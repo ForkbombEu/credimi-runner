@@ -11,7 +11,7 @@ Use it to run Maestro tests or adb commands from inside the container.
 These steps vary slightly by manufacturer, but the flow is similar on most Android 11+ devices.
 
 1. Open **Settings** → **About phone**.
-2. Tap **Build number** 7 times until you see “You are now a developer.”
+2. Tap **Version** -> **Build number** 7 times until you see “You are now a developer.”
 3. Go back to **Settings** and open **System** → **Developer options**.
 4. Turn on **Developer options** (if there’s a master toggle).
 5. Turn on **USB debugging** (required for USB/cable workflows; separate from Wi‑Fi debugging).
