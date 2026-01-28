@@ -14,8 +14,9 @@ These steps vary slightly by manufacturer, but the flow is similar on most Andro
 2. Tap **Build number** 7 times until you see “You are now a developer.”
 3. Go back to **Settings** and open **System** → **Developer options**.
 4. Turn on **Developer options** (if there’s a master toggle).
-5. Find **Wireless debugging** and enable it.
-6. Tap **Wireless debugging** to open its screen:
+5. Turn on **USB debugging** (required for USB/cable workflows; separate from Wi‑Fi debugging).
+6. Find **Wireless debugging** and enable it.
+7. Tap **Wireless debugging** to open its screen:
    - Your phone’s IP address is shown there (often under **IP address** or **Device IP**).
    - Some phones show **IP:PORT** (for example `192.168.1.42:38349`). You can pass that as-is.
    - Ensure **Wireless debugging** stays enabled while you connect.
