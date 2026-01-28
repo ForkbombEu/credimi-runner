@@ -1,5 +1,5 @@
 {
-  "name": "credimi-node",
+  "name": "credimi-runner",
   "version": "0.0.0",
   "private": true,
   "description": "Docker image with Android platform-tools and Maestro for Wi-Fi ADB",

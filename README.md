@@ -1,4 +1,4 @@
-# credimi-node
+# credimi-runner
 
 A tiny Docker image that bundles Android platform-tools (adb/fastboot) and Maestro,
 with a simple entrypoint that connects to a physical Android phone over Wi-Fi ADB.
@@ -32,7 +32,7 @@ have the device listening on a TCP port shown on the phone.
 # If your phone shows IP:PORT, pass it as a single argument
 docker run --rm -it --network host \
   -v adbkeys:/root/.android \
-  ghcr.io/ForkbombEu/credimi-node:latest 192.168.1.42:38349
+  ghcr.io/ForkbombEu/credimi-runner:latest 192.168.1.42:38349
 ```
 
 ### 3) Pair (Android 11+)
@@ -64,7 +64,7 @@ Connect and exit after the attempt:
 ```bash
 docker run --rm -it --network host \
   -v adbkeys:/root/.android \
-  ghcr.io/ForkbombEu/credimi-node:latest --no-wait 192.168.1.42:38349
+  ghcr.io/ForkbombEu/credimi-runner:latest --no-wait 192.168.1.42:38349
 ```
 
 ## USB (wired) alternative
@@ -76,7 +76,7 @@ to pass the USB device into the container:
 docker run --rm -it --privileged \
   -v /dev/bus/usb:/dev/bus/usb \
   -v adbkeys:/root/.android \
-  ghcr.io/ForkbombEu/credimi-node:latest --no-wait 127.0.0.1:5555
+  ghcr.io/ForkbombEu/credimi-runner:latest --no-wait 127.0.0.1:5555
 ```
 
 Then inside the container:
@@ -110,19 +110,19 @@ Notes:
 This repo uses semantic-release (Conventional Commits) on every push to `master`.
 Each release publishes a Docker image to GitHub Container Registry:
 
-- `ghcr.io/ForkbombEu/credimi-node:latest`
-- `ghcr.io/ForkbombEu/credimi-node:vX.Y.Z`
+- `ghcr.io/ForkbombEu/credimi-runner:latest`
+- `ghcr.io/ForkbombEu/credimi-runner:vX.Y.Z`
 
 ## Contributing / Hacking
 
 Build locally:
 
 ```bash
-docker build -t credimi-node .
+docker build -t credimi-runner .
 ```
 
 Run a locally built image:
 
 ```bash
-docker run --rm -it --network host credimi-node 192.168.1.42
+docker run --rm -it --network host credimi-runner 192.168.1.42
 ```
