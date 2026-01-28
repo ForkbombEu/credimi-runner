@@ -1,0 +1,21 @@
+{
+  "name": "credimi-node",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Docker image with Android platform-tools and Maestro for Wi-Fi ADB",
+  "license": "MIT",
+  "release": {
+    "branches": ["master"],
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      "@semantic-release/github"
+    ]
+  },
+  "devDependencies": {
+    "@semantic-release/commit-analyzer": "^13.0.0",
+    "@semantic-release/github": "^10.0.0",
+    "@semantic-release/release-notes-generator": "^14.0.0",
+    "semantic-release": "^24.0.0"
+  }
+}
