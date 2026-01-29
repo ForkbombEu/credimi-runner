@@ -145,12 +145,30 @@ if [[ "$connect_status" -ne 0 ]]; then
   echo "Container will remain running for debugging." >&2
 fi
 
-echo "Waiting for an adb device to be listed..."
+max_wait_seconds=30
+elapsed_seconds=0
+
+echo "Waiting for an adb device to be listed (timeout: ${max_wait_seconds}s)..."
 while true; do
   if adb devices | awk 'NR>1 && $2=="device" {found=1} END {exit !found}'; then
     break
   fi
   sleep 1
+  elapsed_seconds=$((elapsed_seconds + 1))
+  if [[ "$elapsed_seconds" -ge "$max_wait_seconds" ]]; then
+    echo -e "\033[1;31m" >&2
+    echo "====================================================================" >&2
+    echo "   ❌  NO ADB DEVICE DETECTED AFTER ${max_wait_seconds}s" >&2
+    echo "--------------------------------------------------------------------" >&2
+    echo "   📱  Please attach a phone or enable Wireless/USB debugging." >&2
+    echo "   🔌  If using USB, check cable + permissions." >&2
+    echo "   📶  If using Wi-Fi, verify IP:PORT and run adb pair/connect." >&2
+    echo "--------------------------------------------------------------------" >&2
+    echo "   Tip: run 'adb devices -l' to confirm detection." >&2
+    echo "====================================================================" >&2
+    echo -e "\033[0m" >&2
+    exit 1
+  fi
 done
 
 echo "Starting maestro-worker..."
