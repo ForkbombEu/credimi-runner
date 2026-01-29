@@ -1,0 +1,34 @@
+version: "3"
+
+vars:
+  IMAGE: ghcr.io/ForkbombEu/credimi-runner:latest
+  LOCAL_IMAGE: credimi-runner
+  ADBKEYS_VOL: adbkeys
+  # Override like: task run:wifi PHONE=192.168.1.42:38349
+  PHONE: 192.168.1.42:38349
+
+tasks:
+  build:
+    desc: Build the Docker image locally
+    cmds:
+      - docker build -t {{.LOCAL_IMAGE}} .
+
+  run:wifi:
+    desc: Run image with Wi-Fi ADB (host network)
+    cmds:
+      - docker run --rm -it --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.IMAGE}} {{.PHONE}}
+
+  run:usb:
+    desc: Run image with USB passthrough (requires privileged)
+    cmds:
+      - docker run --rm -it --privileged -v /dev/bus/usb:/dev/bus/usb -v {{.ADBKEYS_VOL}}:/root/.android {{.IMAGE}} --usb
+
+  run:local:
+    desc: Run a locally built image (Wi-Fi ADB)
+    cmds:
+      - docker run --rm -it --network host {{.LOCAL_IMAGE}} {{.PHONE}}
+
+  test:entrypoint:
+    desc: Quick entrypoint argument checks (no device required)
+    cmds:
+      - ./scripts/test-entrypoint-args.sh

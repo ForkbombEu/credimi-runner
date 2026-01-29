@@ -1,4 +1,5 @@
-FROM ubuntu:24.04
+# syntax=docker/dockerfile:1.4
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -28,6 +29,13 @@ RUN curl -fsSL https://get.maestro.mobile.dev | bash \
 # Add entrypoint script
 COPY entrypoint.sh /usr/local/bin/phone-connect
 RUN chmod +x /usr/local/bin/phone-connect
+
+RUN mkdir -p /opt/maestro-worker
+RUN --mount=type=bind,source=.,target=/tmp/src \
+    if [ -f /tmp/src/maestro-worker ]; then cp /tmp/src/maestro-worker /opt/maestro-worker/maestro-worker; fi
+RUN if [ -f /opt/maestro-worker/maestro-worker ]; then chmod +x /opt/maestro-worker/maestro-worker; fi
+RUN --mount=type=bind,source=.,target=/tmp/src \
+    if [ -f /tmp/src/.env ]; then cp /tmp/src/.env /opt/maestro-worker/.env; fi
 
 ENV PATH="/opt/android/platform-tools:${PATH}"
 

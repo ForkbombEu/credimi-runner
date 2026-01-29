@@ -145,6 +145,14 @@ if [[ "$connect_status" -ne 0 ]]; then
   echo "Container will remain running for debugging." >&2
 fi
 
-echo "Container is now idle. Use 'docker exec -it <container> bash' to interact."
-# Keep container alive for interactive use
-exec tail -f /dev/null
+echo "Waiting for an adb device to be listed..."
+while true; do
+  if adb devices | awk 'NR>1 && $2=="device" {found=1} END {exit !found}'; then
+    break
+  fi
+  sleep 1
+done
+
+echo "Starting maestro-worker..."
+cd /opt/maestro-worker
+exec ./maestro-worker serve
