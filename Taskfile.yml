@@ -11,7 +11,7 @@ tasks:
   build:
     desc: Build the Docker image locally
     cmds:
-      - docker build -t {{.LOCAL_IMAGE}} .
+      - docker buidx build --platform linux/amd64,linux/arm64 -t {{.LOCAL_IMAGE}} .
 
   run:wifi:
     desc: Run image with Wi-Fi ADB (host network)
