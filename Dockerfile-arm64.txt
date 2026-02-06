@@ -1,0 +1,61 @@
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Ensure APT sources exist (some slim bases use deb822 sources or can be minimal)
+RUN set -eux; \
+    if [ ! -f /etc/apt/sources.list ] && [ ! -f /etc/apt/sources.list.d/debian.sources ]; then \
+      echo "No APT sources found; creating /etc/apt/sources.list"; \
+      printf "deb http://deb.debian.org/debian bookworm main\n\
+deb http://deb.debian.org/debian bookworm-updates main\n\
+deb http://deb.debian.org/debian-security bookworm-security main\n" > /etc/apt/sources.list; \
+    fi
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        unzip \
+        bash \
+        jq \
+        openjdk-17-jre-headless \
+        usbutils \
+        adb \
+        aapt \
+        ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+
+
+# Commented because android-tools are not available for ARM64
+#
+# Install Android platform-tools (adb/fastboot)
+# RUN curl -fsSLo /tmp/platform-tools.zip https://dl.google.com/android/repository/platform-tools-latest-linux.zip \
+#     && mkdir -p /opt/android \
+#    && unzip -q /tmp/platform-tools.zip -d /opt/android \
+#    && rm -f /tmp/platform-tools.zip \
+#    && ln -s /opt/android/platform-tools/adb /usr/local/bin/adb \
+#    && ln -s /opt/android/platform-tools/fastboot /usr/local/bin/fastboot
+
+
+# Install Maestro via official installer
+RUN curl -fsSL https://get.maestro.mobile.dev | bash \
+    && ln -s /root/.maestro/bin/maestro /usr/local/bin/maestro
+	
+RUN curl -fsSL https://raw.githubusercontent.com/omnarayan/Maestro/feature/driver-host-port-distribution/upgrade-maestro-ports.sh | bash
+
+# Add entrypoint script
+COPY entrypoint.sh /usr/local/bin/phone-connect
+RUN chmod +x /usr/local/bin/phone-connect
+
+RUN mkdir -p /opt/maestro-worker
+RUN --mount=type=bind,source=.,target=/tmp/src \
+    if [ -f /tmp/src/maestro-worker ]; then cp /tmp/src/maestro-worker /opt/maestro-worker/maestro-worker; fi
+RUN if [ -f /opt/maestro-worker/maestro-worker ]; then chmod +x /opt/maestro-worker/maestro-worker; fi
+RUN --mount=type=bind,source=.,target=/tmp/src \
+    if [ -f /tmp/src/.env ]; then cp /tmp/src/.env /opt/maestro-worker/.env; fi
+
+ENV PATH="/opt/android/platform-tools:${PATH}"
+
+ENTRYPOINT ["/usr/local/bin/phone-connect"]
+CMD ["--help"]
