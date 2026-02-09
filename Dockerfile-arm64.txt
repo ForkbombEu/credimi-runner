@@ -1,3 +1,5 @@
+# Build this with: docker build --no-cache -t credimi-runner .
+
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
