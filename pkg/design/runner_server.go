@@ -44,31 +44,13 @@ var TouchFingerprintResult = ResultType("TouchFingerprintResult", func() {
 
 var _ = Service("runner", func() {
 	Description("Runner HTTP service.")
+	Files("/docs", "pkg/server/docs/spotlight.html")
+	Files("/docs/openapi.yaml", "pkg/gen/http/openapi.yaml")
 
 	Error("bad_request", APIError)
 	Error("unauthorized", APIError)
 	Error("bad_gateway", APIError)
 	Error("internal_error", APIError)
-
-	Method("docs", func() {
-		Result(String)
-		HTTP(func() {
-			GET("/docs")
-			Response(StatusOK, func() {
-				ContentType("text/html")
-			})
-		})
-	})
-
-	Method("docs_openapi3", func() {
-		Result(String)
-		HTTP(func() {
-			GET("/docs/openapi3.yaml")
-			Response(StatusOK, func() {
-				ContentType("application/yaml")
-			})
-		})
-	})
 
 	Method("process_start_missing", func() {
 		Result(Empty)

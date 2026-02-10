@@ -55,6 +55,7 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 		nil,
 		GoaErrorFormatter,
 		staticFS,
+		staticFS,
 	)
 	runnerhttp.Mount(mux, srv)
 

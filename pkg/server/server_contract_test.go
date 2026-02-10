@@ -236,18 +236,18 @@ func TestServerContract_Docs(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.Code)
 		require.Contains(t, resp.Header().Get("Content-Type"), "text/html")
 		require.Contains(t, resp.Body.String(), "<elements-api")
-		require.Contains(t, resp.Body.String(), `apiDescriptionUrl="/docs/openapi3.yaml"`)
+		require.Contains(t, resp.Body.String(), `apiDescriptionUrl="/docs/openapi.yaml"`)
 	})
 
 	t.Run("openapi yaml", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/docs/openapi3.yaml", nil)
+		req := httptest.NewRequest(http.MethodGet, "/docs/openapi.yaml", nil)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
 
 		require.Equal(t, http.StatusOK, resp.Code)
-		require.Contains(t, resp.Body.String(), "openapi:")
-		require.Contains(t, resp.Body.String(), "runner-server")
+		require.Contains(t, resp.Body.String(), `swagger: "2.0"`)
+		require.Contains(t, resp.Body.String(), "title: Runner Server")
 	})
 }
 

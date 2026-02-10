@@ -23,8 +23,8 @@ func (s *runnerService) Docs(ctx context.Context) (string, error) {
 	return string(content), nil
 }
 
-func (s *runnerService) DocsOpenapi3(ctx context.Context) (string, error) {
-	content, err := os.ReadFile(filepath.Join(projectRootDir(), "pkg", "gen", "http", "openapi3.yaml"))
+func (s *runnerService) DocsOpenapi(ctx context.Context) (string, error) {
+	content, err := os.ReadFile(filepath.Join(projectRootDir(), "pkg", "gen", "http", "openapi.yaml"))
 	if err != nil {
 		return "", err
 	}

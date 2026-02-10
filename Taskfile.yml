@@ -7,7 +7,7 @@ vars:
   BIN_DIR: bin
   APP_NAME: credimi-runner
   COVERAGE_FILE: coverage.out
-  COVERAGE_MIN: "40"
+  COVERAGE_MIN: "90"
   TEST_PKGS:
     sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
   # Override like: task run:wifi PHONE=192.168.1.42:38349
@@ -43,7 +43,7 @@ tasks:
   "build:docker":
     desc: Build the Docker image locally
     cmds:
-      - docker buildx build --platform linux/amd64,linux/arm64 -t {{.LOCAL_IMAGE}} .
+      - docker buildx build --platform linux/amd64,linux/arm64 --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_IMAGE}} .
 
   test:
     desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
