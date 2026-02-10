@@ -4,13 +4,32 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
+	"runtime"
+	"strings"
 
-	"github.com/forkbombeu/credimi-runner/pkg/gen/http/runner/server"
+	runnerhttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/runner/server"
 	runner "github.com/forkbombeu/credimi-runner/pkg/gen/runner"
 	"goa.design/clue/debug"
 	cluelog "goa.design/clue/log"
 	goahttp "goa.design/goa/v3/http"
 )
+
+type slashNormalizedFS struct {
+	fs http.FileSystem
+}
+
+func (s slashNormalizedFS) Open(name string) (http.File, error) {
+	return s.fs.Open(strings.TrimPrefix(name, "/"))
+}
+
+func projectRootDirForFS() string {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "."
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+}
 
 func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handler {
 
@@ -25,9 +44,19 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 		debug.MountDebugLogEnabler(debug.Adapt(mux))
 	}
 
+	staticFS := slashNormalizedFS{fs: http.Dir(projectRootDirForFS())}
+
 	// Transport server
-	srv := server.New(endpoints, mux, goahttp.RequestDecoder, goahttp.ResponseEncoder, nil, GoaErrorFormatter)
-	server.Mount(mux, srv)
+	srv := runnerhttp.New(
+		endpoints,
+		mux,
+		goahttp.RequestDecoder,
+		goahttp.ResponseEncoder,
+		nil,
+		GoaErrorFormatter,
+		staticFS,
+	)
+	runnerhttp.Mount(mux, srv)
 
 	// HTTP middleware stack
 	var handler http.Handler = mux

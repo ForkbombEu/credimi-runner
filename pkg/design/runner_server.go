@@ -50,6 +50,26 @@ var _ = Service("runner", func() {
 	Error("bad_gateway", APIError)
 	Error("internal_error", APIError)
 
+	Method("docs", func() {
+		Result(String)
+		HTTP(func() {
+			GET("/docs")
+			Response(StatusOK, func() {
+				ContentType("text/html")
+			})
+		})
+	})
+
+	Method("docs_openapi3", func() {
+		Result(String)
+		HTTP(func() {
+			GET("/docs/openapi3.yaml")
+			Response(StatusOK, func() {
+				ContentType("application/yaml")
+			})
+		})
+	})
+
 	Method("process_start_missing", func() {
 		Result(Empty)
 

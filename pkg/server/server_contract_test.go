@@ -224,6 +224,33 @@ func TestServerContract_ProcessList(t *testing.T) {
 	require.ElementsMatch(t, []string{"alpha", "charlie"}, list)
 }
 
+func TestServerContract_Docs(t *testing.T) {
+	server := newRunnerServiceForTest(nil, nil)
+
+	t.Run("spotlight page", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/docs", nil)
+		resp := httptest.NewRecorder()
+
+		server.ServeHTTP(resp, req)
+
+		require.Equal(t, http.StatusOK, resp.Code)
+		require.Contains(t, resp.Header().Get("Content-Type"), "text/html")
+		require.Contains(t, resp.Body.String(), "<elements-api")
+		require.Contains(t, resp.Body.String(), `apiDescriptionUrl="/docs/openapi3.yaml"`)
+	})
+
+	t.Run("openapi yaml", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/docs/openapi3.yaml", nil)
+		resp := httptest.NewRecorder()
+
+		server.ServeHTTP(resp, req)
+
+		require.Equal(t, http.StatusOK, resp.Code)
+		require.Contains(t, resp.Body.String(), "openapi:")
+		require.Contains(t, resp.Body.String(), "runner-server")
+	})
+}
+
 func TestServerContract_FetchApkAndAction(t *testing.T) {
 	t.Run("invalid JSON", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
