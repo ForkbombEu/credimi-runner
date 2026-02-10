@@ -4,31 +4,77 @@ vars:
   IMAGE: ghcr.io/ForkbombEu/credimi-runner:latest
   LOCAL_IMAGE: credimi-runner
   ADBKEYS_VOL: adbkeys
+  BIN_DIR: bin
+  APP_NAME: credimi-runner
+  COVERAGE_FILE: coverage.out
+  COVERAGE_MIN: "40"
+  TEST_PKGS:
+    sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
   # Override like: task run:wifi PHONE=192.168.1.42:38349
   PHONE: 192.168.1.42:38349
 
 tasks:
   build:
+    desc: Build the Goa app binary locally
+    deps: ["go:gen"]
+    sources:
+      - main.go
+      - go.mod
+      - go.sum
+      - cmd/**/*.go
+      - pkg/**/*.go
+    generates:
+      - "{{.BIN_DIR}}/{{.APP_NAME}}"
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - go build -o {{.BIN_DIR}}/{{.APP_NAME}} .
+
+  "go:gen":
+    desc: Run code generation (Goa)
+    sources:
+      - pkg/design/**/*.go
+      - go.mod
+      - go.sum
+    generates:
+      - pkg/gen/**/*.go
+    cmds:
+      - go generate ./...
+
+  "build:docker":
     desc: Build the Docker image locally
     cmds:
-      - docker buidx build --platform linux/amd64,linux/arm64 -t {{.LOCAL_IMAGE}} .
+      - docker buildx build --platform linux/amd64,linux/arm64 -t {{.LOCAL_IMAGE}} .
 
-  run:wifi:
+  test:
+    desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
+    deps: ["go:gen"]
+    cmds:
+      - go test {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
+      - >-
+        go tool cover -func={{.COVERAGE_FILE}} |
+        awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
+
+  clean:
+    desc: Remove Goa generated code and local build artifacts
+    cmds:
+      - rm -rf pkg/gen {{.BIN_DIR}} {{.COVERAGE_FILE}}
+
+  "run:wifi":
     desc: Run image with Wi-Fi ADB (host network)
     cmds:
       - docker run --rm -it --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.IMAGE}} {{.PHONE}}
 
-  run:usb:
+  "run:usb":
     desc: Run image with USB passthrough (requires privileged)
     cmds:
       - docker run --rm -it --privileged -v /dev/bus/usb:/dev/bus/usb -v {{.ADBKEYS_VOL}}:/root/.android {{.IMAGE}} --usb
 
-  run:local:
+  "run:local":
     desc: Run a locally built image (Wi-Fi ADB)
     cmds:
       - docker run --rm -it --network host {{.LOCAL_IMAGE}} {{.PHONE}}
 
-  test:entrypoint:
+  "test:entrypoint":
     desc: Quick entrypoint argument checks (no device required)
     cmds:
       - ./scripts/test-entrypoint-args.sh

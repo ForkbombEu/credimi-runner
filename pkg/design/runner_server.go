@@ -2,6 +2,8 @@ package design
 
 import . "goa.design/goa/v3/dsl"
 
+//go:generate go run goa.design/goa/v3/cmd/goa@v3.24.3 gen github.com/forkbombeu/credimi-runner/pkg/design -o ..
+
 var _ = API("runner-server", func() {
 	Title("Runner Server")
 	Description("Credimi runner server API.")
