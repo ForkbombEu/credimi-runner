@@ -11,14 +11,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=secret,id=credimi_extra_pat \
-    if [ -f /run/secrets/credimi_extra_pat ] && [ -s /run/secrets/credimi_extra_pat ]; then \
-      pat="$(cat /run/secrets/credimi_extra_pat)"; \
-      git config --global url."https://${pat}@github.com/".insteadOf "https://github.com/"; \
-    fi
-
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache go mod download
+RUN --mount=type=secret,id=credimi_extra_pat,required=true \
+    --mount=type=cache,target=/gomod-cache \
+    --mount=type=cache,target=/go-cache \
+    pat="$(cat /run/secrets/credimi_extra_pat)" \
+    && git config --global url."https://${pat}@github.com/".insteadOf "https://github.com/" \
+    && go mod download \
+    && rm -f /root/.gitconfig
 
 COPY . ./
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache go generate ./...
