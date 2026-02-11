@@ -3,11 +3,21 @@ package design
 import . "goa.design/goa/v3/dsl"
 
 //go:generate go run goa.design/goa/v3/cmd/goa@v3.24.3 gen github.com/forkbombeu/credimi-runner/pkg/design -o ..
+//go:generate go run ../../scripts/generate_openapi_public.go
 
 var _ = API("runner-server", func() {
 	Title("Runner Server")
 	Description("Credimi runner server API.")
 	Version("1.0")
+	Meta("openapi:operationId", "{service}.{method}(.{routeIndex})")
+	Meta("openapi:example", "false")
+	Meta("openapi:summary", "{path}")
+	Server("runner-server", func() {
+		Services("worker", "credimi", "mobile", "docs")
+		Host("local", func() {
+			URI("http://127.0.0.1:8050")
+		})
+	})
 })
 
 var APIError = Type("APIError", func() {
@@ -43,13 +53,26 @@ var TouchFingerprintResult = ResultType("TouchFingerprintResult", func() {
 })
 
 var _ = Service("runner", func() {
-	Description("Runner HTTP service.")
-	Files("/docs", "pkg/server/docs/spotlight.html")
-	Files("/docs/openapi.yaml", "pkg/gen/http/openapi.yaml")
+	Description("Internal shared error model.")
 
 	Error("bad_request", APIError)
 	Error("unauthorized", APIError)
 	Error("bad_gateway", APIError)
+	Error("internal_error", APIError)
+})
+
+var _ = Service("docs", func() {
+	Description("Static API documentation.")
+	Files("/docs", "pkg/server/docs/spotlight.html")
+	Files("/docs/openapi.yaml", "pkg/gen/http/openapi.yaml")
+	Files("/docs/openapi3.yaml", "pkg/gen/http/openapi3.yaml")
+	Files("/docs/openapi3-public.json", "pkg/gen/http/openapi3-public.json")
+})
+
+var _ = Service("worker", func() {
+	Description("Worker process management.")
+
+	Error("bad_request", APIError)
 	Error("internal_error", APIError)
 
 	Method("process_start_missing", func() {
@@ -58,7 +81,7 @@ var _ = Service("runner", func() {
 		Error("bad_request")
 
 		HTTP(func() {
-			POST("/process/")
+			POST("/api/worker/process/")
 			Response(StatusNoContent)
 			Response("bad_request", StatusBadRequest)
 		})
@@ -66,9 +89,17 @@ var _ = Service("runner", func() {
 
 	Method("process_start", func() {
 		Payload(func() {
-			Attribute("namespace", String)
-			Attribute("old_namespace", String)
+			Attribute("namespace", String, func() {
+				Example("")
+			})
+			Attribute("old_namespace", String, func() {
+				Example("")
+			})
 			Required("namespace")
+			Example(map[string]any{
+				"namespace":     "",
+				"old_namespace": "",
+			})
 		})
 		Result(ProcessStartResult)
 
@@ -76,7 +107,7 @@ var _ = Service("runner", func() {
 		Error("internal_error")
 
 		HTTP(func() {
-			POST("/process/{namespace}")
+			POST("/api/worker/process/{namespace}")
 			Param("namespace")
 			Body(func() {
 				Attribute("old_namespace")
@@ -93,11 +124,20 @@ var _ = Service("runner", func() {
 		Error("internal_error")
 
 		HTTP(func() {
-			GET("/process/list")
+			GET("/api/worker/processes")
 			Response(StatusOK)
 			Response("internal_error", StatusInternalServerError)
 		})
 	})
+})
+
+var _ = Service("credimi", func() {
+	Description("Credimi integration endpoints.")
+
+	Error("bad_request", APIError)
+	Error("unauthorized", APIError)
+	Error("bad_gateway", APIError)
+	Error("internal_error", APIError)
 
 	Method("fetch_apk_and_action", func() {
 		Payload(func() {
@@ -105,6 +145,11 @@ var _ = Service("runner", func() {
 			Attribute("version_identifier", String)
 			Attribute("action_identifier", String)
 			Required("instance_url", "version_identifier")
+			Example(map[string]any{
+				"instance_url":       "",
+				"version_identifier": "",
+				"action_identifier":  "",
+			})
 		})
 		Result(FetchApkAndActionResult)
 
@@ -114,7 +159,7 @@ var _ = Service("runner", func() {
 		Error("internal_error")
 
 		HTTP(func() {
-			POST("/fetch-apk-and-action")
+			POST("/api/credimi/apk-action")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -132,8 +177,16 @@ var _ = Service("runner", func() {
 			Attribute("run_identifier", String)
 			Attribute("runner_identifier", String)
 			Required("instance_url", "run_identifier")
+			Example(map[string]any{
+				"instance_url":      "",
+				"video_path":        "",
+				"last_frame_path":   "",
+				"logcat_path":       "",
+				"run_identifier":    "",
+				"runner_identifier": "",
+			})
 		})
-		Result(Any)
+		Result(MapOf(String, Any))
 
 		Error("bad_request")
 		Error("unauthorized")
@@ -141,7 +194,7 @@ var _ = Service("runner", func() {
 		Error("internal_error")
 
 		HTTP(func() {
-			POST("/store-pipeline-result")
+			POST("/api/credimi/pipeline-result")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -149,6 +202,12 @@ var _ = Service("runner", func() {
 			Response("internal_error", StatusInternalServerError)
 		})
 	})
+})
+
+var _ = Service("mobile", func() {
+	Description("Mobile device control endpoints.")
+
+	Error("internal_error", APIError)
 
 	Method("touch_fingerprint", func() {
 		Result(TouchFingerprintResult)
@@ -156,7 +215,7 @@ var _ = Service("runner", func() {
 		Error("internal_error")
 
 		HTTP(func() {
-			GET("/touch-fingerprint")
+			GET("/api/mobile/fingerprint/touch")
 			Response(StatusOK)
 			Response("internal_error", StatusInternalServerError)
 		})

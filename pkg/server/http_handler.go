@@ -8,8 +8,15 @@ import (
 	"runtime"
 	"strings"
 
-	runnerhttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/runner/server"
+	credimi "github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
+	docs "github.com/forkbombeu/credimi-runner/pkg/gen/docs"
+	credimihttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/credimi/server"
+	docshttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/docs/server"
+	mobilehttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/mobile/server"
+	workerhttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/worker/server"
+	mobile "github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
 	runner "github.com/forkbombeu/credimi-runner/pkg/gen/runner"
+	worker "github.com/forkbombeu/credimi-runner/pkg/gen/worker"
 	"goa.design/clue/debug"
 	cluelog "goa.design/clue/log"
 	goahttp "goa.design/goa/v3/http"
@@ -33,9 +40,21 @@ func projectRootDirForFS() string {
 
 func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handler {
 
-	endpoints := runner.NewEndpoints(rs)
-	endpoints.Use(debug.LogPayloads())
-	endpoints.Use(cluelog.Endpoint)
+	workerEndpoints := worker.NewEndpoints(rs)
+	workerEndpoints.Use(debug.LogPayloads())
+	workerEndpoints.Use(cluelog.Endpoint)
+
+	credimiEndpoints := credimi.NewEndpoints(rs)
+	credimiEndpoints.Use(debug.LogPayloads())
+	credimiEndpoints.Use(cluelog.Endpoint)
+
+	mobileEndpoints := mobile.NewEndpoints(rs)
+	mobileEndpoints.Use(debug.LogPayloads())
+	mobileEndpoints.Use(cluelog.Endpoint)
+
+	docsEndpoints := docs.NewEndpoints(rs)
+	docsEndpoints.Use(debug.LogPayloads())
+	docsEndpoints.Use(cluelog.Endpoint)
 
 	// Goa mux + optional debug mounts
 	mux := goahttp.NewMuxer()
@@ -46,9 +65,32 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 
 	staticFS := slashNormalizedFS{fs: http.Dir(projectRootDirForFS())}
 
-	// Transport server
-	srv := runnerhttp.New(
-		endpoints,
+	workerSrv := workerhttp.New(
+		workerEndpoints,
+		mux,
+		goahttp.RequestDecoder,
+		goahttp.ResponseEncoder,
+		nil,
+		GoaErrorFormatter,
+	)
+	credimiSrv := credimihttp.New(
+		credimiEndpoints,
+		mux,
+		goahttp.RequestDecoder,
+		goahttp.ResponseEncoder,
+		nil,
+		GoaErrorFormatter,
+	)
+	mobileSrv := mobilehttp.New(
+		mobileEndpoints,
+		mux,
+		goahttp.RequestDecoder,
+		goahttp.ResponseEncoder,
+		nil,
+		GoaErrorFormatter,
+	)
+	docsSrv := docshttp.New(
+		docsEndpoints,
 		mux,
 		goahttp.RequestDecoder,
 		goahttp.ResponseEncoder,
@@ -56,8 +98,13 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 		GoaErrorFormatter,
 		staticFS,
 		staticFS,
+		staticFS,
+		staticFS,
 	)
-	runnerhttp.Mount(mux, srv)
+	workerhttp.Mount(mux, workerSrv)
+	credimihttp.Mount(mux, credimiSrv)
+	mobilehttp.Mount(mux, mobileSrv)
+	docshttp.Mount(mux, docsSrv)
 
 	// HTTP middleware stack
 	var handler http.Handler = mux
@@ -67,7 +114,16 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 	handler = cluelog.HTTP(ctx)(handler)
 
 	// Log mounts (super useful)
-	for _, m := range srv.Mounts {
+	for _, m := range workerSrv.Mounts {
+		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
+	}
+	for _, m := range credimiSrv.Mounts {
+		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
+	}
+	for _, m := range mobileSrv.Mounts {
+		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
+	}
+	for _, m := range docsSrv.Mounts {
 		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
 	}
 
@@ -75,7 +131,7 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 }
 
 func (s *runnerService) ProcessStartMissing(ctx context.Context) error {
-	return runner.MakeBadRequest(&runner.APIError{
+	return worker.MakeBadRequest(&runner.APIError{
 		Code:    http.StatusBadRequest,
 		Domain:  "Server",
 		Reason:  "NamespaceMissing",
@@ -83,7 +139,7 @@ func (s *runnerService) ProcessStartMissing(ctx context.Context) error {
 	})
 }
 
-func (s *runnerService) ProcessStart(ctx context.Context, payload *runner.ProcessStartPayload) (*runner.Processstartresult, error) {
+func (s *runnerService) ProcessStart(ctx context.Context, payload *worker.ProcessStartPayload) (*worker.Processstartresult, error) {
 	oldNamespace := ""
 	if payload.OldNamespace != nil {
 		oldNamespace = *payload.OldNamespace
@@ -91,17 +147,17 @@ func (s *runnerService) ProcessStart(ctx context.Context, payload *runner.Proces
 
 	result, apiErr := s.processStart(payload.Namespace, oldNamespace)
 	if apiErr != nil {
-		return nil, wrapAPIError(apiErr)
+		return nil, wrapWorkerAPIError(apiErr)
 	}
 
-	return &runner.Processstartresult{Status: result.Status, Namespace: result.Namespace}, nil
+	return &worker.Processstartresult{Status: result.Status, Namespace: result.Namespace}, nil
 }
 
 func (s *runnerService) ProcessList(ctx context.Context) ([]string, error) {
 	return s.processList(), nil
 }
 
-func (s *runnerService) FetchApkAndAction(ctx context.Context, payload *runner.FetchApkAndActionPayload) (*runner.Fetchapkandactionresult, error) {
+func (s *runnerService) FetchApkAndAction(ctx context.Context, payload *credimi.FetchApkAndActionPayload) (*credimi.Fetchapkandactionresult, error) {
 	var body fetchApkAndActionPayload
 	if payload.InstanceURL != "" {
 		body.InstanceURL = payload.InstanceURL
@@ -115,17 +171,17 @@ func (s *runnerService) FetchApkAndAction(ctx context.Context, payload *runner.F
 
 	result, apiErr := s.fetchApkAndActionLogic(body)
 	if apiErr != nil {
-		return nil, wrapAPIError(apiErr)
+		return nil, wrapCredimiAPIError(apiErr)
 	}
 
-	return &runner.Fetchapkandactionresult{
+	return &credimi.Fetchapkandactionresult{
 		ApkPath:   result.ApkPath,
 		VersionID: result.VersionID,
 		Code:      result.Code,
 	}, nil
 }
 
-func (s *runnerService) StorePipelineResult(ctx context.Context, payload *runner.StorePipelineResultPayload) (any, error) {
+func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credimi.StorePipelineResultPayload) (map[string]any, error) {
 	var body storePipelineResultPayload
 	if payload.InstanceURL != "" {
 		body.InstanceURL = payload.InstanceURL
@@ -147,17 +203,34 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *runner
 	}
 	result, apiErr := s.storePipelineResultLogic(body)
 	if apiErr != nil {
-		return nil, wrapAPIError(apiErr)
+		return nil, wrapCredimiAPIError(apiErr)
 	}
 
-	return json.RawMessage(result), nil
+	if len(result) == 0 {
+		return map[string]any{}, nil
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(result, &decoded); err != nil {
+		return nil, wrapCredimiAPIError(&runner.APIError{
+			Code:    http.StatusInternalServerError,
+			Domain:  "server",
+			Reason:  "invalid upstream response",
+			Message: "store pipeline result returned a non-object JSON body",
+		})
+	}
+	if decoded == nil {
+		return map[string]any{}, nil
+	}
+
+	return decoded, nil
 }
 
-func (s *runnerService) TouchFingerprint(ctx context.Context) (*runner.Touchfingerprintresult, error) {
+func (s *runnerService) TouchFingerprint(ctx context.Context) (*mobile.Touchfingerprintresult, error) {
 	result, apiErr := s.touchFingerprintLogic()
 	if apiErr != nil {
-		return nil, wrapAPIError(apiErr)
+		return nil, wrapMobileAPIError(apiErr)
 	}
 
-	return &runner.Touchfingerprintresult{Status: result.Status}, nil
+	return &mobile.Touchfingerprintresult{Status: result.Status}, nil
 }

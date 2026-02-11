@@ -5,36 +5,56 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/worker"
 
 	goahttp "goa.design/goa/v3/http"
 	goa "goa.design/goa/v3/pkg"
 )
 
-func wrapAPIError(apiErr *runner.APIError) error {
+func normalizeAPIError(apiErr *runner.APIError) *runner.APIError {
 	if apiErr == nil {
-		return runner.MakeInternalError(&runner.APIError{
+		return &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",
 			Reason:  "InternalError",
 			Message: "internal server error",
-		})
+		}
 	}
+	if apiErr.Code == 0 {
+		apiErr.Code = http.StatusInternalServerError
+	}
+	return apiErr
+}
+
+func wrapWorkerAPIError(apiErr *runner.APIError) error {
+	apiErr = normalizeAPIError(apiErr)
+	if apiErr.Code == http.StatusBadRequest {
+		return worker.MakeBadRequest(apiErr)
+	}
+	return worker.MakeInternalError(apiErr)
+}
+
+func wrapCredimiAPIError(apiErr *runner.APIError) error {
+	apiErr = normalizeAPIError(apiErr)
 
 	switch apiErr.Code {
 	case http.StatusBadRequest:
-		return runner.MakeBadRequest(apiErr)
+		return credimi.MakeBadRequest(apiErr)
 	case http.StatusUnauthorized:
-		return runner.MakeUnauthorized(apiErr)
+		return credimi.MakeUnauthorized(apiErr)
 	case http.StatusBadGateway:
-		return runner.MakeBadGateway(apiErr)
+		return credimi.MakeBadGateway(apiErr)
 	default:
-		// everything else treated as internal error
-		if apiErr.Code == 0 {
-			apiErr.Code = http.StatusInternalServerError
-		}
-		return runner.MakeInternalError(apiErr)
+		return credimi.MakeInternalError(apiErr)
 	}
+}
+
+func wrapMobileAPIError(apiErr *runner.APIError) error {
+	apiErr = normalizeAPIError(apiErr)
+	return mobile.MakeInternalError(apiErr)
 }
 
 // Implements goahttp.Statuser and matches your API error JSON.
