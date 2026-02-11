@@ -28,6 +28,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Configure git auth for private Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CREDIMI_EXTRA_PAT:-}" ]; then
+            echo "CREDIMI_EXTRA_PAT is not set"
+            exit 1
+          fi
+          git config --global url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadOf "https://github.com/"
+          go env -w GOPRIVATE=github.com/forkbombeu/*
+
       - name: Run tests with coverage gate (90%)
         shell: bash
         run: |
@@ -36,6 +47,12 @@ jobs:
           PKGS="$(go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' ')"
           go test ${PKGS} -covermode=atomic -coverprofile=coverage.out
           go tool cover -func=coverage.out | awk -v min="90" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
+
+      - name: Cleanup git auth
+        if: always()
+        shell: bash
+        run: |
+          git config --global --unset-all url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadof || true
 
   semantic-release:
     name: 🤖 Semantic release
