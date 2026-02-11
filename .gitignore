@@ -8,7 +8,13 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+.task/
 node_modules/
 npm-debug.log*
 .env
 maestro-worker
+
+# Generated code and build artifacts
+pkg/gen/
+bin/
+coverage.out

@@ -153,6 +153,49 @@ Each release publishes a Docker image to GitHub Container Registry:
 </details>
 
 <details>
+<summary>▶ Run API server locally (`serve`)</summary>
+
+Build and run:
+
+```bash
+task build
+./bin/credimi-runner serve --host 127.0.0.1 --port 8050
+```
+
+Or with Task:
+
+```bash
+task build
+task test
+```
+
+Environment variables used by `serve`:
+
+- `CREDIMI_URL` (default: `http://localhost:8090`)
+- `CREDIMI_PB_ADMIN` (needed to authenticate against `CREDIMI_URL`)
+- `CREDIMI_PB_PASS` (needed to authenticate against `CREDIMI_URL`)
+- `CREDIMI_STAGING_URL` (optional, but if set should have matching creds)
+- `CREDIMI_STAGING_PB_ADMIN` (for staging URL)
+- `CREDIMI_STAGING_PB_PASS` (for staging URL)
+- `CREDIMI_DEV_URL` (optional, but if set should have matching creds)
+- `CREDIMI_DEV_PB_ADMIN` (for dev URL)
+- `CREDIMI_DEV_PB_PASS` (for dev URL)
+- `CREDIMI_RUNNER_ID` (required when workers are started)
+- `TEMPORAL_ADDRESS` (optional, defaults to Temporal SDK default host/port)
+
+Example `.env` for local serve:
+
+```bash
+CREDIMI_URL=http://127.0.0.1:8090
+CREDIMI_PB_ADMIN=admin@example.com
+CREDIMI_PB_PASS=your-password
+CREDIMI_RUNNER_ID=local-runner
+TEMPORAL_ADDRESS=127.0.0.1:7233
+```
+
+</details>
+
+<details>
 <summary>▶ Contributing / Hacking</summary>
 
 Build locally:

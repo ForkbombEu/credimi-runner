@@ -1,4 +1,30 @@
 # syntax=docker/dockerfile:1.4
+FROM golang:1.25.5-bookworm AS builder
+
+WORKDIR /src
+ARG TARGETOS=linux
+ARG TARGETARCH
+ENV GOCACHE=/go-cache
+ENV GOMODCACHE=/gomod-cache
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum ./
+RUN --mount=type=secret,id=credimi_extra_pat,required=true \
+    --mount=type=cache,target=/gomod-cache \
+    --mount=type=cache,target=/go-cache \
+    pat="$(cat /run/secrets/credimi_extra_pat)" \
+    && git config --global url."https://${pat}@github.com/".insteadOf "https://github.com/" \
+    && go mod download \
+    && rm -f /root/.gitconfig
+
+COPY . ./
+RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache go generate ./...
+RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/credimi-runner main.go
+
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -7,37 +33,25 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        unzip \
         bash \
         jq \
         openjdk-17-jre-headless \
         usbutils \
+        unzip \
+        adb \
+        aapt \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Android platform-tools (adb/fastboot)
-RUN curl -fsSLo /tmp/platform-tools.zip https://dl.google.com/android/repository/platform-tools-latest-linux.zip \
-    && mkdir -p /opt/android \
-    && unzip -q /tmp/platform-tools.zip -d /opt/android \
-    && rm -f /tmp/platform-tools.zip \
-    && ln -s /opt/android/platform-tools/adb /usr/local/bin/adb \
-    && ln -s /opt/android/platform-tools/fastboot /usr/local/bin/fastboot
 
 # Install Maestro via official installer
 RUN curl -fsSL https://get.maestro.mobile.dev | bash \
     && ln -s /root/.maestro/bin/maestro /usr/local/bin/maestro
 
+COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
+RUN chmod +x /usr/local/bin/credimi-runner
+
 # Add entrypoint script
 COPY entrypoint.sh /usr/local/bin/phone-connect
 RUN chmod +x /usr/local/bin/phone-connect
-
-RUN mkdir -p /opt/maestro-worker
-RUN --mount=type=bind,source=.,target=/tmp/src \
-    if [ -f /tmp/src/maestro-worker ]; then cp /tmp/src/maestro-worker /opt/maestro-worker/maestro-worker; fi
-RUN if [ -f /opt/maestro-worker/maestro-worker ]; then chmod +x /opt/maestro-worker/maestro-worker; fi
-RUN --mount=type=bind,source=.,target=/tmp/src \
-    if [ -f /tmp/src/.env ]; then cp /tmp/src/.env /opt/maestro-worker/.env; fi
-
-ENV PATH="/opt/android/platform-tools:${PATH}"
 
 ENTRYPOINT ["/usr/local/bin/phone-connect"]
 CMD ["--help"]
