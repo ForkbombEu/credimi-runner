@@ -69,6 +69,7 @@ jobs:
         uses: dyne/pnpm@main
         with:
           node-version: 20
+          fetch-depth: 0
       - run: pnpm semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
