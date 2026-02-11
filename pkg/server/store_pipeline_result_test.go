@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,11 @@ type trackingFileStore struct {
 	memoryFileStore
 	removed []string
 }
+
+type errorReadCloser struct{}
+
+func (errorReadCloser) Read(p []byte) (int, error) { return 0, errors.New("read failed") }
+func (errorReadCloser) Close() error               { return nil }
 
 func (t *trackingFileStore) RemoveAll(path string) error {
 	t.removed = append(t.removed, path)
@@ -183,11 +189,174 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 	}, apiErr)
 }
 
+func TestStorePipelineResult_InvalidInstanceURL(t *testing.T) {
+	baseURL := "http://example.local"
+	store := &memoryFileStore{}
+	writer, err := store.Create("results/run-1/video.mp4")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/last.png")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/logcat.txt")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+		"prod": {URL: baseURL},
+	}, Deps{
+		HTTPClient:    &fakeHTTPClient{},
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     store,
+	})
+
+	_, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
+		InstanceURL:   "http://missing.local",
+		VideoPath:     "results/run-1/video.mp4",
+		LastFramePath: "results/run-1/last.png",
+		LogcatPath:    "results/run-1/logcat.txt",
+	})
+
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusInternalServerError,
+		Domain:  "server",
+		Reason:  "invalid instance url",
+		Message: "no instance found for URL: http://missing.local",
+	}, apiErr)
+}
+
+func TestStorePipelineResult_TokenProviderError(t *testing.T) {
+	baseURL := "http://example.local"
+	store := &memoryFileStore{}
+	writer, err := store.Create("results/run-1/video.mp4")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/last.png")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/logcat.txt")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+		"prod": {URL: baseURL},
+	}, Deps{
+		HTTPClient:    &fakeHTTPClient{},
+		TokenProvider: func(instance utils.Instance) (string, error) { return "", errors.New("bad token") },
+		FileStore:     store,
+	})
+
+	_, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
+		InstanceURL:   baseURL,
+		VideoPath:     "results/run-1/video.mp4",
+		LastFramePath: "results/run-1/last.png",
+		LogcatPath:    "results/run-1/logcat.txt",
+	})
+
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusUnauthorized,
+		Domain:  "authorization",
+		Reason:  "invalid token",
+		Message: "failed to get admin token: bad token",
+	}, apiErr)
+}
+
+func TestStorePipelineResult_RequestFailures(t *testing.T) {
+	baseURL := "http://example.local"
+	storeURL := baseURL + "/api/wallet/store-pipeline-result"
+
+	newServer := func(client *fakeHTTPClient) *runnerService {
+		store := &memoryFileStore{}
+		writer, err := store.Create("results/run-1/video.mp4")
+		require.NoError(t, err)
+		require.NoError(t, writer.Close())
+		writer, err = store.Create("results/run-1/last.png")
+		require.NoError(t, err)
+		require.NoError(t, writer.Close())
+		writer, err = store.Create("results/run-1/logcat.txt")
+		require.NoError(t, err)
+		require.NoError(t, writer.Close())
+
+		return NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+			"prod": {URL: baseURL},
+		}, Deps{
+			HTTPClient:    client,
+			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+			FileStore:     store,
+		})
+	}
+
+	t.Run("upstream request error", func(t *testing.T) {
+		client := &fakeHTTPClient{
+			handlers: map[string]func(*http.Request) (*http.Response, error){
+				http.MethodPost + " " + storeURL: func(req *http.Request) (*http.Response, error) {
+					return nil, errors.New("request failed")
+				},
+			},
+		}
+
+		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
+			InstanceURL:   baseURL,
+			VideoPath:     "results/run-1/video.mp4",
+			LastFramePath: "results/run-1/last.png",
+			LogcatPath:    "results/run-1/logcat.txt",
+		})
+
+		require.Equal(t, "request failed", apiErr.Reason)
+		require.Equal(t, "request failed", apiErr.Message)
+	})
+
+	t.Run("read response error", func(t *testing.T) {
+		client := &fakeHTTPClient{
+			handlers: map[string]func(*http.Request) (*http.Response, error){
+				http.MethodPost + " " + storeURL: func(req *http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Status:     "200 OK",
+						Body:       errorReadCloser{},
+						Header:     make(http.Header),
+					}, nil
+				},
+			},
+		}
+
+		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
+			InstanceURL:   baseURL,
+			VideoPath:     "results/run-1/video.mp4",
+			LastFramePath: "results/run-1/last.png",
+			LogcatPath:    "results/run-1/logcat.txt",
+		})
+
+		require.Equal(t, "request failed", apiErr.Reason)
+		require.Equal(t, "read failed", apiErr.Message)
+	})
+
+	t.Run("non-200 with unparsable JSON", func(t *testing.T) {
+		client := &fakeHTTPClient{
+			handlers: map[string]func(*http.Request) (*http.Response, error){
+				http.MethodPost + " " + storeURL: func(req *http.Request) (*http.Response, error) {
+					return newResponse(http.StatusBadRequest, "{"), nil
+				},
+			},
+		}
+
+		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
+			InstanceURL:   baseURL,
+			VideoPath:     "results/run-1/video.mp4",
+			LastFramePath: "results/run-1/last.png",
+			LogcatPath:    "results/run-1/logcat.txt",
+		})
+
+		require.Equal(t, "request failed", apiErr.Reason)
+		require.Contains(t, apiErr.Message, "failed to parse error response")
+	})
+}
+
 func TestStorePipelineResult_InvalidJSON(t *testing.T) {
 	server := NewRunnerService(NewProcessStore(), nil)
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 	handler := NewHTTPHandler(ctx, server, false)
-	req := httptest.NewRequest(http.MethodPost, "/store-pipeline-result", strings.NewReader("{"))
+	req := httptest.NewRequest(http.MethodPost, "/api/credimi/pipeline-result", strings.NewReader("{"))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)

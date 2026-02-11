@@ -25,6 +25,8 @@ var (
 	clientVerbose bool
 )
 
+var parseEndpoint = cli.ParseEndpoint
+
 var clientCmd = &cobra.Command{
 	Use:   "client [SERVICE] [ENDPOINT] [flags]",
 	Short: "Call the Runner Server API (Goa generated client)",
@@ -58,18 +60,11 @@ Examples:
 			doer = goahttp.NewDebugDoer(doer)
 		}
 
-		// IMPORTANT:
-		// Your generated ParseEndpoint reads os.Args directly:
-		//   flag.CommandLine.Parse(os.Args[1:])
-		// and then expects:
-		//   os.Args[?] = SERVICE ENDPOINT ...
-		//
-		// So we temporarily rewrite os.Args to include just what Goa should parse.
 		origArgs := os.Args
 		defer func() { os.Args = origArgs }()
 		os.Args = append([]string{origArgs[0]}, args...)
 
-		endpoint, payload, err := cli.ParseEndpoint(
+		endpoint, payload, err := parseEndpoint(
 			u.Scheme,
 			u.Host,
 			doer,

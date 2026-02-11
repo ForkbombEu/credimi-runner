@@ -132,7 +132,7 @@ func newRunnerServiceForTest(instances map[string]utils.Instance, store *Process
 func TestServerContract_ProcessStart(t *testing.T) {
 	t.Run("missing namespace", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		req := httptest.NewRequest(http.MethodPost, "/process/", strings.NewReader(`{"old_namespace":""}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/worker/process/", strings.NewReader(`{"old_namespace":""}`))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -149,7 +149,7 @@ func TestServerContract_ProcessStart(t *testing.T) {
 
 	t.Run("invalid JSON", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		req := httptest.NewRequest(http.MethodPost, "/process/example", strings.NewReader("{"))
+		req := httptest.NewRequest(http.MethodPost, "/api/worker/process/example", strings.NewReader("{"))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -169,7 +169,7 @@ func TestServerContract_ProcessStart(t *testing.T) {
 		store := NewProcessStore()
 		store.Add(NewProcess("alpha", nil))
 		server := newRunnerServiceForTest(nil, store)
-		req := httptest.NewRequest(http.MethodPost, "/process/alpha", strings.NewReader(`{"old_namespace":""}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/worker/process/alpha", strings.NewReader(`{"old_namespace":""}`))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -187,7 +187,7 @@ func TestServerContract_ProcessStart(t *testing.T) {
 		proc.Running = true
 		store.Add(proc)
 		server := newRunnerServiceForTest(nil, store)
-		req := httptest.NewRequest(http.MethodPost, "/process/beta", strings.NewReader(`{"old_namespace":""}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/worker/process/beta", strings.NewReader(`{"old_namespace":""}`))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -213,7 +213,7 @@ func TestServerContract_ProcessList(t *testing.T) {
 	store.Add(procC)
 
 	server := newRunnerServiceForTest(nil, store)
-	req := httptest.NewRequest(http.MethodGet, "/process/list", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/worker/processes", nil)
 	resp := httptest.NewRecorder()
 
 	server.ServeHTTP(resp, req)
@@ -236,25 +236,26 @@ func TestServerContract_Docs(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.Code)
 		require.Contains(t, resp.Header().Get("Content-Type"), "text/html")
 		require.Contains(t, resp.Body.String(), "<elements-api")
-		require.Contains(t, resp.Body.String(), `apiDescriptionUrl="/docs/openapi.yaml"`)
+		require.Contains(t, resp.Body.String(), `apiDescriptionUrl="/docs/openapi3-public.json"`)
 	})
 
-	t.Run("openapi yaml", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/docs/openapi.yaml", nil)
+	t.Run("openapi public json", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/docs/openapi3-public.json", nil)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
 
 		require.Equal(t, http.StatusOK, resp.Code)
-		require.Contains(t, resp.Body.String(), `swagger: "2.0"`)
-		require.Contains(t, resp.Body.String(), "title: Runner Server")
+		require.Contains(t, resp.Body.String(), `"openapi": "3.0.3"`)
+		require.NotContains(t, resp.Body.String(), `"/docs/openapi3.yaml"`)
+		require.NotContains(t, resp.Body.String(), `"/docs/openapi.yaml"`)
 	})
 }
 
 func TestServerContract_FetchApkAndAction(t *testing.T) {
 	t.Run("invalid JSON", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		req := httptest.NewRequest(http.MethodPost, "/fetch-apk-and-action", strings.NewReader("{"))
+		req := httptest.NewRequest(http.MethodPost, "/api/credimi/apk-action", strings.NewReader("{"))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -273,7 +274,7 @@ func TestServerContract_FetchApkAndAction(t *testing.T) {
 	t.Run("invalid instance url", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
 		payload := `{"instance_url":"http://missing.local","version_identifier":"v1"}`
-		req := httptest.NewRequest(http.MethodPost, "/fetch-apk-and-action", strings.NewReader(payload))
+		req := httptest.NewRequest(http.MethodPost, "/api/credimi/apk-action", strings.NewReader(payload))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -311,7 +312,7 @@ func TestServerContract_FetchApkAndAction(t *testing.T) {
 
 		server := newRunnerServiceForTest(instances, nil)
 		payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1","action_identifier":"wallet/action"}`
-		req := httptest.NewRequest(http.MethodPost, "/fetch-apk-and-action", strings.NewReader(payload))
+		req := httptest.NewRequest(http.MethodPost, "/api/credimi/apk-action", strings.NewReader(payload))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -329,7 +330,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 	t.Run("missing video path", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
 		payload := `{"instance_url":"http://example.local","video_path":"","last_frame_path":"","logcat_path":"","run_identifier":"run-1","runner_identifier":"runner-1"}`
-		req := httptest.NewRequest(http.MethodPost, "/store-pipeline-result", strings.NewReader(payload))
+		req := httptest.NewRequest(http.MethodPost, "/api/credimi/pipeline-result", strings.NewReader(payload))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -376,7 +377,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		}
 		buf := &bytes.Buffer{}
 		require.NoError(t, json.NewEncoder(buf).Encode(payload))
-		req := httptest.NewRequest(http.MethodPost, "/store-pipeline-result", buf)
+		req := httptest.NewRequest(http.MethodPost, "/api/credimi/pipeline-result", buf)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -402,7 +403,7 @@ func TestServerContract_TouchFingerprint(t *testing.T) {
 	t.Setenv("PATH", adbDir)
 
 	server := newRunnerServiceForTest(nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/touch-fingerprint", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/mobile/fingerprint/touch", nil)
 	resp := httptest.NewRecorder()
 
 	server.ServeHTTP(resp, req)
@@ -446,7 +447,7 @@ func TestServerContract_FetchApkAndAction_OptionalCode(t *testing.T) {
 
 	server := newRunnerServiceForTest(instances, nil)
 	payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1"}`
-	req := httptest.NewRequest(http.MethodPost, "/fetch-apk-and-action", strings.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPost, "/api/credimi/apk-action", strings.NewReader(payload))
 	resp := httptest.NewRecorder()
 
 	server.ServeHTTP(resp, req)

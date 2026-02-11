@@ -32,7 +32,7 @@ func TestProcessStartEndpoint(t *testing.T) {
 		srv := NewRunnerService(NewProcessStore(), nil)
 		ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 		handler := NewHTTPHandler(ctx, srv, false)
-		req := httptest.NewRequest(http.MethodPost, "/process/example", strings.NewReader("{"))
+		req := httptest.NewRequest(http.MethodPost, "/api/worker/process/example", strings.NewReader("{"))
 		rec := httptest.NewRecorder()
 
 		handler.ServeHTTP(rec, req)
