@@ -10,6 +10,9 @@ permissions:
   contents: read
   packages: write
 
+env:
+  CREDIMI_EXTRA_PAT: ${{ secrets.CREDIMI_EXTRA_PAT }}
+
 jobs:
   semantic-release:
     name: 🤖 Semantic release
