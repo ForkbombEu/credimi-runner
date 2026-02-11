@@ -63,7 +63,7 @@ var _ = Service("runner", func() {
 
 var _ = Service("docs", func() {
 	Description("Static API documentation.")
-	Files("/docs", "pkg/server/docs/spotlight.html")
+	Files("/", "pkg/server/docs/index.html")
 	Files("/docs/openapi.yaml", "pkg/gen/http/openapi.yaml")
 	Files("/docs/openapi3.yaml", "pkg/gen/http/openapi3.yaml")
 	Files("/docs/openapi3-public.json", "pkg/gen/http/openapi3-public.json")

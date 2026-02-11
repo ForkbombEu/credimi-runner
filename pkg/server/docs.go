@@ -16,7 +16,7 @@ func projectRootDir() string {
 }
 
 func (s *runnerService) Docs(ctx context.Context) (string, error) {
-	content, err := os.ReadFile(filepath.Join(projectRootDir(), "pkg", "server", "docs", "spotlight.html"))
+	content, err := os.ReadFile(filepath.Join(projectRootDir(), "pkg", "server", "docs", "index.html"))
 	if err != nil {
 		return "", err
 	}

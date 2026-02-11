@@ -228,7 +228,7 @@ func TestServerContract_Docs(t *testing.T) {
 	server := newRunnerServiceForTest(nil, nil)
 
 	t.Run("spotlight page", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/docs", nil)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)

@@ -11,7 +11,7 @@ import (
 func TestProjectRootDir(t *testing.T) {
 	root := projectRootDir()
 	require.NotEmpty(t, root)
-	require.FileExists(t, filepath.Join(root, "pkg", "server", "docs", "spotlight.html"))
+	require.FileExists(t, filepath.Join(root, "pkg", "server", "docs", "index.html"))
 	require.FileExists(t, filepath.Join(root, "pkg", "gen", "http", "openapi.yaml"))
 }
 
