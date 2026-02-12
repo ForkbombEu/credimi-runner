@@ -78,18 +78,6 @@ var _ = Service("worker", func() {
 	Error("bad_request", APIError)
 	Error("internal_error", APIError)
 
-	Method("process_start_missing", func() {
-		Result(Empty)
-
-		Error("bad_request", APIError)
-
-		HTTP(func() {
-			POST("/api/worker/process/")
-			Response(StatusNoContent)
-			Response("bad_request", StatusBadRequest)
-		})
-	})
-
 	Method("process_start", func() {
 		Payload(func() {
 			Attribute("namespace", String, func() {
@@ -110,7 +98,7 @@ var _ = Service("worker", func() {
 		Error("internal_error", APIError)
 
 		HTTP(func() {
-			POST("/api/worker/process/{namespace}")
+			POST("/worker/{namespace}")
 			Param("namespace")
 			Body(func() {
 				Attribute("old_namespace")
@@ -127,7 +115,7 @@ var _ = Service("worker", func() {
 		Error("internal_error", APIError)
 
 		HTTP(func() {
-			GET("/api/worker/processes")
+			GET("/workers")
 			Response(StatusOK)
 			Response("internal_error", StatusInternalServerError)
 		})
@@ -162,7 +150,7 @@ var _ = Service("credimi", func() {
 		Error("internal_error", APIError)
 
 		HTTP(func() {
-			POST("/api/credimi/apk-action")
+			POST("/credimi/apk-action")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -197,7 +185,7 @@ var _ = Service("credimi", func() {
 		Error("internal_error", APIError)
 
 		HTTP(func() {
-			POST("/api/credimi/pipeline-result")
+			POST("/credimi/pipeline-result")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -218,7 +206,7 @@ var _ = Service("mobile", func() {
 		Error("internal_error", APIError)
 
 		HTTP(func() {
-			GET("/api/mobile/fingerprint/touch")
+			GET("/mobile/fingerprint/touch")
 			Response(StatusOK)
 			Response("internal_error", StatusInternalServerError)
 		})

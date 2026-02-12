@@ -126,7 +126,7 @@ func TestFetchApkAndAction_InvalidJSON(t *testing.T) {
 	srv := NewRunnerService(NewProcessStore(), nil)
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 	handler := NewHTTPHandler(ctx, srv, false)
-	req := httptest.NewRequest(http.MethodPost, "/api/credimi/apk-action", strings.NewReader("{"))
+	req := httptest.NewRequest(http.MethodPost, "/credimi/apk-action", strings.NewReader("{"))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
