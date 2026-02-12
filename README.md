@@ -196,6 +196,40 @@ TEMPORAL_ADDRESS=127.0.0.1:7233
 </details>
 
 <details>
+<summary>▶ Expose the API with Cloudflare Tunnel (+ optional custom domain)</summary>
+
+Use `docker-compose.yaml` to run:
+
+- `runner` (`credimi-runner serve` on port `8050`)
+- `caddy` (Docker-label reverse proxy)
+- `cloudflared` (public tunnel)
+
+Quick tunnel (instant public URL on `trycloudflare.com`):
+
+```bash
+task run:service
+```
+
+The tunnel URL is printed in the running output.
+
+Named tunnel (your own domain):
+
+```bash
+export CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxx
+export RUNNER_DOMAIN=api.example.com
+docker compose --profile named up
+```
+
+Notes:
+
+- For named tunnels, configure the public hostname in Cloudflare to point to `http://caddy:80`.
+- The compose file uses `ghcr.io/forkbombeu/credimi-runner:latest` by default.
+- To run your local image instead: `RUNNER_IMAGE=credimi-runner docker compose up`.
+- Stop everything: `docker compose down` (or `docker compose --profile named down`).
+
+</details>
+
+<details>
 <summary>▶ Contributing / Hacking</summary>
 
 Build locally:

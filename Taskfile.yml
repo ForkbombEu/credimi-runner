@@ -78,3 +78,8 @@ tasks:
     desc: Quick entrypoint argument checks (no device required)
     cmds:
       - ./scripts/test-entrypoint-args.sh
+
+  "run:service":
+    desc: Launch runner + caddy + quick Cloudflare tunnel
+    cmds:
+      - docker compose up

@@ -1,0 +1,65 @@
+services:
+  runner:
+    image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner:latest}
+    restart: unless-stopped
+    entrypoint:
+      - /usr/local/bin/credimi-runner
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8050"
+    env_file:
+      - .env
+    expose:
+      - "8050"
+    labels:
+      caddy: "${RUNNER_DOMAIN:-:80}"
+      caddy.reverse_proxy: "{{upstreams 8050}}"
+    networks:
+      - ingress
+
+  caddy:
+    image: lucaslorentz/caddy-docker-proxy:2.9-alpine
+    restart: unless-stopped
+    environment:
+      CADDY_INGRESS_NETWORKS: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - runner
+    networks:
+      - ingress
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://caddy:80
+    depends_on:
+      - caddy
+    networks:
+      - ingress
+
+  tunnel_named:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - caddy
+    profiles:
+      - named
+    networks:
+      - ingress
+
+networks:
+  ingress:
+    name: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
+
+volumes:
+  caddy_data:
+  caddy_config:

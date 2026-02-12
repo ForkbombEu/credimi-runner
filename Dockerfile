@@ -47,6 +47,8 @@ RUN curl -fsSL https://get.maestro.mobile.dev | bash \
     && ln -s /root/.maestro/bin/maestro /usr/local/bin/maestro
 
 COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
+COPY --from=builder /src/pkg/server/docs /src/pkg/server/docs
+COPY --from=builder /src/pkg/gen/http /src/pkg/gen/http
 RUN chmod +x /usr/local/bin/credimi-runner
 
 # Add entrypoint script
