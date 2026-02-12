@@ -58,6 +58,27 @@ func filterPublicSpec(spec map[string]any, inputPath string) error {
 			delete(paths, p)
 		}
 	}
+	for p, pathItemRaw := range paths {
+		pathItem, ok := pathItemRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		for key, operationRaw := range pathItem {
+			if !isHTTPMethod(key) {
+				continue
+			}
+			operation, ok := operationRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if operationHasTag(operation, "docs") {
+				delete(pathItem, key)
+			}
+		}
+		if !hasHTTPMethods(pathItem) {
+			delete(paths, p)
+		}
+	}
 
 	if tagsRaw, ok := spec["tags"]; ok {
 		if tags, ok := tagsRaw.([]any); ok {
@@ -78,6 +99,45 @@ func filterPublicSpec(spec map[string]any, inputPath string) error {
 		}
 	}
 	return nil
+}
+
+func operationHasTag(operation map[string]any, tag string) bool {
+	tagsRaw, ok := operation["tags"]
+	if !ok {
+		return false
+	}
+	tags, ok := tagsRaw.([]any)
+	if !ok {
+		return false
+	}
+	for _, t := range tags {
+		name, ok := t.(string)
+		if !ok {
+			continue
+		}
+		if name == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func hasHTTPMethods(pathItem map[string]any) bool {
+	for key := range pathItem {
+		if isHTTPMethod(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHTTPMethod(method string) bool {
+	switch strings.ToLower(method) {
+	case "get", "put", "post", "delete", "options", "head", "patch", "trace":
+		return true
+	default:
+		return false
+	}
 }
 
 func fail(step string, err error) {

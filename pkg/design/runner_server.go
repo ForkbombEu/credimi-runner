@@ -21,6 +21,9 @@ var _ = API("runner-server", func() {
 })
 
 var APIError = Type("APIError", func() {
+	ErrorName("name", String, "Error class name", func() {
+		Meta("struct:tag:json", "name")
+	})
 	Attribute("status", Int, "HTTP status code", func() {
 		Meta("struct:field:name", "Code")
 		Meta("struct:tag:json", "status")
@@ -31,7 +34,7 @@ var APIError = Type("APIError", func() {
 	})
 	Attribute("reason", String, "Error reason")
 	Attribute("message", String, "Error message")
-	Required("status", "error", "reason", "message")
+	Required("name", "status", "error", "reason", "message")
 })
 
 var ProcessStartResult = ResultType("ProcessStartResult", func() {
@@ -75,18 +78,6 @@ var _ = Service("worker", func() {
 	Error("bad_request", APIError)
 	Error("internal_error", APIError)
 
-	Method("process_start_missing", func() {
-		Result(Empty)
-
-		Error("bad_request")
-
-		HTTP(func() {
-			POST("/api/worker/process/")
-			Response(StatusNoContent)
-			Response("bad_request", StatusBadRequest)
-		})
-	})
-
 	Method("process_start", func() {
 		Payload(func() {
 			Attribute("namespace", String, func() {
@@ -103,11 +94,11 @@ var _ = Service("worker", func() {
 		})
 		Result(ProcessStartResult)
 
-		Error("bad_request")
-		Error("internal_error")
+		Error("bad_request", APIError)
+		Error("internal_error", APIError)
 
 		HTTP(func() {
-			POST("/api/worker/process/{namespace}")
+			POST("/worker/{namespace}")
 			Param("namespace")
 			Body(func() {
 				Attribute("old_namespace")
@@ -121,10 +112,10 @@ var _ = Service("worker", func() {
 	Method("process_list", func() {
 		Result(ArrayOf(String))
 
-		Error("internal_error")
+		Error("internal_error", APIError)
 
 		HTTP(func() {
-			GET("/api/worker/processes")
+			GET("/workers")
 			Response(StatusOK)
 			Response("internal_error", StatusInternalServerError)
 		})
@@ -153,13 +144,13 @@ var _ = Service("credimi", func() {
 		})
 		Result(FetchApkAndActionResult)
 
-		Error("bad_request")
-		Error("unauthorized")
-		Error("bad_gateway")
-		Error("internal_error")
+		Error("bad_request", APIError)
+		Error("unauthorized", APIError)
+		Error("bad_gateway", APIError)
+		Error("internal_error", APIError)
 
 		HTTP(func() {
-			POST("/api/credimi/apk-action")
+			POST("/credimi/apk-action")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -188,13 +179,13 @@ var _ = Service("credimi", func() {
 		})
 		Result(MapOf(String, Any))
 
-		Error("bad_request")
-		Error("unauthorized")
-		Error("bad_gateway")
-		Error("internal_error")
+		Error("bad_request", APIError)
+		Error("unauthorized", APIError)
+		Error("bad_gateway", APIError)
+		Error("internal_error", APIError)
 
 		HTTP(func() {
-			POST("/api/credimi/pipeline-result")
+			POST("/credimi/pipeline-result")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -212,10 +203,10 @@ var _ = Service("mobile", func() {
 	Method("touch_fingerprint", func() {
 		Result(TouchFingerprintResult)
 
-		Error("internal_error")
+		Error("internal_error", APIError)
 
 		HTTP(func() {
-			GET("/api/mobile/fingerprint/touch")
+			GET("/mobile/fingerprint/touch")
 			Response(StatusOK)
 			Response("internal_error", StatusInternalServerError)
 		})

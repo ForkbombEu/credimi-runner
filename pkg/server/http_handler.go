@@ -130,15 +130,6 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 	return handler
 }
 
-func (s *runnerService) ProcessStartMissing(ctx context.Context) error {
-	return worker.MakeBadRequest(&runner.APIError{
-		Code:    http.StatusBadRequest,
-		Domain:  "Server",
-		Reason:  "NamespaceMissing",
-		Message: "namespace is required",
-	})
-}
-
 func (s *runnerService) ProcessStart(ctx context.Context, payload *worker.ProcessStartPayload) (*worker.Processstartresult, error) {
 	oldNamespace := ""
 	if payload.OldNamespace != nil {

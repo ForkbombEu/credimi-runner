@@ -19,9 +19,26 @@ func TestGeneratePublicOpenAPI(t *testing.T) {
 	spec := map[string]any{
 		"openapi": "3.0.3",
 		"paths": map[string]any{
-			"/docs":                 map[string]any{},
-			"/docs/openapi3.yaml":   map[string]any{},
-			"/api/worker/processes": map[string]any{},
+			"/": map[string]any{
+				"get": map[string]any{
+					"tags": []any{"docs"},
+				},
+			},
+			"/docs":               map[string]any{},
+			"/docs/openapi3.yaml": map[string]any{},
+			"/workers": map[string]any{
+				"get": map[string]any{
+					"tags": []any{"worker"},
+				},
+			},
+			"/mixed": map[string]any{
+				"get": map[string]any{
+					"tags": []any{"docs"},
+				},
+				"post": map[string]any{
+					"tags": []any{"worker"},
+				},
+			},
 		},
 		"tags": []any{
 			map[string]any{"name": "docs"},
@@ -43,12 +60,21 @@ func TestGeneratePublicOpenAPI(t *testing.T) {
 	require.NoError(t, json.Unmarshal(output, &decoded))
 
 	paths := decoded["paths"].(map[string]any)
+	_, hasRoot := paths["/"]
 	_, hasDocs := paths["/docs"]
 	_, hasDocsSpec := paths["/docs/openapi3.yaml"]
-	_, hasAPI := paths["/api/worker/processes"]
+	_, hasAPI := paths["/workers"]
+	mixedPath, hasMixed := paths["/mixed"]
+	mixedMethods := mixedPath.(map[string]any)
+	_, mixedHasGet := mixedMethods["get"]
+	_, mixedHasPost := mixedMethods["post"]
+	require.False(t, hasRoot)
 	require.False(t, hasDocs)
 	require.False(t, hasDocsSpec)
 	require.True(t, hasAPI)
+	require.True(t, hasMixed)
+	require.False(t, mixedHasGet)
+	require.True(t, mixedHasPost)
 
 	tags := decoded["tags"].([]any)
 	require.Len(t, tags, 1)
@@ -82,8 +108,17 @@ func TestFilterPublicSpec(t *testing.T) {
 	t.Run("keeps non-map tags while dropping docs", func(t *testing.T) {
 		spec := map[string]any{
 			"paths": map[string]any{
-				"/docs":     map[string]any{},
-				"/api/ping": map[string]any{},
+				"/docs": map[string]any{},
+				"/": map[string]any{
+					"get": map[string]any{
+						"tags": []any{"docs"},
+					},
+				},
+				"/ping": map[string]any{
+					"get": map[string]any{
+						"tags": []any{"worker"},
+					},
+				},
 			},
 			"tags": []any{
 				"raw-tag",
@@ -97,7 +132,8 @@ func TestFilterPublicSpec(t *testing.T) {
 
 		paths := spec["paths"].(map[string]any)
 		require.NotContains(t, paths, "/docs")
-		require.Contains(t, paths, "/api/ping")
+		require.NotContains(t, paths, "/")
+		require.Contains(t, paths, "/ping")
 
 		tags := spec["tags"].([]any)
 		require.Len(t, tags, 2)
@@ -113,7 +149,7 @@ func TestMain(t *testing.T) {
 	require.NoError(t, os.MkdirAll(scriptsDir, 0o755))
 	require.NoError(t, os.MkdirAll(inputDir, 0o755))
 
-	input := `{"openapi":"3.0.3","paths":{"/docs":{},"/api/ping":{}},"tags":[{"name":"docs"},{"name":"worker"}]}`
+	input := `{"openapi":"3.0.3","paths":{"/":{"get":{"tags":["docs"]}},"/docs":{},"/ping":{"get":{"tags":["worker"]}}},"tags":[{"name":"docs"},{"name":"worker"}]}`
 	require.NoError(t, os.WriteFile(filepath.Join(inputDir, "openapi3.json"), []byte(input), 0o644))
 
 	origWD, err := os.Getwd()
@@ -125,8 +161,9 @@ func TestMain(t *testing.T) {
 
 	out, err := os.ReadFile(filepath.Join(inputDir, "openapi3-public.json"))
 	require.NoError(t, err)
-	require.Contains(t, string(out), "/api/ping")
+	require.Contains(t, string(out), "/ping")
 	require.NotContains(t, string(out), "/docs")
+	require.NotContains(t, string(out), "\"/\":")
 }
 
 func TestFailExitsProcess(t *testing.T) {

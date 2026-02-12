@@ -8,10 +8,9 @@ import (
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
-	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
-	goa "goa.design/goa/v3/pkg"
 )
 
 func newStorePipelineMethodService(t *testing.T, responseStatus int, responseBody string) *runnerService {
@@ -93,7 +92,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			RunnerIdentifier: &runnerID,
 		})
 		require.Error(t, err)
-		var svcErr *goa.ServiceError
+		var svcErr *credimi.APIError
 		require.ErrorAs(t, err, &svcErr)
 		require.Equal(t, "internal_error", svcErr.Name)
 	})
@@ -110,10 +109,7 @@ func TestTouchFingerprint_MethodError(t *testing.T) {
 
 	_, err := srv.TouchFingerprint(context.Background())
 	require.Error(t, err)
-	var svcErr *goa.ServiceError
+	var svcErr *mobile.APIError
 	require.ErrorAs(t, err, &svcErr)
 	require.Equal(t, "internal_error", svcErr.Name)
-
-	var apiErr *runner.APIError
-	require.ErrorAs(t, err, &apiErr)
 }

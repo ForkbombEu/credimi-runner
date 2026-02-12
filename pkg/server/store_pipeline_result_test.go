@@ -356,7 +356,7 @@ func TestStorePipelineResult_InvalidJSON(t *testing.T) {
 	server := NewRunnerService(NewProcessStore(), nil)
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 	handler := NewHTTPHandler(ctx, server, false)
-	req := httptest.NewRequest(http.MethodPost, "/api/credimi/pipeline-result", strings.NewReader("{"))
+	req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader("{"))
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -365,6 +365,7 @@ func TestStorePipelineResult_InvalidJSON(t *testing.T) {
 	var apiErr runner.APIError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &apiErr))
 	require.Equal(t, runner.APIError{
+		Name:    "bad_request",
 		Code:    http.StatusBadRequest,
 		Domain:  "server",
 		Reason:  "invalid JSON",
