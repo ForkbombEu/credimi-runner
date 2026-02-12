@@ -32,9 +32,21 @@ func normalizeAPIError(apiErr *runner.APIError) *runner.APIError {
 func wrapWorkerAPIError(apiErr *runner.APIError) error {
 	apiErr = normalizeAPIError(apiErr)
 	if apiErr.Code == http.StatusBadRequest {
-		return worker.MakeBadRequest(apiErr)
+		return &worker.APIError{
+			Name:    "bad_request",
+			Code:    apiErr.Code,
+			Domain:  apiErr.Domain,
+			Reason:  apiErr.Reason,
+			Message: apiErr.Message,
+		}
 	}
-	return worker.MakeInternalError(apiErr)
+	return &worker.APIError{
+		Name:    "internal_error",
+		Code:    apiErr.Code,
+		Domain:  apiErr.Domain,
+		Reason:  apiErr.Reason,
+		Message: apiErr.Message,
+	}
 }
 
 func wrapCredimiAPIError(apiErr *runner.APIError) error {
@@ -42,23 +54,54 @@ func wrapCredimiAPIError(apiErr *runner.APIError) error {
 
 	switch apiErr.Code {
 	case http.StatusBadRequest:
-		return credimi.MakeBadRequest(apiErr)
+		return &credimi.APIError{
+			Name:    "bad_request",
+			Code:    apiErr.Code,
+			Domain:  apiErr.Domain,
+			Reason:  apiErr.Reason,
+			Message: apiErr.Message,
+		}
 	case http.StatusUnauthorized:
-		return credimi.MakeUnauthorized(apiErr)
+		return &credimi.APIError{
+			Name:    "unauthorized",
+			Code:    apiErr.Code,
+			Domain:  apiErr.Domain,
+			Reason:  apiErr.Reason,
+			Message: apiErr.Message,
+		}
 	case http.StatusBadGateway:
-		return credimi.MakeBadGateway(apiErr)
+		return &credimi.APIError{
+			Name:    "bad_gateway",
+			Code:    apiErr.Code,
+			Domain:  apiErr.Domain,
+			Reason:  apiErr.Reason,
+			Message: apiErr.Message,
+		}
 	default:
-		return credimi.MakeInternalError(apiErr)
+		return &credimi.APIError{
+			Name:    "internal_error",
+			Code:    apiErr.Code,
+			Domain:  apiErr.Domain,
+			Reason:  apiErr.Reason,
+			Message: apiErr.Message,
+		}
 	}
 }
 
 func wrapMobileAPIError(apiErr *runner.APIError) error {
 	apiErr = normalizeAPIError(apiErr)
-	return mobile.MakeInternalError(apiErr)
+	return &mobile.APIError{
+		Name:    "internal_error",
+		Code:    apiErr.Code,
+		Domain:  apiErr.Domain,
+		Reason:  apiErr.Reason,
+		Message: apiErr.Message,
+	}
 }
 
 // Implements goahttp.Statuser and matches your API error JSON.
 type apiErrorWire struct {
+	Name    string `json:"name"`
 	Status  int    `json:"status"`
 	Domain  string `json:"error"`
 	Reason  string `json:"reason"`
@@ -72,6 +115,7 @@ func (e *apiErrorWire) StatusCode() int { return e.Status }
 func wireFromrunnerAPIError(e *runner.APIError) *apiErrorWire {
 	if e == nil {
 		return &apiErrorWire{
+			Name:    "internal_error",
 			Status:  http.StatusInternalServerError,
 			Domain:  "server",
 			Reason:  "internal error",
@@ -82,7 +126,75 @@ func wireFromrunnerAPIError(e *runner.APIError) *apiErrorWire {
 	if status == 0 {
 		status = http.StatusInternalServerError
 	}
+	name := e.Name
+	if name == "" {
+		name = "internal_error"
+	}
 	return &apiErrorWire{
+		Name:    name,
+		Status:  status,
+		Domain:  e.Domain,
+		Reason:  e.Reason,
+		Message: e.Message,
+	}
+}
+
+func wireFromworkerAPIError(e *worker.APIError) *apiErrorWire {
+	if e == nil {
+		return wireFromrunnerAPIError(nil)
+	}
+	status := e.Code
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	name := e.Name
+	if name == "" {
+		name = "internal_error"
+	}
+	return &apiErrorWire{
+		Name:    name,
+		Status:  status,
+		Domain:  e.Domain,
+		Reason:  e.Reason,
+		Message: e.Message,
+	}
+}
+
+func wireFromcredimiAPIError(e *credimi.APIError) *apiErrorWire {
+	if e == nil {
+		return wireFromrunnerAPIError(nil)
+	}
+	status := e.Code
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	name := e.Name
+	if name == "" {
+		name = "internal_error"
+	}
+	return &apiErrorWire{
+		Name:    name,
+		Status:  status,
+		Domain:  e.Domain,
+		Reason:  e.Reason,
+		Message: e.Message,
+	}
+}
+
+func wireFrommobileAPIError(e *mobile.APIError) *apiErrorWire {
+	if e == nil {
+		return wireFromrunnerAPIError(nil)
+	}
+	status := e.Code
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	name := e.Name
+	if name == "" {
+		name = "internal_error"
+	}
+	return &apiErrorWire{
+		Name:    name,
 		Status:  status,
 		Domain:  e.Domain,
 		Reason:  e.Reason,
@@ -96,6 +208,21 @@ func GoaErrorFormatter(_ context.Context, err error) goahttp.Statuser {
 	var apiErr *runner.APIError
 	if errors.As(err, &apiErr) && apiErr != nil {
 		return wireFromrunnerAPIError(apiErr)
+	}
+
+	var workerAPIErr *worker.APIError
+	if errors.As(err, &workerAPIErr) && workerAPIErr != nil {
+		return wireFromworkerAPIError(workerAPIErr)
+	}
+
+	var credimiAPIErr *credimi.APIError
+	if errors.As(err, &credimiAPIErr) && credimiAPIErr != nil {
+		return wireFromcredimiAPIError(credimiAPIErr)
+	}
+
+	var mobileAPIErr *mobile.APIError
+	if errors.As(err, &mobileAPIErr) && mobileAPIErr != nil {
+		return wireFrommobileAPIError(mobileAPIErr)
 	}
 
 	// If this is a goa.ServiceError, try to unwrap the original error.
@@ -113,6 +240,7 @@ func GoaErrorFormatter(_ context.Context, err error) goahttp.Statuser {
 		switch svcErr.Name {
 		case goa.DecodePayload, goa.MissingPayload:
 			return &apiErrorWire{
+				Name:    "bad_request",
 				Status:  http.StatusBadRequest,
 				Domain:  "server",
 				Reason:  "invalid JSON",
@@ -123,18 +251,19 @@ func GoaErrorFormatter(_ context.Context, err error) goahttp.Statuser {
 		// Fallback if you want: map known Goa error names → HTTP codes
 		switch svcErr.Name {
 		case "bad_request":
-			return &apiErrorWire{Status: 400, Domain: "server", Reason: "bad request", Message: svcErr.Error()}
+			return &apiErrorWire{Name: "bad_request", Status: 400, Domain: "server", Reason: "bad request", Message: svcErr.Error()}
 		case "unauthorized":
-			return &apiErrorWire{Status: 401, Domain: "server", Reason: "unauthorized", Message: svcErr.Error()}
+			return &apiErrorWire{Name: "unauthorized", Status: 401, Domain: "server", Reason: "unauthorized", Message: svcErr.Error()}
 		case "bad_gateway":
-			return &apiErrorWire{Status: 502, Domain: "server", Reason: "bad gateway", Message: svcErr.Error()}
+			return &apiErrorWire{Name: "bad_gateway", Status: 502, Domain: "server", Reason: "bad gateway", Message: svcErr.Error()}
 		default:
-			return &apiErrorWire{Status: 500, Domain: "server", Reason: "internal error", Message: svcErr.Error()}
+			return &apiErrorWire{Name: "internal_error", Status: 500, Domain: "server", Reason: "internal error", Message: svcErr.Error()}
 		}
 	}
 
 	// Final fallback
 	return &apiErrorWire{
+		Name:    "internal_error",
 		Status:  http.StatusInternalServerError,
 		Domain:  "server",
 		Reason:  "internal error",

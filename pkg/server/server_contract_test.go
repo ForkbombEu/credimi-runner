@@ -140,6 +140,7 @@ func TestServerContract_ProcessStart(t *testing.T) {
 		var apiErr runner.APIError
 		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &apiErr))
 		require.Equal(t, runner.APIError{
+			Name:    "bad_request",
 			Code:    http.StatusBadRequest,
 			Domain:  "Server",
 			Reason:  "NamespaceMissing",
@@ -158,6 +159,7 @@ func TestServerContract_ProcessStart(t *testing.T) {
 		var apiErr runner.APIError
 		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &apiErr))
 		require.Equal(t, runner.APIError{
+			Name:    "bad_request",
 			Code:    http.StatusBadRequest,
 			Domain:  "server",
 			Reason:  "invalid JSON",
@@ -264,6 +266,7 @@ func TestServerContract_FetchApkAndAction(t *testing.T) {
 		var apiErr runner.APIError
 		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &apiErr))
 		require.Equal(t, runner.APIError{
+			Name:    "bad_request",
 			Code:    http.StatusBadRequest,
 			Domain:  "server",
 			Reason:  "invalid JSON",
@@ -282,6 +285,7 @@ func TestServerContract_FetchApkAndAction(t *testing.T) {
 		var apiErr runner.APIError
 		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &apiErr))
 		require.Equal(t, runner.APIError{
+			Name:    "bad_request",
 			Code:    http.StatusBadRequest,
 			Domain:  "server",
 			Reason:  "invalid instance url",
@@ -338,6 +342,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		var apiErr runner.APIError
 		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &apiErr))
 		require.Equal(t, runner.APIError{
+			Name:    "bad_request",
 			Code:    http.StatusBadRequest,
 			Domain:  "server",
 			Reason:  "missing field",

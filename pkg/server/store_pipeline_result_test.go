@@ -365,6 +365,7 @@ func TestStorePipelineResult_InvalidJSON(t *testing.T) {
 	var apiErr runner.APIError
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &apiErr))
 	require.Equal(t, runner.APIError{
+		Name:    "bad_request",
 		Code:    http.StatusBadRequest,
 		Domain:  "server",
 		Reason:  "invalid JSON",

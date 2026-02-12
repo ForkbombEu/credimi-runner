@@ -131,7 +131,7 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 }
 
 func (s *runnerService) ProcessStartMissing(ctx context.Context) error {
-	return worker.MakeBadRequest(&runner.APIError{
+	return wrapWorkerAPIError(&runner.APIError{
 		Code:    http.StatusBadRequest,
 		Domain:  "Server",
 		Reason:  "NamespaceMissing",
