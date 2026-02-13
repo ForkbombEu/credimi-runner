@@ -108,10 +108,11 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 
 	// HTTP middleware stack
 	var handler http.Handler = mux
+	handler = withPublicOpenAPIServerURL(handler)
 	if dbg {
 		handler = debug.HTTP()(handler)
 	}
-	handler = cluelog.HTTP(ctx)(handler)
+	handler = cluelog.HTTP(ctx)(withCORS(handler))
 
 	// Log mounts (super useful)
 	for _, m := range workerSrv.Mounts {

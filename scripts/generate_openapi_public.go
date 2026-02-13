@@ -98,7 +98,23 @@ func filterPublicSpec(spec map[string]any, inputPath string) error {
 			spec["tags"] = filtered
 		}
 	}
+
+	spec["servers"] = []any{
+		map[string]any{"url": publicServerURLFromEnv()},
+	}
+
 	return nil
+}
+
+func publicServerURLFromEnv() string {
+	domain := strings.TrimSpace(os.Getenv("RUNNER_DOMAIN"))
+	if domain == "" || domain == ":80" {
+		return "/"
+	}
+	if strings.HasPrefix(domain, "http://") || strings.HasPrefix(domain, "https://") {
+		return domain
+	}
+	return "https://" + domain
 }
 
 func operationHasTag(operation map[string]any, tag string) bool {

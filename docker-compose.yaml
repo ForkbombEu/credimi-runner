@@ -12,10 +12,15 @@ services:
       - "8050"
     env_file:
       - .env
+    volumes:
+      - ./pkg/server/docs:/src/pkg/server/docs:ro
+      - ./pkg/gen/http:/src/pkg/gen/http:ro
+    ports:
+      - "127.0.0.1:8050:8050"
     expose:
       - "8050"
     labels:
-      caddy: "${RUNNER_DOMAIN:-:80}"
+      caddy: "${RUNNER_CADDY_SITE:-:80}"
       caddy.reverse_proxy: "{{upstreams 8050}}"
     networks:
       - ingress
