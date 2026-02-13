@@ -215,17 +215,23 @@ The tunnel URL is printed in the running output.
 Named tunnel (your own domain):
 
 ```bash
-export CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxx
-export RUNNER_DOMAIN=api.example.com
-docker compose --profile named up
+# Configure in .env (recommended)
+# CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxx
+# RUNNER_DOMAIN=api.example.com
+# RUNNER_CADDY_SITE=:80
+docker compose up runner caddy tunnel_named
 ```
 
 Notes:
 
 - For named tunnels, configure the public hostname in Cloudflare to point to `http://caddy:80`.
+- `RUNNER_DOMAIN` is used by the OpenAPI docs server URL (Stoplight "Try it").
+- For temporary `trycloudflare.com` tunnels, leave `RUNNER_DOMAIN` empty (or unset) so docs use same-origin URLs.
+- Keep `RUNNER_CADDY_SITE=:80` when running behind Cloudflare Tunnel.
+- `docker compose --profile named up` starts both `tunnel` and `tunnel_named`; prefer explicit services as above.
 - The compose file uses `ghcr.io/forkbombeu/credimi-runner:latest` by default.
-- To run your local image instead: `RUNNER_IMAGE=credimi-runner docker compose up`.
-- Stop everything: `docker compose down` (or `docker compose --profile named down`).
+- To run your local image instead: `RUNNER_IMAGE=credimi-runner docker compose up runner caddy tunnel_named`.
+- Stop everything: `docker compose down --remove-orphans`.
 
 </details>
 
