@@ -10,8 +10,10 @@ import (
 
 	credimi "github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
 	docs "github.com/forkbombeu/credimi-runner/pkg/gen/docs"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/health"
 	credimihttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/credimi/server"
 	docshttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/docs/server"
+	healthhttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/health/server"
 	mobilehttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/mobile/server"
 	workerhttp "github.com/forkbombeu/credimi-runner/pkg/gen/http/worker/server"
 	mobile "github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
@@ -39,6 +41,7 @@ func projectRootDirForFS() string {
 }
 
 func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handler {
+	healthService := NewHealthService()
 
 	workerEndpoints := worker.NewEndpoints(rs)
 	workerEndpoints.Use(debug.LogPayloads())
@@ -55,6 +58,10 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 	docsEndpoints := docs.NewEndpoints(rs)
 	docsEndpoints.Use(debug.LogPayloads())
 	docsEndpoints.Use(cluelog.Endpoint)
+
+	healthEndpoints := health.NewEndpoints(healthService)
+	healthEndpoints.Use(debug.LogPayloads())
+	healthEndpoints.Use(cluelog.Endpoint)
 
 	// Goa mux + optional debug mounts
 	mux := goahttp.NewMuxer()
@@ -101,10 +108,19 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 		staticFS,
 		staticFS,
 	)
+	healthSrv := healthhttp.New(
+		healthEndpoints,
+		mux,
+		goahttp.RequestDecoder,
+		goahttp.ResponseEncoder,
+		nil,
+		GoaErrorFormatter,
+	)
 	workerhttp.Mount(mux, workerSrv)
 	credimihttp.Mount(mux, credimiSrv)
 	mobilehttp.Mount(mux, mobileSrv)
 	docshttp.Mount(mux, docsSrv)
+	healthhttp.Mount(mux, healthSrv)
 
 	// HTTP middleware stack
 	var handler http.Handler = mux
@@ -125,6 +141,9 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
 	}
 	for _, m := range docsSrv.Mounts {
+		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
+	}
+	for _, m := range healthSrv.Mounts {
 		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
 	}
 
