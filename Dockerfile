@@ -96,8 +96,7 @@ RUN apt-get update \
         qemu-utils \
         libvirt-daemon-system \
         libvirt-clients \
-        bridge-utils 
-
+        bridge-utils \
     && rm -rf /var/lib/apt/lists/*
 
 
