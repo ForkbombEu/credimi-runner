@@ -10,11 +10,15 @@ import (
 
 type HealthService struct {
 	adbPath string
+	runADB  func(cmd string, args ...string) ([]byte, error)
 }
 
 func NewHealthService() *HealthService {
 	return &HealthService{
 		adbPath: "adb",
+		runADB: func(cmd string, args ...string) ([]byte, error) {
+			return exec.Command(cmd, args...).Output()
+		},
 	}
 }
 
@@ -31,8 +35,7 @@ func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, erro
 }
 
 func (s *HealthService) getDevicesWithDetails() ([]*genhealth.DeviceInfo, error) {
-	cmd := exec.Command(s.adbPath, "devices", "-l")
-	output, err := cmd.Output()
+	output, err := s.runADB(s.adbPath, "devices", "-l")
 	if err != nil {
 		return nil, err
 	}
