@@ -110,7 +110,7 @@ if [[ "$emulator_mode" == true ]]; then
 
   echo "✅ Emulator prerequisites OK."
   echo "Starting credimi-runner..."
-  exec credimi-runner serve
+  exec credimi-runner serve --host 0.0.0.0 --port 8050
 fi
 
 # Device modes (wifi/usb/host-adb)
@@ -219,4 +219,4 @@ while true; do
 done
 
 echo "Starting credimi-runner..."
-exec credimi-runner serve
+exec credimi-runner serve --host 0.0.0.0 --port 8050
