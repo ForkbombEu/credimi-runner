@@ -45,12 +45,12 @@ tasks:
   "build:docker":
     desc: Build the Docker image locally
     cmds:
-      - docker buildx build --target device --platform linux/amd64,linux/arm64 --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_IMAGE}} .
+      - docker buildx build --target device  --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_IMAGE}} .
     
   "build:docker:emulator":
     desc: Build emulator Docker image locally
     cmds:
-      - docker buildx build --target emulator --platform linux/amd64 --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_EMULATOR_IMAGE}} .
+      - docker buildx build --target emulator --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_EMULATOR_IMAGE}} .
 
   test:
     desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
@@ -99,4 +99,9 @@ tasks:
   "run:service":
     desc: Launch runner + caddy + quick Cloudflare tunnel
     cmds:
-      - docker compose up
+      - docker compose --profile device up
+  
+  "run:service:emulator":
+    desc: Launch runner (emulator) + caddy + Cloudflare tunnel
+    cmds:
+      - docker compose --profile emulator up

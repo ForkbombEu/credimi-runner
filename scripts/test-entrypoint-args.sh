@@ -2,13 +2,14 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-entrypoint="${repo_root}/entrypoint.sh"
+entrypoint="${repo_root}/scripts/entrypoint.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 calls_file="${tmp_dir}/adb.calls"
 adb_stub="${tmp_dir}/adb"
+killall_stub="${tmp_dir}/killall"
 
 cat > "${adb_stub}" <<'EOF'
 #!/usr/bin/env bash
@@ -16,12 +17,30 @@ set -euo pipefail
 echo "adb $*" >> "${ADB_CALLS_FILE}"
 case "${1:-}" in
   start-server) exit 0 ;;
+  kill-server) exit 0 ;;
   connect) exit 0 ;;
-  devices|-l) exit 0 ;;
+  wait-for-device) exit 0 ;;
+  devices) exit 0 ;;
+  shell)
+    # emulate: adb shell getprop sys.boot_completed -> "1"
+    if [[ "${2:-}" == "getprop" && "${3:-}" == "sys.boot_completed" ]]; then
+      echo "1"
+      exit 0
+    fi
+    exit 0
+    ;;
   *) exit 0 ;;
 esac
 EOF
 chmod +x "${adb_stub}"
+
+cat > "${killall_stub}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "killall $*" >> "${ADB_CALLS_FILE}"
+exit 0
+EOF
+chmod +x "${killall_stub}"
 
 export PATH="${tmp_dir}:${PATH}"
 export ADB_CALLS_FILE="${calls_file}"
@@ -34,13 +53,9 @@ find_in_calls() {
   fi
 }
 
-reset_calls() {
-  : > "${calls_file}"
-}
+reset_calls() { : > "${calls_file}"; }
 
-run_ok() {
-  "${entrypoint}" "$@" >/dev/null 2>&1
-}
+run_ok() { "${entrypoint}" "$@" >/dev/null 2>&1; }
 
 run_fail() {
   if "${entrypoint}" "$@" >/dev/null 2>&1; then
@@ -48,6 +63,16 @@ run_fail() {
     exit 1
   fi
 }
+
+# For tests that would exec credimi-runner, stub it so we don't start anything real.
+credimi_stub="${tmp_dir}/credimi-runner"
+cat > "${credimi_stub}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "credimi-runner $*" >> "${ADB_CALLS_FILE}"
+exit 0
+EOF
+chmod +x "${credimi_stub}"
 
 echo "Testing: --help"
 reset_calls
@@ -71,19 +96,20 @@ echo "Testing: --usb rejects IP args"
 reset_calls
 run_fail --usb 127.0.0.1:5555
 
-echo "Testing: Wi-Fi requires IP"
+echo "Testing: Wi-Fi mode connects"
 reset_calls
 run_ok --no-wait 192.168.1.42:5555
-
 if find_in_calls "adb connect"; then
   echo "PASS: adb connect invoked for Wi-Fi mode"
 else
   echo "FAIL: adb connect not invoked for Wi-Fi mode" >&2
   exit 1
 fi
-
-if find_in_calls "adb connect" && find_in_calls "adb start-server"; then
-  echo "PASS: adb start-server invoked"
+if find_in_calls "adb start-server"; then
+  echo "PASS: adb start-server invoked in Wi-Fi mode"
+else
+  echo "FAIL: adb start-server not invoked in Wi-Fi mode" >&2
+  exit 1
 fi
 
 echo "Testing: --host-adb skips adb start-server"
@@ -92,6 +118,36 @@ run_ok --host-adb --usb --no-wait
 if find_in_calls "adb start-server"; then
   echo "FAIL: adb start-server should not be called in host ADB mode" >&2
   exit 1
+fi
+
+echo "Testing: --emulator requires no args and runs cleanup + adb start-server"
+reset_calls
+# Make /dev/kvm checks pass even on systems without it:
+# If your script strictly checks /dev/kvm existence, this test must run in CI where /dev/kvm exists.
+# Alternative: have the script allow SKIP_KVM_CHECK=1 in tests.
+if [[ -e /dev/kvm ]]; then
+  run_ok --emulator
+  if find_in_calls "killall -9 qemu-system-x86_64" && find_in_calls "killall -9 emulator"; then
+    echo "PASS: emulator cleanup invoked"
+  else
+    echo "FAIL: emulator cleanup not invoked" >&2
+    exit 1
+  fi
+  if find_in_calls "adb start-server"; then
+    echo "PASS: adb start-server invoked in emulator mode"
+  else
+    echo "FAIL: adb start-server not invoked in emulator mode" >&2
+    exit 1
+  fi
+  if find_in_calls "credimi-runner serve"; then
+    echo "PASS: credimi-runner started in emulator mode"
+  else
+    echo "FAIL: credimi-runner not started in emulator mode" >&2
+    exit 1
+  fi
+else
+  echo "SKIP: --emulator test skipped because /dev/kvm is not present on this host."
+  echo "      (Run this test in an environment with /dev/kvm, or add SKIP_KVM_CHECK=1 support.)"
 fi
 
 echo "All checks passed."

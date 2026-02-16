@@ -2,6 +2,36 @@ services:
   runner:
     image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner:latest}
     restart: unless-stopped
+    profiles: ["device"]
+    entrypoint:
+      - /usr/local/bin/credimi-runner
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8050"
+    env_file:
+      - .env
+    volumes:
+      - ./pkg/server/docs:/src/pkg/server/docs:ro
+      - ./pkg/gen/http:/src/pkg/gen/http:ro
+    ports:
+      - "127.0.0.1:8050:8050"
+    expose:
+      - "8050"
+    labels:
+      caddy: "${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "{{upstreams 8050}}"
+    networks:
+      - ingress
+  
+  runner_emulator:
+    image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner:latest}
+    restart: unless-stopped
+    profiles: ["emulator"]
+    devices:
+      - /dev/kvm:/dev/kvm
     entrypoint:
       - /usr/local/bin/credimi-runner
     command:

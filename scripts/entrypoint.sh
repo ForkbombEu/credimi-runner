@@ -3,40 +3,54 @@ set -euo pipefail
 
 print_help() {
   cat <<'USAGE'
-Usage: phone-connect [--no-wait] [--usb] [--host-adb] [--help|-h] PHONE_IP[:PORT] [PORT]
-
-Connects to an Android device over Wi-Fi ADB (default) or uses USB mode, then
-keeps the container alive for interactive use unless --no-wait is provided.
+Usage:
+  phone-connect [--emulator] [--no-wait] [--usb] [--host-adb] [--help|-h] PHONE_IP[:PORT] [PORT]
 
 Modes:
-  Wi-Fi (default)     Use adb connect to PHONE_IP[:PORT]
-  USB                 Use --usb with device passthrough (no TCP connect)
-  Host ADB            Use --host-adb to talk to a host adb server
-
-Arguments:
-  PHONE_IP            Device IP address (required)
-  PORT                Optional port (default: 5555)
-  PHONE_IP:PORT       IP and port in one argument
+  --emulator          Validate KVM, cleanup emulator leftovers, start adb, then run credimi-runner.
+  Wi-Fi (default)     adb connect to PHONE_IP[:PORT]
+  --usb               Use USB passthrough (no adb connect)
+  --host-adb          Do not start adb server; use host adb via ADB_SERVER_SOCKET
 
 Options:
-  --no-wait           Exit after attempting the connection
-  --usb               Skip adb connect and use USB device passthrough
-  --host-adb          Do not start a server; use host adb via ADB_SERVER_SOCKET
+  --no-wait           Exit after attempting the connection (device modes only)
   -h, --help          Show this help message
 
 Examples:
   phone-connect 192.168.1.42
   phone-connect 192.168.1.42 5555
   phone-connect 192.168.1.42:5555
-  phone-connect --no-wait 192.168.1.42
   phone-connect --usb
   phone-connect --host-adb --usb
+  phone-connect --emulator
 USAGE
 }
 
+need_kvm() {
+  if [ ! -e /dev/kvm ]; then
+    echo "ERROR: /dev/kvm not found. Run container with: --device /dev/kvm" >&2
+    exit 1
+  fi
+  if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+    echo "ERROR: /dev/kvm is not readable/writable." >&2
+    echo "Fix on host: sudo chmod 666 /dev/kvm  (or add user to kvm group)" >&2
+    exit 1
+  fi
+}
+
+cleanup_emulator_leftovers() {
+  echo "Cleaning up existing emulator processes..."
+  killall -9 qemu-system-x86_64 2>/dev/null || true
+  killall -9 emulator 2>/dev/null || true
+  adb kill-server 2>/dev/null || true
+  sleep 2
+}
+
+# Flags
 no_wait=false
 usb_mode=false
 host_adb=false
+emulator_mode=false
 
 if [[ $# -eq 0 ]]; then
   print_help
@@ -61,12 +75,45 @@ while [[ $# -gt 0 ]]; do
       host_adb=true
       shift
       ;;
+    --emulator)
+      emulator_mode=true
+      shift
+      ;;
     *)
       break
       ;;
   esac
 done
 
+# Emulator mode: no PHONE args, just validate + start adb + run service
+if [[ "$emulator_mode" == true ]]; then
+  if [[ $# -gt 0 ]]; then
+    echo "Error: --emulator does not accept PHONE_IP/PORT arguments." >&2
+    exit 1
+  fi
+
+  need_kvm
+  cleanup_emulator_leftovers
+
+  if [[ "$host_adb" == true ]]; then
+    if [[ -z "${ADB_SERVER_SOCKET:-}" ]]; then
+      echo "Warning: --host-adb is set but ADB_SERVER_SOCKET is not. The client may still use the container server." >&2
+    fi
+    echo "Host ADB mode enabled. Skipping adb start-server."
+  else
+    echo "Starting ADB server..."
+    adb start-server
+  fi
+
+  echo "Connected devices:"
+  adb devices -l || true
+
+  echo "✅ Emulator prerequisites OK."
+  echo "Starting credimi-runner..."
+  exec credimi-runner serve
+fi
+
+# Device modes (wifi/usb/host-adb)
 if [[ "$usb_mode" == true && $# -gt 0 ]]; then
   echo "Error: --usb mode does not accept PHONE_IP/PORT arguments." >&2
   exit 1

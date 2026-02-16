@@ -12,7 +12,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN echo ${CREDIMI_EXTRA_PAT}
 COPY go.mod go.sum ./
 RUN --mount=type=secret,id=credimi_extra_pat,required=true \
     --mount=type=cache,target=/gomod-cache \
@@ -163,5 +162,5 @@ RUN set -eux; \
 COPY scripts/start.sh /usr/local/bin/start-emulator
 RUN chmod +x /usr/local/bin/start-emulator
 
-ENTRYPOINT ["/usr/local/bin/start-emulator"]
-CMD ["--help"]
+ENTRYPOINT ["/usr/local/bin/phone-connect"]
+CMD ["--emulator"]
