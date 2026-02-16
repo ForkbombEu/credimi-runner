@@ -19,7 +19,7 @@ services:
       - ingress
   
   runner_emulator:
-    image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner:latest}
+    image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner-emulator:latest}
     restart: unless-stopped
     profiles: ["emulator"]
     devices:

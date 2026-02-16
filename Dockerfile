@@ -158,9 +158,5 @@ RUN set -eux; \
   rm -f /tmp/credimi_base_image.tar.gz /tmp/credimi_golden.tar.gz
 
 
-# Emulator entrypoint (separate)
-COPY scripts/start.sh /usr/local/bin/start-emulator
-RUN chmod +x /usr/local/bin/start-emulator
-
 ENTRYPOINT ["/usr/local/bin/phone-connect"]
 CMD ["--emulator"]
