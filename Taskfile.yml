@@ -2,7 +2,9 @@ version: "3"
 
 vars:
   IMAGE: ghcr.io/ForkbombEu/credimi-runner:latest
+  EMULATOR_IMAGE: ghcr.io/ForkbombEu/credimi-runner-emulator:latest
   LOCAL_IMAGE: credimi-runner
+  LOCAL_EMULATOR_IMAGE: credimi-runner-emulator
   ADBKEYS_VOL: adbkeys
   BIN_DIR: bin
   APP_NAME: credimi-runner
@@ -43,7 +45,12 @@ tasks:
   "build:docker":
     desc: Build the Docker image locally
     cmds:
-      - docker buildx build --platform linux/amd64,linux/arm64 --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_IMAGE}} .
+      - docker buildx build --target device --platform linux/amd64,linux/arm64 --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_IMAGE}} .
+    
+  "build:docker:emulator":
+    desc: Build emulator Docker image locally
+    cmds:
+      - docker buildx build --target emulator --platform linux/amd64 --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_EMULATOR_IMAGE}} .
 
   test:
     desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
@@ -68,7 +75,17 @@ tasks:
     desc: Run image with USB passthrough (requires privileged)
     cmds:
       - docker run --rm -it --privileged -v /dev/bus/usb:/dev/bus/usb -v {{.ADBKEYS_VOL}}:/root/.android {{.IMAGE}} --usb
+  
+  "run:emulator":
+    desc: Run Android emulator (requires /dev/kvm)
+    cmds:
+      - docker run --rm -it --device /dev/kvm --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.EMULATOR_IMAGE}}
 
+  "run:emulator:local":
+    desc: Run locally built Android emulator image
+    cmds:
+      - docker run --rm -it --device /dev/kvm --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.LOCAL_EMULATOR_IMAGE}}
+  
   "run:local":
     desc: Run a locally built image (Wi-Fi ADB)
     cmds:

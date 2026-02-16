@@ -171,6 +171,5 @@ while true; do
   fi
 done
 
-echo "Starting maestro-worker..."
-cd /opt/maestro-worker
-exec ./maestro-worker serve
+echo "Starting credimi-runner..."
+exec credimi-runner serve
