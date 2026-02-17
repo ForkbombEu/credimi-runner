@@ -244,6 +244,16 @@ Build locally:
 docker build -t credimi-runner .
 ```
 
+Build emulator locally without re-downloading golden/base archives every run:
+
+```bash
+# Optional: if present in repo root, these are used directly
+ls credimi_base_image.tar.gz credimi_golden.tar.gz
+
+# BuildKit cache keeps downloaded archives between local builds
+task build:docker:emulator
+```
+
 Run a locally built image:
 
 ```bash

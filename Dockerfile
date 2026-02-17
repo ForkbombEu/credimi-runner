@@ -24,7 +24,9 @@ RUN --mount=type=secret,id=credimi_extra_pat,required=true \
 COPY . ./
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache go generate ./...
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/credimi-runner main.go
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags=credimi_extra -o /out/credimi-runner main.go
+
+FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
 
 
 ############################
@@ -70,9 +72,10 @@ RUN curl -fsSL https://raw.githubusercontent.com/omnarayan/Maestro/feature/drive
 
 
 COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
+COPY --from=avdctl /usr/local/bin/avdctl /usr/local/bin/avdctl
 COPY --from=builder /src/pkg/server/docs /src/pkg/server/docs
 COPY --from=builder /src/pkg/gen/http /src/pkg/gen/http
-RUN chmod +x /usr/local/bin/credimi-runner
+RUN chmod +x /usr/local/bin/credimi-runner /usr/local/bin/avdctl
 
 # Physical-device entrypoint
 COPY scripts/entrypoint.sh /usr/local/bin/phone-connect
@@ -126,8 +129,8 @@ RUN sdkmanager --install \
         "emulator" \
         "build-tools;35.0.0"
 
-# AVD dirs + optional adb keys baked at build time
-ENV ANDROID_AVD_HOME=/root/.android/avd
+# AVDs are stored outside /root/.android so mounting adb keys does not hide base AVDs.
+ENV ANDROID_AVD_HOME=/avd-home
 ENV AVDCTL_GOLDEN_DIR=/avd-golden
 RUN mkdir -p ${ANDROID_AVD_HOME} ${AVDCTL_GOLDEN_DIR}
 
@@ -146,15 +149,35 @@ RUN set -eux; \
 
 # Golden images ONLY in emulator target
 ARG BASE_URL=https://files.pn-a.com/api/static
-ADD ${BASE_URL}/credimi_base_image.tar.gz /tmp/credimi_base_image.tar.gz
-ADD ${BASE_URL}/credimi_golden.tar.gz     /tmp/credimi_golden.tar.gz
-
-RUN set -eux; \
-  test -s /tmp/credimi_base_image.tar.gz; \
-  test -s /tmp/credimi_golden.tar.gz; \
-  tar -xzf /tmp/credimi_base_image.tar.gz -C "${ANDROID_AVD_HOME}"; \
-  tar -xzf /tmp/credimi_golden.tar.gz     -C "${AVDCTL_GOLDEN_DIR}"; \
-  rm -f /tmp/credimi_base_image.tar.gz /tmp/credimi_golden.tar.gz
+RUN --mount=type=bind,source=.,target=/context,ro \
+    --mount=type=cache,target=/tmp/emulator-assets-cache \
+    set -eux; \
+    base_cache="/tmp/emulator-assets-cache/credimi_base_image.tar.gz"; \
+    golden_cache="/tmp/emulator-assets-cache/credimi_golden.tar.gz"; \
+    if [ -s /context/credimi_base_image.tar.gz ]; then \
+      cp /context/credimi_base_image.tar.gz "$base_cache"; \
+      echo "Using local credimi_base_image.tar.gz from build context"; \
+    else \
+      echo "Local credimi_base_image.tar.gz missing; will use cache/download"; \
+    fi; \
+    if [ -s /context/credimi_golden.tar.gz ]; then \
+      cp /context/credimi_golden.tar.gz "$golden_cache"; \
+      echo "Using local credimi_golden.tar.gz from build context"; \
+    else \
+      echo "Local credimi_golden.tar.gz missing; will use cache/download"; \
+    fi; \
+    if [ ! -s "$base_cache" ]; then \
+      rm -f "$base_cache.tmp"; \
+      curl -fsSL "${BASE_URL}/credimi_base_image.tar.gz" -o "$base_cache.tmp"; \
+      mv "$base_cache.tmp" "$base_cache"; \
+    fi; \
+    if [ ! -s "$golden_cache" ]; then \
+      rm -f "$golden_cache.tmp"; \
+      curl -fsSL "${BASE_URL}/credimi_golden.tar.gz" -o "$golden_cache.tmp"; \
+      mv "$golden_cache.tmp" "$golden_cache"; \
+    fi; \
+    tar -xzf "$base_cache"   -C "${ANDROID_AVD_HOME}"; \
+    tar -xzf "$golden_cache" -C "${AVDCTL_GOLDEN_DIR}"
 
 
 ENTRYPOINT ["/usr/local/bin/phone-connect"]

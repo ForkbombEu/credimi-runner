@@ -18,3 +18,5 @@ maestro-worker
 pkg/gen/
 bin/
 coverage.out
+credimi_base_image.tar.gz
+credimi_golden.tar.gz

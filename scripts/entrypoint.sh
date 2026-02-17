@@ -92,6 +92,15 @@ if [[ "$emulator_mode" == true ]]; then
     exit 1
   fi
 
+  # Prefer mounted adb keys when present; otherwise fall back to no-key mode.
+  if [[ -z "${ADB_VENDOR_KEYS:-}" ]]; then
+    if [[ -f /root/.android/adbkey ]]; then
+      export ADB_VENDOR_KEYS=/root/.android
+    else
+      export ADB_VENDOR_KEYS=/dev/null
+    fi
+  fi
+
   need_kvm
   cleanup_emulator_leftovers
 

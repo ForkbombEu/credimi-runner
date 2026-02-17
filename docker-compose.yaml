@@ -19,25 +19,24 @@ services:
       - ingress
   
   runner_emulator:
-    image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner-emulator:latest}
+    image: ${LOCAL_IMAGE:-ghcr.io/forkbombeu/credimi-runner-emulator:latest}
     restart: unless-stopped
     profiles: ["emulator"]
     devices:
       - /dev/kvm:/dev/kvm
     env_file:
       - .env
+    environment:
+      CREDIMI_URL: ${CREDIMI_URL:-http://localhost:8090}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-localhost:7233}
+      ADB_VENDOR_KEYS: /root/.android
+      BASE_NAME: ${BASE_NAME:-credimi}
+      GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
     volumes:
+      - ${ANDROID_KEYS_DIR:-/home/puria/.android}:/root/.android
       - ./pkg/server/docs:/src/pkg/server/docs:ro
       - ./pkg/gen/http:/src/pkg/gen/http:ro
-    ports:
-      - "127.0.0.1:8050:8050"
-    expose:
-      - "8050"
-    labels:
-      caddy: "${RUNNER_CADDY_SITE:-:80}"
-      caddy.reverse_proxy: "{{upstreams 8050}}"
-    networks:
-      - ingress
+    network_mode: host
 
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine
@@ -48,8 +47,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on:
-      - runner
     networks:
       - ingress
 

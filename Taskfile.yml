@@ -5,6 +5,7 @@ vars:
   EMULATOR_IMAGE: ghcr.io/ForkbombEu/credimi-runner-emulator:latest
   LOCAL_PHONE_IMAGE: credimi-runner-phone
   LOCAL_EMULATOR_IMAGE: credimi-runner-emulator
+  LOCAL_IMAGE: "{{.LOCAL_EMULATOR_IMAGE}}"
   ADBKEYS_VOL: adbkeys
   BIN_DIR: bin
   APP_NAME: credimi-runner
@@ -50,7 +51,7 @@ tasks:
   "build:docker:emulator":
     desc: Build emulator Docker image locally
     cmds:
-      - docker buildx build --target emulator --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_EMULATOR_IMAGE}} .
+      - docker buildx build --target emulator --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT --build-arg ADB_PRIVATE_KEY="${ADB_PRIVATE_KEY:-}" --build-arg ADB_PUBLIC_KEY="${ADB_PUBLIC_KEY:-}" -t {{.LOCAL_EMULATOR_IMAGE}} .
 
   test:
     desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
@@ -102,6 +103,8 @@ tasks:
       - docker compose --profile phone up
   
   "run:service:emulator":
-    desc: Launch runner (emulator) + caddy + Cloudflare tunnel
+    desc: Build local emulator image and run local runner service
+    deps:
+      - "build:docker:emulator"
     cmds:
-      - docker compose --profile emulator up
+      - LOCAL_IMAGE={{.LOCAL_IMAGE}} ANDROID_KEYS_DIR=/home/puria/.android docker compose --profile emulator up runner_emulator
