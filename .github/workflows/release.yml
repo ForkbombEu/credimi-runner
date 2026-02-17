@@ -101,21 +101,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
-        id: meta
+      - name: Extract Docker metadata (phone)
+        id: meta_phone
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/credimi-runner-phone
           tags: |
-            type=raw,value=latest,enable=true
+            type=raw,value=latest
+            type=sha
 
-      - name: Build and push image
+      - name: Build and push (phone)
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: phone
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta_phone.outputs.tags }}
+          labels: ${{ steps.meta_phone.outputs.labels }}
+          secret-envs: |
+            credimi_extra_pat=CREDIMI_EXTRA_PAT
+
+      - name: Extract Docker metadata (emulator)
+        id: meta_emulator
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/credimi-runner-emulator
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push (emulator)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: emulator
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta_emulator.outputs.tags }}
+          labels: ${{ steps.meta_emulator.outputs.labels }}
           secret-envs: |
             credimi_extra_pat=CREDIMI_EXTRA_PAT

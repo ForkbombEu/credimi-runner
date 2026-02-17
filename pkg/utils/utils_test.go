@@ -40,6 +40,12 @@ func TestGetEnvironmentVariable(t *testing.T) {
 	t.Setenv("ENV_STRING_TEST", "value")
 	require.Equal(t, "value", GetEnvironmentVariable("ENV_STRING_TEST", "fallback"))
 
+	t.Setenv("ENV_STRING_TEST", "\"quoted\"")
+	require.Equal(t, "quoted", GetEnvironmentVariable("ENV_STRING_TEST", "fallback"))
+
+	t.Setenv("ENV_STRING_TEST", "'quoted-single'")
+	require.Equal(t, "quoted-single", GetEnvironmentVariable("ENV_STRING_TEST", "fallback"))
+
 	require.PanicsWithValue(t, "The environment variable ENV_REQUIRED_TEST is required", func() {
 		_ = GetEnvironmentVariable("ENV_REQUIRED_TEST", "", true)
 	})
@@ -93,6 +99,13 @@ func TestLoadInstances(t *testing.T) {
 func TestJoinAndNormalizeURL(t *testing.T) {
 	joined := JoinURL("http://example.local/base/", "/api", "v1", "items")
 	require.Equal(t, "http://example.local/base/api/v1/items", joined)
+
+	quoted := JoinURL("\"http://example.local/base/\"", "/api", "v1")
+	require.Equal(t, "http://example.local/base/api/v1", quoted)
+
+	require.NotPanics(t, func() {
+		_ = JoinURL("%zz", "api")
+	})
 
 	normalized, err := NormalizeURL("http://example.local/api/")
 	require.NoError(t, err)

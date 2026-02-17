@@ -59,6 +59,7 @@ func GetEnvironmentVariable(name string, others ...any) string {
 	if output == "" {
 		output = defaultValue
 	}
+	output = trimOptionalQuotes(output)
 	if output == "" && required {
 		panic("The environment variable " + name + " is required")
 	}
@@ -189,11 +190,37 @@ func LoadInstances() map[string]Instance {
 }
 
 func JoinURL(base string, parts ...string) string {
-	u, _ := url.Parse(base)
+	base = trimOptionalQuotes(base)
+	u, err := url.Parse(base)
+	if err != nil || u == nil {
+		joined := strings.TrimRight(base, "/")
+		for _, p := range parts {
+			p = strings.Trim(p, "/")
+			if p == "" {
+				continue
+			}
+			if joined == "" {
+				joined = "/" + p
+				continue
+			}
+			joined += "/" + p
+		}
+		return joined
+	}
 	for _, p := range parts {
 		u.Path, _ = url.JoinPath(u.Path, p)
 	}
 	return u.String()
+}
+
+func trimOptionalQuotes(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
 }
 
 func NormalizeURL(raw string) (string, error) {

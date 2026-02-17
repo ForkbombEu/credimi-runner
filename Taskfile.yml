@@ -1,8 +1,11 @@
 version: "3"
 
 vars:
-  IMAGE: ghcr.io/ForkbombEu/credimi-runner:latest
-  LOCAL_IMAGE: credimi-runner
+  PHONE_IMAGE: ghcr.io/ForkbombEu/credimi-runner-phone:latest
+  EMULATOR_IMAGE: ghcr.io/ForkbombEu/credimi-runner-emulator:latest
+  LOCAL_PHONE_IMAGE: credimi-runner-phone
+  LOCAL_EMULATOR_IMAGE: credimi-runner-emulator
+  LOCAL_IMAGE: "{{.LOCAL_EMULATOR_IMAGE}}"
   ADBKEYS_VOL: adbkeys
   BIN_DIR: bin
   APP_NAME: credimi-runner
@@ -40,10 +43,15 @@ tasks:
     cmds:
       - go generate ./...
 
-  "build:docker":
+  "build:docker:phone":
     desc: Build the Docker image locally
     cmds:
-      - docker buildx build --platform linux/amd64,linux/arm64 --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_IMAGE}} .
+      - docker buildx build --target device  --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_PHONE_IMAGE}} .
+    
+  "build:docker:emulator":
+    desc: Build emulator Docker image locally
+    cmds:
+      - docker buildx build --target emulator --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT --build-arg ADB_PRIVATE_KEY="${ADB_PRIVATE_KEY:-}" --build-arg ADB_PUBLIC_KEY="${ADB_PUBLIC_KEY:-}" -t {{.LOCAL_EMULATOR_IMAGE}} .
 
   test:
     desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
@@ -62,24 +70,41 @@ tasks:
   "run:wifi":
     desc: Run image with Wi-Fi ADB (host network)
     cmds:
-      - docker run --rm -it --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.IMAGE}} {{.PHONE}}
+      - docker run --rm -it --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.PHONE_IMAGE}} {{.PHONE}}
 
   "run:usb":
     desc: Run image with USB passthrough (requires privileged)
     cmds:
-      - docker run --rm -it --privileged -v /dev/bus/usb:/dev/bus/usb -v {{.ADBKEYS_VOL}}:/root/.android {{.IMAGE}} --usb
+      - docker run --rm -it --privileged -v /dev/bus/usb:/dev/bus/usb -v {{.ADBKEYS_VOL}}:/root/.android {{.PHONE_IMAGE}} --usb
+  
+  "run:emulator":
+    desc: Run Android emulator (requires /dev/kvm)
+    cmds:
+      - docker run --rm -it --device /dev/kvm --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.EMULATOR_IMAGE}}
 
-  "run:local":
+  "run:emulator:local":
+    desc: Run locally built Android emulator image
+    cmds:
+      - docker run --rm -it --device /dev/kvm --network host -v {{.ADBKEYS_VOL}}:/root/.android {{.LOCAL_EMULATOR_IMAGE}}
+  
+  "run:phone:local":
     desc: Run a locally built image (Wi-Fi ADB)
     cmds:
-      - docker run --rm -it --network host {{.LOCAL_IMAGE}} {{.PHONE}}
+      - docker run --rm -it --network host {{.LOCAL_PHONE_IMAGE}} {{.PHONE}}
 
   "test:entrypoint":
     desc: Quick entrypoint argument checks (no device required)
     cmds:
       - ./scripts/test-entrypoint-args.sh
 
-  "run:service":
+  "run:service:phone":
     desc: Launch runner + caddy + quick Cloudflare tunnel
     cmds:
-      - docker compose up
+      - docker compose --profile phone up
+  
+  "run:service:emulator":
+    desc: Build local emulator image and run local runner service
+    deps:
+      - "build:docker:emulator"
+    cmds:
+      - LOCAL_IMAGE={{.LOCAL_IMAGE}} ANDROID_KEYS_DIR=/home/puria/.android docker compose --profile emulator up runner_emulator
