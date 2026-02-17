@@ -217,6 +217,7 @@ var _ = Service("health", func() {
 	Description("Health check endpoint")
 
 	Error("internal_error", APIError)
+	Error("service_unavailable", APIError)
 
 	Method("check", func() {
 		Result(func() {
@@ -226,11 +227,13 @@ var _ = Service("health", func() {
 		})
 
 		Error("internal_error", APIError)
+		Error("service_unavailable", APIError)
 
 		HTTP(func() {
 			GET("/health")
 			Response(StatusOK)
 			Response("internal_error", StatusInternalServerError)
+			Response("service_unavailable", StatusServiceUnavailable)
 		})
 	})
 })

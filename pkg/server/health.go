@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"os/exec"
 	"strings"
 
@@ -25,7 +26,13 @@ func NewHealthService() *HealthService {
 func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, error) {
 	emulators, err := s.getDevicesWithDetails()
 	if err != nil {
-		return nil, err
+		return nil, &genhealth.APIError{
+			Name:    "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Domain:  "health",
+			Reason:  "adb unavailable",
+			Message: err.Error(),
+		}
 	}
 
 	return &genhealth.CheckResult{

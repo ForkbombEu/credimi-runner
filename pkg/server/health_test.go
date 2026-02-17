@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
+
+	genhealth "github.com/forkbombeu/credimi-runner/pkg/gen/health"
 )
 
 type fakeADB struct {
@@ -78,7 +81,18 @@ func TestCheck_ADBError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "adb failed") {
-		t.Errorf("unexpected error: %v", err)
+
+	var apiErr *genhealth.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected health.APIError, got %T", err)
+	}
+	if apiErr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status %d, got %d", http.StatusServiceUnavailable, apiErr.Code)
+	}
+	if apiErr.Name != "service_unavailable" {
+		t.Errorf("expected name %q, got %q", "service_unavailable", apiErr.Name)
+	}
+	if !strings.Contains(apiErr.Message, "adb failed") {
+		t.Errorf("unexpected message: %q", apiErr.Message)
 	}
 }
