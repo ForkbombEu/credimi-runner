@@ -46,7 +46,7 @@ tasks:
   "build:docker:phone":
     desc: Build the Docker image locally
     cmds:
-      - docker buildx build --target device  --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_PHONE_IMAGE}} .
+      - docker buildx build --target phone --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT -t {{.LOCAL_PHONE_IMAGE}} .
     
   "build:docker:emulator":
     desc: Build emulator Docker image locally

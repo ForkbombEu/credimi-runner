@@ -84,6 +84,10 @@ RUN chmod +x /usr/local/bin/phone-connect
 ENTRYPOINT ["/usr/local/bin/phone-connect"]
 CMD ["--help"]
 
+############################
+# Phone runtime alias (for CI target compatibility)
+############################
+FROM device AS phone
 
 ############################
 # Emulator runtime (extends device)
