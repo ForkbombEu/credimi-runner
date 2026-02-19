@@ -129,3 +129,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           secret-envs: |
             credimi_extra_pat=CREDIMI_EXTRA_PAT
+
+      - name: Trigger Coolify deploy (emulator)
+        if: success() && matrix.target == 'emulator' && secrets.COOLIFY_WEBHOOK_URL != '' && secrets.COOLIFY_WEBHOOK_TOKEN != ''
+        shell: bash
+        env:
+          COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
+          COOLIFY_WEBHOOK_TOKEN: ${{ secrets.COOLIFY_WEBHOOK_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsS --request GET "${COOLIFY_WEBHOOK_URL}" \
+            --header "Authorization: Bearer ${COOLIFY_WEBHOOK_TOKEN}"
