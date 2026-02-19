@@ -131,12 +131,16 @@ jobs:
             credimi_extra_pat=CREDIMI_EXTRA_PAT
 
       - name: Trigger Coolify deploy (emulator)
-        if: success() && matrix.target == 'emulator' && secrets.COOLIFY_WEBHOOK_URL != '' && secrets.COOLIFY_WEBHOOK_TOKEN != ''
+        if: success() && matrix.target == 'emulator'
         shell: bash
         env:
           COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
           COOLIFY_WEBHOOK_TOKEN: ${{ secrets.COOLIFY_WEBHOOK_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ -z "${COOLIFY_WEBHOOK_URL:-}" || -z "${COOLIFY_WEBHOOK_TOKEN:-}" ]]; then
+            echo "Coolify webhook secrets are not set; skipping deploy trigger."
+            exit 0
+          fi
           curl -fsS --request GET "${COOLIFY_WEBHOOK_URL}" \
             --header "Authorization: Bearer ${COOLIFY_WEBHOOK_TOKEN}"
