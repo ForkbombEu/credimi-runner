@@ -24,6 +24,4 @@ services:
 
 volumes:
   avd_home:
-    device: /root/avd-home
   avd_golden:
-    device: /root/avd-golden
