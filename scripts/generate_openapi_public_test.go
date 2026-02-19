@@ -142,6 +142,44 @@ func TestFilterPublicSpec(t *testing.T) {
 	})
 }
 
+func TestPublicServerURLFromEnv(t *testing.T) {
+	t.Run("defaults to root when empty", func(t *testing.T) {
+		t.Setenv("RUNNER_DOMAIN", "")
+		require.Equal(t, "/", publicServerURLFromEnv())
+	})
+
+	t.Run("defaults to root on :80", func(t *testing.T) {
+		t.Setenv("RUNNER_DOMAIN", ":80")
+		require.Equal(t, "/", publicServerURLFromEnv())
+	})
+
+	t.Run("keeps explicit scheme", func(t *testing.T) {
+		t.Setenv("RUNNER_DOMAIN", "http://example.com")
+		require.Equal(t, "http://example.com", publicServerURLFromEnv())
+	})
+
+	t.Run("adds https scheme", func(t *testing.T) {
+		t.Setenv("RUNNER_DOMAIN", "api.example.com")
+		require.Equal(t, "https://api.example.com", publicServerURLFromEnv())
+	})
+}
+
+func TestOperationAndMethodHelpers(t *testing.T) {
+	t.Run("operationHasTag handles missing and invalid tags", func(t *testing.T) {
+		require.False(t, operationHasTag(map[string]any{}, "docs"))
+		require.False(t, operationHasTag(map[string]any{"tags": "docs"}, "docs"))
+		require.False(t, operationHasTag(map[string]any{"tags": []any{123, "worker"}}, "docs"))
+		require.True(t, operationHasTag(map[string]any{"tags": []any{"worker", "docs"}}, "docs"))
+	})
+
+	t.Run("hasHTTPMethods and isHTTPMethod", func(t *testing.T) {
+		require.False(t, hasHTTPMethods(map[string]any{"summary": "x"}))
+		require.True(t, hasHTTPMethods(map[string]any{"GET": map[string]any{}}))
+		require.True(t, isHTTPMethod("PoSt"))
+		require.False(t, isHTTPMethod("connect"))
+	})
+}
+
 func TestMain(t *testing.T) {
 	base := t.TempDir()
 	scriptsDir := filepath.Join(base, "scripts")
