@@ -120,6 +120,24 @@ if find_in_calls "adb start-server"; then
   exit 1
 fi
 
+echo "Testing: key materialization is ordered before emulator adb start-server"
+materialize_call_line="$(
+  rg -n "^materialize_adb_keys_from_env$" "${entrypoint}" | cut -d: -f1
+)"
+emulator_adb_start_line="$(
+  rg -n "^    adb start-server$" "${entrypoint}" | head -n1 | cut -d: -f1
+)"
+if [[ -z "${materialize_call_line}" || -z "${emulator_adb_start_line}" ]]; then
+  echo "FAIL: unable to locate key materialization or emulator adb start lines" >&2
+  exit 1
+fi
+if (( materialize_call_line < emulator_adb_start_line )); then
+  echo "PASS: key materialization is ordered before emulator adb start-server"
+else
+  echo "FAIL: key materialization must happen before emulator adb start-server" >&2
+  exit 1
+fi
+
 echo "Testing: --emulator requires no args and runs cleanup + adb start-server"
 reset_calls
 # Make /dev/kvm checks pass even on systems without it:

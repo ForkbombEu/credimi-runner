@@ -236,6 +236,22 @@ Notes:
 </details>
 
 <details>
+<summary>▶ Deploy emulator with Coolify</summary>
+
+Use `docker-compose.coolify.yaml` as the Compose file in Coolify.
+
+This compose file keeps `runner_emulator` under the `emulator` profile.
+Set this in Coolify environment variables:
+
+```bash
+COMPOSE_PROFILES=emulator
+```
+
+This enables the `emulator` profile without passing `--profile emulator` on every command.
+
+</details>
+
+<details>
 <summary>▶ Contributing / Hacking</summary>
 
 Build locally:

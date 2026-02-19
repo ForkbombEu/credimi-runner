@@ -1,0 +1,27 @@
+services:
+  runner_emulator:
+    image: ghcr.io/forkbombeu/credimi-runner-emulator:latest
+    restart: unless-stopped
+    privileged: true             # needed for qemu/kvm/emulator access
+    devices:
+      - /dev/kvm:/dev/kvm
+
+    volumes:
+      - avd_home:/avd-home
+      - avd_golden:/avd-golden
+
+    environment:
+      CREDIMI_URL: ${CREDIMI_URL:?http://localhost:8090}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?localhost:7233}
+      BASE_NAME: ${BASE_NAME:?credimi}
+      GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
+      CREDIMI_PB_ADMIN: ${CREDIMI_PB_ADMIN:?}
+      CREDIMI_PB_PASS: ${CREDIMI_PB_PASS:?}
+      CREDIMI_RUNNER_ID: ${CREDIMI_RUNNER_ID:?}
+      ADB_PRIVATE_KEY: ${ADB_PRIVATE_KEY:?}
+      ADB_PUBLIC_KEY: ${ADB_PUBLIC_KEY:?}
+      PORT: ${PORT:-8060}
+
+volumes:
+  avd_home:
+  avd_golden:
