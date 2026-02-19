@@ -46,6 +46,31 @@ cleanup_emulator_leftovers() {
   sleep 2
 }
 
+materialize_adb_keys_from_env() {
+  local adb_dir="/root/.android"
+  local wrote_any=false
+
+  if [[ -n "${ADB_PRIVATE_KEY:-}" || -n "${ADB_PUBLIC_KEY:-}" ]]; then
+    mkdir -p "$adb_dir"
+  fi
+
+  if [[ ! -f "${adb_dir}/adbkey" && -n "${ADB_PRIVATE_KEY:-}" ]]; then
+    printf "%s\n" "$ADB_PRIVATE_KEY" > "${adb_dir}/adbkey"
+    chmod 600 "${adb_dir}/adbkey"
+    wrote_any=true
+  fi
+
+  if [[ ! -f "${adb_dir}/adbkey.pub" && -n "${ADB_PUBLIC_KEY:-}" ]]; then
+    printf "%s\n" "$ADB_PUBLIC_KEY" > "${adb_dir}/adbkey.pub"
+    chmod 644 "${adb_dir}/adbkey.pub"
+    wrote_any=true
+  fi
+
+  if [[ "$wrote_any" == true ]]; then
+    echo "Loaded ADB key material from environment variables."
+  fi
+}
+
 # Flags
 no_wait=false
 usb_mode=false
@@ -91,6 +116,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+materialize_adb_keys_from_env
+
 # Emulator mode: no PHONE args, just validate + start adb + run service
 if [[ "$emulator_mode" == true ]]; then
   if [[ $# -gt 0 ]]; then
@@ -104,6 +131,7 @@ if [[ "$emulator_mode" == true ]]; then
       export ADB_VENDOR_KEYS=/root/.android
     else
       export ADB_VENDOR_KEYS=/dev/null
+      echo "Warning: no adb private key found; ADB auth keys are disabled (ADB_VENDOR_KEYS=/dev/null)." >&2
     fi
   fi
 
