@@ -51,6 +51,12 @@ no_wait=false
 usb_mode=false
 host_adb=false
 emulator_mode=false
+service_port="${PORT:-8050}"
+
+if ! [[ "$service_port" =~ ^[0-9]+$ ]]; then
+  echo "Error: PORT must be a number. Got: $service_port" >&2
+  exit 1
+fi
 
 if [[ $# -eq 0 ]]; then
   print_help
@@ -119,7 +125,7 @@ if [[ "$emulator_mode" == true ]]; then
 
   echo "✅ Emulator prerequisites OK."
   echo "Starting credimi-runner..."
-  exec credimi-runner serve --host 0.0.0.0 --port 8050
+  exec credimi-runner serve --host 0.0.0.0 --port "$service_port"
 fi
 
 # Device modes (wifi/usb/host-adb)
@@ -228,4 +234,4 @@ while true; do
 done
 
 echo "Starting credimi-runner..."
-exec credimi-runner serve --host 0.0.0.0 --port 8050
+exec credimi-runner serve --host 0.0.0.0 --port "$service_port"
