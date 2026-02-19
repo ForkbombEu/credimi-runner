@@ -24,4 +24,14 @@ services:
 
 volumes:
   avd_home:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /root/avd-home
   avd_golden:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /root/avd-golden
