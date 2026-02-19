@@ -6,8 +6,8 @@ services:
     devices:
       - /dev/kvm:/dev/kvm
     volumes:
-      - /avd-home:/avd-home
-      - /avd-golden:/avd-golden
+      - /root/avd-home:/avd-home
+      - /root/avd-golden:/avd-golden
     environment:
       CREDIMI_URL: ${CREDIMI_URL:?http://localhost:8090}
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?localhost:7233}
