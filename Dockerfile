@@ -151,38 +151,6 @@ RUN set -eux; \
         chmod 644 /root/.android/adbkey.pub; \
     fi
 
-# Golden images ONLY in emulator target
-ARG BASE_URL=https://files.pn-a.com/api/static
-RUN --mount=type=bind,source=.,target=/context,ro \
-    --mount=type=cache,target=/tmp/emulator-assets-cache \
-    set -eux; \
-    base_cache="/tmp/emulator-assets-cache/credimi_base_image.tar.gz"; \
-    golden_cache="/tmp/emulator-assets-cache/credimi_golden.tar.gz"; \
-    if [ -s /context/credimi_base_image.tar.gz ]; then \
-      cp /context/credimi_base_image.tar.gz "$base_cache"; \
-      echo "Using local credimi_base_image.tar.gz from build context"; \
-    else \
-      echo "Local credimi_base_image.tar.gz missing; will use cache/download"; \
-    fi; \
-    if [ -s /context/credimi_golden.tar.gz ]; then \
-      cp /context/credimi_golden.tar.gz "$golden_cache"; \
-      echo "Using local credimi_golden.tar.gz from build context"; \
-    else \
-      echo "Local credimi_golden.tar.gz missing; will use cache/download"; \
-    fi; \
-    if [ ! -s "$base_cache" ]; then \
-      rm -f "$base_cache.tmp"; \
-      curl -fsSL "${BASE_URL}/credimi_base_image.tar.gz" -o "$base_cache.tmp"; \
-      mv "$base_cache.tmp" "$base_cache"; \
-    fi; \
-    if [ ! -s "$golden_cache" ]; then \
-      rm -f "$golden_cache.tmp"; \
-      curl -fsSL "${BASE_URL}/credimi_golden.tar.gz" -o "$golden_cache.tmp"; \
-      mv "$golden_cache.tmp" "$golden_cache"; \
-    fi; \
-    tar -xzf "$base_cache"   -C "${ANDROID_AVD_HOME}"; \
-    tar -xzf "$golden_cache" -C "${AVDCTL_GOLDEN_DIR}"
-
 
 ENTRYPOINT ["/usr/local/bin/phone-connect"]
 CMD ["--emulator"]

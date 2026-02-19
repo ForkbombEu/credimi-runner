@@ -138,12 +138,38 @@ else
   exit 1
 fi
 
+echo "Testing: emulator asset checks are ordered before emulator adb start-server"
+asset_check_call_line="$(
+  rg -n "^  ensure_emulator_assets$" "${entrypoint}" | cut -d: -f1
+)"
+if [[ -z "${asset_check_call_line}" ]]; then
+  echo "FAIL: unable to locate ensure_emulator_assets call in entrypoint" >&2
+  exit 1
+fi
+if (( asset_check_call_line < emulator_adb_start_line )); then
+  echo "PASS: emulator asset checks are ordered before emulator adb start-server"
+else
+  echo "FAIL: emulator asset checks must happen before emulator adb start-server" >&2
+  exit 1
+fi
+
 echo "Testing: --emulator requires no args and runs cleanup + adb start-server"
 reset_calls
 # Make /dev/kvm checks pass even on systems without it:
 # If your script strictly checks /dev/kvm existence, this test must run in CI where /dev/kvm exists.
 # Alternative: have the script allow SKIP_KVM_CHECK=1 in tests.
 if [[ -e /dev/kvm ]]; then
+  test_avd_home="${tmp_dir}/avd-home"
+  test_golden_root="${tmp_dir}/avd-golden"
+  test_golden_path="${test_golden_root}/credimi-golden"
+  mkdir -p "${test_avd_home}/credimi.avd" "${test_golden_path}"
+  : > "${test_avd_home}/credimi.ini"
+
+  export ANDROID_AVD_HOME="${test_avd_home}"
+  export AVDCTL_GOLDEN_DIR="${test_golden_root}"
+  export BASE_NAME="credimi"
+  export GOLDEN_PATH="${test_golden_path}"
+
   run_ok --emulator
   if find_in_calls "killall -9 qemu-system-x86_64" && find_in_calls "killall -9 emulator"; then
     echo "PASS: emulator cleanup invoked"
