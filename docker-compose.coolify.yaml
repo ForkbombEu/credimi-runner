@@ -22,6 +22,6 @@ services:
       ADB_PUBLIC_KEY: ${ADB_PUBLIC_KEY:?}
       PORT: ${PORT:-8060}
 
-    volumes:
-      avd_home:
-      avd_golden:
+volumes:
+  avd_home:
+  avd_golden:
