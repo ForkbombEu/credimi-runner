@@ -71,6 +71,11 @@ materialize_adb_keys_from_env() {
   fi
 }
 
+ensure_workflows_dir() {
+  local workflows_dir="${CREDIMI_WORKFLOWS_DIR:-/credimi/workflows}"
+  mkdir -p "$workflows_dir"
+}
+
 download_and_extract_archive() {
   local archive_url="$1"
   local destination_dir="$2"
@@ -170,6 +175,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 materialize_adb_keys_from_env
+ensure_workflows_dir
 
 # Emulator mode: no PHONE args, just validate + start adb + run service
 if [[ "$emulator_mode" == true ]]; then

@@ -77,6 +77,9 @@ COPY --from=builder /src/pkg/server/docs /src/pkg/server/docs
 COPY --from=builder /src/pkg/gen/http /src/pkg/gen/http
 RUN chmod +x /usr/local/bin/credimi-runner /usr/local/bin/avdctl
 
+ENV CREDIMI_WORKFLOWS_DIR=/credimi/workflows
+RUN mkdir -p ${CREDIMI_WORKFLOWS_DIR}
+
 # Physical-device entrypoint
 COPY scripts/entrypoint.sh /usr/local/bin/phone-connect
 RUN chmod +x /usr/local/bin/phone-connect
