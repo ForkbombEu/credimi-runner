@@ -212,3 +212,37 @@ var _ = Service("mobile", func() {
 		})
 	})
 })
+
+var _ = Service("health", func() {
+	Description("Health check endpoint")
+
+	Error("internal_error", APIError)
+	Error("service_unavailable", APIError)
+
+	Method("check", func() {
+		Result(func() {
+			Attribute("status", String)
+			Attribute("emulators", ArrayOf(DeviceInfo))
+			Required("status")
+		})
+
+		Error("internal_error", APIError)
+		Error("service_unavailable", APIError)
+
+		HTTP(func() {
+			GET("/health")
+			Response(StatusOK)
+			Response("internal_error", StatusInternalServerError)
+			Response("service_unavailable", StatusServiceUnavailable)
+		})
+	})
+})
+
+var DeviceInfo = Type("DeviceInfo", func() {
+	Attribute("serial", String)
+	Attribute("state", String)
+	Attribute("product", String)
+	Attribute("model", String)
+	Attribute("device", String)
+	Attribute("transport_id", String)
+})

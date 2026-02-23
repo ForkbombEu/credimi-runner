@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/health"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/worker"
@@ -202,6 +203,27 @@ func wireFrommobileAPIError(e *mobile.APIError) *apiErrorWire {
 	}
 }
 
+func wireFromhealthAPIError(e *health.APIError) *apiErrorWire {
+	if e == nil {
+		return wireFromrunnerAPIError(nil)
+	}
+	status := e.Code
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	name := e.Name
+	if name == "" {
+		name = "internal_error"
+	}
+	return &apiErrorWire{
+		Name:    name,
+		Status:  status,
+		Domain:  e.Domain,
+		Reason:  e.Reason,
+		Message: e.Message,
+	}
+}
+
 // GoaErrorFormatter is what you pass as the LAST argument to server.New(...).
 func GoaErrorFormatter(_ context.Context, err error) goahttp.Statuser {
 	// If the error is (or wraps) *runner.APIError, encode it as your wire error.
@@ -223,6 +245,11 @@ func GoaErrorFormatter(_ context.Context, err error) goahttp.Statuser {
 	var mobileAPIErr *mobile.APIError
 	if errors.As(err, &mobileAPIErr) && mobileAPIErr != nil {
 		return wireFrommobileAPIError(mobileAPIErr)
+	}
+
+	var healthAPIErr *health.APIError
+	if errors.As(err, &healthAPIErr) && healthAPIErr != nil {
+		return wireFromhealthAPIError(healthAPIErr)
 	}
 
 	// If this is a goa.ServiceError, try to unwrap the original error.

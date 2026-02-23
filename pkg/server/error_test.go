@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/health"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/worker"
@@ -154,6 +155,20 @@ func TestWireFromServiceSpecificAPIErrors(t *testing.T) {
 		require.Equal(t, "mobile", wire.Domain)
 		require.Equal(t, "unreachable", wire.Reason)
 	})
+
+	t.Run("health keeps explicit values", func(t *testing.T) {
+		wire := wireFromhealthAPIError(&health.APIError{
+			Name:    "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Domain:  "health",
+			Reason:  "adb unavailable",
+			Message: "adb failed",
+		})
+		require.Equal(t, "service_unavailable", wire.Name)
+		require.Equal(t, http.StatusServiceUnavailable, wire.StatusCode())
+		require.Equal(t, "health", wire.Domain)
+		require.Equal(t, "adb unavailable", wire.Reason)
+	})
 }
 
 func TestGoaErrorFormatter(t *testing.T) {
@@ -198,6 +213,21 @@ func TestGoaErrorFormatter(t *testing.T) {
 		require.Equal(t, http.StatusInternalServerError, w.StatusCode())
 		require.Equal(t, "mobile", w.Domain)
 		require.Equal(t, "internal_error", w.Name)
+	})
+
+	t.Run("health typed error", func(t *testing.T) {
+		wire := GoaErrorFormatter(context.Background(), &health.APIError{
+			Name:    "service_unavailable",
+			Code:    http.StatusServiceUnavailable,
+			Domain:  "health",
+			Reason:  "adb unavailable",
+			Message: "adb failed",
+		})
+		w, ok := wire.(*apiErrorWire)
+		require.True(t, ok)
+		require.Equal(t, http.StatusServiceUnavailable, w.StatusCode())
+		require.Equal(t, "health", w.Domain)
+		require.Equal(t, "service_unavailable", w.Name)
 	})
 
 	t.Run("decode payload maps to bad request", func(t *testing.T) {
