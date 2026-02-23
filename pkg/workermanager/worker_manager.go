@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
+	"github.com/forkbombeu/credimi-runner/pkg/telemetry"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi/pkg/workflowengine"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/activities"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/workflows"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
@@ -19,24 +24,55 @@ import (
 
 var clientCache sync.Map
 
+type ActivityTracer struct {
+	tracer     trace.Tracer
+	workerSpan trace.Span
+}
+
+func NewActivityTracer(tracer trace.Tracer, workerSpan trace.Span) *ActivityTracer {
+	return &ActivityTracer{tracer: tracer, workerSpan: workerSpan}
+}
+
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		tracer := telemetry.GetTracer()
+
+		ctx, span := tracer.Start(ctx, "worker.lifecycle")
+		defer span.End()
+
+		span.AddEvent("Connecting to Temporal")
 		c, err := getTemporalClientWithNamespace(namespace)
 		if err != nil {
+			span.SetStatus(codes.Error, err.Error())
+			span.RecordError(err)
 			return err
 		}
 		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
-		w := worker.New(c, taskqueue, worker.Options{})
+		telemetry.TrackWorkerStart(ctx, namespace, runnerID)
+		defer telemetry.TrackWorkerStop(ctx, namespace, runnerID)
+		span.SetAttributes(
+			attribute.String("worker.namespace", namespace),
+			attribute.String("worker.runner_id", runnerID),
+			attribute.String("worker.taskqueue", taskqueue),
+			attribute.String("worker.start_time", time.Now().Format(time.RFC3339)),
+		)
 
+		w := worker.New(c, taskqueue, worker.Options{})
+		span.AddEvent("worker.registering_workflows")
+		workflowCount := 0
 		// Register workflows
 		for _, wf := range []workflowengine.Workflow{workflows.NewMobileAutomationWorkflow()} {
 			w.RegisterWorkflowWithOptions(wf.Workflow, workflow.RegisterOptions{Name: wf.Name()})
+			workflowCount++
+			span.SetAttributes(attribute.Int("worker.workflows_registered", workflowCount))
 		}
 
+		activityTracer := NewActivityTracer(tracer, span)
 		// Register activities
-		for _, act := range []workflowengine.ExecutableActivity{
+		span.AddEvent("worker.registering_activities")
+		activitiesList := []workflowengine.ExecutableActivity{
 			activities.NewHTTPActivity(),
 			activities.NewRunMobileFlowActivity(),
 			activities.NewStartEmulatorActivity(),
@@ -45,23 +81,40 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 			activities.NewStopRecordingActivity(),
 			// activities.NewUnlockEmulatorActivity(),
 			activities.NewCleanupDeviceActivity(),
-		} {
-			w.RegisterActivityWithOptions(act.Execute, activity.RegisterOptions{Name: act.Name()})
 		}
+
+		// Register activities with tracing
+		for _, act := range activitiesList {
+			wrapped := activityTracer.Wrap(act)
+			w.RegisterActivityWithOptions(
+				wrapped,
+				activity.RegisterOptions{Name: act.Name()},
+			)
+		}
+		span.SetAttributes(attribute.Int("worker.activities_registered", len(activitiesList)))
+		span.AddEvent("worker.registration_complete")
 
 		// Shutdown channel
 		shutdownCh := make(chan interface{})
 		go func() {
 			<-ctx.Done()
+			span.AddEvent("worker.shutdown_received")
 			close(shutdownCh)
 		}()
 
+		span.AddEvent("worker.starting")
 		log.Printf("Temporal worker running for namespace %s", namespace)
 		if err := w.Run(shutdownCh); err != nil {
+			span.SetStatus(codes.Error, err.Error())
+			span.RecordError(err)
 			log.Printf("Temporal worker stopped with error: %v", err)
 			return err
 		}
 
+		span.AddEvent("worker.stopped")
+		span.SetAttributes(
+			attribute.String("worker.end_time", time.Now().Format(time.RFC3339)),
+		)
 		log.Printf("Temporal worker stopped for namespace %s", namespace)
 		return nil
 	}
@@ -82,4 +135,46 @@ func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
 
 	clientCache.Store(namespace, c)
 	return c, nil
+}
+
+func (at *ActivityTracer) Wrap(act workflowengine.ExecutableActivity) func(ctx context.Context,
+	input interface{}) (interface{}, error) {
+	return func(ctx context.Context, input interface{}) (interface{}, error) {
+		startTime := time.Now()
+		activityName := act.Name()
+
+		at.workerSpan.AddEvent(fmt.Sprintf("activity.%s.started", activityName))
+
+		ctx, activitySpan := at.tracer.Start(ctx, fmt.Sprintf("Activity: %s", activityName))
+		defer activitySpan.End()
+
+		activitySpan.SetAttributes(
+			attribute.String("activity.name", act.Name()),
+			attribute.String("activity.type", fmt.Sprintf("%T", act)),
+		)
+		activityInput, ok := input.(workflowengine.ActivityInput)
+		if !ok {
+			err := fmt.Errorf("invalid input type for activity %s: expected workflowengine.ActivityInput, got %T", act.Name(), input)
+			activitySpan.SetStatus(codes.Error, err.Error())
+			activitySpan.RecordError(err)
+			at.workerSpan.AddEvent(fmt.Sprintf("activity.%s.failed: input error", activityName))
+			telemetry.TrackActivity(ctx, activityName, time.Since(startTime), err)
+			return nil, err
+		}
+		result, err := act.Execute(ctx, activityInput)
+		duration := time.Since(startTime)
+		activitySpan.SetAttributes(
+			attribute.Int64("activity.duration_ms", duration.Milliseconds()),
+		)
+		if err != nil {
+			activitySpan.SetStatus(codes.Error, err.Error())
+			activitySpan.RecordError(err)
+			at.workerSpan.AddEvent(fmt.Sprintf("activity.%s.failed", activityName))
+		} else {
+			activitySpan.SetStatus(codes.Ok, "Activity completed successfully")
+			at.workerSpan.AddEvent(fmt.Sprintf("activity.%s.completed", activityName))
+		}
+		telemetry.TrackActivity(ctx, activityName, duration, err)
+		return result, err
+	}
 }

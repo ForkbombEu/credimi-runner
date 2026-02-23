@@ -13,6 +13,7 @@ import (
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	cluelog "goa.design/clue/log"
 )
@@ -53,12 +54,17 @@ var serverCmd = &cobra.Command{
 		// Build HTTP handler (Goa mux + middleware + debug endpoints)
 		handler := server.NewHTTPHandler(ctx, srv, debug)
 
+		mux := http.NewServeMux()
+		mux.Handle("/", handler)
+		mux.Handle("/metrics", promhttp.Handler())
+
 		addr := fmt.Sprintf("%s:%d", host, port)
 		httpSrv := &http.Server{
 			Addr:              addr,
-			Handler:           handler,
+			Handler:           mux,
 			ReadHeaderTimeout: 60 * time.Second,
 		}
+		cluelog.Printf(ctx, "Metrics available at http://%s/metrics", addr)
 
 		// Run server
 		errc := make(chan error, 1)

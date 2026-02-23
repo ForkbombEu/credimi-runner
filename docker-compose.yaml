@@ -17,6 +17,10 @@ services:
       caddy.reverse_proxy: "{{upstreams 8050}}"
     networks:
       - ingress
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_SERVICE_NAME: credimi-runner-server
   
   runner_emulator:
     image: ${LOCAL_IMAGE:-ghcr.io/forkbombeu/credimi-runner-emulator:latest}
@@ -32,6 +36,9 @@ services:
       ADB_VENDOR_KEYS: /root/.android
       BASE_NAME: ${BASE_NAME:-credimi}
       GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4318
+      OTEL_EXPORTER_OTLP_INSECURE: true
+      OTEL_SERVICE_NAME: credimi-runner-server
     volumes:
       - ${ANDROID_KEYS_DIR:-/home/puria/.android}:/root/.android
       - ./pkg/server/docs:/src/pkg/server/docs:ro
@@ -71,6 +78,25 @@ services:
       - named
     networks:
       - ingress
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    restart: unless-stopped
+    ports:
+      - "16686:16686"  
+      - "4318:4318"    
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true 
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
 
 networks:
   ingress:
