@@ -30,7 +30,7 @@ tasks:
       - "{{.BIN_DIR}}/{{.APP_NAME}}"
     cmds:
       - mkdir -p {{.BIN_DIR}}
-      - go build -o {{.BIN_DIR}}/{{.APP_NAME}} .
+      - go build  --tags=credimi_extra -o {{.BIN_DIR}}/{{.APP_NAME}} .
 
   "go:gen":
     desc: Run code generation (Goa)
