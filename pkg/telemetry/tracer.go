@@ -76,5 +76,8 @@ func InitTracer() func() {
 }
 
 func GetTracer() trace.Tracer {
-	return tracer
+	if tracer != nil {
+		return tracer
+	}
+	return otel.Tracer("github.com/forkbombeu/credimi-runner")
 }
