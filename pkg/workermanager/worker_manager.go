@@ -137,9 +137,11 @@ func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
 	return c, nil
 }
 
-func (at *ActivityTracer) Wrap(act workflowengine.ExecutableActivity) func(ctx context.Context,
-	input interface{}) (interface{}, error) {
-	return func(ctx context.Context, input interface{}) (interface{}, error) {
+func (at *ActivityTracer) Wrap(act workflowengine.ExecutableActivity) func(
+	ctx context.Context,
+	input workflowengine.ActivityInput,
+) (workflowengine.ActivityResult, error) {
+	return func(ctx context.Context, input workflowengine.ActivityInput) (workflowengine.ActivityResult, error) {
 		startTime := time.Now()
 		activityName := act.Name()
 
@@ -152,16 +154,8 @@ func (at *ActivityTracer) Wrap(act workflowengine.ExecutableActivity) func(ctx c
 			attribute.String("activity.name", act.Name()),
 			attribute.String("activity.type", fmt.Sprintf("%T", act)),
 		)
-		activityInput, ok := input.(workflowengine.ActivityInput)
-		if !ok {
-			err := fmt.Errorf("invalid input type for activity %s: expected workflowengine.ActivityInput, got %T", act.Name(), input)
-			activitySpan.SetStatus(codes.Error, err.Error())
-			activitySpan.RecordError(err)
-			at.workerSpan.AddEvent(fmt.Sprintf("activity.%s.failed: input error", activityName))
-			telemetry.TrackActivity(ctx, activityName, time.Since(startTime), err)
-			return nil, err
-		}
-		result, err := act.Execute(ctx, activityInput)
+
+		result, err := act.Execute(ctx, input)
 		duration := time.Since(startTime)
 		activitySpan.SetAttributes(
 			attribute.Int64("activity.duration_ms", duration.Milliseconds()),
