@@ -36,18 +36,52 @@ Below are the only two commands you need after phone setup.
 > ```bash
 > # If your phone shows IP:PORT, pass it as a single argument
 > docker run --rm -it --network host \
+>   -e CREDIMI_URL=http://127.0.0.1:8090 \
+>   -e CREDIMI_PB_ADMIN=credimi-admin-mail \
+>   -e CREDIMI_PB_PASS=your-password \
+>   -e CREDIMI_RUNNER_ID=/org-id/runner-phone-01 \
 >   -v adbkeys:/root/.android \
->   ghcr.io/ForkbombEu/credimi-runner:latest 192.168.1.42:38349
+>   ghcr.io/ForkbombEu/credimi-runner-phone:latest 192.168.1.42:38349
 > ```
 
 > [!IMPORTANT]
 > **USB (cable)**
 > ```bash
-> docker run --rm -it --privileged \
+> docker run --rm -it --privileged --network host \
+>   -e CREDIMI_URL=http://127.0.0.1:8090 \
+>   -e CREDIMI_PB_ADMIN=credimi-admin-mail \
+>   -e CREDIMI_PB_PASS=your-password \
+>   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-phone-01 \
 >   -v /dev/bus/usb:/dev/bus/usb \
 >   -v adbkeys:/root/.android \
->   ghcr.io/ForkbombEu/credimi-runner:latest --usb
+>   ghcr.io/ForkbombEu/credimi-runner-phone:latest --usb
 > ```
+
+> [!IMPORTANT]
+> **Emulator (requires KVM)**
+> ```bash
+> docker run --rm -it --device /dev/kvm --network host \
+>   -e CREDIMI_URL=http://127.0.0.1:8090 \
+>   -e CREDIMI_PB_ADMIN=credimi-admin-mail \
+>   -e CREDIMI_PB_PASS=your-password \
+>   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-emulator-01 \
+>   -v adbkeys:/root/.android \
+>   ghcr.io/ForkbombEu/credimi-runner-emulator:latest
+> ```
+
+Required environment variables (all modes):
+- `CREDIMI_URL`
+- `CREDIMI_PB_ADMIN`
+- `CREDIMI_PB_PASS`
+- `CREDIMI_RUNNER_ID`
+
+Optional environment variables (all modes):
+- `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
+
+Emulator-only optional environment variables:
+- `BASE_NAME` (default: `credimi`)
+- `GOLDEN_PATH` (default: `/avd-golden/<BASE_NAME>-golden`)
+- `ADB_PRIVATE_KEY` and `ADB_PUBLIC_KEY` (provide to inject ADB keys; otherwise the container uses mounted keys if present, or disables ADB auth keys)
 
 <details>
 <summary>▶ Verify device (optional)</summary>
@@ -79,7 +113,7 @@ docker exec -it <container> adb connect 192.168.1.42:38349
 ```bash
 docker run --rm -it --network host \
   -v adbkeys:/root/.android \
-  ghcr.io/ForkbombEu/credimi-runner:latest --no-wait 192.168.1.42:38349
+  ghcr.io/ForkbombEu/credimi-runner-phone:latest --no-wait 192.168.1.42:38349
 ```
 </details>
 
@@ -103,7 +137,7 @@ Then run the container:
 docker run --rm -it --network host \
   -e ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 \
   -v adbkeys:/root/.android \
-  ghcr.io/ForkbombEu/credimi-runner:latest --host-adb --usb
+  ghcr.io/ForkbombEu/credimi-runner-phone:latest --host-adb --usb
 ```
 
 Notes:
@@ -148,8 +182,10 @@ Notes:
 This repo uses semantic-release (Conventional Commits) on every push to `master`.
 Each release publishes a Docker image to GitHub Container Registry:
 
-- `ghcr.io/ForkbombEu/credimi-runner:latest`
-- `ghcr.io/ForkbombEu/credimi-runner:vX.Y.Z`
+- `ghcr.io/ForkbombEu/credimi-runner-phone:latest`
+- `ghcr.io/ForkbombEu/credimi-runner-phone:vX.Y.Z`
+- `ghcr.io/ForkbombEu/credimi-runner-emulator:latest`
+- `ghcr.io/ForkbombEu/credimi-runner-emulator:vX.Y.Z`
 </details>
 
 <details>
@@ -182,6 +218,20 @@ Environment variables used by `serve`:
 - `CREDIMI_DEV_PB_PASS` (for dev URL)
 - `CREDIMI_RUNNER_ID` (required when workers are started)
 - `TEMPORAL_ADDRESS` (optional, defaults to Temporal SDK default host/port)
+
+Runner container envs (phone/emulator):
+
+Required:
+- `CREDIMI_URL`
+- `CREDIMI_PB_ADMIN`
+- `CREDIMI_PB_PASS`
+- `CREDIMI_RUNNER_ID`
+
+Optional:
+- `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
+- `BASE_NAME` (emulator only, default: `credimi`)
+- `GOLDEN_PATH` (emulator only, default: `/avd-golden/<BASE_NAME>-golden`)
+- `ADB_PRIVATE_KEY` and `ADB_PUBLIC_KEY` (emulator only, provide to inject ADB keys; otherwise the container uses mounted keys if present, or disables ADB auth keys)
 
 Example `.env` for local serve:
 
@@ -229,8 +279,8 @@ Notes:
 - For temporary `trycloudflare.com` tunnels, leave `RUNNER_DOMAIN` empty (or unset) so docs use same-origin URLs.
 - Keep `RUNNER_CADDY_SITE=:80` when running behind Cloudflare Tunnel.
 - `docker compose --profile named up` starts both `tunnel` and `tunnel_named`; prefer explicit services as above.
-- The compose file uses `ghcr.io/forkbombeu/credimi-runner:latest` by default.
-- To run your local image instead: `RUNNER_IMAGE=credimi-runner docker compose up runner caddy tunnel_named`.
+- The compose file uses `ghcr.io/forkbombeu/credimi-runner-phone:latest` by default.
+- To run your local image instead: `RUNNER_IMAGE=credimi-runner-phone docker compose up runner caddy tunnel_named`.
 - Stop everything: `docker compose down --remove-orphans`.
 
 </details>
@@ -254,10 +304,10 @@ This enables the `emulator` profile without passing `--profile emulator` on ever
 <details>
 <summary>▶ Contributing / Hacking</summary>
 
-Build locally:
+Build phone image locally:
 
 ```bash
-docker build -t credimi-runner .
+task build:docker:phone
 ```
 
 Build emulator locally:
@@ -272,7 +322,7 @@ Note: emulator base/golden archives are now downloaded at container startup only
 Run a locally built image:
 
 ```bash
-docker run --rm -it --network host credimi-runner 192.168.1.42
+docker run --rm -it --network host credimi-runner-phone 192.168.1.42
 ```
 
 Quick entrypoint argument checks (no device required):
