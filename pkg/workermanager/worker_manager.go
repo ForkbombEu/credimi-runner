@@ -2,15 +2,18 @@ package workermanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi/pkg/workflowengine"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/activities"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/workflows"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -22,49 +25,124 @@ var clientCache sync.Map
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		c, err := getTemporalClientWithNamespace(namespace)
-		if err != nil {
-			return err
-		}
 		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
-		w := worker.New(c, taskqueue, worker.Options{})
+		backoff := time.Second
+		const maxBackoff = 30 * time.Second
 
-		// Register workflows
-		for _, wf := range []workflowengine.Workflow{workflows.NewMobileAutomationWorkflow()} {
-			w.RegisterWorkflowWithOptions(wf.Workflow, workflow.RegisterOptions{Name: wf.Name()})
+		for {
+			if ctx.Err() != nil {
+				log.Printf("Temporal worker stopped for namespace %s", namespace)
+				return nil
+			}
+
+			c, err := getTemporalClientWithNamespace(namespace)
+			if err != nil {
+				if !shouldRetryTemporalWorker(err) {
+					return err
+				}
+				log.Printf("Temporal worker failed to initialize for namespace %s: %v (retrying in %s)", namespace, err, backoff)
+				if !sleepWithContext(ctx, backoff) {
+					return nil
+				}
+				backoff = growBackoff(backoff, maxBackoff)
+				continue
+			}
+
+			w := worker.New(c, taskqueue, worker.Options{})
+
+			// Register workflows
+			for _, wf := range []workflowengine.Workflow{workflows.NewMobileAutomationWorkflow()} {
+				w.RegisterWorkflowWithOptions(wf.Workflow, workflow.RegisterOptions{Name: wf.Name()})
+			}
+
+			// Register activities
+			for _, act := range []workflowengine.ExecutableActivity{
+				activities.NewHTTPActivity(),
+				activities.NewRunMobileFlowActivity(),
+				activities.NewStartEmulatorActivity(),
+				activities.NewApkInstallActivity(),
+				activities.NewStartRecordingActivity(),
+				activities.NewStopRecordingActivity(),
+				// activities.NewUnlockEmulatorActivity(),
+				activities.NewCleanupDeviceActivity(),
+			} {
+				w.RegisterActivityWithOptions(act.Execute, activity.RegisterOptions{Name: act.Name()})
+			}
+
+			// Shutdown channel
+			shutdownCh := make(chan interface{})
+			go func() {
+				<-ctx.Done()
+				close(shutdownCh)
+			}()
+
+			log.Printf("Temporal worker running for namespace %s", namespace)
+			if err := w.Run(shutdownCh); err != nil {
+				if ctx.Err() != nil {
+					log.Printf("Temporal worker stopped for namespace %s", namespace)
+					return nil
+				}
+				if !shouldRetryTemporalWorker(err) {
+					log.Printf("Temporal worker stopped with non-retryable error for namespace %s: %v", namespace, err)
+					return err
+				}
+				log.Printf("Temporal worker stopped with retryable error for namespace %s: %v (retrying in %s)", namespace, err, backoff)
+				if !sleepWithContext(ctx, backoff) {
+					return nil
+				}
+				backoff = growBackoff(backoff, maxBackoff)
+				continue
+			}
+
+			log.Printf("Temporal worker stopped for namespace %s", namespace)
+			return nil
 		}
-
-		// Register activities
-		for _, act := range []workflowengine.ExecutableActivity{
-			activities.NewHTTPActivity(),
-			activities.NewRunMobileFlowActivity(),
-			activities.NewStartEmulatorActivity(),
-			activities.NewApkInstallActivity(),
-			activities.NewStartRecordingActivity(),
-			activities.NewStopRecordingActivity(),
-			// activities.NewUnlockEmulatorActivity(),
-			activities.NewCleanupDeviceActivity(),
-		} {
-			w.RegisterActivityWithOptions(act.Execute, activity.RegisterOptions{Name: act.Name()})
-		}
-
-		// Shutdown channel
-		shutdownCh := make(chan interface{})
-		go func() {
-			<-ctx.Done()
-			close(shutdownCh)
-		}()
-
-		log.Printf("Temporal worker running for namespace %s", namespace)
-		if err := w.Run(shutdownCh); err != nil {
-			log.Printf("Temporal worker stopped with error: %v", err)
-			return err
-		}
-
-		log.Printf("Temporal worker stopped for namespace %s", namespace)
-		return nil
 	}
+}
+
+func shouldRetryTemporalWorker(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+
+	// Do not retry for permanent setup/configuration failures.
+	var namespaceNotFound *serviceerror.NamespaceNotFound
+	var invalidArgument *serviceerror.InvalidArgument
+	var permissionDenied *serviceerror.PermissionDenied
+	var unimplemented *serviceerror.Unimplemented
+	if errors.As(err, &namespaceNotFound) ||
+		errors.As(err, &invalidArgument) ||
+		errors.As(err, &permissionDenied) ||
+		errors.As(err, &unimplemented) {
+		return false
+	}
+
+	// Retry by default to survive transient transport/server failures.
+	return true
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func growBackoff(current, max time.Duration) time.Duration {
+	next := current * 2
+	if next > max {
+		return max
+	}
+	return next
 }
 
 func getTemporalClientWithNamespace(namespace string) (client.Client, error) {

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 )
@@ -30,6 +31,9 @@ func NewRunnerServiceWithDeps(store *ProcessStore, instances map[string]utils.In
 }
 
 func (s *runnerService) StartExistingWorkers() error {
+	startDelay := startupWorkerDelay()
+	startAttempts := 0
+
 	for name, inst := range s.Instances {
 		token, err := s.Deps.TokenProvider(inst)
 		if err != nil {
@@ -87,6 +91,11 @@ func (s *runnerService) StartExistingWorkers() error {
 					continue
 				}
 
+				if startDelay > 0 && startAttempts > 0 {
+					s.Deps.Sleeper(startDelay)
+				}
+				startAttempts++
+
 				log.Printf("Starting worker for organization %s (%s)", org.Name, org.Namespace)
 				proc := NewProcess(org.Namespace, s.Deps.WorkerRunnerFactory(org.Namespace))
 				s.Store.Add(proc)
@@ -110,6 +119,21 @@ func (s *runnerService) StartExistingWorkers() error {
 	}
 	return nil
 }
+
+func startupWorkerDelay() time.Duration {
+	const defaultWorkerStartDelayMS = 50
+	delayMS, err := utils.GetEnvironmentVariableAsInteger("CREDIMI_WORKER_START_DELAY_MS", defaultWorkerStartDelayMS)
+	if err != nil {
+		log.Printf("[WARN] Invalid CREDIMI_WORKER_START_DELAY_MS value: %v (using %d)", err, defaultWorkerStartDelayMS)
+		return defaultWorkerStartDelayMS * time.Millisecond
+	}
+	if delayMS < 0 {
+		log.Printf("[WARN] Negative CREDIMI_WORKER_START_DELAY_MS value %d (using %d)", delayMS, defaultWorkerStartDelayMS)
+		return defaultWorkerStartDelayMS * time.Millisecond
+	}
+	return time.Duration(delayMS) * time.Millisecond
+}
+
 func (s *runnerService) getInstanceByURL(rawURL string) (utils.Instance, error) {
 	normalizedInput, err := utils.NormalizeURL(rawURL)
 	if err != nil {

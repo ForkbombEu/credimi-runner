@@ -152,6 +152,94 @@ func TestStartExistingWorkers_PaginatesAllOrganizations(t *testing.T) {
 	proc2.Stop()
 }
 
+func TestStartExistingWorkers_AppliesStartupDelayBetweenStarts(t *testing.T) {
+	t.Setenv("CREDIMI_WORKER_START_DELAY_MS", "25")
+
+	store := NewProcessStore()
+	client := &startWorkersHTTPClient{
+		responder: func(req *http.Request) (*http.Response, error) {
+			require.Equal(t, "/api/collections/organizations/records", req.URL.Path)
+			return httpResp(http.StatusOK, `{"items":[{"name":"A","canonified_name":"ns-1"},{"name":"B","canonified_name":"ns-2"}]}`), nil
+		},
+	}
+
+	var sleeps []time.Duration
+	deps := Deps{
+		HTTPClient: client,
+		TokenProvider: func(instance utils.Instance) (string, error) {
+			return "token-123", nil
+		},
+		Sleeper: func(d time.Duration) {
+			sleeps = append(sleeps, d)
+		},
+		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
+			return func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			}
+		},
+	}
+
+	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
+		"prod": {URL: "http://example.local"},
+	}, deps)
+
+	err := srv.StartExistingWorkers()
+	require.NoError(t, err)
+	require.Equal(t, []time.Duration{25 * time.Millisecond}, sleeps)
+
+	proc1, ok := store.Get("ns-1")
+	require.True(t, ok)
+	proc1.Stop()
+	proc2, ok := store.Get("ns-2")
+	require.True(t, ok)
+	proc2.Stop()
+}
+
+func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
+	t.Setenv("CREDIMI_WORKER_START_DELAY_MS", "")
+
+	store := NewProcessStore()
+	client := &startWorkersHTTPClient{
+		responder: func(req *http.Request) (*http.Response, error) {
+			require.Equal(t, "/api/collections/organizations/records", req.URL.Path)
+			return httpResp(http.StatusOK, `{"items":[{"name":"A","canonified_name":"ns-1"},{"name":"B","canonified_name":"ns-2"}]}`), nil
+		},
+	}
+
+	var sleeps []time.Duration
+	deps := Deps{
+		HTTPClient: client,
+		TokenProvider: func(instance utils.Instance) (string, error) {
+			return "token-123", nil
+		},
+		Sleeper: func(d time.Duration) {
+			sleeps = append(sleeps, d)
+		},
+		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
+			return func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			}
+		},
+	}
+
+	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
+		"prod": {URL: "http://example.local"},
+	}, deps)
+
+	err := srv.StartExistingWorkers()
+	require.NoError(t, err)
+	require.Equal(t, []time.Duration{50 * time.Millisecond}, sleeps)
+
+	proc1, ok := store.Get("ns-1")
+	require.True(t, ok)
+	proc1.Stop()
+	proc2, ok := store.Get("ns-2")
+	require.True(t, ok)
+	proc2.Stop()
+}
+
 func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
