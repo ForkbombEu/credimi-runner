@@ -48,3 +48,15 @@ func TestGrowBackoff(t *testing.T) {
 	require.Equal(t, 2*time.Second, growBackoff(time.Second, 30*time.Second))
 	require.Equal(t, 30*time.Second, growBackoff(20*time.Second, 30*time.Second))
 }
+
+func TestSleepWithContext(t *testing.T) {
+	t.Run("context canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		require.False(t, sleepWithContext(ctx, 50*time.Millisecond))
+	})
+
+	t.Run("timer fires", func(t *testing.T) {
+		require.True(t, sleepWithContext(context.Background(), time.Millisecond))
+	})
+}

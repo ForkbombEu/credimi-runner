@@ -22,6 +22,20 @@ import (
 
 var clientCache sync.Map
 
+type temporalWorker interface {
+	RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions)
+	RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions)
+	Run(interruptCh <-chan interface{}) error
+}
+
+var (
+	temporalClientGetter  = getTemporalClientWithNamespace
+	temporalWorkerFactory = func(c client.Client, taskqueue string, options worker.Options) temporalWorker {
+		return worker.New(c, taskqueue, options)
+	}
+	sleepWithContextFn = sleepWithContext
+)
+
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
@@ -36,20 +50,20 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				return nil
 			}
 
-			c, err := getTemporalClientWithNamespace(namespace)
+			c, err := temporalClientGetter(namespace)
 			if err != nil {
 				if !shouldRetryTemporalWorker(err) {
 					return err
 				}
 				log.Printf("Temporal worker failed to initialize for namespace %s: %v (retrying in %s)", namespace, err, backoff)
-				if !sleepWithContext(ctx, backoff) {
+				if !sleepWithContextFn(ctx, backoff) {
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
 				continue
 			}
 
-			w := worker.New(c, taskqueue, worker.Options{})
+			w := temporalWorkerFactory(c, taskqueue, worker.Options{})
 
 			// Register workflows
 			for _, wf := range []workflowengine.Workflow{workflows.NewMobileAutomationWorkflow()} {
@@ -88,7 +102,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 					return err
 				}
 				log.Printf("Temporal worker stopped with retryable error for namespace %s: %v (retrying in %s)", namespace, err, backoff)
-				if !sleepWithContext(ctx, backoff) {
+				if !sleepWithContextFn(ctx, backoff) {
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
