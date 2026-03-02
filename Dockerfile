@@ -67,10 +67,6 @@ ENV LANG=C.UTF-8 \
 RUN curl -fsSL https://get.maestro.mobile.dev | bash \
     && ln -s /root/.maestro/bin/maestro /usr/local/bin/maestro
 
-# Maestro patch 
-RUN curl -fsSL https://raw.githubusercontent.com/omnarayan/Maestro/feature/driver-host-port-distribution/upgrade-maestro-ports.sh | bash
-
-
 COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
 COPY --from=avdctl /usr/local/bin/avdctl /usr/local/bin/avdctl
 COPY --from=builder /src/pkg/server/docs /src/pkg/server/docs

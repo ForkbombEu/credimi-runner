@@ -3,10 +3,11 @@ module github.com/forkbombeu/credimi-runner
 go 1.25.5
 
 require (
-	github.com/forkbombeu/credimi v1.186.6
+	github.com/forkbombeu/credimi v1.186.7
 	github.com/joho/godotenv v1.5.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	go.temporal.io/api v1.59.0
 	go.temporal.io/sdk v1.39.0
 	goa.design/clue v1.2.4
 	goa.design/goa/v3 v3.24.3
@@ -37,7 +38,7 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/forkbombeu/avdctl v0.5.1 // indirect
-	github.com/forkbombeu/credimi-extra v1.2.0 // indirect
+	github.com/forkbombeu/credimi-extra v1.3.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/ganigeorgiev/fexpr v0.4.1 // indirect
 	github.com/go-chi/chi/v5 v5.2.4 // indirect
@@ -87,7 +88,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.9.0 // indirect
-	go.temporal.io/api v1.59.0 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/exp v0.0.0-20250305212735-054e65f0b394 // indirect
 	golang.org/x/image v0.25.0 // indirect
