@@ -1,7 +1,7 @@
 dario.cat/mergo v1.0.1 h1:Ra4+bf83h2ztPIQYNP99R6m+Y7KfnARDfID+a+vLl4s=
 dario.cat/mergo v1.0.1/go.mod h1:uNxQE+84aUszobStD9th8a29P2fMDhsBdgRYvZOxGmk=
-filippo.io/edwards25519 v1.1.0 h1:FNf4tywRC1HmFuKW5xopWpigGjJKiJSV0Cqo0cJWDaA=
-filippo.io/edwards25519 v1.1.0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
+filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
+filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
 github.com/ForkbombEu/et-tu-cesr v0.0.0-20250730082655-1822692d6150 h1:KKoJNod2ptCU5BMcFOejyTVHrwAWQBYO+5KiDxlxutU=
@@ -55,10 +55,10 @@ github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/forkbombeu/avdctl v0.5.1 h1:8Cvwgh0521/fZZGdpkX20BVNgQI9VqHOUEELgOsTNxY=
 github.com/forkbombeu/avdctl v0.5.1/go.mod h1:bCgZk+Q15y/YB39jGnZhwChGej7YYsX7Kgexg/GPMWA=
-github.com/forkbombeu/credimi v1.186.7 h1:HyJsvnjkY1yxZ/5tvhgly3zhsX/WFLd9NfP4/ChdvzI=
-github.com/forkbombeu/credimi v1.186.7/go.mod h1:L1rAWzTz6ROkvrskrZ+Pi2UfSbDGxaEi+S6oWYrzaL4=
-github.com/forkbombeu/credimi-extra v1.3.0 h1:73YjWCFrbljl2w3lWlz31ACQuRe+kfeNvrnLYonJbo4=
-github.com/forkbombeu/credimi-extra v1.3.0/go.mod h1:R2SqMXU/7q6ObCUx60mY+gcmZC8V2+qeK5WQMngqO9s=
+github.com/forkbombeu/credimi v1.186.8 h1:J5Pp1zifCUJh83/oAixBG25d4HMbepikW04ZsQ2+Z00=
+github.com/forkbombeu/credimi v1.186.8/go.mod h1:S9qtv3z7CkjTPQKAweBoMscrQvHAq8Pp0Aj8xocP/K4=
+github.com/forkbombeu/credimi-extra v1.3.3 h1:YwCQlWvqC9LdGMaiTvoqaS8tXT5f1HiocneBa3rMOcY=
+github.com/forkbombeu/credimi-extra v1.3.3/go.mod h1:kX94O/W2Qbekq6Jcir1ZIaoi2iGpgui2FY/IDTf1JmM=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/gabriel-vasile/mimetype v1.4.8 h1:FfZ3gj38NjllZIeJAmMhr+qKL8Wu+nOoI3GqacKw1NM=
