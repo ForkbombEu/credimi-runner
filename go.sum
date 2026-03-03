@@ -55,10 +55,10 @@ github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/forkbombeu/avdctl v0.5.1 h1:8Cvwgh0521/fZZGdpkX20BVNgQI9VqHOUEELgOsTNxY=
 github.com/forkbombeu/avdctl v0.5.1/go.mod h1:bCgZk+Q15y/YB39jGnZhwChGej7YYsX7Kgexg/GPMWA=
-github.com/forkbombeu/credimi v1.186.8 h1:J5Pp1zifCUJh83/oAixBG25d4HMbepikW04ZsQ2+Z00=
-github.com/forkbombeu/credimi v1.186.8/go.mod h1:S9qtv3z7CkjTPQKAweBoMscrQvHAq8Pp0Aj8xocP/K4=
-github.com/forkbombeu/credimi-extra v1.3.3 h1:YwCQlWvqC9LdGMaiTvoqaS8tXT5f1HiocneBa3rMOcY=
-github.com/forkbombeu/credimi-extra v1.3.3/go.mod h1:kX94O/W2Qbekq6Jcir1ZIaoi2iGpgui2FY/IDTf1JmM=
+github.com/forkbombeu/credimi v1.186.9 h1:INPDbnOqHudrQd96Mej6/xoI5tAi7ZoECXhQ6vregCo=
+github.com/forkbombeu/credimi v1.186.9/go.mod h1:LdhhiPdb+eq5kJwD8l1efC38uJ1qXHC57zBolEUWlNU=
+github.com/forkbombeu/credimi-extra v1.3.4 h1:5Esl6KpdAcb2Rrc5TmPKmRoMoCq5vw6dZScms61x2OE=
+github.com/forkbombeu/credimi-extra v1.3.4/go.mod h1:kX94O/W2Qbekq6Jcir1ZIaoi2iGpgui2FY/IDTf1JmM=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/gabriel-vasile/mimetype v1.4.8 h1:FfZ3gj38NjllZIeJAmMhr+qKL8Wu+nOoI3GqacKw1NM=
