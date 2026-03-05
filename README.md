@@ -115,6 +115,21 @@ docker run --rm -it --network host \
   -v adbkeys:/root/.android \
   ghcr.io/ForkbombEu/credimi-runner-phone:latest --no-wait 192.168.1.42:38349
 ```
+
+`--no-wait` only attempts the ADB connect and then exits. It does not start `credimi-runner serve`.
+</details>
+
+<details>
+<summary>▶ Start server without waiting for a device</summary>
+
+```bash
+docker run --rm -it --network host \
+  -e CREDIMI_URL=http://127.0.0.1:8090 \
+  -e CREDIMI_PB_ADMIN=credimi-admin-mail \
+  -e CREDIMI_PB_PASS=your-password \
+  -e CREDIMI_RUNNER_ID=/owner-org-id/runner-phone-01 \
+  ghcr.io/ForkbombEu/credimi-runner-phone:latest --no-device
+```
 </details>
 
 <details>

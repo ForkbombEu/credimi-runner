@@ -78,6 +78,20 @@ echo "Testing: --help"
 reset_calls
 run_ok --help
 
+echo "Testing: --no-device starts service without adb usage"
+reset_calls
+run_ok --no-device
+if find_in_calls "adb "; then
+  echo "FAIL: adb should not be called in --no-device mode" >&2
+  exit 1
+fi
+if find_in_calls "credimi-runner serve"; then
+  echo "PASS: credimi-runner started in --no-device mode"
+else
+  echo "FAIL: credimi-runner not started in --no-device mode" >&2
+  exit 1
+fi
+
 echo "Testing: --usb without args"
 reset_calls
 run_ok --usb --no-wait
