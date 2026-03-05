@@ -4,19 +4,21 @@ set -euo pipefail
 print_help() {
   cat <<'USAGE'
 Usage:
-  phone-connect [--emulator] [--no-wait] [--usb] [--host-adb] [--help|-h] PHONE_IP[:PORT] [PORT]
+  phone-connect [--emulator] [--no-device] [--no-wait] [--usb] [--host-adb] [--help|-h] PHONE_IP[:PORT] [PORT]
 
 Modes:
   --emulator          Validate KVM, cleanup emulator leftovers, start adb, then run credimi-runner.
+  --no-device         Skip adb checks/connect/wait and start credimi-runner immediately.
   Wi-Fi (default)     adb connect to PHONE_IP[:PORT]
   --usb               Use USB passthrough (no adb connect)
   --host-adb          Do not start adb server; use host adb via ADB_SERVER_SOCKET
 
 Options:
-  --no-wait           Exit after attempting the connection (device modes only)
+  --no-wait           Exit after attempting the connection (device modes only, no server start)
   -h, --help          Show this help message
 
 Examples:
+  phone-connect --no-device
   phone-connect 192.168.1.42
   phone-connect 192.168.1.42 5555
   phone-connect 192.168.1.42:5555
@@ -134,16 +136,12 @@ no_wait=false
 usb_mode=false
 host_adb=false
 emulator_mode=false
+no_device=false
 service_port="${PORT:-8050}"
 
 if ! [[ "$service_port" =~ ^[0-9]+$ ]]; then
   echo "Error: PORT must be a number. Got: $service_port" >&2
   exit 1
-fi
-
-if [[ $# -eq 0 ]]; then
-  print_help
-  exit 0
 fi
 
 while [[ $# -gt 0 ]]; do
@@ -168,6 +166,10 @@ while [[ $# -gt 0 ]]; do
       emulator_mode=true
       shift
       ;;
+    --no-device)
+      no_device=true
+      shift
+      ;;
     *)
       break
       ;;
@@ -179,6 +181,10 @@ ensure_workflows_dir
 
 # Emulator mode: no PHONE args, just validate + start adb + run service
 if [[ "$emulator_mode" == true ]]; then
+  if [[ "$no_device" == true ]]; then
+    echo "Error: --no-device cannot be combined with --emulator." >&2
+    exit 1
+  fi
   if [[ $# -gt 0 ]]; then
     echo "Error: --emulator does not accept PHONE_IP/PORT arguments." >&2
     exit 1
@@ -217,6 +223,21 @@ if [[ "$emulator_mode" == true ]]; then
 fi
 
 # Device modes (wifi/usb/host-adb)
+if [[ "$no_device" == true ]]; then
+  if [[ "$usb_mode" == true || "$host_adb" == true ]]; then
+    echo "Error: --no-device cannot be combined with --usb or --host-adb." >&2
+    exit 1
+  fi
+  if [[ $# -gt 0 ]]; then
+    echo "Error: --no-device does not accept PHONE_IP/PORT arguments." >&2
+    exit 1
+  fi
+
+  echo "No-device mode enabled. Skipping adb startup/connection/wait."
+  echo "Starting credimi-runner..."
+  exec credimi-runner serve --host 0.0.0.0 --port "$service_port"
+fi
+
 if [[ "$usb_mode" == true && $# -gt 0 ]]; then
   echo "Error: --usb mode does not accept PHONE_IP/PORT arguments." >&2
   exit 1
