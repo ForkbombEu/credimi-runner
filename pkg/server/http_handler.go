@@ -180,7 +180,7 @@ func (s *runnerService) FetchApkAndAction(ctx context.Context, payload *credimi.
 		body.ActionIdentifier = *payload.ActionIdentifier
 	}
 
-	result, apiErr := s.fetchApkAndActionLogic(body)
+	result, apiErr := s.fetchApkAndActionLogic(ctx, body)
 	if apiErr != nil {
 		return nil, wrapCredimiAPIError(apiErr)
 	}

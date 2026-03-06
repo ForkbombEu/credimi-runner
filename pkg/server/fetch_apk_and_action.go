@@ -12,10 +12,8 @@ import (
 	"strings"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
-	"github.com/forkbombeu/credimi-runner/pkg/telemetry"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
+	"goa.design/clue/log"
 )
 
 type fetchApkAndActionPayload struct {
@@ -30,22 +28,17 @@ type fetchApkAndActionResult struct {
 	Code      *string
 }
 
-func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload) (*fetchApkAndActionResult, *runner.APIError) {
-	ctx := context.Background()
-	spanName := fmt.Sprintf("fetchApkAndAction%s", payload.VersionIdentifier)
-	ctx, span := telemetry.GetTracer().Start(ctx, spanName)
-	defer span.End()
-
-	span.SetAttributes(
-		attribute.String("version.identifier", payload.VersionIdentifier),
-		attribute.String("istance.url", payload.InstanceURL),
-		attribute.String("action.identifier", payload.ActionIdentifier),
+func (s *runnerService) fetchApkAndActionLogic(ctx context.Context, payload fetchApkAndActionPayload) (*fetchApkAndActionResult, *runner.APIError) {
+	ctx = log.With(ctx,
+		log.KV{K: "version.identifier", V: payload.VersionIdentifier},
+		log.KV{K: "instance.url", V: payload.InstanceURL},
+		log.KV{K: "action.identifier", V: payload.ActionIdentifier},
 	)
+	log.Info(ctx, log.KV{K: "msg", V: "Starting fetchApkAndActionLogic"})
 
 	instance, err := s.getInstanceByURL(payload.InstanceURL)
 	if err != nil {
-		span.SetStatus(codes.Error, "invalid istance url")
-		span.RecordError(err)
+		log.Error(ctx, err, log.KV{K: "msg", V: "invalid instance url"})
 		return nil, &runner.APIError{
 			Code:    http.StatusBadRequest,
 			Domain:  "server",
@@ -56,8 +49,7 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 
 	token, err := s.Deps.TokenProvider(instance)
 	if err != nil {
-		span.SetStatus(codes.Error, "token acquisition failed")
-		span.RecordError(err)
+		log.Error(ctx, err, log.KV{K: "msg", V: "token acquisition failed"})
 		return nil, &runner.APIError{
 			Code:    http.StatusUnauthorized,
 			Domain:  "authorization",
@@ -71,14 +63,11 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 
 	var actionCode *string
 	if payload.ActionIdentifier != "" {
-		_, spanValidate := telemetry.GetTracer().Start(ctx, "validateActionIdentifier")
-		spanValidate.SetAttributes(attribute.String("action.identifier", payload.ActionIdentifier))
+		log.Info(ctx, log.KV{K: "msg", V: "validating action identifier"})
 
-		code, err := validateActionIdentifier(validateURL, payload.ActionIdentifier, token, s.Deps.HTTPClient)
+		code, err := validateActionIdentifier(ctx, validateURL, payload.ActionIdentifier, token, s.Deps.HTTPClient)
 		if err != nil {
-			spanValidate.SetStatus(codes.Error, "validation failed")
-			spanValidate.RecordError(err)
-			spanValidate.End()
+			log.Error(ctx, err, log.KV{K: "msg", V: "action validation failed"})
 			var apiErr *runner.APIError
 			if errors.As(err, &apiErr) {
 				return nil, apiErr
@@ -90,17 +79,11 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 				Message: err.Error(),
 			}
 		}
-		spanValidate.SetAttributes(attribute.String("action.code", code))
-		spanValidate.End()
+		log.Info(ctx, log.KV{K: "msg", V: "action validated"}, log.KV{K: "action_code", V: code})
 		actionCode = &code
 	}
 
-	ctxMD5, spanMD5 := telemetry.GetTracer().Start(ctx, "getMD5")
-	defer spanMD5.End()
-
-	spanMD5.SetAttributes(
-		attribute.String("version.identifier", payload.VersionIdentifier),
-	)
+	log.Info(ctx, log.KV{K: "msg", V: "getting APK MD5"})
 
 	md5ReqBodyMap := map[string]string{
 		"wallet_version_identifier": payload.VersionIdentifier,
@@ -108,13 +91,12 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 
 	if walletID, ok := deriveWalletIdentifier(payload.VersionIdentifier, payload.ActionIdentifier); ok {
 		md5ReqBodyMap["wallet_identifier"] = walletID
-		spanMD5.SetAttributes(attribute.String("wallet.identifier", walletID))
+		log.Info(ctx, log.KV{K: "msg", V: "derived wallet identifier"}, log.KV{K: "wallet_id", V: walletID})
 	}
 
 	md5ReqBody, err := json.Marshal(md5ReqBodyMap)
 	if err != nil {
-		spanMD5.SetStatus(codes.Error, "marshal failed")
-		spanMD5.RecordError(err)
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to marshal MD5 request"})
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",
@@ -129,8 +111,7 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 
 	resp, err := s.Deps.HTTPClient.Do(req)
 	if err != nil {
-		spanMD5.SetStatus(codes.Error, "http request failed")
-		spanMD5.RecordError(err)
+		log.Error(ctx, err, log.KV{K: "msg", V: "MD5 request failed"})
 		return nil, &runner.APIError{
 			Code:    http.StatusBadGateway,
 			Domain:  "CredimiAPI",
@@ -142,8 +123,7 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		spanMD5.SetStatus(codes.Error, "read response failed")
-		spanMD5.RecordError(err)
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to read MD5 response"})
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",
@@ -151,14 +131,15 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 			Message: "failed to read get-md5 response: " + err.Error(),
 		}
 	}
-	spanMD5.SetAttributes(attribute.Int("get-md5.response_size", len(respBody)),
-		attribute.Int("get-md5.status_code", resp.StatusCode),
+	log.Info(ctx,
+		log.KV{K: "msg", V: "MD5 response received"},
+		log.KV{K: "status_code", V: resp.StatusCode},
+		log.KV{K: "response_size", V: len(respBody)},
 	)
 	if resp.StatusCode != http.StatusOK {
 		var errResp runner.APIError
 		if err := json.Unmarshal(respBody, &errResp); err != nil {
-			spanMD5.SetStatus(codes.Error, "unmarshal error response failed")
-			spanMD5.RecordError(err)
+			log.Error(ctx, err, log.KV{K: "msg", V: "failed to parse error response"})
 			return nil, &runner.APIError{
 				Code:    http.StatusInternalServerError,
 				Domain:  "server",
@@ -166,8 +147,9 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 				Message: "failed to unmarshal get-md5 response: " + err.Error(),
 			}
 		}
-		spanMD5.SetAttributes(
-			attribute.String("error.reason", errResp.Reason),
+		log.Error(ctx, errors.New(errResp.Message),
+			log.KV{K: "msg", V: "MD5 request returned error"},
+			log.KV{K: "error_reason", V: errResp.Reason},
 		)
 		return nil, &errResp
 	}
@@ -179,8 +161,7 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 		VersionID     string `json:"version_id"`
 	}
 	if err := json.Unmarshal(respBody, &md5Resp); err != nil {
-		spanMD5.SetStatus(codes.Error, "parse response failed")
-		spanMD5.RecordError(err)
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to parse MD5 response"})
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",
@@ -189,15 +170,17 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 		}
 	}
 
-	spanMD5.SetAttributes(
-		attribute.String("md5.record_id", md5Resp.RecordID),
-		attribute.String("md5.apk_name", md5Resp.ApkName),
-		attribute.String("md5.apk_identifier", md5Resp.ApkIdentifier),
-		attribute.String("md5.version_id", md5Resp.VersionID),
+	log.Info(ctx,
+		log.KV{K: "msg", V: "MD5 response parsed"},
+		log.KV{K: "record_id", V: md5Resp.RecordID},
+		log.KV{K: "apk_name", V: md5Resp.ApkName},
+		log.KV{K: "apk_identifier", V: md5Resp.ApkIdentifier},
+		log.KV{K: "version_id", V: md5Resp.VersionID},
 	)
 
 	if md5Resp.ApkName == "" || md5Resp.ApkIdentifier == "" {
-		spanMD5.SetStatus(codes.Error, "missing fields")
+		err := fmt.Errorf("missing fields in response: %s", string(respBody))
+		log.Error(ctx, err, log.KV{K: "msg", V: "invalid MD5 response"})
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",
@@ -206,22 +189,13 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 		}
 	}
 
-	_, spanDownload := telemetry.GetTracer().Start(ctxMD5, "downloadApk")
-	defer spanDownload.End()
-
-	spanDownload.SetAttributes(
-		attribute.String("version.identifier", payload.VersionIdentifier),
-	)
+	log.Info(ctx, log.KV{K: "msg", V: "downloading APK"})
 
 	fileURL := utils.JoinURL(payload.InstanceURL, "api", "files", "wallet_versions", md5Resp.RecordID, md5Resp.ApkName)
-	spanDownload.SetAttributes(
-		attribute.String("file.url", fileURL),
-		attribute.String("file.local_name", md5Resp.ApkIdentifier),
-	)
-	path, err := downloadFileIfMissing(fileURL, token, md5Resp.ApkIdentifier, s.Deps.HTTPClient, s.Deps.FileStore)
+
+	path, err := downloadFileIfMissing(ctx, fileURL, token, md5Resp.ApkIdentifier, s.Deps.HTTPClient, s.Deps.FileStore)
 	if err != nil {
-		spanDownload.SetStatus(codes.Error, "download failed")
-		spanDownload.RecordError(err)
+		log.Error(ctx, err, log.KV{K: "msg", V: "download failed"})
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "credimiAPI",
@@ -230,16 +204,12 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 		}
 	}
 
-	spanDownload.SetAttributes(attribute.String("file.local_path", path))
-
-	span.SetAttributes(
-		attribute.String("result.apk_path", path),
-		attribute.String("result.version_id", md5Resp.VersionID),
+	log.Info(ctx,
+		log.KV{K: "msg", V: "APK download complete"},
+		log.KV{K: "apk_path", V: path},
 	)
-	if actionCode != nil {
-		span.SetAttributes(attribute.String("result.action_code", *actionCode))
-	}
 
+	log.Info(ctx, log.KV{K: "msg", V: "fetchApkAndAction completed successfully"})
 	return &fetchApkAndActionResult{
 		ApkPath:   path,
 		VersionID: md5Resp.VersionID,
@@ -247,45 +217,61 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 	}, nil
 }
 
-func downloadFileIfMissing(fileURL, token, localName string, client HTTPClient, fileStore FileStore) (string, error) {
+func downloadFileIfMissing(ctx context.Context, fileURL, token, localName string, client HTTPClient, fileStore FileStore) (string, error) {
+	ctx = log.With(ctx, log.KV{K: "file_url", V: fileURL}, log.KV{K: "local_name", V: localName})
 	if err := fileStore.MkdirAll("apps", 0755); err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to create apps directory"})
 		return "", fmt.Errorf("failed to create apps directory: %v", err)
 	}
 
 	localPath := filepath.Join("apps", localName+".apk")
+	log.Info(ctx, log.KV{K: "msg", V: "checking if file exists"}, log.KV{K: "local_path", V: localPath})
 
 	if _, err := fileStore.Stat(localPath); err == nil {
+		log.Info(ctx, log.KV{K: "msg", V: "file already exists, skipping download"})
 		return localPath, nil
 	}
+	log.Info(ctx, log.KV{K: "msg", V: "downloading file"})
 
 	req, err := http.NewRequest("GET", fileURL, nil)
 	if err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to create request"})
 		return "", fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "download request failed"})
 		return "", fmt.Errorf("failed to download file: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		log.Error(ctx, err, log.KV{K: "status_code", V: resp.StatusCode})
 		return "", fmt.Errorf("download failed: %s", resp.Status)
 	}
 
 	out, err := fileStore.Create(localPath)
 	if err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to create local file"})
 		return "", fmt.Errorf("failed to create file: %v", err)
 	}
 	defer out.Close()
 
 	if _, err := io.Copy(out, resp.Body); err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to save file"})
 		return "", fmt.Errorf("failed to save file: %v", err)
 	}
+	log.Info(ctx,
+		log.KV{K: "msg", V: "file downloaded successfully"},
+	)
 
 	return localPath, nil
 }
 
-func validateActionIdentifier(url, identifier, token string, client HTTPClient) (string, error) {
+func validateActionIdentifier(ctx context.Context, url, identifier, token string, client HTTPClient) (string, error) {
+	ctx = log.With(ctx, log.KV{K: "validate_url", V: url}, log.KV{K: "identifier", V: identifier})
+	log.Info(ctx, log.KV{K: "msg", V: "validating action identifier"})
+
 	body, _ := json.Marshal(map[string]string{"canonified_name": identifier})
 	req, _ := http.NewRequest("POST", url, strings.NewReader(string(body)))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -293,20 +279,31 @@ func validateActionIdentifier(url, identifier, token string, client HTTPClient) 
 
 	resp, err := client.Do(req)
 	if err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "validate request failed"})
 		return "", fmt.Errorf("failed to call validate endpoint: %v", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to read validate response"})
 		return "", fmt.Errorf("failed to read response body: %v", err)
 	}
+	log.Info(ctx,
+		log.KV{K: "msg", V: "validate response received"},
+		log.KV{K: "status_code", V: resp.StatusCode},
+	)
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp runner.APIError
 		if err := json.Unmarshal(respBody, &errResp); err != nil {
+			log.Error(ctx, err, log.KV{K: "msg", V: "validation failed with no parseable error"})
 			return "", fmt.Errorf("validate failed: %s", resp.Status)
 		}
+		log.Error(ctx, errors.New(errResp.Message),
+			log.KV{K: "msg", V: "validation failed"},
+			log.KV{K: "error_reason", V: errResp.Reason},
+		)
 		return "", &errResp
 	}
 
@@ -314,14 +311,17 @@ func validateActionIdentifier(url, identifier, token string, client HTTPClient) 
 		Record map[string]any `json:"record"`
 	}
 	if err := json.Unmarshal(respBody, &data); err != nil {
+		log.Error(ctx, err, log.KV{K: "msg", V: "failed to parse validate response"})
 		return "", fmt.Errorf("failed to parse validate response: %v", err)
 	}
 
 	code, ok := data.Record["code"].(string)
 	if !ok || code == "" {
-		return "", fmt.Errorf("record missing 'code' field")
+		err := fmt.Errorf("record missing 'code' field")
+		log.Error(ctx, err, log.KV{K: "msg", V: "invalid validate response format"})
+		return "", err
 	}
-
+	log.Info(ctx, log.KV{K: "msg", V: "action validated successfully"}, log.KV{K: "code", V: code})
 	return code, nil
 }
 

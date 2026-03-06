@@ -20,6 +20,8 @@ import (
 	cluelog "goa.design/clue/log"
 )
 
+var ctx = context.Background()
+
 type fakeHTTPClient struct {
 	handlers map[string]func(*http.Request) (*http.Response, error)
 	calls    map[string]int
@@ -158,7 +160,7 @@ func TestFetchApkAndAction_InvalidInstanceURL(t *testing.T) {
 		VersionIdentifier: "v1",
 	}
 
-	result, err := server.fetchApkAndActionLogic(payload)
+	result, err := server.fetchApkAndActionLogic(ctx, payload)
 
 	require.Nil(t, result)
 	require.Equal(t, &runner.APIError{
@@ -191,7 +193,7 @@ func TestFetchApkAndAction_ValidateFailure(t *testing.T) {
 		ActionIdentifier:  "wallet/action",
 	}
 
-	result, err := server.fetchApkAndActionLogic(payload)
+	result, err := server.fetchApkAndActionLogic(ctx, payload)
 
 	require.Nil(t, result)
 	require.Equal(t, &runner.APIError{
@@ -223,7 +225,7 @@ func TestFetchApkAndAction_GetMD5Failure(t *testing.T) {
 		VersionIdentifier: "v1",
 	}
 
-	result, err := server.fetchApkAndActionLogic(payload)
+	result, err := server.fetchApkAndActionLogic(ctx, payload)
 
 	require.Nil(t, result)
 	require.Equal(t, &runner.APIError{
@@ -260,7 +262,7 @@ func TestFetchApkAndAction_DownloadMissingAndCached(t *testing.T) {
 		VersionIdentifier: "v1",
 	}
 
-	result, apiErr := server.fetchApkAndActionLogic(payload)
+	result, apiErr := server.fetchApkAndActionLogic(ctx, payload)
 
 	require.Nil(t, apiErr)
 	require.Equal(t, "apps/apk-123.apk", result.ApkPath)
@@ -271,7 +273,7 @@ func TestFetchApkAndAction_DownloadMissingAndCached(t *testing.T) {
 	require.NoError(t, statErr)
 
 	client.calls = nil
-	_, apiErr = server.fetchApkAndActionLogic(payload)
+	_, apiErr = server.fetchApkAndActionLogic(ctx, payload)
 	require.Nil(t, apiErr)
 	require.Equal(t, 0, client.callCount(http.MethodGet, downloadURL))
 }
