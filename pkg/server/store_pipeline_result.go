@@ -108,6 +108,7 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
+	setInternalAdminKeyHeader(req)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := s.Deps.HTTPClient.Do(req)

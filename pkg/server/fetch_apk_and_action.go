@@ -88,6 +88,7 @@ func (s *runnerService) fetchApkAndActionLogic(payload fetchApkAndActionPayload)
 
 	req, _ := http.NewRequest("POST", getMD5URL, bytes.NewReader(md5ReqBody))
 	req.Header.Set("Authorization", "Bearer "+token)
+	setInternalAdminKeyHeader(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.Deps.HTTPClient.Do(req)
@@ -181,6 +182,7 @@ func downloadFileIfMissing(fileURL, token, localName string, client HTTPClient, 
 		return "", fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	setInternalAdminKeyHeader(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download file: %v", err)
@@ -207,6 +209,7 @@ func validateActionIdentifier(url, identifier, token string, client HTTPClient) 
 	body, _ := json.Marshal(map[string]string{"canonified_name": identifier})
 	req, _ := http.NewRequest("POST", url, strings.NewReader(string(body)))
 	req.Header.Set("Authorization", "Bearer "+token)
+	setInternalAdminKeyHeader(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
