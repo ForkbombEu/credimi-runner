@@ -10,11 +10,6 @@ import (
 	genhealth "github.com/forkbombeu/credimi-runner/pkg/gen/health"
 )
 
-type fakeADB struct {
-	output string
-	err    error
-}
-
 func newTestHealthService(output string, err error) *HealthService {
 	svc := &HealthService{
 		runADB: func(cmd string, args ...string) ([]byte, error) {
