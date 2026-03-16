@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,6 +41,7 @@ var (
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
+		runnerID = strings.TrimLeft(strings.TrimSpace(runnerID), "/")
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
 		backoff := time.Second
 		const maxBackoff = 30 * time.Second
