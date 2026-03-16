@@ -170,11 +170,14 @@ func TestFetchApkAndAction_InvalidInstanceURL(t *testing.T) {
 }
 
 func TestFetchApkAndAction_ValidateFailure(t *testing.T) {
+	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
+
 	baseURL := "http://example.local"
 	validateURL := baseURL + "/api/canonify/identifier/validate"
 	client := &fakeHTTPClient{
 		handlers: map[string]func(*http.Request) (*http.Response, error){
 			http.MethodPost + " " + validateURL: func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
 				return newResponse(http.StatusBadRequest, `{"status":400,"error":"CredimiAPI","reason":"BadIdentifier","message":"invalid"}`), nil
 			},
 		},
@@ -235,15 +238,19 @@ func TestFetchApkAndAction_GetMD5Failure(t *testing.T) {
 }
 
 func TestFetchApkAndAction_DownloadMissingAndCached(t *testing.T) {
+	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
+
 	baseURL := "http://example.local"
 	getMD5URL := baseURL + "/api/wallet/get-apk-md5-or-etag"
 	downloadURL := baseURL + "/api/files/wallet_versions/rec-1/app.apk"
 	client := &fakeHTTPClient{
 		handlers: map[string]func(*http.Request) (*http.Response, error){
 			http.MethodPost + " " + getMD5URL: func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
 				return newResponse(http.StatusOK, `{"record_id":"rec-1","apk_name":"app.apk","apk_identifier":"apk-123","version_id":"v1"}`), nil
 			},
 			http.MethodGet + " " + downloadURL: func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
 				return newResponse(http.StatusOK, "apk-bytes"), nil
 			},
 		},

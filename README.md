@@ -77,6 +77,7 @@ Required environment variables (all modes):
 
 Optional environment variables (all modes):
 - `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
+- `CREDIMI_INTERNAL_ADMIN_KEY` (added as `X-Api-Key` header on internal Credimi API requests)
 
 Emulator-only optional environment variables:
 - `BASE_NAME` (default: `credimi`)
@@ -233,6 +234,7 @@ Environment variables used by `serve`:
 - `CREDIMI_DEV_PB_PASS` (for dev URL)
 - `CREDIMI_RUNNER_ID` (required when workers are started)
 - `TEMPORAL_ADDRESS` (optional, defaults to Temporal SDK default host/port)
+- `CREDIMI_INTERNAL_ADMIN_KEY` (optional, forwarded on internal Credimi API requests)
 
 Runner container envs (phone/emulator):
 
@@ -244,6 +246,7 @@ Required:
 
 Optional:
 - `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
+- `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded on internal Credimi API requests)
 - `BASE_NAME` (emulator only, default: `credimi`)
 - `GOLDEN_PATH` (emulator only, default: `/avd-golden/<BASE_NAME>-golden`)
 - `ADB_PRIVATE_KEY` and `ADB_PUBLIC_KEY` (emulator only, provide to inject ADB keys; otherwise the container uses mounted keys if present, or disables ADB auth keys)

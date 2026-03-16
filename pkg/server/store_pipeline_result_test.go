@@ -57,6 +57,8 @@ func TestStorePipelineResult_MissingVideoPath(t *testing.T) {
 }
 
 func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
+	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
+
 	baseURL := "http://example.local"
 	storeURL := baseURL + "/api/wallet/store-pipeline-result"
 	capture := &multipartCapture{}
@@ -64,6 +66,7 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	client := &fakeHTTPClient{
 		handlers: map[string]func(*http.Request) (*http.Response, error){
 			http.MethodPost + " " + storeURL: func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
 				reader, err := req.MultipartReader()
 				if err != nil {
 					capture.err = err

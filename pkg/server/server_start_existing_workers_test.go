@@ -17,12 +17,14 @@ import (
 type startWorkersHTTPClient struct {
 	mu        sync.Mutex
 	lastAuth  string
+	lastKey   string
 	responder func(req *http.Request) (*http.Response, error)
 }
 
 func (c *startWorkersHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	c.mu.Lock()
 	c.lastAuth = req.Header.Get("Authorization")
+	c.lastKey = req.Header.Get(internalAdminKeyHeader)
 	c.mu.Unlock()
 	return c.responder(req)
 }
@@ -31,6 +33,12 @@ func (c *startWorkersHTTPClient) authHeader() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.lastAuth
+}
+
+func (c *startWorkersHTTPClient) keyHeader() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastKey
 }
 
 func httpResp(status int, body string) *http.Response {
@@ -43,6 +51,8 @@ func httpResp(status int, body string) *http.Response {
 }
 
 func TestStartExistingWorkers_Success(t *testing.T) {
+	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
+
 	store := NewProcessStore()
 	existing := NewProcess("already-running", nil)
 	existing.Running = true
@@ -78,6 +88,7 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 	err := srv.StartExistingWorkers()
 	require.NoError(t, err)
 	require.Equal(t, "Bearer token-123", client.authHeader())
+	require.Equal(t, "internal-admin-key", client.keyHeader())
 	select {
 	case ns := <-startedCh:
 		require.Equal(t, "new-ns", ns)

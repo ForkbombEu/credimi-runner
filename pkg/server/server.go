@@ -53,6 +53,7 @@ func (s *runnerService) StartExistingWorkers() error {
 			query.Set("perPage", strconv.Itoa(perPage))
 			req.URL.RawQuery = query.Encode()
 			req.Header.Set("Authorization", "Bearer "+token)
+			setInternalAdminKeyHeader(req)
 
 			resp, err := s.Deps.HTTPClient.Do(req)
 			if err != nil {
