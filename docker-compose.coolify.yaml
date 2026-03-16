@@ -13,6 +13,7 @@ services:
 
     environment:
       CREDIMI_URL: ${CREDIMI_URL:?http://localhost:8090}
+      CREDIMI_INTERNAL_ADMIN_KEY: ${CREDIMI_INTERNAL_ADMIN_KEY:?}
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?localhost:7233}
       BASE_NAME: ${BASE_NAME:?credimi}
       GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
