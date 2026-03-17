@@ -78,8 +78,12 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				activities.NewRunMobileFlowActivity(),
 				activities.NewStartEmulatorActivity(),
 				activities.NewApkInstallActivity(),
+				activities.NewStartIOSSimulatorActivity(),
+				activities.NewInstallIOSAppActivity(),
 				activities.NewStartRecordingActivity(),
+				activities.NewStartIOSRecordingActivity(),
 				activities.NewStopRecordingActivity(),
+				activities.NewStopIOSRecordingActivity(),
 				// activities.NewUnlockEmulatorActivity(),
 				activities.NewCleanupDeviceActivity(),
 			} {
