@@ -43,11 +43,11 @@ var ProcessStartResult = ResultType("ProcessStartResult", func() {
 	Required("status", "namespace")
 })
 
-var FetchApkAndActionResult = ResultType("FetchApkAndActionResult", func() {
-	Attribute("apk_path", String)
+var FetchInstallerAndActionResult = ResultType("FetchInstallerAndActionResult", func() {
+	Attribute("installer_path", String)
 	Attribute("version_id", String)
 	Attribute("code", String)
-	Required("apk_path", "version_id")
+	Required("installer_path", "version_id")
 })
 
 var TouchFingerprintResult = ResultType("TouchFingerprintResult", func() {
@@ -130,19 +130,21 @@ var _ = Service("credimi", func() {
 	Error("bad_gateway", APIError)
 	Error("internal_error", APIError)
 
-	Method("fetch_apk_and_action", func() {
+	Method("fetch_installer_and_action", func() {
 		Payload(func() {
 			Attribute("instance_url", String)
 			Attribute("version_identifier", String)
 			Attribute("action_identifier", String)
-			Required("instance_url", "version_identifier")
+			Attribute("platform", String)
+			Required("instance_url", "version_identifier", "platform")
 			Example(map[string]any{
 				"instance_url":       "",
 				"version_identifier": "",
 				"action_identifier":  "",
+				"platform":           "android",
 			})
 		})
-		Result(FetchApkAndActionResult)
+		Result(FetchInstallerAndActionResult)
 
 		Error("bad_request", APIError)
 		Error("unauthorized", APIError)
@@ -150,7 +152,7 @@ var _ = Service("credimi", func() {
 		Error("internal_error", APIError)
 
 		HTTP(func() {
-			POST("/credimi/apk-action")
+			POST("/credimi/installer-action")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -167,12 +169,14 @@ var _ = Service("credimi", func() {
 			Attribute("logcat_path", String)
 			Attribute("run_identifier", String)
 			Attribute("runner_identifier", String)
-			Required("instance_url", "run_identifier")
+			Attribute("platform", String)
+			Required("instance_url", "run_identifier", "platform")
 			Example(map[string]any{
 				"instance_url":      "",
 				"video_path":        "",
 				"last_frame_path":   "",
 				"logcat_path":       "",
+				"platform":          "android",
 				"run_identifier":    "",
 				"runner_identifier": "",
 			})

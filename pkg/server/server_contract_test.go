@@ -81,11 +81,23 @@ func newTestInstanceServer(t *testing.T, capture *storeCapture) *httptest.Server
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"record":{"code":"ACTION-CODE"}}`))
 	})
-	mux.HandleFunc("/api/wallet/get-apk-md5-or-etag", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.ReadAll(r.Body)
+	mux.HandleFunc("/api/wallet/get-installer-md5-or-etag", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			capture.setErr(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(body, &payload); err != nil {
+			capture.setErr(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		capture.recordField("installer_platform", payload["platform"])
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"record_id":"rec-1","apk_name":"app.apk","apk_identifier":"apk-123","version_id":"v1"}`))
+		_, _ = w.Write([]byte(`{"record_id":"rec-1","installer_name":"app.apk","installer_identifier":"apk-123","version_id":"v1"}`))
 	})
 	mux.HandleFunc("/api/files/wallet_versions/rec-1/app.apk", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -247,10 +259,10 @@ func TestServerContract_Docs(t *testing.T) {
 	})
 }
 
-func TestServerContract_FetchApkAndAction(t *testing.T) {
+func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 	t.Run("invalid JSON", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		req := httptest.NewRequest(http.MethodPost, "/credimi/apk-action", strings.NewReader("{"))
+		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader("{"))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -269,8 +281,8 @@ func TestServerContract_FetchApkAndAction(t *testing.T) {
 
 	t.Run("invalid instance url", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		payload := `{"instance_url":"http://missing.local","version_identifier":"v1"}`
-		req := httptest.NewRequest(http.MethodPost, "/credimi/apk-action", strings.NewReader(payload))
+		payload := `{"instance_url":"http://missing.local","version_identifier":"v1","platform":"android"}`
+		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -308,8 +320,8 @@ func TestServerContract_FetchApkAndAction(t *testing.T) {
 		})
 
 		server := newRunnerServiceForTest(instances, nil)
-		payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1","action_identifier":"wallet/action"}`
-		req := httptest.NewRequest(http.MethodPost, "/credimi/apk-action", strings.NewReader(payload))
+		payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1","action_identifier":"wallet/action","platform":"android"}`
+		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -317,16 +329,19 @@ func TestServerContract_FetchApkAndAction(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.Code)
 		var body map[string]any
 		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
-		require.Equal(t, "apps/apk-123.apk", body["apk_path"])
+		require.Equal(t, "apps/apk-123.apk", body["installer_path"])
 		require.Equal(t, "v1", body["version_id"])
 		require.Equal(t, "ACTION-CODE", body["code"])
+		fields, _, err := capture.snapshot()
+		require.NoError(t, err)
+		require.Equal(t, "android", fields["installer_platform"])
 	})
 }
 
 func TestServerContract_StorePipelineResult(t *testing.T) {
 	t.Run("missing video path", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		payload := `{"instance_url":"http://example.local","video_path":"","last_frame_path":"","logcat_path":"","run_identifier":"run-1","runner_identifier":"runner-1"}`
+		payload := `{"instance_url":"http://example.local","video_path":"","last_frame_path":"","logcat_path":"","run_identifier":"run-1","runner_identifier":"runner-1","platform":"android"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader(payload))
 		resp := httptest.NewRecorder()
 
@@ -370,6 +385,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 			"video_path":        videoPath,
 			"last_frame_path":   lastFramePath,
 			"logcat_path":       logcatPath,
+			"platform":          "android",
 			"run_identifier":    "run-1",
 			"runner_identifier": "runner-1",
 		}
@@ -387,6 +403,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "runner-1", fields["runner_identifier"])
 		require.Equal(t, "run-1", fields["run_identifier"])
+		require.Equal(t, "android", fields["platform"])
 		require.Equal(t, "video.mp4", files["result_video"])
 		require.Equal(t, "last.png", files["last_frame"])
 		require.Equal(t, "logcat.txt", files["logcat"])
@@ -422,7 +439,7 @@ func TestServerContract_NotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.Code)
 }
 
-func TestServerContract_FetchApkAndAction_OptionalCode(t *testing.T) {
+func TestServerContract_FetchInstallerAndAction_OptionalCode(t *testing.T) {
 	capture := &storeCapture{}
 	upstream := newTestInstanceServer(t, capture)
 	defer upstream.Close()
@@ -444,8 +461,8 @@ func TestServerContract_FetchApkAndAction_OptionalCode(t *testing.T) {
 	})
 
 	server := newRunnerServiceForTest(instances, nil)
-	payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1"}`
-	req := httptest.NewRequest(http.MethodPost, "/credimi/apk-action", strings.NewReader(payload))
+	payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1","platform":"android"}`
+	req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
 	resp := httptest.NewRecorder()
 
 	server.ServeHTTP(resp, req)

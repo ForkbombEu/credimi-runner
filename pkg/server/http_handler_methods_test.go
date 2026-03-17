@@ -52,6 +52,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 	logcat := "results/run-1/logcat.txt"
 	runnerID := "runner-1"
 	baseURL := "http://example.local"
+	platform := "android"
 
 	t.Run("empty body returns empty object", func(t *testing.T) {
 		srv := newStorePipelineMethodService(t, http.StatusOK, "")
@@ -60,6 +61,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			VideoPath:        &video,
 			LastFramePath:    &last,
 			LogcatPath:       &logcat,
+			Platform:         platform,
 			RunIdentifier:    "run-1",
 			RunnerIdentifier: &runnerID,
 		})
@@ -74,6 +76,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			VideoPath:        &video,
 			LastFramePath:    &last,
 			LogcatPath:       &logcat,
+			Platform:         platform,
 			RunIdentifier:    "run-1",
 			RunnerIdentifier: &runnerID,
 		})
@@ -88,6 +91,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			VideoPath:        &video,
 			LastFramePath:    &last,
 			LogcatPath:       &logcat,
+			Platform:         platform,
 			RunIdentifier:    "run-1",
 			RunnerIdentifier: &runnerID,
 		})

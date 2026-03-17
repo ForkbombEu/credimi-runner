@@ -21,6 +21,7 @@ type storePipelineResultPayload struct {
 	LogcatPath       string `json:"logcat_path"`
 	RunIdentifier    string `json:"run_identifier"`
 	RunnerIdentifier string `json:"runner_identifier"`
+	Platform         string `json:"platform"`
 }
 
 func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayload) ([]byte, *runner.APIError) {
@@ -31,6 +32,11 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 			Reason:  "missing field",
 			Message: "result_path is required",
 		}
+	}
+
+	platform, apiErr := normalizeInstallerPlatform(payload.Platform)
+	if apiErr != nil {
+		return nil, apiErr
 	}
 
 	var body bytes.Buffer
@@ -44,8 +50,10 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		return nil, apiErr
 	}
 
-	if apiErr := addFileToMultipart(writer, "logcat", payload.LogcatPath, s.Deps.FileStore); apiErr != nil {
-		return nil, apiErr
+	if platform != "ios" {
+		if apiErr := addFileToMultipart(writer, "logcat", payload.LogcatPath, s.Deps.FileStore); apiErr != nil {
+			return nil, apiErr
+		}
 	}
 
 	if err := writer.WriteField("runner_identifier", payload.RunnerIdentifier); err != nil {
@@ -58,6 +66,15 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 	}
 
 	if err := writer.WriteField("run_identifier", payload.RunIdentifier); err != nil {
+		return nil, &runner.APIError{
+			Code:    http.StatusInternalServerError,
+			Domain:  "server",
+			Reason:  "multipart failed",
+			Message: err.Error(),
+		}
+	}
+
+	if err := writer.WriteField("platform", platform); err != nil {
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",

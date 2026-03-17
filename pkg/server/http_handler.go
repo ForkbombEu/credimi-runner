@@ -168,8 +168,8 @@ func (s *runnerService) ProcessList(ctx context.Context) ([]string, error) {
 	return s.processList(), nil
 }
 
-func (s *runnerService) FetchApkAndAction(ctx context.Context, payload *credimi.FetchApkAndActionPayload) (*credimi.Fetchapkandactionresult, error) {
-	var body fetchApkAndActionPayload
+func (s *runnerService) FetchInstallerAndAction(ctx context.Context, payload *credimi.FetchInstallerAndActionPayload) (*credimi.Fetchinstallerandactionresult, error) {
+	var body fetchInstallerAndActionPayload
 	if payload.InstanceURL != "" {
 		body.InstanceURL = payload.InstanceURL
 	}
@@ -179,16 +179,19 @@ func (s *runnerService) FetchApkAndAction(ctx context.Context, payload *credimi.
 	if payload.ActionIdentifier != nil {
 		body.ActionIdentifier = *payload.ActionIdentifier
 	}
+	if payload.Platform != "" {
+		body.Platform = payload.Platform
+	}
 
-	result, apiErr := s.fetchApkAndActionLogic(body)
+	result, apiErr := s.fetchInstallerAndActionLogic(body)
 	if apiErr != nil {
 		return nil, wrapCredimiAPIError(apiErr)
 	}
 
-	return &credimi.Fetchapkandactionresult{
-		ApkPath:   result.ApkPath,
-		VersionID: result.VersionID,
-		Code:      result.Code,
+	return &credimi.Fetchinstallerandactionresult{
+		InstallerPath: result.InstallerPath,
+		VersionID:     result.VersionID,
+		Code:          result.Code,
 	}, nil
 }
 
@@ -211,6 +214,9 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 	}
 	if payload.RunnerIdentifier != nil {
 		body.RunnerIdentifier = *payload.RunnerIdentifier
+	}
+	if payload.Platform != "" {
+		body.Platform = payload.Platform
 	}
 	result, apiErr := s.storePipelineResultLogic(body)
 	if apiErr != nil {
