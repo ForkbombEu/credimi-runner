@@ -101,7 +101,7 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	store := &trackingFileStore{}
 	videoPath := "results/run-1/video.mp4"
 	lastFramePath := "results/run-1/last.png"
-	logcatPath := "results/run-1/logcat.txt"
+	logPath := "results/run-1/log.txt"
 
 	writer, err := store.Create(videoPath)
 	require.NoError(t, err)
@@ -111,9 +111,9 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	require.NoError(t, err)
 	_, _ = writer.Write([]byte("frame"))
 	require.NoError(t, writer.Close())
-	writer, err = store.Create(logcatPath)
+	writer, err = store.Create(logPath)
 	require.NoError(t, err)
-	_, _ = writer.Write([]byte("logcat"))
+	_, _ = writer.Write([]byte("log"))
 	require.NoError(t, writer.Close())
 
 	deps := Deps{
@@ -126,7 +126,7 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 		InstanceURL:      baseURL,
 		VideoPath:        videoPath,
 		LastFramePath:    lastFramePath,
-		LogcatPath:       logcatPath,
+		LogPath:          logPath,
 		RunIdentifier:    "run-1",
 		RunnerIdentifier: "runner-1",
 		Platform:         "android",
@@ -142,11 +142,11 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	require.Equal(t, "android", capture.fields["platform"])
 	require.Equal(t, "video.mp4", capture.files["result_video"])
 	require.Equal(t, "last.png", capture.files["last_frame"])
-	require.Equal(t, "logcat.txt", capture.files["logcat"])
+	require.Equal(t, "log.txt", capture.files["logfile"])
 	require.Contains(t, store.removed, filepath.Dir(videoPath))
 }
 
-func TestStorePipelineResult_IOSMultipartSkipsLogcat(t *testing.T) {
+func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 	baseURL := "http://example.local"
 	storeURL := baseURL + "/api/wallet/store-pipeline-result"
 	capture := &multipartCapture{}
@@ -187,6 +187,7 @@ func TestStorePipelineResult_IOSMultipartSkipsLogcat(t *testing.T) {
 	store := &trackingFileStore{}
 	videoPath := "results/run-1/video.mp4"
 	lastFramePath := "results/run-1/last.png"
+	logPath := "results/run-1/log.txt"
 
 	writer, err := store.Create(videoPath)
 	require.NoError(t, err)
@@ -195,6 +196,10 @@ func TestStorePipelineResult_IOSMultipartSkipsLogcat(t *testing.T) {
 	writer, err = store.Create(lastFramePath)
 	require.NoError(t, err)
 	_, _ = writer.Write([]byte("frame"))
+	require.NoError(t, writer.Close())
+	writer, err = store.Create(logPath)
+	require.NoError(t, err)
+	_, _ = writer.Write([]byte("log"))
 	require.NoError(t, writer.Close())
 
 	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, Deps{
@@ -207,6 +212,7 @@ func TestStorePipelineResult_IOSMultipartSkipsLogcat(t *testing.T) {
 		InstanceURL:      baseURL,
 		VideoPath:        videoPath,
 		LastFramePath:    lastFramePath,
+		LogPath:          logPath,
 		RunIdentifier:    "run-1",
 		RunnerIdentifier: "runner-1",
 		Platform:         "ios",
@@ -218,8 +224,7 @@ func TestStorePipelineResult_IOSMultipartSkipsLogcat(t *testing.T) {
 	require.Equal(t, "ios", capture.fields["platform"])
 	require.Equal(t, "video.mp4", capture.files["result_video"])
 	require.Equal(t, "last.png", capture.files["last_frame"])
-	_, hasLogcat := capture.files["logcat"]
-	require.False(t, hasLogcat)
+	require.Equal(t, "log.txt", capture.files["logfile"])
 }
 
 func TestStorePipelineResult_UpstreamError(t *testing.T) {
@@ -241,7 +246,7 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 	writer, err = store.Create("results/run-1/last.png")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	writer, err = store.Create("results/run-1/logcat.txt")
+	writer, err = store.Create("results/run-1/log.txt")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
@@ -255,7 +260,7 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 		InstanceURL:      baseURL,
 		VideoPath:        "results/run-1/video.mp4",
 		LastFramePath:    "results/run-1/last.png",
-		LogcatPath:       "results/run-1/logcat.txt",
+		LogPath:          "results/run-1/log.txt",
 		RunIdentifier:    "run-1",
 		RunnerIdentifier: "runner-1",
 		Platform:         "android",
@@ -281,7 +286,7 @@ func TestStorePipelineResult_InvalidInstanceURL(t *testing.T) {
 	writer, err = store.Create("results/run-1/last.png")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	writer, err = store.Create("results/run-1/logcat.txt")
+	writer, err = store.Create("results/run-1/log.txt")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
@@ -297,7 +302,7 @@ func TestStorePipelineResult_InvalidInstanceURL(t *testing.T) {
 		InstanceURL:   "http://missing.local",
 		VideoPath:     "results/run-1/video.mp4",
 		LastFramePath: "results/run-1/last.png",
-		LogcatPath:    "results/run-1/logcat.txt",
+		LogPath:       "results/run-1/log.txt",
 		Platform:      "android",
 	})
 
@@ -318,7 +323,7 @@ func TestStorePipelineResult_TokenProviderError(t *testing.T) {
 	writer, err = store.Create("results/run-1/last.png")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	writer, err = store.Create("results/run-1/logcat.txt")
+	writer, err = store.Create("results/run-1/log.txt")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
@@ -334,7 +339,7 @@ func TestStorePipelineResult_TokenProviderError(t *testing.T) {
 		InstanceURL:   baseURL,
 		VideoPath:     "results/run-1/video.mp4",
 		LastFramePath: "results/run-1/last.png",
-		LogcatPath:    "results/run-1/logcat.txt",
+		LogPath:       "results/run-1/log.txt",
 		Platform:      "android",
 	})
 
@@ -358,7 +363,7 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		writer, err = store.Create("results/run-1/last.png")
 		require.NoError(t, err)
 		require.NoError(t, writer.Close())
-		writer, err = store.Create("results/run-1/logcat.txt")
+		writer, err = store.Create("results/run-1/log.txt")
 		require.NoError(t, err)
 		require.NoError(t, writer.Close())
 
@@ -384,7 +389,7 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 			InstanceURL:   baseURL,
 			VideoPath:     "results/run-1/video.mp4",
 			LastFramePath: "results/run-1/last.png",
-			LogcatPath:    "results/run-1/logcat.txt",
+			LogPath:       "results/run-1/log.txt",
 			Platform:      "android",
 		})
 
@@ -410,7 +415,7 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 			InstanceURL:   baseURL,
 			VideoPath:     "results/run-1/video.mp4",
 			LastFramePath: "results/run-1/last.png",
-			LogcatPath:    "results/run-1/logcat.txt",
+			LogPath:       "results/run-1/log.txt",
 			Platform:      "android",
 		})
 
@@ -431,7 +436,7 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 			InstanceURL:   baseURL,
 			VideoPath:     "results/run-1/video.mp4",
 			LastFramePath: "results/run-1/last.png",
-			LogcatPath:    "results/run-1/logcat.txt",
+			LogPath:       "results/run-1/log.txt",
 			Platform:      "android",
 		})
 

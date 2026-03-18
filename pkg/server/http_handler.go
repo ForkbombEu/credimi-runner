@@ -206,8 +206,8 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 	if payload.LastFramePath != nil {
 		body.LastFramePath = *payload.LastFramePath
 	}
-	if payload.LogcatPath != nil {
-		body.LogcatPath = *payload.LogcatPath
+	if payload.LogPath != nil {
+		body.LogPath = *payload.LogPath
 	}
 	if payload.RunIdentifier != "" {
 		body.RunIdentifier = payload.RunIdentifier

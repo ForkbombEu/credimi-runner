@@ -341,7 +341,7 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 func TestServerContract_StorePipelineResult(t *testing.T) {
 	t.Run("missing video path", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		payload := `{"instance_url":"http://example.local","video_path":"","last_frame_path":"","logcat_path":"","run_identifier":"run-1","runner_identifier":"runner-1","platform":"android"}`
+		payload := `{"instance_url":"http://example.local","video_path":"","last_frame_path":"","log_path":"","run_identifier":"run-1","runner_identifier":"runner-1","platform":"android"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader(payload))
 		resp := httptest.NewRecorder()
 
@@ -374,17 +374,17 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		tmpDir := t.TempDir()
 		videoPath := filepath.Join(tmpDir, "video.mp4")
 		lastFramePath := filepath.Join(tmpDir, "last.png")
-		logcatPath := filepath.Join(tmpDir, "logcat.txt")
+		logPath := filepath.Join(tmpDir, "log.txt")
 		require.NoError(t, os.WriteFile(videoPath, []byte("video"), 0600))
 		require.NoError(t, os.WriteFile(lastFramePath, []byte("frame"), 0600))
-		require.NoError(t, os.WriteFile(logcatPath, []byte("log"), 0600))
+		require.NoError(t, os.WriteFile(logPath, []byte("log"), 0600))
 
 		server := newRunnerServiceForTest(instances, nil)
 		payload := map[string]string{
 			"instance_url":      upstream.URL,
 			"video_path":        videoPath,
 			"last_frame_path":   lastFramePath,
-			"logcat_path":       logcatPath,
+			"log_path":          logPath,
 			"platform":          "android",
 			"run_identifier":    "run-1",
 			"runner_identifier": "runner-1",
@@ -406,7 +406,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		require.Equal(t, "android", fields["platform"])
 		require.Equal(t, "video.mp4", files["result_video"])
 		require.Equal(t, "last.png", files["last_frame"])
-		require.Equal(t, "logcat.txt", files["logcat"])
+		require.Equal(t, "log.txt", files["logfile"])
 	})
 }
 

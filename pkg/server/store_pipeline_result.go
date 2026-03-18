@@ -18,7 +18,7 @@ type storePipelineResultPayload struct {
 	InstanceURL      string `json:"instance_url"`
 	VideoPath        string `json:"video_path"`
 	LastFramePath    string `json:"last_frame_path"`
-	LogcatPath       string `json:"logcat_path"`
+	LogPath          string `json:"log_path"`
 	RunIdentifier    string `json:"run_identifier"`
 	RunnerIdentifier string `json:"runner_identifier"`
 	Platform         string `json:"platform"`
@@ -50,10 +50,8 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		return nil, apiErr
 	}
 
-	if platform != "ios" {
-		if apiErr := addFileToMultipart(writer, "logcat", payload.LogcatPath, s.Deps.FileStore); apiErr != nil {
-			return nil, apiErr
-		}
+	if apiErr := addFileToMultipart(writer, "logfile", payload.LogPath, s.Deps.FileStore); apiErr != nil {
+		return nil, apiErr
 	}
 
 	if err := writer.WriteField("runner_identifier", payload.RunnerIdentifier); err != nil {

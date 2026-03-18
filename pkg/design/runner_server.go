@@ -166,7 +166,7 @@ var _ = Service("credimi", func() {
 			Attribute("instance_url", String)
 			Attribute("video_path", String)
 			Attribute("last_frame_path", String)
-			Attribute("logcat_path", String)
+			Attribute("log_path", String)
 			Attribute("run_identifier", String)
 			Attribute("runner_identifier", String)
 			Attribute("platform", String)
@@ -175,7 +175,7 @@ var _ = Service("credimi", func() {
 				"instance_url":      "",
 				"video_path":        "",
 				"last_frame_path":   "",
-				"logcat_path":       "",
+				"log_path":          "",
 				"platform":          "android",
 				"run_identifier":    "",
 				"runner_identifier": "",

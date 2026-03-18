@@ -33,7 +33,7 @@ func newStorePipelineMethodService(t *testing.T, responseStatus int, responseBod
 	writer, err = store.Create("results/run-1/last.png")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	writer, err = store.Create("results/run-1/logcat.txt")
+	writer, err = store.Create("results/run-1/log.txt")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
@@ -49,7 +49,7 @@ func newStorePipelineMethodService(t *testing.T, responseStatus int, responseBod
 func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 	video := "results/run-1/video.mp4"
 	last := "results/run-1/last.png"
-	logcat := "results/run-1/logcat.txt"
+	log := "results/run-1/log.txt"
 	runnerID := "runner-1"
 	baseURL := "http://example.local"
 	platform := "android"
@@ -60,7 +60,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			InstanceURL:      baseURL,
 			VideoPath:        &video,
 			LastFramePath:    &last,
-			LogcatPath:       &logcat,
+			LogPath:          &log,
 			Platform:         platform,
 			RunIdentifier:    "run-1",
 			RunnerIdentifier: &runnerID,
@@ -75,7 +75,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			InstanceURL:      baseURL,
 			VideoPath:        &video,
 			LastFramePath:    &last,
-			LogcatPath:       &logcat,
+			LogPath:          &log,
 			Platform:         platform,
 			RunIdentifier:    "run-1",
 			RunnerIdentifier: &runnerID,
@@ -90,7 +90,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			InstanceURL:      baseURL,
 			VideoPath:        &video,
 			LastFramePath:    &last,
-			LogcatPath:       &logcat,
+			LogPath:          &log,
 			Platform:         platform,
 			RunIdentifier:    "run-1",
 			RunnerIdentifier: &runnerID,
