@@ -34,7 +34,7 @@ var clientCmd = &cobra.Command{
 
 Examples:
   credimi-runner client --url http://127.0.0.1:8050 runner process-list
-  credimi-runner client --host 127.0.0.1 --port 8050 runner fetch-apk-and-action --body '{"instance_url":"...","version_identifier":"v1"}'
+  credimi-runner client --host 127.0.0.1 --port 8050 runner fetch-installer-and-action --body '{"instance_url":"...","version_identifier":"v1","platform":"android"}'
 `,
 	Args: cobra.MinimumNArgs(2), // SERVICE + ENDPOINT at least
 	RunE: func(cmd *cobra.Command, args []string) error {

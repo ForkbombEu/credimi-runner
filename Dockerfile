@@ -38,24 +38,24 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        bash \
-        jq \
-        openjdk-17-jre-headless \
-        usbutils \
-        unzip \
-        adb \
-        aapt \
-        ffmpeg \
-        fontconfig \
-        fonts-noto-mono \
-        fonts-noto-color-emoji \
+    ca-certificates \
+    curl \
+    bash \
+    jq \
+    openjdk-17-jre-headless \
+    usbutils \
+    unzip \
+    adb \
+    aapt \
+    ffmpeg \
+    fontconfig \
+    fonts-noto-mono \
+    fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /etc/fonts/conf.d && \
     printf '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <alias>\n    <family>monospace</family>\n    <prefer>\n      <family>Noto Color Emoji</family>\n    </prefer>\n  </alias>\n</fontconfig>' \
-      > /etc/fonts/conf.d/51-emoji-monospace.conf && \
+    > /etc/fonts/conf.d/51-emoji-monospace.conf && \
     fc-cache -fv
 
 ENV LANG=C.UTF-8 \
@@ -73,8 +73,8 @@ COPY --from=builder /src/pkg/server/docs /src/pkg/server/docs
 COPY --from=builder /src/pkg/gen/http /src/pkg/gen/http
 RUN chmod +x /usr/local/bin/credimi-runner /usr/local/bin/avdctl
 
-ENV CREDIMI_WORKFLOWS_DIR=/credimi/workflows
-RUN mkdir -p ${CREDIMI_WORKFLOWS_DIR}
+ENV CREDIMI_TEMP_DIR=/credimi/
+RUN mkdir -p ${CREDIMI_TEMP_DIR}/workflows
 
 # Physical-device entrypoint
 COPY scripts/entrypoint.sh /usr/local/bin/phone-connect
@@ -95,14 +95,14 @@ FROM device AS emulator
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        wget \
-        git \
-        psmisc \
-        qemu-kvm \
-        qemu-utils \
-        libvirt-daemon-system \
-        libvirt-clients \
-        bridge-utils \
+    wget \
+    git \
+    psmisc \
+    qemu-kvm \
+    qemu-utils \
+    libvirt-daemon-system \
+    libvirt-clients \
+    bridge-utils \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -126,11 +126,11 @@ RUN --mount=type=cache,target=/opt/android-sdk/.android/cache \
 
 RUN sdkmanager --update
 RUN sdkmanager --install \
-        "platform-tools" \
-        "platforms;android-35" \
-        "system-images;android-35;google_apis_playstore;x86_64" \
-        "emulator" \
-        "build-tools;35.0.0"
+    "platform-tools" \
+    "platforms;android-35" \
+    "system-images;android-35;google_apis_playstore;x86_64" \
+    "emulator" \
+    "build-tools;35.0.0"
 
 # AVDs are stored outside /root/.android so mounting adb keys does not hide base AVDs.
 ENV ANDROID_AVD_HOME=/avd-home
@@ -142,12 +142,12 @@ ARG ADB_PUBLIC_KEY
 RUN set -eux; \
     mkdir -p /root/.android; \
     if [ -n "${ADB_PRIVATE_KEY:-}" ]; then \
-        printf "%s\n" "$ADB_PRIVATE_KEY" > /root/.android/adbkey; \
-        chmod 600 /root/.android/adbkey; \
+    printf "%s\n" "$ADB_PRIVATE_KEY" > /root/.android/adbkey; \
+    chmod 600 /root/.android/adbkey; \
     fi; \
     if [ -n "${ADB_PUBLIC_KEY:-}" ]; then \
-        printf "%s\n" "$ADB_PUBLIC_KEY" > /root/.android/adbkey.pub; \
-        chmod 644 /root/.android/adbkey.pub; \
+    printf "%s\n" "$ADB_PUBLIC_KEY" > /root/.android/adbkey.pub; \
+    chmod 644 /root/.android/adbkey.pub; \
     fi
 
 

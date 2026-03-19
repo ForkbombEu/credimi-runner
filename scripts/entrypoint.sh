@@ -74,8 +74,8 @@ materialize_adb_keys_from_env() {
 }
 
 ensure_workflows_dir() {
-  local workflows_dir="${CREDIMI_WORKFLOWS_DIR:-/credimi/workflows}"
-  mkdir -p "$workflows_dir"
+  local workflows_dir="${CREDIMI_DIR:-/credimi}"
+  mkdir -p "$workflows_dir/workflows"
 }
 
 download_and_extract_archive() {

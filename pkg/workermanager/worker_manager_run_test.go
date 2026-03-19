@@ -17,15 +17,19 @@ import (
 type fakeTemporalWorker struct {
 	workflowRegistrations int
 	activityRegistrations int
+	workflowNames         []string
+	activityNames         []string
 	runErr                error
 }
 
 func (f *fakeTemporalWorker) RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions) {
 	f.workflowRegistrations++
+	f.workflowNames = append(f.workflowNames, options.Name)
 }
 
 func (f *fakeTemporalWorker) RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions) {
 	f.activityRegistrations++
+	f.activityNames = append(f.activityNames, options.Name)
 }
 
 func (f *fakeTemporalWorker) Run(interruptCh <-chan interface{}) error {
@@ -94,7 +98,11 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "bad worker config")
 	require.Equal(t, 1, fake.workflowRegistrations)
-	require.Equal(t, 7, fake.activityRegistrations)
+	require.Equal(t, 11, fake.activityRegistrations)
+	require.Contains(t, fake.activityNames, "Setup iOS simulator")
+	require.Contains(t, fake.activityNames, "Install iOS app on device")
+	require.Contains(t, fake.activityNames, "Start recording iOS device screen")
+	require.Contains(t, fake.activityNames, "Stop recording iOS device screen")
 }
 
 func TestRunTemporalWorker_RetryableRunErrorThenSuccess(t *testing.T) {
