@@ -85,7 +85,7 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 		"prod": {URL: "http://example.local"},
 	}, deps)
 
-	err := srv.StartExistingWorkers()
+	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "Bearer token-123", client.authHeader())
 	require.Equal(t, "internal-admin-key", client.keyHeader())
@@ -148,7 +148,7 @@ func TestStartExistingWorkers_PaginatesAllOrganizations(t *testing.T) {
 		"prod": {URL: "http://example.local"},
 	}, deps)
 
-	err := srv.StartExistingWorkers()
+	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{"1", "2"}, pages)
 
@@ -195,7 +195,7 @@ func TestStartExistingWorkers_AppliesStartupDelayBetweenStarts(t *testing.T) {
 		"prod": {URL: "http://example.local"},
 	}, deps)
 
-	err := srv.StartExistingWorkers()
+	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, []time.Duration{25 * time.Millisecond}, sleeps)
 
@@ -239,7 +239,7 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 		"prod": {URL: "http://example.local"},
 	}, deps)
 
-	err := srv.StartExistingWorkers()
+	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, []time.Duration{50 * time.Millisecond}, sleeps)
 
@@ -272,7 +272,7 @@ func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
 		"good": {URL: "http://good.local"},
 	}, deps)
 
-	err := srv.StartExistingWorkers()
+	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "Bearer ok-token", client.authHeader())
 }
@@ -290,7 +290,7 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
 		})
 
-		err := srv.StartExistingWorkers()
+		err := srv.StartExistingWorkers(context.Background())
 		require.ErrorContains(t, err, "failed to fetch organizations")
 	})
 
@@ -306,7 +306,7 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
 		})
 
-		err := srv.StartExistingWorkers()
+		err := srv.StartExistingWorkers(context.Background())
 		require.ErrorContains(t, err, "failed to fetch organizations")
 	})
 
@@ -322,7 +322,7 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
 		})
 
-		err := srv.StartExistingWorkers()
+		err := srv.StartExistingWorkers(context.Background())
 		require.ErrorContains(t, err, "failed to parse organizations response")
 	})
 }
