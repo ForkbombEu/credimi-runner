@@ -81,6 +81,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				activities.NewApkPostInstallChecksActivity(),
 				activities.NewStartIOSSimulatorActivity(),
 				activities.NewInstallIOSAppActivity(),
+				activities.NewIOSPostInstallChecksActivity(),
 				activities.NewStartRecordingActivity(),
 				activities.NewStartIOSRecordingActivity(),
 				activities.NewStopRecordingActivity(),
