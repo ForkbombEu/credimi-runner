@@ -98,11 +98,12 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorContains(t, err, "bad worker config")
 	require.Equal(t, 1, fake.workflowRegistrations)
-	require.Equal(t, 13, fake.activityRegistrations)
+	require.Equal(t, 14, fake.activityRegistrations)
 	require.Contains(t, fake.activityNames, "Run APK post-install checks")
 	require.Contains(t, fake.activityNames, "Setup iOS simulator")
 	require.Contains(t, fake.activityNames, "Install iOS app on device")
 	require.Contains(t, fake.activityNames, "Run iOS post-install checks")
+	require.Contains(t, fake.activityNames, "List installed mobile apps")
 	require.Contains(t, fake.activityNames, "Start recording iOS device screen")
 	require.Contains(t, fake.activityNames, "Stop recording iOS device screen")
 }
