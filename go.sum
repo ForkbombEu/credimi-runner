@@ -55,6 +55,10 @@ github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/forkbombeu/avdctl v0.9.0 h1:2drYWjYfP750n/94F+HWV/dlJlwQo9nIdNq/njUkpLc=
 github.com/forkbombeu/avdctl v0.9.0/go.mod h1:agBlpobRnEMlEsvmr8ayHHVW8wFvK0DO3YGr7M4FEOk=
+github.com/forkbombeu/credimi v1.195.0 h1:tTBmpjCCxlb6HfN6mNL8rmq0x/A8LmZnJQT9Y7opldI=
+github.com/forkbombeu/credimi v1.195.0/go.mod h1:yb2Ne7n4uHiAck9CUhYOGz+mE9qk5e2q4g04ldUY2/g=
+github.com/forkbombeu/credimi-extra v1.10.0 h1:8ildP55LLVfQNHJhzL5fpNAVFBEM6jCRV7m/RjHTpG8=
+github.com/forkbombeu/credimi-extra v1.10.0/go.mod h1:T7FkIgnCNpUhXGV/gDdhJKJ9kt2boOzR1D6TxsnbCWo=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=
 github.com/frankban/quicktest v1.14.6/go.mod h1:4ptaffx2x8+WTWXmUCuVU6aPUX1/Mz7zb5vbUoiM6w0=
 github.com/gabriel-vasile/mimetype v1.4.8 h1:FfZ3gj38NjllZIeJAmMhr+qKL8Wu+nOoI3GqacKw1NM=
