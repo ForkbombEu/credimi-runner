@@ -88,6 +88,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				activities.NewStopIOSRecordingActivity(),
 				// activities.NewUnlockEmulatorActivity(),
 				activities.NewListInstalledAppsActivity(),
+				activities.NewDisableAndroidPlayStoreActivity(),
 				activities.NewCleanupDeviceActivity(),
 			} {
 				w.RegisterActivityWithOptions(act.Execute, activity.RegisterOptions{Name: act.Name()})
