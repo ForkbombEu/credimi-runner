@@ -182,6 +182,9 @@ func (s *runnerService) FetchInstallerAndAction(ctx context.Context, payload *cr
 	if payload.Platform != "" {
 		body.Platform = payload.Platform
 	}
+	if payload.SkipInstaller != nil {
+		body.SkipInstaller = *payload.SkipInstaller
+	}
 
 	result, apiErr := s.fetchInstallerAndActionLogic(body)
 	if apiErr != nil {

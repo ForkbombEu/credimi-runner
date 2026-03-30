@@ -21,6 +21,7 @@ type fetchInstallerAndActionPayload struct {
 	VersionIdentifier string `json:"version_identifier"`
 	ActionIdentifier  string `json:"action_identifier"`
 	Platform          string `json:"platform"`
+	SkipInstaller     bool   `json:"skip_installer,omitempty"`
 }
 
 type fetchInstallerAndActionResult struct {
@@ -74,6 +75,13 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 			}
 		}
 		actionCode = &code
+	}
+	if payload.SkipInstaller {
+		return &fetchInstallerAndActionResult{
+			InstallerPath: "",
+			VersionID:     payload.VersionIdentifier,
+			Code:          actionCode,
+		}, nil
 	}
 
 	md5ReqBodyMap := map[string]string{

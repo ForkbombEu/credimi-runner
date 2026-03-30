@@ -136,12 +136,14 @@ var _ = Service("credimi", func() {
 			Attribute("version_identifier", String)
 			Attribute("action_identifier", String)
 			Attribute("platform", String)
+			Attribute("skip_installer", Boolean)
 			Required("instance_url", "version_identifier", "platform")
 			Example(map[string]any{
 				"instance_url":       "",
 				"version_identifier": "",
 				"action_identifier":  "",
 				"platform":           "android",
+				"skip_installer":     false,
 			})
 		})
 		Result(FetchInstallerAndActionResult)

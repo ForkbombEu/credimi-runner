@@ -3,7 +3,7 @@ module github.com/forkbombeu/credimi-runner
 go 1.25.5
 
 require (
-	github.com/forkbombeu/credimi v1.194.6
+	github.com/forkbombeu/credimi v1.195.0
 	github.com/joho/godotenv v1.5.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
@@ -37,7 +37,7 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/forkbombeu/avdctl v0.9.0 // indirect
-	github.com/forkbombeu/credimi-extra v1.9.4 // indirect
+	github.com/forkbombeu/credimi-extra v1.10.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/ganigeorgiev/fexpr v0.4.1 // indirect
 	github.com/go-chi/chi/v5 v5.2.4 // indirect
@@ -115,3 +115,7 @@ require (
 	modernc.org/memory v1.9.1 // indirect
 	modernc.org/sqlite v1.36.2 // indirect
 )
+
+replace github.com/forkbombeu/credimi-extra => ../credimi-extra
+
+replace github.com/forkbombeu/credimi => ../credimi-2
