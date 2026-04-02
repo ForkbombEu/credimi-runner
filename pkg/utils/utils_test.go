@@ -82,18 +82,24 @@ func TestLoadInstances(t *testing.T) {
 	t.Setenv("CREDIMI_URL", "http://prod.local")
 	t.Setenv("CREDIMI_PB_ADMIN", "admin")
 	t.Setenv("CREDIMI_PB_PASS", "pass")
+	t.Setenv("CREDIMI_USER_API_KEY", "prod-user-key")
 	t.Setenv("CREDIMI_STAGING_URL", "http://staging.local")
 	t.Setenv("CREDIMI_STAGING_PB_ADMIN", "st-admin")
 	t.Setenv("CREDIMI_STAGING_PB_PASS", "st-pass")
+	t.Setenv("CREDIMI_STAGING_USER_API_KEY", "st-user-key")
 	t.Setenv("CREDIMI_DEV_URL", "http://dev.local")
 	t.Setenv("CREDIMI_DEV_PB_ADMIN", "dev-admin")
 	t.Setenv("CREDIMI_DEV_PB_PASS", "dev-pass")
+	t.Setenv("CREDIMI_DEV_USER_API_KEY", "dev-user-key")
 
 	instances := LoadInstances()
 	require.Equal(t, "http://prod.local", instances["production"].URL)
 	require.Equal(t, "admin", instances["production"].PB_ADMIN)
+	require.Equal(t, "prod-user-key", instances["production"].UserAPIKey)
 	require.Equal(t, "st-pass", instances["staging"].PB_PASS)
+	require.Equal(t, "st-user-key", instances["staging"].UserAPIKey)
 	require.Equal(t, "http://dev.local", instances["dev"].URL)
+	require.Equal(t, "dev-user-key", instances["dev"].UserAPIKey)
 }
 
 func TestJoinAndNormalizeURL(t *testing.T) {
@@ -117,7 +123,7 @@ func TestJoinAndNormalizeURL(t *testing.T) {
 
 func TestGetAdminToken_CachedToken(t *testing.T) {
 	resetTokenCache()
-	tokenCache["http://cached.local"] = &tokenCacheEntry{
+	tokenCache["http://cached.local|admin"] = &tokenCacheEntry{
 		token:     "cached-token",
 		expiresAt: time.Now().Add(time.Hour),
 	}
@@ -220,4 +226,56 @@ func TestGetAdminToken_FailurePaths(t *testing.T) {
 			require.ErrorContains(t, err, tc.errContain)
 		})
 	}
+}
+
+func TestGetUserAPIKeyToken_SuccessAndCache(t *testing.T) {
+	resetTokenCache()
+
+	var calls int
+	originalClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	http.DefaultClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			require.Equal(t, "http://example.local/api/apikey/authenticate", req.URL.String())
+			require.Equal(t, "user-key-123", req.Header.Get(userAPIKeyHeader))
+			return makeHTTPResponse(http.StatusOK, `{"token":"token-user"}`), nil
+		}),
+	}
+
+	instance := Instance{
+		URL:        "http://example.local",
+		UserAPIKey: "user-key-123",
+	}
+
+	token, err := GetUserAPIKeyToken(instance)
+	require.NoError(t, err)
+	require.Equal(t, "token-user", token)
+
+	token, err = GetUserAPIKeyToken(instance)
+	require.NoError(t, err)
+	require.Equal(t, "token-user", token)
+	require.Equal(t, 1, calls)
+}
+
+func TestGetBearerToken_PrefersUserAPIKey(t *testing.T) {
+	resetTokenCache()
+
+	originalClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	http.DefaultClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			require.Equal(t, "http://example.local/api/apikey/authenticate", req.URL.String())
+			return makeHTTPResponse(http.StatusOK, `{"token":"token-user"}`), nil
+		}),
+	}
+
+	token, err := GetBearerToken(Instance{
+		URL:        "http://example.local",
+		PB_ADMIN:   "admin",
+		PB_PASS:    "pass",
+		UserAPIKey: "user-key-123",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "token-user", token)
 }

@@ -129,16 +129,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		var errResp runner.APIError
-		if err := json.Unmarshal(respBody, &errResp); err != nil {
-			return nil, &runner.APIError{
-				Code:    http.StatusInternalServerError,
-				Domain:  "server",
-				Reason:  "unmarshal failed",
-				Message: "failed to unmarshal get-installer response: " + err.Error(),
-			}
-		}
-		return nil, &errResp
+		return nil, parseUpstreamRunnerAPIError(resp.StatusCode, respBody)
 	}
 
 	var md5Resp struct {
@@ -409,11 +400,7 @@ func validateActionIdentifier(url, identifier, token string, client HTTPClient) 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp runner.APIError
-		if err := json.Unmarshal(respBody, &errResp); err != nil {
-			return "", fmt.Errorf("validate failed: %s", resp.Status)
-		}
-		return "", &errResp
+		return "", parseUpstreamRunnerAPIError(resp.StatusCode, respBody)
 	}
 
 	var data struct {

@@ -40,6 +40,15 @@ func (s *runnerService) StartExistingWorkers() error {
 			log.Printf("[WARN] Skipping instance %q: cannot fetch admin token: %v", name, err)
 			continue
 		}
+		if inst.UserAPIKey != "" {
+			namespace, err := s.fetchUserNamespace(inst, token)
+			if err != nil {
+				return err
+			}
+			startAttempts = s.startWorkerIfNeeded(namespace, name, startAttempts, startDelay)
+			continue
+		}
+
 		orgsURL := utils.JoinURL(inst.URL, "api", "collections", "organizations", "records")
 
 		const perPage = 200
@@ -92,18 +101,7 @@ func (s *runnerService) StartExistingWorkers() error {
 					continue
 				}
 
-				if startDelay > 0 && startAttempts > 0 {
-					s.Deps.Sleeper(startDelay)
-				}
-				startAttempts++
-
-				log.Printf("Starting worker for organization %s (%s)", org.Name, org.Namespace)
-				proc := NewProcess(org.Namespace, s.Deps.WorkerRunnerFactory(org.Namespace))
-				s.Store.Add(proc)
-
-				if err := proc.Start(); err != nil {
-					log.Printf("Failed to start worker for %s: %v", org.Namespace, err)
-				}
+				startAttempts = s.startWorkerIfNeeded(org.Namespace, org.Name, startAttempts, startDelay)
 			}
 
 			if data.TotalPages > 0 {
@@ -119,6 +117,73 @@ func (s *runnerService) StartExistingWorkers() error {
 		}
 	}
 	return nil
+}
+
+func (s *runnerService) fetchUserNamespace(inst utils.Instance, token string) (string, error) {
+	req, err := http.NewRequest(
+		http.MethodGet,
+		utils.JoinURL(inst.URL, "api", "organizations", "my"),
+		nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to create organization lookup request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := s.Deps.HTTPClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch organization for configured API key: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf(
+			"failed to fetch organization for configured API key: %s",
+			resp.Status,
+		)
+	}
+
+	var data struct {
+		Name      string `json:"name"`
+		Namespace string `json:"canonified_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return "", fmt.Errorf("failed to parse organization response: %w", err)
+	}
+	if data.Namespace == "" {
+		return "", fmt.Errorf("organization namespace is empty for instance %s", inst.URL)
+	}
+
+	return data.Namespace, nil
+}
+
+func (s *runnerService) startWorkerIfNeeded(
+	namespace string,
+	label string,
+	startAttempts int,
+	startDelay time.Duration,
+) int {
+	if namespace == "" {
+		return startAttempts
+	}
+	if proc, exists := s.Store.Get(namespace); exists && proc.Running {
+		log.Printf("Worker already running for namespace %s", namespace)
+		return startAttempts
+	}
+	if startDelay > 0 && startAttempts > 0 {
+		s.Deps.Sleeper(startDelay)
+	}
+	startAttempts++
+
+	log.Printf("Starting worker for %s (%s)", label, namespace)
+	proc := NewProcess(namespace, s.Deps.WorkerRunnerFactory(namespace))
+	s.Store.Add(proc)
+
+	if err := proc.Start(); err != nil {
+		log.Printf("Failed to start worker for %s: %v", namespace, err)
+	}
+
+	return startAttempts
 }
 
 func startupWorkerDelay() time.Duration {

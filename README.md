@@ -37,8 +37,7 @@ Below are the only two commands you need after phone setup.
 > # If your phone shows IP:PORT, pass it as a single argument
 > docker run --rm -it --network host \
 >   -e CREDIMI_URL=http://127.0.0.1:8090 \
->   -e CREDIMI_PB_ADMIN=credimi-admin-mail \
->   -e CREDIMI_PB_PASS=your-password \
+>   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/org-id/runner-phone-01 \
 >   -v adbkeys:/root/.android \
 >   ghcr.io/ForkbombEu/credimi-runner-phone:latest 192.168.1.42:38349
@@ -49,8 +48,7 @@ Below are the only two commands you need after phone setup.
 > ```bash
 > docker run --rm -it --privileged --network host \
 >   -e CREDIMI_URL=http://127.0.0.1:8090 \
->   -e CREDIMI_PB_ADMIN=credimi-admin-mail \
->   -e CREDIMI_PB_PASS=your-password \
+>   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-phone-01 \
 >   -v /dev/bus/usb:/dev/bus/usb \
 >   -v adbkeys:/root/.android \
@@ -62,8 +60,7 @@ Below are the only two commands you need after phone setup.
 > ```bash
 > docker run --rm -it --device /dev/kvm --network host \
 >   -e CREDIMI_URL=http://127.0.0.1:8090 \
->   -e CREDIMI_PB_ADMIN=credimi-admin-mail \
->   -e CREDIMI_PB_PASS=your-password \
+>   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-emulator-01 \
 >   -v adbkeys:/root/.android \
 >   ghcr.io/ForkbombEu/credimi-runner-emulator:latest
@@ -71,9 +68,11 @@ Below are the only two commands you need after phone setup.
 
 Required environment variables (all modes):
 - `CREDIMI_URL`
-- `CREDIMI_PB_ADMIN`
-- `CREDIMI_PB_PASS`
 - `CREDIMI_RUNNER_ID`
+
+Authentication options (choose one):
+- `CREDIMI_USER_API_KEY`
+- `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
 
 Optional environment variables (all modes):
 - `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
@@ -126,8 +125,7 @@ docker run --rm -it --network host \
 ```bash
 docker run --rm -it --network host \
   -e CREDIMI_URL=http://127.0.0.1:8090 \
-  -e CREDIMI_PB_ADMIN=credimi-admin-mail \
-  -e CREDIMI_PB_PASS=your-password \
+  -e CREDIMI_USER_API_KEY=your-user-api-key \
   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-phone-01 \
   ghcr.io/ForkbombEu/credimi-runner-phone:latest --no-device
 ```

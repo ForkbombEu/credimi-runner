@@ -281,6 +281,42 @@ func TestFetchInstallerAndAction_ValidateFailure(t *testing.T) {
 	}, err)
 }
 
+func TestFetchInstallerAndAction_ValidateFailureWrappedError(t *testing.T) {
+	baseURL := "http://example.local"
+	validateURL := baseURL + "/api/canonify/identifier/validate"
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + validateURL: func(req *http.Request) (*http.Response, error) {
+				return newResponse(
+					http.StatusForbidden,
+					`{"apiVersion":"2.0","error":{"code":403,"message":"forbidden validate","errors":[{"domain":"authorization","reason":"forbidden","message":"forbidden validate"}]}}`,
+				), nil
+			},
+		},
+	}
+	deps := Deps{
+		HTTPClient:    client,
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     &memoryFileStore{},
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+
+	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		InstanceURL:       baseURL,
+		VersionIdentifier: "v1",
+		ActionIdentifier:  "wallet/action",
+		Platform:          "android",
+	})
+
+	require.Nil(t, result)
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusForbidden,
+		Domain:  "authorization",
+		Reason:  "forbidden",
+		Message: "forbidden validate",
+	}, err)
+}
+
 func TestFetchInstallerAndAction_GetInstallerFailure(t *testing.T) {
 	baseURL := "http://example.local"
 	getInstallerURL := baseURL + "/api/wallet/get-installer-md5-or-etag"
@@ -311,6 +347,41 @@ func TestFetchInstallerAndAction_GetInstallerFailure(t *testing.T) {
 		Domain:  "CredimiAPI",
 		Reason:  "get-installer failed",
 		Message: "nope",
+	}, err)
+}
+
+func TestFetchInstallerAndAction_GetInstallerFailureWrappedError(t *testing.T) {
+	baseURL := "http://example.local"
+	getInstallerURL := baseURL + "/api/wallet/get-installer-md5-or-etag"
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + getInstallerURL: func(req *http.Request) (*http.Response, error) {
+				return newResponse(
+					http.StatusForbidden,
+					`{"apiVersion":"2.0","error":{"code":403,"message":"forbidden installer","errors":[{"domain":"authorization","reason":"forbidden","message":"forbidden installer"}]}}`,
+				), nil
+			},
+		},
+	}
+	deps := Deps{
+		HTTPClient:    client,
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     &memoryFileStore{},
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+
+	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		InstanceURL:       baseURL,
+		VersionIdentifier: "v1",
+		Platform:          "android",
+	})
+
+	require.Nil(t, result)
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusForbidden,
+		Domain:  "authorization",
+		Reason:  "forbidden",
+		Message: "forbidden installer",
 	}, err)
 }
 
