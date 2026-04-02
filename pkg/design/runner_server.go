@@ -60,6 +60,7 @@ var _ = Service("runner", func() {
 
 	Error("bad_request", APIError)
 	Error("unauthorized", APIError)
+	Error("forbidden", APIError)
 	Error("bad_gateway", APIError)
 	Error("internal_error", APIError)
 })
@@ -127,6 +128,7 @@ var _ = Service("credimi", func() {
 
 	Error("bad_request", APIError)
 	Error("unauthorized", APIError)
+	Error("forbidden", APIError)
 	Error("bad_gateway", APIError)
 	Error("internal_error", APIError)
 
@@ -150,6 +152,7 @@ var _ = Service("credimi", func() {
 
 		Error("bad_request", APIError)
 		Error("unauthorized", APIError)
+		Error("forbidden", APIError)
 		Error("bad_gateway", APIError)
 		Error("internal_error", APIError)
 
@@ -158,6 +161,7 @@ var _ = Service("credimi", func() {
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
+			Response("forbidden", StatusForbidden)
 			Response("bad_gateway", StatusBadGateway)
 			Response("internal_error", StatusInternalServerError)
 		})
@@ -187,6 +191,7 @@ var _ = Service("credimi", func() {
 
 		Error("bad_request", APIError)
 		Error("unauthorized", APIError)
+		Error("forbidden", APIError)
 		Error("bad_gateway", APIError)
 		Error("internal_error", APIError)
 
@@ -195,6 +200,7 @@ var _ = Service("credimi", func() {
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
+			Response("forbidden", StatusForbidden)
 			Response("bad_gateway", StatusBadGateway)
 			Response("internal_error", StatusInternalServerError)
 		})

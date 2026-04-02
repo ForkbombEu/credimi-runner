@@ -134,7 +134,12 @@ func TestValidateActionIdentifier(t *testing.T) {
 		}
 
 		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", client)
-		require.ErrorContains(t, err, "validate failed")
+		var apiErr *runner.APIError
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, http.StatusBadRequest, apiErr.Code)
+		require.Equal(t, "upstream", apiErr.Domain)
+		require.Equal(t, "request failed", apiErr.Reason)
+		require.Contains(t, apiErr.Message, "upstream request failed with status 400")
 	})
 
 	t.Run("non-200 with API error body", func(t *testing.T) {

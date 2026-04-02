@@ -62,6 +62,7 @@ func TestWrapCredimiAPIError(t *testing.T) {
 	}{
 		{name: "bad request", code: http.StatusBadRequest, want: "bad_request"},
 		{name: "unauthorized", code: http.StatusUnauthorized, want: "unauthorized"},
+		{name: "forbidden", code: http.StatusForbidden, want: "forbidden"},
 		{name: "bad gateway", code: http.StatusBadGateway, want: "bad_gateway"},
 		{name: "default to internal", code: http.StatusTeapot, want: "internal_error"},
 	}

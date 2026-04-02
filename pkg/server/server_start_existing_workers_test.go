@@ -277,6 +277,108 @@ func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
 	require.Equal(t, "Bearer ok-token", client.authHeader())
 }
 
+func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T) {
+	store := NewProcessStore()
+	startedCh := make(chan string, 1)
+
+	client := &startWorkersHTTPClient{
+		responder: func(req *http.Request) (*http.Response, error) {
+			require.Equal(t, "/api/organizations/my", req.URL.Path)
+			require.Empty(t, req.URL.RawQuery)
+			return httpResp(http.StatusOK, `{"name":"User Org","canonified_name":"user-ns"}`), nil
+		},
+	}
+
+	deps := Deps{
+		HTTPClient: client,
+		TokenProvider: func(instance utils.Instance) (string, error) {
+			require.Equal(t, "user-api-key", instance.UserAPIKey)
+			return "user-token", nil
+		},
+		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
+			return func(ctx context.Context) error {
+				startedCh <- namespace
+				<-ctx.Done()
+				return nil
+			}
+		},
+	}
+
+	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
+		"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+	}, deps)
+
+	err := srv.StartExistingWorkers()
+	require.NoError(t, err)
+	require.Equal(t, "Bearer user-token", client.authHeader())
+	require.Empty(t, client.keyHeader())
+
+	select {
+	case ns := <-startedCh:
+		require.Equal(t, "user-ns", ns)
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker run function was not started")
+	}
+
+	proc, ok := store.Get("user-ns")
+	require.True(t, ok)
+	require.True(t, proc.Running)
+	proc.Stop()
+}
+
+func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
+	t.Run("organization lookup non-200", func(t *testing.T) {
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		}, Deps{
+			HTTPClient: &startWorkersHTTPClient{
+				responder: func(req *http.Request) (*http.Response, error) {
+					require.Equal(t, "/api/organizations/my", req.URL.Path)
+					return httpResp(http.StatusForbidden, ""), nil
+				},
+			},
+			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
+		})
+
+		err := srv.StartExistingWorkers()
+		require.ErrorContains(t, err, "failed to fetch organization for configured API key")
+	})
+
+	t.Run("organization lookup invalid JSON", func(t *testing.T) {
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		}, Deps{
+			HTTPClient: &startWorkersHTTPClient{
+				responder: func(req *http.Request) (*http.Response, error) {
+					require.Equal(t, "/api/organizations/my", req.URL.Path)
+					return httpResp(http.StatusOK, "{"), nil
+				},
+			},
+			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
+		})
+
+		err := srv.StartExistingWorkers()
+		require.ErrorContains(t, err, "failed to parse organization response")
+	})
+
+	t.Run("organization lookup empty namespace", func(t *testing.T) {
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		}, Deps{
+			HTTPClient: &startWorkersHTTPClient{
+				responder: func(req *http.Request) (*http.Response, error) {
+					require.Equal(t, "/api/organizations/my", req.URL.Path)
+					return httpResp(http.StatusOK, `{"name":"User Org","canonified_name":""}`), nil
+				},
+			},
+			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
+		})
+
+		err := srv.StartExistingWorkers()
+		require.ErrorContains(t, err, "organization namespace is empty")
+	})
+}
+
 func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 	t.Run("http request error", func(t *testing.T) {
 		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
@@ -324,5 +426,17 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 
 		err := srv.StartExistingWorkers()
 		require.ErrorContains(t, err, "failed to parse organizations response")
+	})
+}
+
+func TestStartupWorkerDelay_InvalidValuesFallBackToDefault(t *testing.T) {
+	t.Run("invalid integer", func(t *testing.T) {
+		t.Setenv("CREDIMI_WORKER_START_DELAY_MS", "not-a-number")
+		require.Equal(t, 50*time.Millisecond, startupWorkerDelay())
+	})
+
+	t.Run("negative integer", func(t *testing.T) {
+		t.Setenv("CREDIMI_WORKER_START_DELAY_MS", "-10")
+		require.Equal(t, 50*time.Millisecond, startupWorkerDelay())
 	})
 }

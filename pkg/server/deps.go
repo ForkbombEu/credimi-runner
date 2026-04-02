@@ -46,7 +46,7 @@ func (d *Deps) WithDefaults() {
 		d.HTTPClient = http.DefaultClient
 	}
 	if d.TokenProvider == nil {
-		d.TokenProvider = utils.GetAdminToken
+		d.TokenProvider = utils.GetBearerToken
 	}
 	if d.FileStore == nil {
 		d.FileStore = osFileStore{}

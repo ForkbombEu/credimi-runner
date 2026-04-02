@@ -148,16 +148,7 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp runner.APIError
-		if err := json.Unmarshal(respBody, &errResp); err != nil {
-			return nil, &runner.APIError{
-				Code:    http.StatusInternalServerError,
-				Domain:  "server",
-				Reason:  "request failed",
-				Message: fmt.Sprintf("failed to parse error response status code : %v, error: %v,", resp.StatusCode, err.Error()),
-			}
-		}
-		return nil, &errResp
+		return nil, parseUpstreamRunnerAPIError(resp.StatusCode, respBody)
 	}
 
 	resultDir := filepath.Dir(payload.VideoPath)
@@ -200,4 +191,63 @@ func addFileToMultipart(writer *multipart.Writer, fieldName, filePath string, fi
 	}
 
 	return nil
+}
+
+func parseUpstreamRunnerAPIError(statusCode int, body []byte) *runner.APIError {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+
+	var direct runner.APIError
+	if err := decoder.Decode(&direct); err == nil {
+		if direct.Code == 0 {
+			direct.Code = statusCode
+		}
+		return &direct
+	}
+
+	decoder = json.NewDecoder(bytes.NewReader(body))
+	var wrapped struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Errors  []struct {
+				Domain  string `json:"domain"`
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
+			} `json:"errors"`
+		} `json:"error"`
+	}
+	if err := decoder.Decode(&wrapped); err == nil {
+		apiErr := &runner.APIError{
+			Code:    statusCode,
+			Domain:  "upstream",
+			Reason:  "request failed",
+			Message: wrapped.Error.Message,
+		}
+		if wrapped.Error.Code != 0 {
+			apiErr.Code = wrapped.Error.Code
+		}
+		if len(wrapped.Error.Errors) > 0 {
+			first := wrapped.Error.Errors[0]
+			if first.Domain != "" {
+				apiErr.Domain = first.Domain
+			}
+			if first.Reason != "" {
+				apiErr.Reason = first.Reason
+			}
+			if first.Message != "" {
+				apiErr.Message = first.Message
+			}
+		}
+		if apiErr.Message == "" {
+			apiErr.Message = fmt.Sprintf("upstream request failed with status %d", statusCode)
+		}
+		return apiErr
+	}
+
+	return &runner.APIError{
+		Code:    statusCode,
+		Domain:  "upstream",
+		Reason:  "request failed",
+		Message: fmt.Sprintf("upstream request failed with status %d: %s", statusCode, bytes.TrimSpace(body)),
+	}
 }
