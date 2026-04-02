@@ -222,15 +222,12 @@ task test
 Environment variables used by `serve`:
 
 - `CREDIMI_URL` (default: `http://localhost:8090`)
-- `CREDIMI_PB_ADMIN` (needed to authenticate against `CREDIMI_URL`)
-- `CREDIMI_PB_PASS` (needed to authenticate against `CREDIMI_URL`)
-- `CREDIMI_STAGING_URL` (optional, but if set should have matching creds)
-- `CREDIMI_STAGING_PB_ADMIN` (for staging URL)
-- `CREDIMI_STAGING_PB_PASS` (for staging URL)
-- `CREDIMI_DEV_URL` (optional, but if set should have matching creds)
-- `CREDIMI_DEV_PB_ADMIN` (for dev URL)
-- `CREDIMI_DEV_PB_PASS` (for dev URL)
 - `CREDIMI_RUNNER_ID` (required when workers are started)
+- `CREDIMI_USER_API_KEY` or `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS` for `CREDIMI_URL`
+- `CREDIMI_STAGING_URL` (optional, but if set should have matching creds)
+- `CREDIMI_STAGING_USER_API_KEY` or `CREDIMI_STAGING_PB_ADMIN` + `CREDIMI_STAGING_PB_PASS` for `CREDIMI_STAGING_URL`
+- `CREDIMI_DEV_URL` (optional, but if set should have matching creds)
+- `CREDIMI_DEV_USER_API_KEY` or `CREDIMI_DEV_PB_ADMIN` + `CREDIMI_DEV_PB_PASS` for `CREDIMI_DEV_URL`
 - `TEMPORAL_ADDRESS` (optional, defaults to Temporal SDK default host/port)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (optional, forwarded on internal Credimi API requests)
 
@@ -238,9 +235,11 @@ Runner container envs (phone/emulator):
 
 Required:
 - `CREDIMI_URL`
-- `CREDIMI_PB_ADMIN`
-- `CREDIMI_PB_PASS`
 - `CREDIMI_RUNNER_ID`
+
+Authentication options:
+- `CREDIMI_USER_API_KEY`
+- `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
 
 Optional:
 - `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
@@ -253,11 +252,47 @@ Example `.env` for local serve:
 
 ```bash
 CREDIMI_URL=http://127.0.0.1:8090
+CREDIMI_USER_API_KEY=your-user-api-key
+CREDIMI_RUNNER_ID=local-runner
+TEMPORAL_ADDRESS=127.0.0.1:7233
+```
+
+Alternative `.env` using admin credentials:
+
+```bash
+CREDIMI_URL=http://127.0.0.1:8090
 CREDIMI_PB_ADMIN=admin@example.com
 CREDIMI_PB_PASS=your-password
 CREDIMI_RUNNER_ID=local-runner
 TEMPORAL_ADDRESS=127.0.0.1:7233
 ```
+
+### iOS local usage
+
+There is no separate iOS build target in this repo. For iOS, run the same `credimi-runner serve`
+binary and call the API with `"platform": "ios"`. The server supports iOS installers in
+`/credimi/installer-action` and iOS pipeline uploads in `/credimi/pipeline-result`.
+
+Typical `.env` for a local iOS workflow:
+
+```bash
+CREDIMI_URL=http://127.0.0.1:8090
+CREDIMI_RUNNER_ID=local-ios-runner
+CREDIMI_INTERNAL_ADMIN_KEY=
+TEMPORAL_ADDRESS=127.0.0.1:7233
+
+# Choose one auth mode
+CREDIMI_USER_API_KEY=
+# or
+CREDIMI_PB_ADMIN=
+CREDIMI_PB_PASS=
+```
+
+Notes:
+
+- `CREDIMI_USER_API_KEY` can be used instead of `CREDIMI_PB_ADMIN` and `CREDIMI_PB_PASS`.
+- `BASE_NAME` is only used by the Android emulator flow. It is not required for local iOS usage.
+- `CREDIMI_TEMP_DIR` is set in the Docker image, but the local `serve` command does not currently read it.
 
 </details>
 
@@ -273,10 +308,19 @@ Use `docker-compose.yaml` to run:
 Quick tunnel (instant public URL on `trycloudflare.com`):
 
 ```bash
-task run:service
+task run:service:phone
 ```
 
 The tunnel URL is printed in the running output.
+
+Quick tunnel with the local macOS/Linux binary instead of Docker:
+
+```bash
+brew install cloudflared
+task run:service:local
+```
+
+This starts `./bin/credimi-runner serve --host 127.0.0.1 --port 8050` and points `cloudflared` at it.
 
 Named tunnel (your own domain):
 
@@ -288,6 +332,16 @@ Named tunnel (your own domain):
 docker compose up runner caddy tunnel_named
 ```
 
+Named tunnel with the local macOS/Linux binary:
+
+```bash
+# Configure in .env (recommended)
+# CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxx
+# RUNNER_DOMAIN=api.example.com
+brew install cloudflared
+task run:service:local:named
+```
+
 Notes:
 
 - For named tunnels, configure the public hostname in Cloudflare to point to `http://caddy:80`.
@@ -297,6 +351,7 @@ Notes:
 - `docker compose --profile named up` starts both `tunnel` and `tunnel_named`; prefer explicit services as above.
 - The compose file uses `ghcr.io/forkbombeu/credimi-runner-phone:latest` by default.
 - To run your local image instead: `RUNNER_IMAGE=credimi-runner-phone docker compose up runner caddy tunnel_named`.
+- The local Taskfile flow requires `cloudflared` installed on the host.
 - Stop everything: `docker compose down --remove-orphans`.
 
 </details>
