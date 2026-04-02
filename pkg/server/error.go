@@ -70,6 +70,14 @@ func wrapCredimiAPIError(apiErr *runner.APIError) error {
 			Reason:  apiErr.Reason,
 			Message: apiErr.Message,
 		}
+	case http.StatusForbidden:
+		return &credimi.APIError{
+			Name:    "forbidden",
+			Code:    apiErr.Code,
+			Domain:  apiErr.Domain,
+			Reason:  apiErr.Reason,
+			Message: apiErr.Message,
+		}
 	case http.StatusBadGateway:
 		return &credimi.APIError{
 			Name:    "bad_gateway",
