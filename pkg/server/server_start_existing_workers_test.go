@@ -326,6 +326,59 @@ func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T
 	proc.Stop()
 }
 
+func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
+	t.Run("organization lookup non-200", func(t *testing.T) {
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		}, Deps{
+			HTTPClient: &startWorkersHTTPClient{
+				responder: func(req *http.Request) (*http.Response, error) {
+					require.Equal(t, "/api/organizations/my", req.URL.Path)
+					return httpResp(http.StatusForbidden, ""), nil
+				},
+			},
+			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
+		})
+
+		err := srv.StartExistingWorkers()
+		require.ErrorContains(t, err, "failed to fetch organization for configured API key")
+	})
+
+	t.Run("organization lookup invalid JSON", func(t *testing.T) {
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		}, Deps{
+			HTTPClient: &startWorkersHTTPClient{
+				responder: func(req *http.Request) (*http.Response, error) {
+					require.Equal(t, "/api/organizations/my", req.URL.Path)
+					return httpResp(http.StatusOK, "{"), nil
+				},
+			},
+			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
+		})
+
+		err := srv.StartExistingWorkers()
+		require.ErrorContains(t, err, "failed to parse organization response")
+	})
+
+	t.Run("organization lookup empty namespace", func(t *testing.T) {
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		}, Deps{
+			HTTPClient: &startWorkersHTTPClient{
+				responder: func(req *http.Request) (*http.Response, error) {
+					require.Equal(t, "/api/organizations/my", req.URL.Path)
+					return httpResp(http.StatusOK, `{"name":"User Org","canonified_name":""}`), nil
+				},
+			},
+			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
+		})
+
+		err := srv.StartExistingWorkers()
+		require.ErrorContains(t, err, "organization namespace is empty")
+	})
+}
+
 func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 	t.Run("http request error", func(t *testing.T) {
 		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
@@ -373,5 +426,17 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 
 		err := srv.StartExistingWorkers()
 		require.ErrorContains(t, err, "failed to parse organizations response")
+	})
+}
+
+func TestStartupWorkerDelay_InvalidValuesFallBackToDefault(t *testing.T) {
+	t.Run("invalid integer", func(t *testing.T) {
+		t.Setenv("CREDIMI_WORKER_START_DELAY_MS", "not-a-number")
+		require.Equal(t, 50*time.Millisecond, startupWorkerDelay())
+	})
+
+	t.Run("negative integer", func(t *testing.T) {
+		t.Setenv("CREDIMI_WORKER_START_DELAY_MS", "-10")
+		require.Equal(t, 50*time.Millisecond, startupWorkerDelay())
 	})
 }
