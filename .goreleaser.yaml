@@ -1,0 +1,43 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# vim: set ts=2 sw=2 tw=0 fo=cnqoj
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: credimi-runner
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: binaries
+    builds: [credimi-runner]
+    format: binary
+    name_template: >-
+      credimi-runner-{{- if eq .Os "linux" -}}Linux
+                     {{- else if eq .Os "darwin" -}}Darwin
+                     {{- else -}}{{ .Os }}{{- end -}}-{{- if eq .Arch "amd64" -}}x86_64
+      {{- else if and (eq .Os "linux") (eq .Arch "arm64") -}}aarch64
+      {{- else if and (eq .Os "darwin") (eq .Arch "arm64") -}}arm64
+      {{- else -}}{{ .Arch }}{{- end -}}
+
+checksum:
+  name_template: "{{ .ProjectName }}_v{{ .Version }}_checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
