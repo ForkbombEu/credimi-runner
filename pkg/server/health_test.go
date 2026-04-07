@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	genhealth "github.com/forkbombeu/credimi-runner/pkg/gen/health"
 )
@@ -95,7 +96,9 @@ func TestCheck_ADBError(t *testing.T) {
 
 func TestCheck_WithConnectedIPhoneOnMacOS(t *testing.T) {
 	svc := &HealthService{
-		goos: "darwin",
+		goos:          "darwin",
+		appleCacheTTL: time.Hour,
+		now:           time.Now,
 		runADB: func(cmd string, args ...string) ([]byte, error) {
 			return []byte("List of devices attached\n"), nil
 		},
@@ -153,6 +156,8 @@ func TestCheck_WithConnectedIPhoneOnMacOS(t *testing.T) {
 		},
 	}
 
+	svc.refreshAppleDeviceCache()
+
 	res, err := svc.Check(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -162,7 +167,15 @@ func TestCheck_WithConnectedIPhoneOnMacOS(t *testing.T) {
 		t.Fatalf("expected 4 devices, got %d", len(res.Emulators))
 	}
 
-	device := res.Emulators[0]
+	devicesBySerial := make(map[string]*genhealth.DeviceInfo, len(res.Emulators))
+	for _, device := range res.Emulators {
+		devicesBySerial[*device.Serial] = device
+	}
+
+	device, ok := devicesBySerial["ios-device-1"]
+	if !ok {
+		t.Fatal("missing ios-device-1")
+	}
 	if *device.Serial != "ios-device-1" {
 		t.Errorf("unexpected serial: %s", *device.Serial)
 	}
@@ -179,7 +192,10 @@ func TestCheck_WithConnectedIPhoneOnMacOS(t *testing.T) {
 		t.Errorf("unexpected transport: %s", *device.TransportID)
 	}
 
-	attachedTablet := res.Emulators[1]
+	attachedTablet, ok := devicesBySerial["ipad-device-1"]
+	if !ok {
+		t.Fatal("missing ipad-device-1")
+	}
 	if *attachedTablet.Serial != "ipad-device-1" {
 		t.Errorf("unexpected tablet serial: %s", *attachedTablet.Serial)
 	}
@@ -190,7 +206,10 @@ func TestCheck_WithConnectedIPhoneOnMacOS(t *testing.T) {
 		t.Errorf("unexpected tablet model: %s", *attachedTablet.Model)
 	}
 
-	simulator := res.Emulators[2]
+	simulator, ok := devicesBySerial["sim-booted-1"]
+	if !ok {
+		t.Fatal("missing sim-booted-1")
+	}
 	if *simulator.Serial != "sim-booted-1" {
 		t.Errorf("unexpected simulator serial: %s", *simulator.Serial)
 	}
@@ -207,7 +226,10 @@ func TestCheck_WithConnectedIPhoneOnMacOS(t *testing.T) {
 		t.Errorf("unexpected simulator device: %s", *simulator.Device)
 	}
 
-	tabletSimulator := res.Emulators[3]
+	tabletSimulator, ok := devicesBySerial["sim-ipad-1"]
+	if !ok {
+		t.Fatal("missing sim-ipad-1")
+	}
 	if *tabletSimulator.Serial != "sim-ipad-1" {
 		t.Errorf("unexpected tablet simulator serial: %s", *tabletSimulator.Serial)
 	}
@@ -221,7 +243,9 @@ func TestCheck_WithConnectedIPhoneOnMacOS(t *testing.T) {
 
 func TestCheck_IgnoresIPhoneProbeErrorOnMacOS(t *testing.T) {
 	svc := &HealthService{
-		goos: "darwin",
+		goos:          "darwin",
+		appleCacheTTL: time.Hour,
+		now:           time.Now,
 		runADB: func(cmd string, args ...string) ([]byte, error) {
 			return []byte(`List of devices attached
 emulator-5554 device product:sdk_google_phone_x86 model:Android_SDK built-in device:generic transport_id:1
@@ -243,4 +267,51 @@ emulator-5554 device product:sdk_google_phone_x86 model:Android_SDK built-in dev
 	if *res.Emulators[0].Serial != "emulator-5554" {
 		t.Errorf("unexpected serial: %s", *res.Emulators[0].Serial)
 	}
+}
+
+func TestCheck_DoesNotBlockOnAppleProbeOnMacOS(t *testing.T) {
+	blockProbe := make(chan struct{})
+
+	svc := &HealthService{
+		goos:          "darwin",
+		appleCacheTTL: time.Hour,
+		now:           time.Now,
+		runADB: func(cmd string, args ...string) ([]byte, error) {
+			return []byte(`List of devices attached
+emulator-5554 device product:sdk_google_phone_x86 model:Android_SDK built-in device:generic transport_id:1
+`), nil
+		},
+		runXCRun: func(cmd string, args ...string) ([]byte, error) {
+			<-blockProbe
+			return nil, errors.New("probe cancelled")
+		},
+	}
+
+	resultCh := make(chan *genhealth.CheckResult, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		res, err := svc.Check(context.Background())
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resultCh <- res
+	}()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
+	case res := <-resultCh:
+		if len(res.Emulators) != 1 {
+			t.Fatalf("expected 1 device, got %d", len(res.Emulators))
+		}
+		if *res.Emulators[0].Serial != "emulator-5554" {
+			t.Errorf("unexpected serial: %s", *res.Emulators[0].Serial)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("health check blocked on Apple probe")
+	}
+
+	close(blockProbe)
 }

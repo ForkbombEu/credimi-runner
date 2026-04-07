@@ -7,23 +7,36 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
+	"time"
 
 	genhealth "github.com/forkbombeu/credimi-runner/pkg/gen/health"
 )
 
+const defaultAppleDeviceCacheTTL = 5 * time.Second
+
 type HealthService struct {
-	adbPath   string
-	xcrunPath string
-	goos      string
-	runADB    func(cmd string, args ...string) ([]byte, error)
-	runXCRun  func(cmd string, args ...string) ([]byte, error)
+	adbPath           string
+	xcrunPath         string
+	goos              string
+	appleCacheTTL     time.Duration
+	appleCacheAt      time.Time
+	appleRefreshInFly bool
+	now               func() time.Time
+	runADB            func(cmd string, args ...string) ([]byte, error)
+	runXCRun          func(cmd string, args ...string) ([]byte, error)
+
+	appleCacheMu      sync.RWMutex
+	cachedAppleDevice []*genhealth.DeviceInfo
 }
 
 func NewHealthService() *HealthService {
-	return &HealthService{
-		adbPath:   "adb",
-		xcrunPath: "xcrun",
-		goos:      runtime.GOOS,
+	svc := &HealthService{
+		adbPath:       "adb",
+		xcrunPath:     "xcrun",
+		goos:          runtime.GOOS,
+		appleCacheTTL: defaultAppleDeviceCacheTTL,
+		now:           time.Now,
 		runADB: func(cmd string, args ...string) ([]byte, error) {
 			return exec.Command(cmd, args...).Output()
 		},
@@ -31,6 +44,12 @@ func NewHealthService() *HealthService {
 			return exec.Command(cmd, args...).Output()
 		},
 	}
+
+	if svc.goos == "darwin" {
+		svc.scheduleAppleDeviceRefresh()
+	}
+
+	return svc
 }
 
 func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, error) {
@@ -61,17 +80,106 @@ func (s *HealthService) getDevicesWithDetails() ([]*genhealth.DeviceInfo, error)
 		return devices, nil
 	}
 
-	iosDevices, err := s.getConnectedIOSDevices()
-	if err == nil {
-		devices = append(devices, iosDevices...)
-	}
-
-	simulators, err := s.getBootedIOSSimulators()
-	if err == nil {
-		devices = append(devices, simulators...)
-	}
+	devices = append(devices, s.getCachedAppleDevices()...)
+	s.scheduleAppleDeviceRefresh()
 
 	return devices, nil
+}
+
+func (s *HealthService) getCachedAppleDevices() []*genhealth.DeviceInfo {
+	s.appleCacheMu.RLock()
+	defer s.appleCacheMu.RUnlock()
+
+	if len(s.cachedAppleDevice) == 0 {
+		return nil
+	}
+
+	cached := make([]*genhealth.DeviceInfo, len(s.cachedAppleDevice))
+	copy(cached, s.cachedAppleDevice)
+
+	return cached
+}
+
+func (s *HealthService) scheduleAppleDeviceRefresh() {
+	s.appleCacheMu.Lock()
+	if s.appleRefreshInFly || !s.appleCacheExpiredLocked() {
+		s.appleCacheMu.Unlock()
+		return
+	}
+	s.appleRefreshInFly = true
+	s.appleCacheMu.Unlock()
+
+	go s.refreshAppleDeviceCache()
+}
+
+func (s *HealthService) appleCacheExpiredLocked() bool {
+	if s.appleCacheAt.IsZero() {
+		return true
+	}
+
+	return s.nowTime().Sub(s.appleCacheAt) >= s.appleCacheWindow()
+}
+
+func (s *HealthService) refreshAppleDeviceCache() {
+	devices := s.getAppleDevicesWithDetails()
+
+	s.appleCacheMu.Lock()
+	s.appleRefreshInFly = false
+	s.appleCacheAt = s.nowTime()
+	if devices != nil {
+		s.cachedAppleDevice = devices
+	}
+	s.appleCacheMu.Unlock()
+}
+
+func (s *HealthService) getAppleDevicesWithDetails() []*genhealth.DeviceInfo {
+	type probeResult struct {
+		devices []*genhealth.DeviceInfo
+	}
+
+	results := make(chan probeResult, 2)
+
+	go func() {
+		devices, err := s.getConnectedIOSDevices()
+		if err != nil {
+			results <- probeResult{}
+			return
+		}
+		results <- probeResult{devices: devices}
+	}()
+
+	go func() {
+		devices, err := s.getBootedIOSSimulators()
+		if err != nil {
+			results <- probeResult{}
+			return
+		}
+		results <- probeResult{devices: devices}
+	}()
+
+	var devices []*genhealth.DeviceInfo
+	for i := 0; i < 2; i++ {
+		result := <-results
+		devices = append(devices, result.devices...)
+	}
+
+	return devices
+}
+
+func (s *HealthService) appleCacheWindow() time.Duration {
+	if s.appleCacheTTL > 0 {
+		return s.appleCacheTTL
+	}
+
+	return defaultAppleDeviceCacheTTL
+}
+
+func (s *HealthService) nowTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+
+	return time.Now()
 }
 
 func (s *HealthService) getADBDevicesWithDetails() ([]*genhealth.DeviceInfo, error) {
