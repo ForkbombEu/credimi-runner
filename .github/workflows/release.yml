@@ -91,6 +91,10 @@ jobs:
           git config --global url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadOf "https://github.com/"
           go env -w GOPRIVATE=github.com/forkbombeu/*
 
+      - name: Generate Goa code
+        shell: bash
+        run: go generate ./...
+
       - name: Release & build binaries
         uses: go-semantic-release/action@v1
         id: release
