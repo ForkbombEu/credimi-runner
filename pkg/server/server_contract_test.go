@@ -336,6 +336,38 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "android", fields["installer_platform"])
 	})
+
+	t.Run("skip installer still returns action code", func(t *testing.T) {
+		capture := &storeCapture{}
+		upstream := newTestInstanceServer(t, capture)
+		defer upstream.Close()
+
+		instances := map[string]utils.Instance{
+			"test": {
+				URL:      upstream.URL,
+				PB_ADMIN: "admin",
+				PB_PASS:  "pass",
+			},
+		}
+
+		server := newRunnerServiceForTest(instances, nil)
+		payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"installed_from_external_source","action_identifier":"wallet/action","platform":"android","skip_installer":true}`
+		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
+		resp := httptest.NewRecorder()
+
+		server.ServeHTTP(resp, req)
+
+		require.Equal(t, http.StatusOK, resp.Code)
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+		require.Equal(t, "", body["installer_path"])
+		require.Equal(t, "installed_from_external_source", body["version_id"])
+		require.Equal(t, "ACTION-CODE", body["code"])
+		fields, _, err := capture.snapshot()
+		require.NoError(t, err)
+		_, installerCalled := fields["installer_platform"]
+		require.False(t, installerCalled)
+	})
 }
 
 func TestServerContract_StorePipelineResult(t *testing.T) {

@@ -277,6 +277,110 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 	}, apiErr)
 }
 
+func TestStorePipelineResult_UpstreamWrappedError(t *testing.T) {
+	baseURL := "http://example.local"
+	storeURL := baseURL + "/api/wallet/store-pipeline-result"
+
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + storeURL: func(req *http.Request) (*http.Response, error) {
+				return newResponse(
+					http.StatusForbidden,
+					`{"apiVersion":"2.0","error":{"code":403,"message":"record does not belong to the authenticated user's organization","errors":[{"domain":"authorization","reason":"forbidden","message":"record does not belong to the authenticated user's organization"}]}}`,
+				), nil
+			},
+		},
+	}
+
+	store := &memoryFileStore{}
+	writer, err := store.Create("results/run-1/video.mp4")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/last.png")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/log.txt")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	deps := Deps{
+		HTTPClient:    client,
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     store,
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+
+	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
+		InstanceURL:      baseURL,
+		VideoPath:        "results/run-1/video.mp4",
+		LastFramePath:    "results/run-1/last.png",
+		LogPath:          "results/run-1/log.txt",
+		RunIdentifier:    "run-1",
+		RunnerIdentifier: "runner-1",
+		Platform:         "android",
+	})
+
+	require.Nil(t, result)
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusForbidden,
+		Domain:  "authorization",
+		Reason:  "forbidden",
+		Message: "record does not belong to the authenticated user's organization",
+	}, apiErr)
+}
+
+func TestStorePipelineResult_UpstreamConcatenatedErrorFallsBackGracefully(t *testing.T) {
+	baseURL := "http://example.local"
+	storeURL := baseURL + "/api/wallet/store-pipeline-result"
+
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + storeURL: func(req *http.Request) (*http.Response, error) {
+				return newResponse(
+					http.StatusForbidden,
+					`{"status":403,"error":"authorization","reason":"forbidden","message":"first"}{"status":403,"error":"authorization","reason":"forbidden","message":"second"}`,
+				), nil
+			},
+		},
+	}
+
+	store := &memoryFileStore{}
+	writer, err := store.Create("results/run-1/video.mp4")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/last.png")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	writer, err = store.Create("results/run-1/log.txt")
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	deps := Deps{
+		HTTPClient:    client,
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     store,
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+
+	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
+		InstanceURL:      baseURL,
+		VideoPath:        "results/run-1/video.mp4",
+		LastFramePath:    "results/run-1/last.png",
+		LogPath:          "results/run-1/log.txt",
+		RunIdentifier:    "run-1",
+		RunnerIdentifier: "runner-1",
+		Platform:         "android",
+	})
+
+	require.Nil(t, result)
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusForbidden,
+		Domain:  "authorization",
+		Reason:  "forbidden",
+		Message: "first",
+	}, apiErr)
+}
+
 func TestStorePipelineResult_InvalidInstanceURL(t *testing.T) {
 	baseURL := "http://example.local"
 	store := &memoryFileStore{}
@@ -441,7 +545,8 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		})
 
 		require.Equal(t, "request failed", apiErr.Reason)
-		require.Contains(t, apiErr.Message, "failed to parse error response")
+		require.Equal(t, "upstream", apiErr.Domain)
+		require.Contains(t, apiErr.Message, "upstream request failed with status 400")
 	})
 }
 

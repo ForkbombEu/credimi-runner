@@ -281,6 +281,42 @@ func TestFetchInstallerAndAction_ValidateFailure(t *testing.T) {
 	}, err)
 }
 
+func TestFetchInstallerAndAction_ValidateFailureWrappedError(t *testing.T) {
+	baseURL := "http://example.local"
+	validateURL := baseURL + "/api/canonify/identifier/validate"
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + validateURL: func(req *http.Request) (*http.Response, error) {
+				return newResponse(
+					http.StatusForbidden,
+					`{"apiVersion":"2.0","error":{"code":403,"message":"forbidden validate","errors":[{"domain":"authorization","reason":"forbidden","message":"forbidden validate"}]}}`,
+				), nil
+			},
+		},
+	}
+	deps := Deps{
+		HTTPClient:    client,
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     &memoryFileStore{},
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+
+	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		InstanceURL:       baseURL,
+		VersionIdentifier: "v1",
+		ActionIdentifier:  "wallet/action",
+		Platform:          "android",
+	})
+
+	require.Nil(t, result)
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusForbidden,
+		Domain:  "authorization",
+		Reason:  "forbidden",
+		Message: "forbidden validate",
+	}, err)
+}
+
 func TestFetchInstallerAndAction_GetInstallerFailure(t *testing.T) {
 	baseURL := "http://example.local"
 	getInstallerURL := baseURL + "/api/wallet/get-installer-md5-or-etag"
@@ -312,6 +348,78 @@ func TestFetchInstallerAndAction_GetInstallerFailure(t *testing.T) {
 		Reason:  "get-installer failed",
 		Message: "nope",
 	}, err)
+}
+
+func TestFetchInstallerAndAction_GetInstallerFailureWrappedError(t *testing.T) {
+	baseURL := "http://example.local"
+	getInstallerURL := baseURL + "/api/wallet/get-installer-md5-or-etag"
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + getInstallerURL: func(req *http.Request) (*http.Response, error) {
+				return newResponse(
+					http.StatusForbidden,
+					`{"apiVersion":"2.0","error":{"code":403,"message":"forbidden installer","errors":[{"domain":"authorization","reason":"forbidden","message":"forbidden installer"}]}}`,
+				), nil
+			},
+		},
+	}
+	deps := Deps{
+		HTTPClient:    client,
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     &memoryFileStore{},
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+
+	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		InstanceURL:       baseURL,
+		VersionIdentifier: "v1",
+		Platform:          "android",
+	})
+
+	require.Nil(t, result)
+	require.Equal(t, &runner.APIError{
+		Code:    http.StatusForbidden,
+		Domain:  "authorization",
+		Reason:  "forbidden",
+		Message: "forbidden installer",
+	}, err)
+}
+
+func TestFetchInstallerAndAction_SkipInstallerStillValidatesAction(t *testing.T) {
+	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
+
+	baseURL := "http://example.local"
+	validateURL := baseURL + "/api/canonify/identifier/validate"
+	getInstallerURL := baseURL + "/api/wallet/get-installer-md5-or-etag"
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + validateURL: func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				return newResponse(http.StatusOK, `{"record":{"code":"ACTION-CODE"}}`), nil
+			},
+		},
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, Deps{
+		HTTPClient:    client,
+		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
+		FileStore:     &memoryFileStore{},
+	})
+
+	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		InstanceURL:       baseURL,
+		VersionIdentifier: "installed_from_external_source",
+		ActionIdentifier:  "wallet/action",
+		Platform:          "android",
+		SkipInstaller:     true,
+	})
+
+	require.Nil(t, apiErr)
+	require.Equal(t, "", result.InstallerPath)
+	require.Equal(t, "installed_from_external_source", result.VersionID)
+	require.NotNil(t, result.Code)
+	require.Equal(t, "ACTION-CODE", *result.Code)
+	require.Equal(t, 1, client.callCount(http.MethodPost, validateURL))
+	require.Equal(t, 0, client.callCount(http.MethodPost, getInstallerURL))
 }
 
 func TestFetchInstallerAndAction_DownloadMissingAndCached(t *testing.T) {

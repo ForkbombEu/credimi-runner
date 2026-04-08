@@ -21,6 +21,7 @@ type fetchInstallerAndActionPayload struct {
 	VersionIdentifier string `json:"version_identifier"`
 	ActionIdentifier  string `json:"action_identifier"`
 	Platform          string `json:"platform"`
+	SkipInstaller     bool   `json:"skip_installer,omitempty"`
 }
 
 type fetchInstallerAndActionResult struct {
@@ -75,6 +76,13 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		}
 		actionCode = &code
 	}
+	if payload.SkipInstaller {
+		return &fetchInstallerAndActionResult{
+			InstallerPath: "",
+			VersionID:     payload.VersionIdentifier,
+			Code:          actionCode,
+		}, nil
+	}
 
 	md5ReqBodyMap := map[string]string{
 		"wallet_version_identifier": payload.VersionIdentifier,
@@ -121,16 +129,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
-		var errResp runner.APIError
-		if err := json.Unmarshal(respBody, &errResp); err != nil {
-			return nil, &runner.APIError{
-				Code:    http.StatusInternalServerError,
-				Domain:  "server",
-				Reason:  "unmarshal failed",
-				Message: "failed to unmarshal get-installer response: " + err.Error(),
-			}
-		}
-		return nil, &errResp
+		return nil, parseUpstreamRunnerAPIError(resp.StatusCode, respBody)
 	}
 
 	var md5Resp struct {
@@ -401,11 +400,7 @@ func validateActionIdentifier(url, identifier, token string, client HTTPClient) 
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp runner.APIError
-		if err := json.Unmarshal(respBody, &errResp); err != nil {
-			return "", fmt.Errorf("validate failed: %s", resp.Status)
-		}
-		return "", &errResp
+		return "", parseUpstreamRunnerAPIError(resp.StatusCode, respBody)
 	}
 
 	var data struct {

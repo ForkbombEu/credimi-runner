@@ -93,13 +93,17 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				activities.NewRunMobileFlowActivity(),
 				activities.NewStartEmulatorActivity(),
 				activities.NewApkInstallActivity(),
+				activities.NewApkPostInstallChecksActivity(),
 				activities.NewStartIOSSimulatorActivity(),
 				activities.NewInstallIOSAppActivity(),
+				activities.NewIOSPostInstallChecksActivity(),
 				activities.NewStartRecordingActivity(),
 				activities.NewStartIOSRecordingActivity(),
 				activities.NewStopRecordingActivity(),
 				activities.NewStopIOSRecordingActivity(),
 				// activities.NewUnlockEmulatorActivity(),
+				activities.NewListInstalledAppsActivity(),
+				activities.NewDisableAndroidPlayStoreActivity(),
 				activities.NewCleanupDeviceActivity(),
 			} {
 				w.RegisterActivityWithOptions(act.Execute, activity.RegisterOptions{Name: act.Name()})
