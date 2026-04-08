@@ -55,24 +55,61 @@ jobs:
           git config --global --unset-all url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadof || true
 
   semantic-release:
-    name: 🤖 Semantic release
+    name: 🤖 Semantic release & publish binaries
     needs: go-test
     permissions:
       contents: write
       issues: write
       pull-requests: write
       id-token: write
+      attestations: write
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
-      - name: 🛠️ Prepare pnpm workspace
-        uses: dyne/pnpm@main
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
-          node-version: 20
           fetch-depth: 0
-      - run: pnpm semantic-release
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure git auth for private Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CREDIMI_EXTRA_PAT:-}" ]; then
+            echo "CREDIMI_EXTRA_PAT is not set"
+            exit 1
+          fi
+          git config --global url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadOf "https://github.com/"
+          go env -w GOPRIVATE=github.com/forkbombeu/*
+
+      - name: Release & build binaries
+        uses: go-semantic-release/action@v1
+        id: release
+        with:
+          hooks: goreleaser
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest binary artifacts
+        if: steps.release.outputs.release_created == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/credimi-runner-*
+
+      - name: Cleanup git auth
+        if: always()
+        shell: bash
+        run: |
+          git config --global --unset-all url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadOf || true
 
   publish_docker_image:
     name: 🐳 Publish Docker image
@@ -90,9 +127,11 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -120,6 +159,7 @@ jobs:
 
       - name: Build and push (${{ matrix.target }})
         uses: docker/build-push-action@v6
+        id: push
         with:
           context: .
           target: ${{ matrix.target }}
@@ -129,6 +169,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           secret-envs: |
             credimi_extra_pat=CREDIMI_EXTRA_PAT
+
+      - name: Attest Docker image (${{ matrix.target }})
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/credimi-runner-${{ matrix.target }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
       - name: Trigger Coolify deploy (emulator)
         if: success() && matrix.target == 'emulator'
@@ -144,3 +191,4 @@ jobs:
           fi
           curl -fsS --request GET "${COOLIFY_WEBHOOK_URL}" \
             --header "Authorization: Bearer ${COOLIFY_WEBHOOK_TOKEN}"
+

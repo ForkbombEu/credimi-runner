@@ -4,6 +4,24 @@ A tiny Docker image that bundles Android platform-tools (adb/fastboot) and Maest
 with a simple entrypoint that connects to a physical Android phone over Wi-Fi ADB.
 Use it to run Maestro tests or adb commands from inside the container.
 
+## 🚀 Quick start
+
+Download and install the latest `credimi-runner` binary with a single command:
+
+```bash
+curl -fsSL "https://github.com/ForkbombEu/credimi-runner/releases/latest/download/credimi-runner-$(uname -s)-$(uname -m)" -o credimi-runner && chmod +x credimi-runner
+```
+
+This works on **macOS** (Intel and Apple Silicon) and **Linux** (x86\_64 and arm64).
+
+Then start the server:
+
+```bash
+./credimi-runner serve --host 127.0.0.1 --port 8050
+```
+
+See the [Run API server locally](#run-api-server-locally-serve) section for environment variables and configuration options.
+
 ## Quickstart (first-time users)
 
 ### 1) Phone setup (enable Wi‑Fi debugging and find IP)
