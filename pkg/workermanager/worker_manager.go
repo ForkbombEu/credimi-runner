@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi/pkg/workflowengine"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/activities"
@@ -17,6 +18,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
@@ -40,6 +42,10 @@ var (
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		temporalInterceptor, err := observability.NewTemporalInterceptor()
+		if err != nil {
+			return fmt.Errorf("unable to create temporal tracing interceptor: %w", err)
+		}
 		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
 		runnerID = strings.TrimLeft(strings.TrimSpace(runnerID), "/")
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
@@ -57,6 +63,13 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				if !shouldRetryTemporalWorker(err) {
 					return err
 				}
+				observability.Warn(ctx, "credimi-runner.temporal", "temporal worker initialization failed",
+					observability.String("namespace", namespace),
+					observability.String("task_queue", taskqueue),
+					observability.String("backoff", backoff.String()),
+					observability.String("runner_id", runnerID),
+					observability.String("error", err.Error()),
+				)
 				log.Printf("Temporal worker failed to initialize for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
 					return nil
@@ -65,7 +78,9 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				continue
 			}
 
-			w := temporalWorkerFactory(c, taskqueue, worker.Options{})
+			w := temporalWorkerFactory(c, taskqueue, worker.Options{
+				Interceptors: []interceptor.WorkerInterceptor{temporalInterceptor},
+			})
 
 			// Register workflows
 			for _, wf := range []workflowengine.Workflow{workflows.NewMobileAutomationWorkflow()} {
@@ -102,15 +117,32 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 			}()
 
 			log.Printf("Temporal worker running for namespace %s", namespace)
+			observability.Info(ctx, "credimi-runner.temporal", "temporal worker running",
+				observability.String("namespace", namespace),
+				observability.String("task_queue", taskqueue),
+				observability.String("runner_id", runnerID),
+			)
 			if err := w.Run(shutdownCh); err != nil {
 				if ctx.Err() != nil {
 					log.Printf("Temporal worker stopped for namespace %s", namespace)
 					return nil
 				}
 				if !shouldRetryTemporalWorker(err) {
+					observability.Error(ctx, "credimi-runner.temporal", "temporal worker stopped with non-retryable error", err,
+						observability.String("namespace", namespace),
+						observability.String("task_queue", taskqueue),
+						observability.String("runner_id", runnerID),
+					)
 					log.Printf("Temporal worker stopped with non-retryable error for namespace %s: %v", namespace, err)
 					return err
 				}
+				observability.Warn(ctx, "credimi-runner.temporal", "temporal worker stopped with retryable error",
+					observability.String("namespace", namespace),
+					observability.String("task_queue", taskqueue),
+					observability.String("runner_id", runnerID),
+					observability.String("backoff", backoff.String()),
+					observability.String("error", err.Error()),
+				)
 				log.Printf("Temporal worker stopped with retryable error for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
 					return nil
@@ -173,10 +205,17 @@ func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
 	if c, ok := clientCache.Load(namespace); ok {
 		return c.(client.Client), nil
 	}
+	temporalInterceptor, err := observability.NewTemporalInterceptor()
+	if err != nil {
+		return nil, fmt.Errorf("unable to create tracing interceptor: %w", err)
+	}
 	hostPort := utils.GetEnvironmentVariable("TEMPORAL_ADDRESS", client.DefaultHostPort)
 	c, err := client.NewLazyClient(client.Options{
 		HostPort:  hostPort,
 		Namespace: namespace,
+		Interceptors: []interceptor.ClientInterceptor{
+			temporalInterceptor,
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("unable to create client: %w", err)

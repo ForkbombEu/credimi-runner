@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,7 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type runnerService struct {
@@ -30,22 +35,34 @@ func NewRunnerServiceWithDeps(store *ProcessStore, instances map[string]utils.In
 	}
 }
 
-func (s *runnerService) StartExistingWorkers() error {
+func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, span := observability.Tracer("credimi-runner.startup").Start(ctx, "start_existing_workers")
+	defer span.End()
+
 	startDelay := startupWorkerDelay()
 	startAttempts := 0
+	runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")
 
 	for name, inst := range s.Instances {
 		token, err := s.Deps.TokenProvider(inst)
 		if err != nil {
+			span.AddEvent("instance.skipped", traceWithAttrs(
+				attribute.String("instance.name", name),
+				attribute.String("instance.url", inst.URL),
+				attribute.String("reason", "admin_token_failed"),
+			))
 			log.Printf("[WARN] Skipping instance %q: cannot fetch admin token: %v", name, err)
 			continue
 		}
 		if inst.UserAPIKey != "" {
-			namespace, err := s.fetchUserNamespace(inst, token)
+			orgName, namespace, err := s.fetchUserNamespace(ctx, inst, token)
 			if err != nil {
 				return err
 			}
-			startAttempts = s.startWorkerIfNeeded(namespace, name, startAttempts, startDelay)
+			startAttempts = s.startWorkerIfNeeded(ctx, span, name, orgName, namespace, runnerID, startAttempts, startDelay)
 			continue
 		}
 
@@ -53,8 +70,10 @@ func (s *runnerService) StartExistingWorkers() error {
 
 		const perPage = 200
 		for page := 1; ; page++ {
-			req, err := http.NewRequest("GET", orgsURL, nil)
+			req, err := http.NewRequestWithContext(ctx, "GET", orgsURL, nil)
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "request creation failed")
 				return fmt.Errorf("failed to create request: %w", err)
 			}
 			query := req.URL.Query()
@@ -66,12 +85,15 @@ func (s *runnerService) StartExistingWorkers() error {
 
 			resp, err := s.Deps.HTTPClient.Do(req)
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "organization fetch failed")
 				return fmt.Errorf("failed to fetch organizations: %w", err)
 			}
 
 			if resp.StatusCode != http.StatusOK {
 				status := resp.Status
 				_ = resp.Body.Close()
+				span.SetStatus(codes.Error, status)
 				return fmt.Errorf("failed to fetch organizations: %s", status)
 			}
 
@@ -96,12 +118,7 @@ func (s *runnerService) StartExistingWorkers() error {
 					continue
 				}
 
-				if proc, exists := s.Store.Get(org.Namespace); exists && proc.Running {
-					log.Printf("Worker already running for org.Namespace %s", org.Namespace)
-					continue
-				}
-
-				startAttempts = s.startWorkerIfNeeded(org.Namespace, org.Name, startAttempts, startDelay)
+				startAttempts = s.startWorkerIfNeeded(ctx, span, name, org.Name, org.Namespace, runnerID, startAttempts, startDelay)
 			}
 
 			if data.TotalPages > 0 {
@@ -119,25 +136,34 @@ func (s *runnerService) StartExistingWorkers() error {
 	return nil
 }
 
-func (s *runnerService) fetchUserNamespace(inst utils.Instance, token string) (string, error) {
-	req, err := http.NewRequest(
+func traceWithAttrs(attrs ...attribute.KeyValue) trace.EventOption {
+	return trace.WithAttributes(attrs...)
+}
+
+func (s *runnerService) fetchUserNamespace(
+	ctx context.Context,
+	inst utils.Instance,
+	token string,
+) (string, string, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
 		http.MethodGet,
 		utils.JoinURL(inst.URL, "api", "organizations", "my"),
 		nil,
 	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create organization lookup request: %w", err)
+		return "", "", fmt.Errorf("failed to create organization lookup request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, err := s.Deps.HTTPClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("failed to fetch organization for configured API key: %w", err)
+		return "", "", fmt.Errorf("failed to fetch organization for configured API key: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf(
+		return "", "", fmt.Errorf(
 			"failed to fetch organization for configured API key: %s",
 			resp.Status,
 		)
@@ -148,18 +174,22 @@ func (s *runnerService) fetchUserNamespace(inst utils.Instance, token string) (s
 		Namespace string `json:"canonified_name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return "", fmt.Errorf("failed to parse organization response: %w", err)
+		return "", "", fmt.Errorf("failed to parse organization response: %w", err)
 	}
 	if data.Namespace == "" {
-		return "", fmt.Errorf("organization namespace is empty for instance %s", inst.URL)
+		return "", "", fmt.Errorf("organization namespace is empty for instance %s", inst.URL)
 	}
 
-	return data.Namespace, nil
+	return data.Name, data.Namespace, nil
 }
 
 func (s *runnerService) startWorkerIfNeeded(
+	ctx context.Context,
+	span trace.Span,
+	instanceName string,
+	orgName string,
 	namespace string,
-	label string,
+	runnerID string,
 	startAttempts int,
 	startDelay time.Duration,
 ) int {
@@ -168,6 +198,11 @@ func (s *runnerService) startWorkerIfNeeded(
 	}
 	if proc, exists := s.Store.Get(namespace); exists && proc.Running {
 		log.Printf("Worker already running for namespace %s", namespace)
+		observability.Info(ctx, "credimi-runner.startup", "worker already running for namespace",
+			observability.String("instance.name", instanceName),
+			observability.String("organization.name", orgName),
+			observability.String("namespace", namespace),
+		)
 		return startAttempts
 	}
 	if startDelay > 0 && startAttempts > 0 {
@@ -175,12 +210,35 @@ func (s *runnerService) startWorkerIfNeeded(
 	}
 	startAttempts++
 
-	log.Printf("Starting worker for %s (%s)", label, namespace)
+	log.Printf("Starting worker for organization %s (%s)", orgName, namespace)
+	observability.RecordWorkerStart(ctx,
+		attribute.String("instance.name", instanceName),
+		attribute.String("organization.name", orgName),
+		attribute.String("namespace", namespace),
+		attribute.String("runner_id", runnerID),
+	)
+	observability.Info(ctx, "credimi-runner.startup", "starting worker for namespace",
+		observability.String("instance.name", instanceName),
+		observability.String("organization.name", orgName),
+		observability.String("namespace", namespace),
+	)
 	proc := NewProcess(namespace, s.Deps.WorkerRunnerFactory(namespace))
 	s.Store.Add(proc)
 
 	if err := proc.Start(); err != nil {
+		span.RecordError(err)
 		log.Printf("Failed to start worker for %s: %v", namespace, err)
+		observability.RecordWorkerStartFailure(ctx,
+			attribute.String("instance.name", instanceName),
+			attribute.String("organization.name", orgName),
+			attribute.String("namespace", namespace),
+			attribute.String("runner_id", runnerID),
+		)
+		observability.Error(ctx, "credimi-runner.startup", "failed to start worker for namespace", err,
+			observability.String("instance.name", instanceName),
+			observability.String("organization.name", orgName),
+			observability.String("namespace", namespace),
+		)
 	}
 
 	return startAttempts
