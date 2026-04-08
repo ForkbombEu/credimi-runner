@@ -167,6 +167,14 @@ else
   exit 1
 fi
 
+echo "Testing: emulator assets no longer download at startup"
+if ! rg -q "download_and_extract_archive|files\\.pn-a\\.com|EMULATOR_ASSETS_AUTO_DOWNLOAD" "${entrypoint}"; then
+  echo "PASS: emulator startup only validates mounted assets"
+else
+  echo "FAIL: emulator startup should not include asset download logic" >&2
+  exit 1
+fi
+
 echo "Testing: --emulator requires no args and runs cleanup + adb start-server"
 reset_calls
 # Make /dev/kvm checks pass even on systems without it:

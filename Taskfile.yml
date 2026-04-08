@@ -121,4 +121,4 @@ tasks:
     deps:
       - "build:docker:emulator"
     cmds:
-      - LOCAL_IMAGE={{.LOCAL_IMAGE}} ANDROID_KEYS_DIR=/home/puria/.android docker compose --profile emulator up runner_emulator
+      - LOCAL_IMAGE={{.LOCAL_IMAGE}} ANDROID_KEYS_DIR=/home/puria/.android HOST_AVD_HOME_PATH=${HOST_AVD_HOME_PATH:-/srv/credimi/avd-home} HOST_AVD_GOLDEN_PATH=${HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden} GOLDEN_PATH=${GOLDEN_PATH:-/avd-golden/credimi-golden} docker compose --profile emulator up runner_emulator

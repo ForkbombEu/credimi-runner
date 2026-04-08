@@ -80,7 +80,10 @@ Below are the only two commands you need after phone setup.
 >   -e CREDIMI_URL=http://127.0.0.1:8090 \
 >   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-emulator-01 \
->   -v adbkeys:/root/.android \
+>   -e GOLDEN_PATH=/avd-golden/credimi-golden \
+>   -v /srv/credimi/avd-home:/avd-home \
+>   -v /srv/credimi/avd-golden:/avd-golden \
+>   -v /path/to/.android:/root/.android \
 >   ghcr.io/ForkbombEu/credimi-runner-emulator:latest
 > ```
 
@@ -405,8 +408,19 @@ Build emulator locally:
 task build:docker:emulator
 ```
 
-Note: emulator base/golden archives are now downloaded at container startup only if
-`/avd-home` or `GOLDEN_PATH` assets are missing.
+Run the emulator locally with preloaded assets mounted from the host:
+
+```bash
+HOST_AVD_HOME_PATH=/srv/credimi/avd-home
+HOST_AVD_GOLDEN_PATH=/srv/credimi/avd-golden
+GOLDEN_PATH=/avd-golden/credimi-golden
+task run:service:emulator
+```
+
+`HOST_AVD_HOME_PATH` and `HOST_AVD_GOLDEN_PATH` are host folders. `GOLDEN_PATH` is the
+path inside the container and must stay under `/avd-golden`.
+
+
 
 Run a locally built image:
 
