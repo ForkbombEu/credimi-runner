@@ -78,44 +78,24 @@ ensure_workflows_dir() {
   mkdir -p "$workflows_dir/workflows"
 }
 
-download_and_extract_archive() {
-  local archive_url="$1"
-  local destination_dir="$2"
-  local label="$3"
-  local tmp_file="/tmp/${label}.tar.gz"
-  local tmp_part="${tmp_file}.part"
-
-  echo "Downloading ${label} archive..."
-  rm -f "$tmp_part"
-  curl -fsSL "$archive_url" -o "$tmp_part"
-  mv "$tmp_part" "$tmp_file"
-
-  echo "Extracting ${label} archive into ${destination_dir}..."
-  tar -xzf "$tmp_file" -C "$destination_dir"
-  rm -f "$tmp_file"
-}
-
 ensure_emulator_assets() {
   local avd_home="${ANDROID_AVD_HOME:-/avd-home}"
   local golden_root="${AVDCTL_GOLDEN_DIR:-/avd-golden}"
   local base_name="${BASE_NAME:-credimi}"
   local golden_path="${GOLDEN_PATH:-${golden_root}/${base_name}-golden}"
-  local assets_base_url="${EMULATOR_ASSETS_BASE_URL:-https://files.pn-a.com/api/static}"
-  local base_archive_url="${EMULATOR_BASE_ARCHIVE_URL:-${assets_base_url}/credimi_base_image.tar.gz}"
-  local golden_archive_url="${EMULATOR_GOLDEN_ARCHIVE_URL:-${assets_base_url}/credimi_golden.tar.gz}"
   local base_avd_dir="${avd_home}/${base_name}.avd"
   local base_ini="${avd_home}/${base_name}.ini"
 
   mkdir -p "$avd_home" "$golden_root"
 
   if [[ ! -d "$base_avd_dir" || ! -f "$base_ini" ]]; then
-    download_and_extract_archive "$base_archive_url" "$avd_home" "credimi-base"
+    echo "ERROR: base AVD assets are missing at ${base_avd_dir} and ${base_ini}. Mount preloaded assets into ${avd_home}." >&2
   else
     echo "Base AVD assets already present at ${base_avd_dir}."
   fi
 
   if [[ ! -d "$golden_path" ]]; then
-    download_and_extract_archive "$golden_archive_url" "$golden_root" "credimi-golden"
+    echo "ERROR: golden assets are missing at ${golden_path}. Mount preloaded assets into ${golden_root}." >&2
   else
     echo "Golden assets already present at ${golden_path}."
   fi

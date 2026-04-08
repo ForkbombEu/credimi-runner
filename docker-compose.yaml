@@ -34,6 +34,8 @@ services:
       GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
     volumes:
       - ${ANDROID_KEYS_DIR:-/home/puria/.android}:/root/.android
+      - ${HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}:/avd-home
+      - ${HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}:/avd-golden
       - ./pkg/server/docs:/src/pkg/server/docs:ro
       - ./pkg/gen/http:/src/pkg/gen/http:ro
     network_mode: host

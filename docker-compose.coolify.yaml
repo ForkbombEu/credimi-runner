@@ -8,8 +8,12 @@ services:
       - /dev/kvm:/dev/kvm
 
     volumes:
-      - avd_home:/avd-home
-      - avd_golden:/avd-golden
+      - type: bind
+        source: "${HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}"
+        target: /avd-home
+      - type: bind
+        source: "${HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}"
+        target: /avd-golden
 
     environment:
       CREDIMI_URL: ${CREDIMI_URL:?http://localhost:8090}
@@ -23,7 +27,3 @@ services:
       ADB_PRIVATE_KEY: ${ADB_PRIVATE_KEY:?}
       ADB_PUBLIC_KEY: ${ADB_PUBLIC_KEY:?}
       PORT: ${PORT:-8060}
-
-volumes:
-  avd_home:
-  avd_golden:
