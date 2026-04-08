@@ -80,7 +80,10 @@ Below are the only two commands you need after phone setup.
 >   -e CREDIMI_URL=http://127.0.0.1:8090 \
 >   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-emulator-01 \
->   -v adbkeys:/root/.android \
+>   -e GOLDEN_PATH=/avd-golden/credimi-golden \
+>   -v /srv/credimi/avd-home:/avd-home \
+>   -v /srv/credimi/avd-golden:/avd-golden \
+>   -v /path/to/.android:/root/.android \
 >   ghcr.io/ForkbombEu/credimi-runner-emulator:latest
 > ```
 
