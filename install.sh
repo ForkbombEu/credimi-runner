@@ -17,7 +17,7 @@ DEFAULT_HOST_AVD_HOME_PATH="/srv/credimi/avd-home"
 DEFAULT_HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden"
 
 tty_path=""
-if [ -r /dev/tty ]; then
+if tty >/dev/null 2>&1 && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   tty_path="/dev/tty"
 fi
 
@@ -75,13 +75,55 @@ load_env_defaults() {
       *=*)
         key="${line%%=*}"
         value="${line#*=}"
-        current_value="$(printenv "$key" 2>/dev/null || true)"
-        if [ -z "$current_value" ]; then
-          export "$key=$value"
-        fi
+        eval "INSTALL_DEFAULT_${key}=\$value"
+        eval "INSTALL_DEFAULT_SET_${key}=1"
         ;;
     esac
   done <"$env_file"
+}
+
+env_var_is_set() {
+  var_name="$1"
+  printenv "$var_name" >/dev/null 2>&1
+}
+
+loaded_default_is_set() {
+  var_name="$1"
+  eval "[ \"\${INSTALL_DEFAULT_SET_${var_name}-}\" = \"1\" ]"
+}
+
+loaded_default_value() {
+  var_name="$1"
+  eval "printf '%s' \"\${INSTALL_DEFAULT_${var_name}-}\""
+}
+
+explicit_env_or_default() {
+  var_name="$1"
+  fallback_value="${2-}"
+
+  if env_var_is_set "$var_name"; then
+    eval "printf '%s' \"\${${var_name}}\""
+    return 0
+  fi
+
+  printf '%s' "$fallback_value"
+}
+
+resolved_value() {
+  var_name="$1"
+  fallback_value="${2-}"
+
+  if env_var_is_set "$var_name"; then
+    eval "printf '%s' \"\${${var_name}}\""
+    return 0
+  fi
+
+  if loaded_default_is_set "$var_name"; then
+    loaded_default_value "$var_name"
+    return 0
+  fi
+
+  printf '%s' "$fallback_value"
 }
 
 env_file_has_key() {
@@ -158,18 +200,27 @@ prompt_value() {
   secret="${4-0}"
   allow_empty="${5-0}"
 
-  eval "is_set=\${${var_name}+x}"
-  existing_value="$(printenv "$var_name" 2>/dev/null || true)"
-  if [ -n "${is_set:-}" ] && { [ -n "$existing_value" ] || [ "$allow_empty" = "1" ]; }; then
+  if env_var_is_set "$var_name"; then
+    eval "existing_value=\${${var_name}}"
     printf '%s' "$existing_value"
     return 0
   fi
 
-  [ -n "$tty_path" ] || die "$var_name is required for non-interactive install"
+  if [ -z "$tty_path" ]; then
+    if [ -n "$default_value" ] || [ "$allow_empty" = "1" ]; then
+      printf '%s' "$default_value"
+      return 0
+    fi
+    die "$var_name is required for non-interactive install"
+  fi
 
   while :; do
     if [ -n "$default_value" ]; then
-      printf '%s [%s]: ' "$label" "$default_value" >"$tty_path"
+      if [ "$secret" = "1" ]; then
+        printf '%s [%s]: ' "$label" "saved" >"$tty_path"
+      else
+        printf '%s [%s]: ' "$label" "$default_value" >"$tty_path"
+      fi
     else
       printf '%s: ' "$label" >"$tty_path"
     fi
@@ -197,13 +248,16 @@ prompt_choice() {
   default_value="$3"
   choices="$4"
 
-  existing_value="$(printenv "$var_name" 2>/dev/null || true)"
-  if [ -n "$existing_value" ]; then
+  if env_var_is_set "$var_name"; then
+    eval "existing_value=\${${var_name}}"
     printf '%s' "$existing_value"
     return 0
   fi
 
-  [ -n "$tty_path" ] || die "$var_name is required for non-interactive install"
+  if [ -z "$tty_path" ]; then
+    printf '%s' "$default_value"
+    return 0
+  fi
 
   while :; do
     printf '%s [%s]: ' "$label" "$default_value" >"$tty_path"
@@ -625,7 +679,7 @@ main() {
     existing_env="1"
     load_env_defaults "$env_file"
   fi
-  CREDIMI_RUNNER_BACKEND="${CREDIMI_RUNNER_BACKEND:-$(default_service_backend)}"
+  CREDIMI_RUNNER_BACKEND="$(resolved_value CREDIMI_RUNNER_BACKEND "$(default_service_backend)")"
   CREDIMI_CONTAINER_MODE="${CREDIMI_CONTAINER_MODE-}"
   RUNNER_IMAGE="${RUNNER_IMAGE-}"
   ANDROID_KEYS_DIR="${ANDROID_KEYS_DIR-}"
@@ -650,75 +704,52 @@ main() {
   esac
 
   if [ "$existing_env" = "1" ]; then
-    warn "Existing configuration found at ${env_file}; keeping it unchanged."
-    CREDIMI_URL="${CREDIMI_URL:-${DEFAULT_CREDIMI_URL}}"
-    TEMPORAL_ADDRESS="${TEMPORAL_ADDRESS:-${DEFAULT_TEMPORAL_ADDRESS}}"
-    RUNNER_HOST="${RUNNER_HOST:-${DEFAULT_RUNNER_HOST}}"
-    RUNNER_PORT="${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
-    RUNNER_CADDY_SITE="${RUNNER_CADDY_SITE:-${DEFAULT_RUNNER_CADDY_SITE}}"
-    CREDIMI_SERVICE_MODE="${CREDIMI_SERVICE_MODE:-quick}"
+    warn "Existing configuration found at ${env_file}; loaded as prompt defaults."
+  fi
 
-    CREDIMI_RUNNER_ID="${CREDIMI_RUNNER_ID:-}"
-    [ -n "$CREDIMI_RUNNER_ID" ] || die "existing config is missing CREDIMI_RUNNER_ID: ${env_file}"
+  CREDIMI_URL="$(prompt_value CREDIMI_URL "Credimi API URL" "$(resolved_value CREDIMI_URL "${DEFAULT_CREDIMI_URL}")")"
+  TEMPORAL_ADDRESS="$(prompt_value TEMPORAL_ADDRESS "Temporal address" "$(resolved_value TEMPORAL_ADDRESS "${DEFAULT_TEMPORAL_ADDRESS}")")"
+  CREDIMI_RUNNER_ID="$(prompt_value CREDIMI_RUNNER_ID "Runner ID" "$(resolved_value CREDIMI_RUNNER_ID)")"
 
-    if [ -n "${CREDIMI_USER_API_KEY:-}" ]; then
-      CREDIMI_PB_ADMIN=""
-      CREDIMI_PB_PASS=""
-    else
-      CREDIMI_PB_ADMIN="${CREDIMI_PB_ADMIN:-}"
-      CREDIMI_PB_PASS="${CREDIMI_PB_PASS:-}"
-      [ -n "$CREDIMI_PB_ADMIN" ] || die "existing config is missing CREDIMI_PB_ADMIN: ${env_file}"
-      [ -n "$CREDIMI_PB_PASS" ] || die "existing config is missing CREDIMI_PB_PASS: ${env_file}"
-      CREDIMI_USER_API_KEY=""
-    fi
-
-    CREDIMI_INTERNAL_ADMIN_KEY="${CREDIMI_INTERNAL_ADMIN_KEY:-}"
-    if [ "$CREDIMI_SERVICE_MODE" = "named" ]; then
-      RUNNER_DOMAIN="${RUNNER_DOMAIN:-}"
-      CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
-      [ -n "$RUNNER_DOMAIN" ] || die "existing config is missing RUNNER_DOMAIN for named mode: ${env_file}"
-      [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] || die "existing config is missing CLOUDFLARE_TUNNEL_TOKEN for named mode: ${env_file}"
-    else
-      RUNNER_DOMAIN=""
-      CLOUDFLARE_TUNNEL_TOKEN=""
-    fi
+  if [ -n "$(resolved_value CREDIMI_USER_API_KEY)" ]; then
+    auth_mode_default="api_key"
+  elif [ -n "$(resolved_value CREDIMI_PB_ADMIN)" ] || [ -n "$(resolved_value CREDIMI_PB_PASS)" ]; then
+    auth_mode_default="admin"
   else
-    CREDIMI_URL="$(prompt_value CREDIMI_URL "Credimi API URL" "${DEFAULT_CREDIMI_URL}")"
-    TEMPORAL_ADDRESS="$(prompt_value TEMPORAL_ADDRESS "Temporal address" "${DEFAULT_TEMPORAL_ADDRESS}")"
-    CREDIMI_RUNNER_ID="$(prompt_value CREDIMI_RUNNER_ID "Runner ID")"
-    auth_mode="$(prompt_choice CREDIMI_INSTALL_AUTH_MODE "Auth mode (api_key/admin)" "api_key" "api_key admin")"
+    auth_mode_default="api_key"
+  fi
+  auth_mode="$(prompt_choice CREDIMI_INSTALL_AUTH_MODE "Auth mode (api_key/admin)" "${auth_mode_default}" "api_key admin")"
 
-    if [ "$auth_mode" = "api_key" ]; then
-      CREDIMI_USER_API_KEY="$(prompt_value CREDIMI_USER_API_KEY "Credimi user API key" "" 1)"
-      CREDIMI_PB_ADMIN=""
-      CREDIMI_PB_PASS=""
-    else
-      CREDIMI_PB_ADMIN="$(prompt_value CREDIMI_PB_ADMIN "Credimi admin email")"
-      CREDIMI_PB_PASS="$(prompt_value CREDIMI_PB_PASS "Credimi admin password" "" 1)"
-      CREDIMI_USER_API_KEY=""
-    fi
+  if [ "$auth_mode" = "api_key" ]; then
+    CREDIMI_USER_API_KEY="$(prompt_value CREDIMI_USER_API_KEY "Credimi user API key" "$(resolved_value CREDIMI_USER_API_KEY)" 1)"
+    CREDIMI_PB_ADMIN=""
+    CREDIMI_PB_PASS=""
+  else
+    CREDIMI_PB_ADMIN="$(prompt_value CREDIMI_PB_ADMIN "Credimi admin email" "$(resolved_value CREDIMI_PB_ADMIN)")"
+    CREDIMI_PB_PASS="$(prompt_value CREDIMI_PB_PASS "Credimi admin password" "$(resolved_value CREDIMI_PB_PASS)" 1)"
+    CREDIMI_USER_API_KEY=""
+  fi
 
-    CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "" 1 1)"
-    CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "quick" "quick named")"
-    RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "${DEFAULT_RUNNER_HOST}")"
-    RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "${DEFAULT_RUNNER_PORT}")"
-    RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "${DEFAULT_RUNNER_CADDY_SITE}")"
+  CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "$(resolved_value CREDIMI_INTERNAL_ADMIN_KEY)" 1 1)"
+  CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named")"
+  RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")")"
+  RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")")"
+  RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")")"
 
-    if [ "$CREDIMI_SERVICE_MODE" = "named" ]; then
-      RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain")"
-      CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "" 1)"
-    else
-      RUNNER_DOMAIN=""
-      CLOUDFLARE_TUNNEL_TOKEN=""
-    fi
+  if [ "$CREDIMI_SERVICE_MODE" = "named" ]; then
+    RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain" "$(resolved_value RUNNER_DOMAIN)")"
+    CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "$(resolved_value CLOUDFLARE_TUNNEL_TOKEN)" 1)"
+  else
+    RUNNER_DOMAIN=""
+    CLOUDFLARE_TUNNEL_TOKEN=""
   fi
 
   if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
-    CREDIMI_CONTAINER_MODE="$(prompt_choice CREDIMI_CONTAINER_MODE "Linux runner mode (usb/emulator/no_device)" "${DEFAULT_CONTAINER_MODE}" "usb emulator no_device")"
+    CREDIMI_CONTAINER_MODE="$(prompt_choice CREDIMI_CONTAINER_MODE "Linux runner mode (usb/emulator/no_device)" "$(resolved_value CREDIMI_CONTAINER_MODE "${DEFAULT_CONTAINER_MODE}")" "usb emulator no_device")"
 
     case "$CREDIMI_CONTAINER_MODE" in
       usb)
-        RUNNER_IMAGE="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
+        RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
         ANDROID_KEYS_DIR=""
         HOST_AVD_HOME_PATH=""
         HOST_AVD_GOLDEN_PATH=""
@@ -726,15 +757,15 @@ main() {
         GOLDEN_PATH=""
         ;;
       emulator)
-        RUNNER_IMAGE="${RUNNER_IMAGE:-${DEFAULT_EMULATOR_IMAGE}}"
-        ANDROID_KEYS_DIR="$(prompt_value ANDROID_KEYS_DIR "ADB keys directory" "${HOME}/.android")"
-        HOST_AVD_HOME_PATH="$(prompt_value HOST_AVD_HOME_PATH "Host AVD home path" "${DEFAULT_HOST_AVD_HOME_PATH}")"
-        HOST_AVD_GOLDEN_PATH="$(prompt_value HOST_AVD_GOLDEN_PATH "Host golden assets path (parent or extracted dir)" "${DEFAULT_HOST_AVD_GOLDEN_PATH}")"
-        BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "${DEFAULT_BASE_NAME}")"
-        GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Container golden path" "/avd-golden/${BASE_NAME}-golden")"
+        RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_EMULATOR_IMAGE}")"
+        ANDROID_KEYS_DIR="$(prompt_value ANDROID_KEYS_DIR "ADB keys directory" "$(resolved_value ANDROID_KEYS_DIR "${HOME}/.android")")"
+        HOST_AVD_HOME_PATH="$(prompt_value HOST_AVD_HOME_PATH "Host AVD home path" "$(resolved_value HOST_AVD_HOME_PATH "${DEFAULT_HOST_AVD_HOME_PATH}")")"
+        HOST_AVD_GOLDEN_PATH="$(prompt_value HOST_AVD_GOLDEN_PATH "Host golden assets path (parent or extracted dir)" "$(resolved_value HOST_AVD_GOLDEN_PATH "${DEFAULT_HOST_AVD_GOLDEN_PATH}")")"
+        BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")")"
+        GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Container golden path" "$(resolved_value GOLDEN_PATH "/avd-golden/${BASE_NAME}-golden")")"
         ;;
       no_device)
-        RUNNER_IMAGE="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
+        RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
         ANDROID_KEYS_DIR=""
         HOST_AVD_HOME_PATH=""
         HOST_AVD_GOLDEN_PATH=""
@@ -761,11 +792,7 @@ main() {
 
   write_compose_file "$compose_file"
   write_launcher "$launcher_path"
-  if [ "$existing_env" = "0" ]; then
-    write_env_file "$env_file"
-  else
-    write_missing_env_values "$env_file"
-  fi
+  write_env_file "$env_file"
 
   say ""
   success "Installed:"
@@ -804,10 +831,7 @@ main() {
     esac
   fi
   if [ "$existing_env" = "1" ]; then
-    say "Reused existing configuration from ${env_file}."
-    if [ "${appended_env_keys:-0}" = "1" ]; then
-      say "Appended missing runtime settings to ${env_file}."
-    fi
+    say "Updated configuration in ${env_file}."
   fi
   say ""
   say "Start the service with:"

@@ -414,10 +414,63 @@ RUNNER_IMAGE=ghcr.io/example/custom-runner:latest'
 
   assert_file_exists "${launcher}"
   assert_file_exists "${compose_file}"
-  assert_file_starts_with "${env_file}" "${original_env}"
+  assert_contains "CREDIMI_URL=https://persisted.example" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_ID=/org-id/persisted-runner" "${env_file}"
+  assert_contains "CREDIMI_USER_API_KEY=persisted-user-api-key" "${env_file}"
   assert_contains "CREDIMI_CONTAINER_MODE=usb" "${env_file}"
+  assert_contains "RUNNER_PORT=9000" "${env_file}"
+  assert_contains "RUNNER_CADDY_SITE=:8080" "${env_file}"
   assert_contains "--usb" "${compose_file}"
   assert_empty_or_missing "${curl_log}"
+}
+
+run_existing_env_mode_switch_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs" "${case_dir}/config/credimi/runner"
+  create_mocks "${case_dir}/mocks"
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  cat >"${env_file}" <<'EOF'
+CREDIMI_URL=https://persisted.example
+CREDIMI_RUNNER_ID=/org-id/persisted-runner
+CREDIMI_USER_API_KEY=persisted-user-api-key
+CREDIMI_PB_ADMIN=
+CREDIMI_PB_PASS=
+CREDIMI_INTERNAL_ADMIN_KEY=
+TEMPORAL_ADDRESS=temporal.persisted.example:7233
+CREDIMI_RUNNER_BACKEND=container
+CREDIMI_CONTAINER_MODE=emulator
+RUNNER_HOST=127.0.0.1
+RUNNER_PORT=9000
+RUNNER_DOMAIN=
+RUNNER_CADDY_SITE=:8080
+CLOUDFLARE_TUNNEL_TOKEN=
+CREDIMI_SERVICE_MODE=quick
+RUNNER_IMAGE=ghcr.io/forkbombeu/credimi-runner-emulator:latest
+ANDROID_KEYS_DIR=/srv/android-keys
+HOST_AVD_HOME_PATH=/srv/credimi/avd-home
+HOST_AVD_GOLDEN_PATH=/srv/credimi/avd-golden
+BASE_NAME=credimi
+GOLDEN_PATH=/avd-golden/credimi-golden
+EOF
+
+  FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64" \
+  CREDIMI_CONTAINER_MODE="usb" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  sh "${install_script}" >/dev/null
+
+  assert_contains "CREDIMI_CONTAINER_MODE=usb" "${env_file}"
+  assert_contains "RUNNER_IMAGE=ghcr.io/forkbombeu/credimi-runner-phone:latest" "${env_file}"
+  assert_contains "ANDROID_KEYS_DIR=" "${env_file}"
+  assert_contains "HOST_AVD_HOME_PATH=" "${env_file}"
+  assert_contains "HOST_AVD_GOLDEN_PATH=" "${env_file}"
+  assert_contains "BASE_NAME=" "${env_file}"
+  assert_contains "GOLDEN_PATH=" "${env_file}"
 }
 
 run_linux_usb_case
@@ -429,5 +482,6 @@ run_quick_mode_with_domain_case
 run_literal_env_loading_case
 run_host_bind_host_readiness_case
 run_existing_env_case
+run_existing_env_mode_switch_case
 
 printf 'install.sh tests passed\n'

@@ -9,7 +9,7 @@ Use it to run Maestro tests or adb commands from inside the container.
 Install `credimi-runner-service` with the bootstrap installer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ForkbombEu/credimi-runner/main/install.sh | sh
+curl -sL credimi.run | sh
 ```
 
 This works on **macOS** (Intel and Apple Silicon) and **Linux** (x86\_64 and arm64).
