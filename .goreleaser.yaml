@@ -11,6 +11,8 @@ builds:
   - id: credimi-runner
     env:
       - CGO_ENABLED=0
+    tags:
+      - credimi_extra
     goos:
       - linux
       - darwin
