@@ -94,6 +94,11 @@ env_file_has_key() {
   fi
 }
 
+path_has_dir() {
+  target_dir="$1"
+  printf '%s\n' ":$PATH:" | grep -Fq ":${target_dir}:"
+}
+
 append_env_if_missing() {
   env_file="$1"
   key="$2"
@@ -110,9 +115,11 @@ prompt_value() {
   label="$2"
   default_value="${3-}"
   secret="${4-0}"
+  allow_empty="${5-0}"
 
+  eval "is_set=\${${var_name}+x}"
   existing_value="$(printenv "$var_name" 2>/dev/null || true)"
-  if [ -n "$existing_value" ]; then
+  if [ -n "${is_set:-}" ] && { [ -n "$existing_value" ] || [ "$allow_empty" = "1" ]; }; then
     printf '%s' "$existing_value"
     return 0
   fi
@@ -139,7 +146,7 @@ prompt_value() {
       answer="$default_value"
     fi
 
-    if [ -n "$answer" ] || [ -n "$default_value" ]; then
+    if [ -n "$answer" ] || [ -n "$default_value" ] || [ "$allow_empty" = "1" ]; then
       printf '%s' "$answer"
       return 0
     fi
@@ -362,16 +369,52 @@ compose_file="${config_dir}/docker-compose.yaml"
 bin_path="${script_dir}/credimi-runner"
 backend="${CREDIMI_RUNNER_BACKEND:-container}"
 
+load_env_file() {
+  local path="$1"
+  local line key value
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      ''|\#*)
+        continue
+        ;;
+      *=*)
+        key="${line%%=*}"
+        value="${line#*=}"
+        export "${key}=${value}"
+        ;;
+    esac
+  done <"${path}"
+}
+
+runner_ready_url() {
+  local host="$1"
+  local port="$2"
+
+  case "${host}" in
+    ''|0.0.0.0)
+      printf 'http://127.0.0.1:%s/\n' "${port}"
+      ;;
+    '::'|'[::]')
+      printf 'http://[::1]:%s/\n' "${port}"
+      ;;
+    *:*)
+      printf 'http://[%s]:%s/\n' "${host}" "${port}"
+      ;;
+    *)
+      printf 'http://%s:%s/\n' "${host}" "${port}"
+      ;;
+  esac
+}
+
 if [[ -f "${env_file}" ]]; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${env_file}"
-  set +a
+  load_env_file "${env_file}"
 fi
 
 mode="${1:-${CREDIMI_SERVICE_MODE:-quick}}"
 runner_host="${RUNNER_HOST:-0.0.0.0}"
 runner_port="${RUNNER_PORT:-8050}"
+runner_url="$(runner_ready_url "${runner_host}" "${runner_port}")"
 backend="${CREDIMI_RUNNER_BACKEND:-${backend}}"
 compose_services=(caddy)
 
@@ -395,7 +438,7 @@ wait_for_runner() {
   local attempt
 
   for attempt in $(seq 1 50); do
-    if curl --silent --output /dev/null "http://127.0.0.1:${runner_port}/" >/dev/null 2>&1; then
+    if curl --silent --output /dev/null "${runner_url}" >/dev/null 2>&1; then
       return 0
     fi
     if ! kill -0 "${runner_pid}" >/dev/null 2>&1; then
@@ -405,7 +448,7 @@ wait_for_runner() {
     sleep 0.2
   done
 
-  printf 'runner did not become ready on http://127.0.0.1:%s/\n' "${runner_port}" >&2
+  printf 'runner did not become ready on %s\n' "${runner_url}" >&2
   return 1
 }
 
@@ -444,10 +487,6 @@ esac
 
 case "${mode}" in
   quick)
-    if [[ -n "${RUNNER_DOMAIN:-}" ]]; then
-      printf 'RUNNER_DOMAIN must be empty in quick mode\n' >&2
-      exit 1
-    fi
     compose_services+=(tunnel)
     ;;
   named)
@@ -621,7 +660,7 @@ main() {
       CREDIMI_USER_API_KEY=""
     fi
 
-    CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "" 1)"
+    CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "" 1 1)"
     CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "quick" "quick named")"
     RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "${DEFAULT_RUNNER_HOST}")"
     RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "${DEFAULT_RUNNER_PORT}")"
@@ -699,9 +738,16 @@ main() {
   say "- ${compose_file}"
   say "- ${env_file}"
   say ""
-  if ! echo ":$PATH:" | grep -q ":$bin_dir:"; then
-    say "Add ${bin_dir} to PATH if needed:"
-    say "export PATH=\"${bin_dir}:\$PATH\""
+  if ! path_has_dir "$bin_dir"; then
+    if [ "$bin_dir" = "${HOME}/.local/bin" ]; then
+      say "~/.local/bin is not in PATH for this shell."
+      say "Add it before running ${PROJECT_NAME}-service:"
+      say "export PATH=\"\$HOME/.local/bin:\$PATH\""
+    else
+      say "${bin_dir} is not in PATH for this shell."
+      say "Add it before running ${PROJECT_NAME}-service:"
+      say "export PATH=\"${bin_dir}:\$PATH\""
+    fi
     say ""
   fi
   say "Before starting the service, make sure Docker is installed and the daemon is running."

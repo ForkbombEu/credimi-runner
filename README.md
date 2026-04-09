@@ -6,27 +6,30 @@ Use it to run Maestro tests or adb commands from inside the container.
 
 ## 🚀 Quick start
 
-Download and install the latest `credimi-runner` binary with a single command:
+Install `credimi-runner-service` with the bootstrap installer:
 
 ```bash
-curl -fsSL "https://github.com/ForkbombEu/credimi-runner/releases/latest/download/credimi-runner-$(uname -s)-$(uname -m)" -o credimi-runner && chmod +x credimi-runner
+curl -fsSL https://raw.githubusercontent.com/ForkbombEu/credimi-runner/main/install.sh | sh
 ```
 
 This works on **macOS** (Intel and Apple Silicon) and **Linux** (x86\_64 and arm64).
 
-Then start the server:
+Then start the service:
 
 ```bash
-./credimi-runner serve --host 127.0.0.1 --port 8050
+credimi-runner-service
 ```
 
-Check which build you downloaded:
+The installer writes the runtime configuration under `~/.config/credimi/runner/` and installs
+`credimi-runner-service` into `~/.local/bin` by default.
+
+On macOS, it also installs the local `credimi-runner` binary. You can verify that with:
 
 ```bash
-./credimi-runner version
+credimi-runner version
 ```
 
-See the [Run API server locally](#run-api-server-locally-serve) section for environment variables and configuration options.
+See [One-command install](#one-command-install) and [Run API server locally](#run-api-server-locally-serve) for configuration details and alternate workflows.
 
 ## One-command install
 

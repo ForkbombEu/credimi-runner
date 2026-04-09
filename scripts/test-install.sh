@@ -239,6 +239,141 @@ run_darwin_case() {
   assert_contains "credimi-runner-Darwin-arm64" "${curl_log}"
 }
 
+run_linux_arm64_host_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" FAKE_UNAME_M="arm64" CREDIMI_RUNNER_BACKEND="host" run_install "${case_dir}"
+
+  local curl_log="${case_dir}/logs/curl.log"
+  assert_contains "credimi-runner-Linux-aarch64" "${curl_log}"
+}
+
+run_noninteractive_empty_optional_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_ID="/org-id/runner-01" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_INTERNAL_ADMIN_KEY="" \
+  CREDIMI_SERVICE_MODE="quick" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  CREDIMI_CONTAINER_MODE="usb" \
+  sh "${install_script}" >/dev/null
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  assert_file_exists "${env_file}"
+  assert_contains "CREDIMI_INTERNAL_ADMIN_KEY=" "${env_file}"
+}
+
+run_quick_mode_with_domain_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64" CREDIMI_CONTAINER_MODE="usb" run_install "${case_dir}"
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local docker_log="${case_dir}/logs/docker.log"
+
+  cat >"${env_file}" <<'EOF'
+CREDIMI_RUNNER_BACKEND=container
+RUNNER_DOMAIN=runner.example.com
+RUNNER_CADDY_SITE=:80
+EOF
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains "up runner caddy tunnel" "${docker_log}"
+}
+
+run_literal_env_loading_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64" CREDIMI_CONTAINER_MODE="usb" run_install "${case_dir}"
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local docker_log="${case_dir}/logs/docker.log"
+  local marker="${case_dir}/command-substitution-ran"
+
+  cat >"${env_file}" <<EOF
+CREDIMI_RUNNER_BACKEND=container
+RUNNER_DOMAIN=runner.example.com
+CLOUDFLARE_TUNNEL_TOKEN=\$(touch "${marker}")
+RUNNER_CADDY_SITE=:80
+EOF
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  "${launcher}" named >/dev/null
+
+  assert_file_absent "${marker}"
+  assert_contains "up runner caddy tunnel_named" "${docker_log}"
+}
+
+run_host_bind_host_readiness_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Darwin" FAKE_UNAME_M="arm64" run_install "${case_dir}"
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local binary="${case_dir}/bin/credimi-runner"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local curl_log="${case_dir}/logs/curl.log"
+
+  cat >"${binary}" <<'EOF'
+#!/usr/bin/env bash
+sleep 2
+EOF
+  chmod +x "${binary}"
+
+  cat >"${env_file}" <<'EOF'
+CREDIMI_RUNNER_BACKEND=host
+RUNNER_HOST=192.0.2.10
+RUNNER_PORT=9000
+RUNNER_CADDY_SITE=:80
+EOF
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains "http://192.0.2.10:9000/" "${curl_log}"
+}
+
 run_existing_env_case() {
   local case_dir
   case_dir="$(mktemp -d)"
@@ -288,6 +423,11 @@ RUNNER_IMAGE=ghcr.io/example/custom-runner:latest'
 run_linux_usb_case
 run_linux_emulator_case
 run_darwin_case
+run_linux_arm64_host_case
+run_noninteractive_empty_optional_case
+run_quick_mode_with_domain_case
+run_literal_env_loading_case
+run_host_bind_host_readiness_case
 run_existing_env_case
 
 printf 'install.sh tests passed\n'
