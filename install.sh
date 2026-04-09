@@ -110,6 +110,47 @@ append_env_if_missing() {
   fi
 }
 
+read_secret_value() {
+  answer=""
+  backspace_char="$(printf '\b')"
+  delete_char="$(printf '\177')"
+  ctrl_c_char="$(printf '\003')"
+  newline_char="$(printf '\n')"
+  carriage_return_char="$(printf '\r')"
+  old_stty="$(stty -g <"$tty_path")"
+
+  stty -echo -icanon min 1 time 0 <"$tty_path"
+  while :; do
+    char="$(dd bs=1 count=1 2>/dev/null <"$tty_path" || true)"
+    case "$char" in
+      "$newline_char"|"$carriage_return_char")
+        break
+        ;;
+      "$backspace_char"|"$delete_char")
+        if [ -n "$answer" ]; then
+          answer="${answer%?}"
+          printf '\b \b' >"$tty_path"
+        fi
+        ;;
+      "$ctrl_c_char")
+        stty "$old_stty" <"$tty_path"
+        printf '\n' >"$tty_path"
+        exit 130
+        ;;
+      "")
+        break
+        ;;
+      *)
+        answer="${answer}${char}"
+        printf '*' >"$tty_path"
+        ;;
+    esac
+  done
+  stty "$old_stty" <"$tty_path"
+  printf '\n' >"$tty_path"
+  printf '%s' "$answer"
+}
+
 prompt_value() {
   var_name="$1"
   label="$2"
@@ -134,10 +175,7 @@ prompt_value() {
     fi
 
     if [ "$secret" = "1" ]; then
-      stty -echo <"$tty_path"
-      IFS= read -r answer <"$tty_path" || true
-      stty echo <"$tty_path"
-      printf '\n' >"$tty_path"
+      answer="$(read_secret_value)"
     else
       IFS= read -r answer <"$tty_path" || true
     fi
