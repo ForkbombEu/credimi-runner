@@ -93,3 +93,18 @@ func TestLoadDotEnv_NoFileAvailable(t *testing.T) {
 	require.Empty(t, path)
 	require.Empty(t, os.Getenv("CREDIMI_RUNNER_TEST_CONFIG_ONLY"))
 }
+
+func TestValidateRequiredRuntimeEnv_WithRunnerID(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
+
+	require.NoError(t, validateRequiredRuntimeEnv())
+}
+
+func TestValidateRequiredRuntimeEnv_MissingRunnerID(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+	t.Setenv("CREDIMI_RUNNER_ID", "")
+
+	err := validateRequiredRuntimeEnv()
+	require.EqualError(t, err, "CREDIMI_RUNNER_ID is required; set it in .env, "+filepath.Join(tmpDir, "credimi", "runner", ".env")+", or the process environment")
+}

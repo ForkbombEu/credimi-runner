@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -24,7 +25,7 @@ func loadDotEnv() (string, error) {
 		return "", nil
 	}
 
-	configEnvPath := filepath.Join(configDir, "credimi", "runner", ".env")
+	configEnvPath := runtimeConfigEnvPath(configDir)
 	if !fileExists(configEnvPath) {
 		return "", nil
 	}
@@ -38,4 +39,24 @@ func loadDotEnv() (string, error) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil || !errors.Is(err, os.ErrNotExist)
+}
+
+func runtimeConfigEnvPath(configDir string) string {
+	return filepath.Join(configDir, "credimi", "runner", ".env")
+}
+
+func validateRequiredRuntimeEnv() error {
+	if strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_ID")) != "" {
+		return nil
+	}
+
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return fmt.Errorf("CREDIMI_RUNNER_ID is required")
+	}
+
+	return fmt.Errorf(
+		"CREDIMI_RUNNER_ID is required; set it in .env, %s, or the process environment",
+		runtimeConfigEnvPath(configDir),
+	)
 }

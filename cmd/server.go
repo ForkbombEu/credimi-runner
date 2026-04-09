@@ -37,6 +37,9 @@ var serverCmd = &cobra.Command{
 		} else if envPath == "" {
 			stdlog.Println("No .env file found in current directory or config directory, using environment variables")
 		}
+		if err := validateRequiredRuntimeEnv(); err != nil {
+			return err
+		}
 
 		format := cluelog.FormatJSON
 		if cluelog.IsTerminal() {
