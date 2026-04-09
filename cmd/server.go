@@ -21,9 +21,10 @@ import (
 )
 
 var (
-	host  string
-	port  int
-	debug bool
+	host                  string
+	port                  int
+	debug                 bool
+	serverSignalReadyHook = func() {}
 )
 
 var serverCmd = &cobra.Command{
@@ -123,6 +124,8 @@ var serverCmd = &cobra.Command{
 
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigc)
+		serverSignalReadyHook()
 
 		select {
 		case sig := <-sigc:
