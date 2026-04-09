@@ -236,6 +236,7 @@ run_darwin_case() {
   assert_file_exists "${binary}"
   assert_executable "${binary}"
   assert_contains "CREDIMI_RUNNER_BACKEND=host" "${env_file}"
+  assert_contains "BASE_NAME=credimi" "${env_file}"
   assert_contains "credimi-runner-Darwin-arm64" "${curl_log}"
 }
 
