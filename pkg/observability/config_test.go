@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 )
@@ -31,6 +32,9 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.ServiceName != defaultServiceName {
 		t.Fatalf("expected default service name %q, got %q", defaultServiceName, cfg.ServiceName)
+	}
+	if cfg.ServiceVersion != buildinfo.String() {
+		t.Fatalf("expected default service version %q, got %q", buildinfo.String(), cfg.ServiceVersion)
 	}
 	if cfg.InstanceID == "" {
 		t.Fatalf("expected non-empty instance id")

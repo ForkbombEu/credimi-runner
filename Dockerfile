@@ -5,6 +5,7 @@ FROM golang:1.25.5-bookworm AS builder
 WORKDIR /src
 ARG TARGETOS=linux
 ARG TARGETARCH
+ARG VERSION=dev
 ENV GOCACHE=/go-cache
 ENV GOMODCACHE=/gomod-cache
 
@@ -24,7 +25,9 @@ RUN --mount=type=secret,id=credimi_extra_pat,required=true \
 COPY . ./
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache go generate ./...
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags=credimi_extra -o /out/credimi-runner main.go
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags=credimi_extra \
+    -ldflags "-s -w -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version=${VERSION}" \
+    -o /out/credimi-runner main.go
 
 FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
 

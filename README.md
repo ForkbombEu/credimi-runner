@@ -20,6 +20,12 @@ Then start the server:
 ./credimi-runner serve --host 127.0.0.1 --port 8050
 ```
 
+Check which build you downloaded:
+
+```bash
+./credimi-runner version
+```
+
 See the [Run API server locally](#run-api-server-locally-serve) section for environment variables and configuration options.
 
 ## Quickstart (first-time users)
@@ -329,7 +335,7 @@ Use `docker-compose.yaml` to run:
 Quick tunnel (instant public URL on `trycloudflare.com`):
 
 ```bash
-task run:service:phone
+task service:phone
 ```
 
 The tunnel URL is printed in the running output.
@@ -338,7 +344,7 @@ Quick tunnel with the local macOS/Linux binary instead of Docker:
 
 ```bash
 brew install cloudflared
-task run:service:local
+task service:local
 ```
 
 This starts `./bin/credimi-runner serve --host 127.0.0.1 --port 8050` and points `cloudflared` at it.
@@ -350,7 +356,7 @@ Named tunnel (your own domain):
 # CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxx
 # RUNNER_DOMAIN=api.example.com
 # RUNNER_CADDY_SITE=:80
-docker compose up runner caddy tunnel_named
+task -a service:phone:named
 ```
 
 Named tunnel with the local macOS/Linux binary:
@@ -360,18 +366,20 @@ Named tunnel with the local macOS/Linux binary:
 # CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxx
 # RUNNER_DOMAIN=api.example.com
 brew install cloudflared
-task run:service:local:named
+task -a service:local:named
 ```
 
 Notes:
 
+- `task --list` shows the recommended day-to-day workflows.
+- `task -a` shows the advanced variants (named tunnels, local images, build-only tasks).
 - For named tunnels, configure the public hostname in Cloudflare to point to `http://caddy:80`.
 - `RUNNER_DOMAIN` is used by the OpenAPI docs server URL (Stoplight "Try it").
 - For temporary `trycloudflare.com` tunnels, leave `RUNNER_DOMAIN` empty (or unset) so docs use same-origin URLs.
 - Keep `RUNNER_CADDY_SITE=:80` when running behind Cloudflare Tunnel.
 - `docker compose --profile named up` starts both `tunnel` and `tunnel_named`; prefer explicit services as above.
 - The compose file uses `ghcr.io/forkbombeu/credimi-runner-phone:latest` by default.
-- To run your local image instead: `RUNNER_IMAGE=credimi-runner-phone docker compose up runner caddy tunnel_named`.
+- To run your local image instead: `task -a service:phone:local:named`.
 - The local Taskfile flow requires `cloudflared` installed on the host.
 - Stop everything: `docker compose down --remove-orphans`.
 
@@ -399,13 +407,13 @@ This enables the `emulator` profile without passing `--profile emulator` on ever
 Build phone image locally:
 
 ```bash
-task build:docker:phone
+task -a build:phone
 ```
 
 Build emulator locally:
 
 ```bash
-task build:docker:emulator
+task -a build:emulator
 ```
 
 Run the emulator locally with preloaded assets mounted from the host:
