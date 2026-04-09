@@ -102,6 +102,13 @@ func TestLoadInstances(t *testing.T) {
 	require.Equal(t, "dev-user-key", instances["dev"].UserAPIKey)
 }
 
+func TestLoadInstances_DefaultProductionURL(t *testing.T) {
+	t.Setenv("CREDIMI_URL", "")
+
+	instances := LoadInstances()
+	require.Equal(t, defaultCredimiURL, instances["production"].URL)
+}
+
 func TestJoinAndNormalizeURL(t *testing.T) {
 	joined := JoinURL("http://example.local/base/", "/api", "v1", "items")
 	require.Equal(t, "http://example.local/base/api/v1/items", joined)

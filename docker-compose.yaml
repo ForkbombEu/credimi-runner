@@ -27,8 +27,8 @@ services:
     env_file:
       - .env
     environment:
-      CREDIMI_URL: ${CREDIMI_URL:-http://localhost:8090}
-      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-localhost:7233}
+      CREDIMI_URL: ${CREDIMI_URL:-https://credimi.io}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal.credimi.io:7233}
       ADB_VENDOR_KEYS: /root/.android
       BASE_NAME: ${BASE_NAME:-credimi}
       GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}

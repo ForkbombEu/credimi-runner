@@ -16,9 +16,9 @@ services:
         target: /avd-golden
 
     environment:
-      CREDIMI_URL: ${CREDIMI_URL:?http://localhost:8090}
+      CREDIMI_URL: ${CREDIMI_URL:?https://credimi.io}
       CREDIMI_INTERNAL_ADMIN_KEY: ${CREDIMI_INTERNAL_ADMIN_KEY:?}
-      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?localhost:7233}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?temporal.credimi.io:7233}
       BASE_NAME: ${BASE_NAME:?credimi}
       GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
       CREDIMI_PB_ADMIN: ${CREDIMI_PB_ADMIN:?}

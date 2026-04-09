@@ -102,7 +102,7 @@ Authentication options (choose one):
 - `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
 
 Optional environment variables (all modes):
-- `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
+- `TEMPORAL_ADDRESS` (default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (added as `X-Api-Key` header on internal Credimi API requests)
 
 Emulator-only optional environment variables:
@@ -248,14 +248,14 @@ task test
 
 Environment variables used by `serve`:
 
-- `CREDIMI_URL` (default: `http://localhost:8090`)
+- `CREDIMI_URL` (default: `https://credimi.io`)
 - `CREDIMI_RUNNER_ID` (required when workers are started)
 - `CREDIMI_USER_API_KEY` or `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS` for `CREDIMI_URL`
 - `CREDIMI_STAGING_URL` (optional, but if set should have matching creds)
 - `CREDIMI_STAGING_USER_API_KEY` or `CREDIMI_STAGING_PB_ADMIN` + `CREDIMI_STAGING_PB_PASS` for `CREDIMI_STAGING_URL`
 - `CREDIMI_DEV_URL` (optional, but if set should have matching creds)
 - `CREDIMI_DEV_USER_API_KEY` or `CREDIMI_DEV_PB_ADMIN` + `CREDIMI_DEV_PB_PASS` for `CREDIMI_DEV_URL`
-- `TEMPORAL_ADDRESS` (optional, defaults to Temporal SDK default host/port)
+- `TEMPORAL_ADDRESS` (optional, default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (optional, forwarded on internal Credimi API requests)
 
 Runner container envs (phone/emulator):
@@ -269,7 +269,7 @@ Authentication options:
 - `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
 
 Optional:
-- `TEMPORAL_ADDRESS` (defaults to Temporal SDK default host/port)
+- `TEMPORAL_ADDRESS` (default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded on internal Credimi API requests)
 - `BASE_NAME` (emulator only, default: `credimi`)
 - `GOLDEN_PATH` (emulator only, default: `/avd-golden/<BASE_NAME>-golden`)
@@ -278,20 +278,20 @@ Optional:
 Example `.env` for local serve:
 
 ```bash
-CREDIMI_URL=http://127.0.0.1:8090
+CREDIMI_URL=https://credimi.io
 CREDIMI_USER_API_KEY=your-user-api-key
 CREDIMI_RUNNER_ID=local-runner
-TEMPORAL_ADDRESS=127.0.0.1:7233
+TEMPORAL_ADDRESS=temporal.credimi.io:7233
 ```
 
 Alternative `.env` using admin credentials:
 
 ```bash
-CREDIMI_URL=http://127.0.0.1:8090
+CREDIMI_URL=https://credimi.io
 CREDIMI_PB_ADMIN=admin@example.com
 CREDIMI_PB_PASS=your-password
 CREDIMI_RUNNER_ID=local-runner
-TEMPORAL_ADDRESS=127.0.0.1:7233
+TEMPORAL_ADDRESS=temporal.credimi.io:7233
 ```
 
 ### iOS local usage
@@ -303,10 +303,10 @@ binary and call the API with `"platform": "ios"`. The server supports iOS instal
 Typical `.env` for a local iOS workflow:
 
 ```bash
-CREDIMI_URL=http://127.0.0.1:8090
+CREDIMI_URL=https://credimi.io
 CREDIMI_RUNNER_ID=local-ios-runner
 CREDIMI_INTERNAL_ADMIN_KEY=
-TEMPORAL_ADDRESS=127.0.0.1:7233
+TEMPORAL_ADDRESS=temporal.credimi.io:7233
 
 # Choose one auth mode
 CREDIMI_USER_API_KEY=

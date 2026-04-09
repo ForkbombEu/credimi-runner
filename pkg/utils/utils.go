@@ -21,6 +21,8 @@ type Instance struct {
 	UserAPIKey string
 }
 
+const defaultCredimiURL = "https://credimi.io"
+
 // tokenCacheEntry stores a cached token and its expiration time
 type tokenCacheEntry struct {
 	token     string
@@ -244,7 +246,7 @@ func (i Instance) tokenCacheKey() string {
 func LoadInstances() map[string]Instance {
 	return map[string]Instance{
 		"production": {
-			URL:        GetEnvironmentVariable("CREDIMI_URL", "http://localhost:8090"),
+			URL:        GetEnvironmentVariable("CREDIMI_URL", defaultCredimiURL),
 			PB_ADMIN:   GetEnvironmentVariable("CREDIMI_PB_ADMIN"),
 			PB_PASS:    GetEnvironmentVariable("CREDIMI_PB_PASS"),
 			UserAPIKey: GetEnvironmentVariable("CREDIMI_USER_API_KEY"),
