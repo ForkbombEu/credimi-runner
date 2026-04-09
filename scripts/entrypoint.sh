@@ -78,15 +78,38 @@ ensure_workflows_dir() {
   mkdir -p "$workflows_dir/workflows"
 }
 
+resolve_golden_path() {
+  local golden_root="$1"
+  local configured_golden_path="$2"
+
+  if [[ -d "$configured_golden_path" ]]; then
+    printf '%s\n' "$configured_golden_path"
+    return 0
+  fi
+
+  # Some deployments bind the extracted golden directory itself to /avd-golden
+  # instead of binding its parent and keeping the default nested path.
+  if [[ "$configured_golden_path" != "$golden_root" ]] && [[ -n "$(find "$golden_root" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+    echo "Golden assets not found at ${configured_golden_path}; using ${golden_root} because the mount already points at the golden directory." >&2
+    printf '%s\n' "$golden_root"
+    return 0
+  fi
+
+  printf '%s\n' "$configured_golden_path"
+}
+
 ensure_emulator_assets() {
   local avd_home="${ANDROID_AVD_HOME:-/avd-home}"
   local golden_root="${AVDCTL_GOLDEN_DIR:-/avd-golden}"
   local base_name="${BASE_NAME:-credimi}"
-  local golden_path="${GOLDEN_PATH:-${golden_root}/${base_name}-golden}"
+  local configured_golden_path="${GOLDEN_PATH:-${golden_root}/${base_name}-golden}"
+  local golden_path="${configured_golden_path}"
   local base_avd_dir="${avd_home}/${base_name}.avd"
   local base_ini="${avd_home}/${base_name}.ini"
 
   mkdir -p "$avd_home" "$golden_root"
+  golden_path="$(resolve_golden_path "$golden_root" "$configured_golden_path")"
+  export GOLDEN_PATH="$golden_path"
 
   if [[ ! -d "$base_avd_dir" || ! -f "$base_ini" ]]; then
     echo "ERROR: base AVD assets are missing at ${base_avd_dir} and ${base_ini}. Mount preloaded assets into ${avd_home}." >&2
@@ -95,7 +118,7 @@ ensure_emulator_assets() {
   fi
 
   if [[ ! -d "$golden_path" ]]; then
-    echo "ERROR: golden assets are missing at ${golden_path}. Mount preloaded assets into ${golden_root}." >&2
+    echo "ERROR: golden assets are missing at ${configured_golden_path}. Mount preloaded assets into ${golden_root}, or set GOLDEN_PATH=${golden_root} if the bind already points at the extracted golden directory." >&2
   else
     echo "Golden assets already present at ${golden_path}."
   fi
@@ -106,7 +129,7 @@ ensure_emulator_assets() {
   fi
 
   if [[ ! -d "$golden_path" ]]; then
-    echo "ERROR: golden assets are missing after setup (${golden_path})." >&2
+    echo "ERROR: golden assets are missing after setup (${configured_golden_path})." >&2
     exit 1
   fi
 }

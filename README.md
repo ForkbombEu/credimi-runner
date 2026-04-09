@@ -470,6 +470,8 @@ task run:service:emulator
 
 `HOST_AVD_HOME_PATH` and `HOST_AVD_GOLDEN_PATH` are host folders. `GOLDEN_PATH` is the
 path inside the container and must stay under `/avd-golden`.
+If your bind already points at the extracted `credimi-golden` directory itself, use
+`GOLDEN_PATH=/avd-golden` instead of the nested default.
 
 
 

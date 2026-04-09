@@ -652,7 +652,7 @@ main() {
         RUNNER_IMAGE="${RUNNER_IMAGE:-${DEFAULT_EMULATOR_IMAGE}}"
         ANDROID_KEYS_DIR="$(prompt_value ANDROID_KEYS_DIR "ADB keys directory" "${HOME}/.android")"
         HOST_AVD_HOME_PATH="$(prompt_value HOST_AVD_HOME_PATH "Host AVD home path" "${DEFAULT_HOST_AVD_HOME_PATH}")"
-        HOST_AVD_GOLDEN_PATH="$(prompt_value HOST_AVD_GOLDEN_PATH "Host golden assets path" "${DEFAULT_HOST_AVD_GOLDEN_PATH}")"
+        HOST_AVD_GOLDEN_PATH="$(prompt_value HOST_AVD_GOLDEN_PATH "Host golden assets path (parent or extracted dir)" "${DEFAULT_HOST_AVD_GOLDEN_PATH}")"
         BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "${DEFAULT_BASE_NAME}")"
         GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Container golden path" "/avd-golden/${BASE_NAME}-golden")"
         ;;
