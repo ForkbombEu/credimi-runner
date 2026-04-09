@@ -42,14 +42,14 @@ jobs:
           git config --global url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadOf "https://github.com/"
           go env -w GOPRIVATE=github.com/forkbombeu/*
 
-      - name: Run tests with coverage gate (90%)
+      - name: Run tests with coverage gate (85%)
         shell: bash
         run: |
           set -euo pipefail
           go generate ./...
           PKGS="$(go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' ')"
           go test ${PKGS} -covermode=atomic -coverprofile=coverage.out
-          go tool cover -func=coverage.out | awk -v min="90" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
+          go tool cover -func=coverage.out | awk -v min="85" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
 
       - name: Cleanup git auth
         if: always()

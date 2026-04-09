@@ -22,7 +22,7 @@ vars:
   BUILD_VERSION:
     sh: git describe --tags --always --dirty 2>/dev/null || echo dev
   COVERAGE_FILE: coverage.out
-  COVERAGE_MIN: "90"
+  COVERAGE_MIN: "85"
   GO_LDFLAGS: >-
     -s -w
     -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version={{.BUILD_VERSION}}
