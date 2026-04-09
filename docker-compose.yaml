@@ -3,6 +3,8 @@ services:
     image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner-phone:latest}
     restart: unless-stopped
     profiles: ["phone"]
+    command:
+      - --no-device
     env_file:
       - .env
     volumes:

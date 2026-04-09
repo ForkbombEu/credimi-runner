@@ -9,6 +9,12 @@ DEFAULT_TEMPORAL_ADDRESS="temporal.credimi.io:7233"
 DEFAULT_RUNNER_HOST="0.0.0.0"
 DEFAULT_RUNNER_PORT="8050"
 DEFAULT_RUNNER_CADDY_SITE=":80"
+DEFAULT_CONTAINER_MODE="usb"
+DEFAULT_PHONE_IMAGE="ghcr.io/forkbombeu/credimi-runner-phone:latest"
+DEFAULT_EMULATOR_IMAGE="ghcr.io/forkbombeu/credimi-runner-emulator:latest"
+DEFAULT_BASE_NAME="credimi"
+DEFAULT_HOST_AVD_HOME_PATH="/srv/credimi/avd-home"
+DEFAULT_HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden"
 
 tty_path=""
 if [ -r /dev/tty ]; then
@@ -76,6 +82,27 @@ load_env_defaults() {
         ;;
     esac
   done <"$env_file"
+}
+
+env_file_has_key() {
+  env_file="$1"
+  key="$2"
+  if command -v rg >/dev/null 2>&1; then
+    rg -q "^${key}=" "$env_file"
+  else
+    grep -q "^${key}=" "$env_file"
+  fi
+}
+
+append_env_if_missing() {
+  env_file="$1"
+  key="$2"
+  value="$3"
+
+  if [ ! -f "$env_file" ] || ! env_file_has_key "$env_file" "$key"; then
+    printf '%s=%s\n' "$key" "$value" >>"$env_file"
+    appended_env_keys="1"
+  fi
 }
 
 prompt_value() {
@@ -179,20 +206,87 @@ default_service_backend() {
 
 write_compose_file() {
   compose_file="$1"
-  cat >"$compose_file" <<'EOF'
+  runner_mode="${CREDIMI_CONTAINER_MODE:-${DEFAULT_CONTAINER_MODE}}"
+  runner_image="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
+
+  cat >"$compose_file" <<EOF
 services:
+EOF
+
+  case "$runner_mode" in
+    usb)
+      cat >>"$compose_file" <<EOF
   runner:
-    image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner-phone:latest}
+    image: ${runner_image}
     restart: unless-stopped
+    command:
+      - --usb
+    privileged: true
+    env_file:
+      - .env
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+      - adbkeys:/root/.android
+    expose:
+      - "8050"
+    labels:
+      caddy: "\${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "{{upstreams 8050}}"
+    networks:
+      - ingress
+EOF
+      ;;
+    emulator)
+      cat >>"$compose_file" <<EOF
+  runner:
+    image: ${runner_image}
+    restart: unless-stopped
+    command:
+      - --emulator
+    env_file:
+      - .env
+    environment:
+      BASE_NAME: "\${BASE_NAME:-${DEFAULT_BASE_NAME}}"
+      GOLDEN_PATH: "\${GOLDEN_PATH:-/avd-golden/\${BASE_NAME:-${DEFAULT_BASE_NAME}}-golden}"
+    devices:
+      - /dev/kvm:/dev/kvm
+    volumes:
+      - \${ANDROID_KEYS_DIR}:/root/.android
+      - \${HOST_AVD_HOME_PATH}:/avd-home
+      - \${HOST_AVD_GOLDEN_PATH}:/avd-golden
+    expose:
+      - "8050"
+    labels:
+      caddy: "\${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "{{upstreams 8050}}"
+    networks:
+      - ingress
+EOF
+      ;;
+    no_device)
+      cat >>"$compose_file" <<EOF
+  runner:
+    image: ${runner_image}
+    restart: unless-stopped
+    command:
+      - --no-device
     env_file:
       - .env
     expose:
       - "8050"
     labels:
-      caddy: "${RUNNER_CADDY_SITE:-:80}"
+      caddy: "\${RUNNER_CADDY_SITE:-:80}"
       caddy.reverse_proxy: "{{upstreams 8050}}"
     networks:
       - ingress
+EOF
+      ;;
+    *)
+      die "unsupported CREDIMI_CONTAINER_MODE: $runner_mode"
+      ;;
+  esac
+
+  cat >>"$compose_file" <<'EOF'
 
   runner_host:
     image: alpine:3.21
@@ -248,6 +342,7 @@ networks:
     name: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
 
 volumes:
+  adbkeys:
   caddy_data:
   caddy_config:
 EOF
@@ -401,6 +496,7 @@ CREDIMI_PB_PASS=${CREDIMI_PB_PASS}
 CREDIMI_INTERNAL_ADMIN_KEY=${CREDIMI_INTERNAL_ADMIN_KEY}
 TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS}
 CREDIMI_RUNNER_BACKEND=${CREDIMI_RUNNER_BACKEND}
+CREDIMI_CONTAINER_MODE=${CREDIMI_CONTAINER_MODE}
 RUNNER_HOST=${RUNNER_HOST}
 RUNNER_PORT=${RUNNER_PORT}
 RUNNER_DOMAIN=${RUNNER_DOMAIN}
@@ -408,7 +504,32 @@ RUNNER_CADDY_SITE=${RUNNER_CADDY_SITE}
 CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
 CREDIMI_SERVICE_MODE=${CREDIMI_SERVICE_MODE}
 RUNNER_IMAGE=${RUNNER_IMAGE}
+ANDROID_KEYS_DIR=${ANDROID_KEYS_DIR}
+HOST_AVD_HOME_PATH=${HOST_AVD_HOME_PATH}
+HOST_AVD_GOLDEN_PATH=${HOST_AVD_GOLDEN_PATH}
+BASE_NAME=${BASE_NAME}
+GOLDEN_PATH=${GOLDEN_PATH}
 EOF
+}
+
+write_missing_env_values() {
+  env_file="$1"
+  appended_env_keys="0"
+
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_BACKEND" "${CREDIMI_RUNNER_BACKEND}"
+  append_env_if_missing "$env_file" "CREDIMI_CONTAINER_MODE" "${CREDIMI_CONTAINER_MODE}"
+  append_env_if_missing "$env_file" "RUNNER_IMAGE" "${RUNNER_IMAGE}"
+  append_env_if_missing "$env_file" "RUNNER_HOST" "${RUNNER_HOST}"
+  append_env_if_missing "$env_file" "RUNNER_PORT" "${RUNNER_PORT}"
+  append_env_if_missing "$env_file" "RUNNER_DOMAIN" "${RUNNER_DOMAIN}"
+  append_env_if_missing "$env_file" "RUNNER_CADDY_SITE" "${RUNNER_CADDY_SITE}"
+  append_env_if_missing "$env_file" "CLOUDFLARE_TUNNEL_TOKEN" "${CLOUDFLARE_TUNNEL_TOKEN}"
+  append_env_if_missing "$env_file" "CREDIMI_SERVICE_MODE" "${CREDIMI_SERVICE_MODE}"
+  append_env_if_missing "$env_file" "ANDROID_KEYS_DIR" "${ANDROID_KEYS_DIR}"
+  append_env_if_missing "$env_file" "HOST_AVD_HOME_PATH" "${HOST_AVD_HOME_PATH}"
+  append_env_if_missing "$env_file" "HOST_AVD_GOLDEN_PATH" "${HOST_AVD_GOLDEN_PATH}"
+  append_env_if_missing "$env_file" "BASE_NAME" "${BASE_NAME}"
+  append_env_if_missing "$env_file" "GOLDEN_PATH" "${GOLDEN_PATH}"
 }
 
 main() {
@@ -428,7 +549,13 @@ main() {
     load_env_defaults "$env_file"
   fi
   CREDIMI_RUNNER_BACKEND="${CREDIMI_RUNNER_BACKEND:-$(default_service_backend)}"
+  CREDIMI_CONTAINER_MODE="${CREDIMI_CONTAINER_MODE-}"
   RUNNER_IMAGE="${RUNNER_IMAGE-}"
+  ANDROID_KEYS_DIR="${ANDROID_KEYS_DIR-}"
+  HOST_AVD_HOME_PATH="${HOST_AVD_HOME_PATH-}"
+  HOST_AVD_GOLDEN_PATH="${HOST_AVD_GOLDEN_PATH-}"
+  BASE_NAME="${BASE_NAME-}"
+  GOLDEN_PATH="${GOLDEN_PATH-}"
 
   case "$CREDIMI_RUNNER_BACKEND" in
     host)
@@ -509,6 +636,44 @@ main() {
     fi
   fi
 
+  if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+    CREDIMI_CONTAINER_MODE="$(prompt_choice CREDIMI_CONTAINER_MODE "Linux runner mode (usb/emulator/no_device)" "${DEFAULT_CONTAINER_MODE}" "usb emulator no_device")"
+
+    case "$CREDIMI_CONTAINER_MODE" in
+      usb)
+        RUNNER_IMAGE="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
+        ANDROID_KEYS_DIR=""
+        HOST_AVD_HOME_PATH=""
+        HOST_AVD_GOLDEN_PATH=""
+        BASE_NAME=""
+        GOLDEN_PATH=""
+        ;;
+      emulator)
+        RUNNER_IMAGE="${RUNNER_IMAGE:-${DEFAULT_EMULATOR_IMAGE}}"
+        ANDROID_KEYS_DIR="$(prompt_value ANDROID_KEYS_DIR "ADB keys directory" "${HOME}/.android")"
+        HOST_AVD_HOME_PATH="$(prompt_value HOST_AVD_HOME_PATH "Host AVD home path" "${DEFAULT_HOST_AVD_HOME_PATH}")"
+        HOST_AVD_GOLDEN_PATH="$(prompt_value HOST_AVD_GOLDEN_PATH "Host golden assets path" "${DEFAULT_HOST_AVD_GOLDEN_PATH}")"
+        BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "${DEFAULT_BASE_NAME}")"
+        GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Container golden path" "/avd-golden/${BASE_NAME}-golden")"
+        ;;
+      no_device)
+        RUNNER_IMAGE="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
+        ANDROID_KEYS_DIR=""
+        HOST_AVD_HOME_PATH=""
+        HOST_AVD_GOLDEN_PATH=""
+        BASE_NAME=""
+        GOLDEN_PATH=""
+        ;;
+    esac
+  else
+    CREDIMI_CONTAINER_MODE=""
+    ANDROID_KEYS_DIR=""
+    HOST_AVD_HOME_PATH=""
+    HOST_AVD_GOLDEN_PATH=""
+    BASE_NAME=""
+    GOLDEN_PATH=""
+  fi
+
   mkdir -p "$bin_dir" "$config_dir"
 
   if [ "$CREDIMI_RUNNER_BACKEND" = "host" ]; then
@@ -521,6 +686,8 @@ main() {
   write_launcher "$launcher_path"
   if [ "$existing_env" = "0" ]; then
     write_env_file "$env_file"
+  else
+    write_missing_env_values "$env_file"
   fi
 
   say ""
@@ -540,9 +707,23 @@ main() {
   say "Before starting the service, make sure Docker is installed and the daemon is running."
   if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
     say "This install uses the published runner container and does not start a local ${PROJECT_NAME} binary."
+    case "$CREDIMI_CONTAINER_MODE" in
+      usb)
+        say "Configured Linux runner mode: USB phone."
+        ;;
+      emulator)
+        say "Configured Linux runner mode: Android emulator."
+        ;;
+      no_device)
+        say "Configured Linux runner mode: no-device."
+        ;;
+    esac
   fi
   if [ "$existing_env" = "1" ]; then
     say "Reused existing configuration from ${env_file}."
+    if [ "${appended_env_keys:-0}" = "1" ]; then
+      say "Appended missing runtime settings to ${env_file}."
+    fi
   fi
   say ""
   say "Start the service with:"
