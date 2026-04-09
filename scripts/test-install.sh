@@ -146,6 +146,30 @@ run_install() {
   sh "${install_script}" >/dev/null
 }
 
+run_install_with_temp_dir() {
+  local case_dir="$1"
+  local temp_dir="$2"
+  local mock_dir="${case_dir}/mocks"
+
+  PATH="${mock_dir}:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_ID="/org-id/runner-01" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
+  CREDIMI_SERVICE_MODE="quick" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  CREDIMI_TEMP_DIR="${temp_dir}" \
+  sh "${install_script}" >/dev/null
+}
+
 run_linux_usb_case() {
   local case_dir
   case_dir="$(mktemp -d)"
@@ -169,6 +193,7 @@ run_linux_usb_case() {
   assert_file_absent "${binary}"
   assert_contains "CREDIMI_RUNNER_BACKEND=container" "${env_file}"
   assert_contains "CREDIMI_CONTAINER_MODE=usb" "${env_file}"
+  assert_contains "CREDIMI_TEMP_DIR=/tmp/credimi-runner-tmp" "${env_file}"
   assert_contains "runner:" "${compose_file}"
   assert_contains "--usb" "${compose_file}"
   assert_contains "privileged: true" "${compose_file}"
@@ -281,6 +306,7 @@ run_noninteractive_empty_optional_case() {
   local env_file="${case_dir}/config/credimi/runner/.env"
   assert_file_exists "${env_file}"
   assert_contains "CREDIMI_INTERNAL_ADMIN_KEY=" "${env_file}"
+  assert_contains "CREDIMI_TEMP_DIR=/tmp/credimi-runner-tmp" "${env_file}"
 }
 
 run_quick_mode_with_domain_case() {
@@ -418,6 +444,7 @@ RUNNER_IMAGE=ghcr.io/example/custom-runner:latest'
   assert_contains "CREDIMI_URL=https://persisted.example" "${env_file}"
   assert_contains "CREDIMI_RUNNER_ID=/org-id/persisted-runner" "${env_file}"
   assert_contains "CREDIMI_USER_API_KEY=persisted-user-api-key" "${env_file}"
+  assert_contains "CREDIMI_TEMP_DIR=/tmp/credimi-runner-tmp" "${env_file}"
   assert_contains "CREDIMI_CONTAINER_MODE=usb" "${env_file}"
   assert_contains "RUNNER_PORT=9000" "${env_file}"
   assert_contains "RUNNER_CADDY_SITE=:8080" "${env_file}"
@@ -474,6 +501,25 @@ EOF
   assert_contains "GOLDEN_PATH=" "${env_file}"
 }
 
+run_temp_dir_creation_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  local temp_dir="${case_dir}/credimi-temp"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  CREDIMI_CONTAINER_MODE="usb" \
+  run_install_with_temp_dir "${case_dir}" "${temp_dir}"
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+
+  [[ -d "${temp_dir}" ]] || fail "missing temp dir: ${temp_dir}"
+  assert_contains "CREDIMI_TEMP_DIR=${temp_dir}" "${env_file}"
+}
+
 run_linux_usb_case
 run_linux_emulator_case
 run_darwin_case
@@ -484,5 +530,6 @@ run_literal_env_loading_case
 run_host_bind_host_readiness_case
 run_existing_env_case
 run_existing_env_mode_switch_case
+run_temp_dir_creation_case
 
 printf 'install.sh tests passed\n'

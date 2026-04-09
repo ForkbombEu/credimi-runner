@@ -5,6 +5,7 @@ REPO_OWNER="ForkbombEu"
 REPO_NAME="credimi-runner"
 PROJECT_NAME="credimi-runner"
 DEFAULT_CREDIMI_URL="https://credimi.io"
+DEFAULT_CREDIMI_TEMP_DIR="/tmp/credimi-runner-tmp"
 DEFAULT_TEMPORAL_ADDRESS="temporal.credimi.io:7233"
 DEFAULT_RUNNER_HOST="0.0.0.0"
 DEFAULT_RUNNER_PORT="8050"
@@ -626,6 +627,7 @@ CREDIMI_USER_API_KEY=${CREDIMI_USER_API_KEY}
 CREDIMI_PB_ADMIN=${CREDIMI_PB_ADMIN}
 CREDIMI_PB_PASS=${CREDIMI_PB_PASS}
 CREDIMI_INTERNAL_ADMIN_KEY=${CREDIMI_INTERNAL_ADMIN_KEY}
+CREDIMI_TEMP_DIR=${CREDIMI_TEMP_DIR}
 TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS}
 CREDIMI_RUNNER_BACKEND=${CREDIMI_RUNNER_BACKEND}
 CREDIMI_CONTAINER_MODE=${CREDIMI_CONTAINER_MODE}
@@ -650,6 +652,7 @@ write_missing_env_values() {
 
   append_env_if_missing "$env_file" "CREDIMI_RUNNER_BACKEND" "${CREDIMI_RUNNER_BACKEND}"
   append_env_if_missing "$env_file" "CREDIMI_CONTAINER_MODE" "${CREDIMI_CONTAINER_MODE}"
+  append_env_if_missing "$env_file" "CREDIMI_TEMP_DIR" "${CREDIMI_TEMP_DIR}"
   append_env_if_missing "$env_file" "RUNNER_IMAGE" "${RUNNER_IMAGE}"
   append_env_if_missing "$env_file" "RUNNER_HOST" "${RUNNER_HOST}"
   append_env_if_missing "$env_file" "RUNNER_PORT" "${RUNNER_PORT}"
@@ -682,6 +685,7 @@ main() {
   fi
   CREDIMI_RUNNER_BACKEND="$(resolved_value CREDIMI_RUNNER_BACKEND "$(default_service_backend)")"
   CREDIMI_CONTAINER_MODE="${CREDIMI_CONTAINER_MODE-}"
+  CREDIMI_TEMP_DIR="$(resolved_value CREDIMI_TEMP_DIR "${DEFAULT_CREDIMI_TEMP_DIR}")"
   RUNNER_IMAGE="${RUNNER_IMAGE-}"
   ANDROID_KEYS_DIR="${ANDROID_KEYS_DIR-}"
   HOST_AVD_HOME_PATH="${HOST_AVD_HOME_PATH-}"
@@ -783,7 +787,19 @@ main() {
     GOLDEN_PATH=""
   fi
 
-  mkdir -p "$bin_dir" "$config_dir"
+  if [ -z "$CREDIMI_TEMP_DIR" ]; then
+    CREDIMI_TEMP_DIR="${DEFAULT_CREDIMI_TEMP_DIR}"
+  fi
+  if [ -e "$CREDIMI_TEMP_DIR" ] && [ ! -d "$CREDIMI_TEMP_DIR" ]; then
+    fallback_temp_dir="${DEFAULT_CREDIMI_TEMP_DIR}"
+    if [ "$CREDIMI_TEMP_DIR" = "$fallback_temp_dir" ]; then
+      fallback_temp_dir="${DEFAULT_CREDIMI_TEMP_DIR}-${USER:-runner}"
+    fi
+    warn "CREDIMI_TEMP_DIR path ${CREDIMI_TEMP_DIR} exists and is not a directory; using ${fallback_temp_dir} instead."
+    CREDIMI_TEMP_DIR="$fallback_temp_dir"
+  fi
+
+  mkdir -p "$bin_dir" "$config_dir" "$CREDIMI_TEMP_DIR"
 
   if [ "$CREDIMI_RUNNER_BACKEND" = "host" ]; then
     say "Downloading ${binary_url}"
