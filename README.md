@@ -6,27 +6,55 @@ Use it to run Maestro tests or adb commands from inside the container.
 
 ## 🚀 Quick start
 
-Download and install the latest `credimi-runner` binary with a single command:
+Install `credimi-runner-service` with the bootstrap installer:
 
 ```bash
-curl -fsSL "https://github.com/ForkbombEu/credimi-runner/releases/latest/download/credimi-runner-$(uname -s)-$(uname -m)" -o credimi-runner && chmod +x credimi-runner
+curl -fsSL https://raw.githubusercontent.com/ForkbombEu/credimi-runner/main/install.sh | sh
 ```
 
 This works on **macOS** (Intel and Apple Silicon) and **Linux** (x86\_64 and arm64).
 
-Then start the server:
+Then start the service:
 
 ```bash
-./credimi-runner serve --host 127.0.0.1 --port 8050
+credimi-runner-service
 ```
 
-Check which build you downloaded:
+The installer writes the runtime configuration under `~/.config/credimi/runner/` and installs
+`credimi-runner-service` into `~/.local/bin` by default.
+
+On macOS, it also installs the local `credimi-runner` binary. You can verify that with:
 
 ```bash
-./credimi-runner version
+credimi-runner version
 ```
 
-See the [Run API server locally](#run-api-server-locally-serve) section for environment variables and configuration options.
+See [One-command install](#one-command-install) and [Run API server locally](#run-api-server-locally-serve) for configuration details and alternate workflows.
+
+## One-command install
+
+For a no-clone host install, use the bootstrap script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ForkbombEu/credimi-runner/main/install.sh | sh
+```
+
+What it does:
+
+- on macOS, downloads the latest release binary for your OS and CPU
+- installs `credimi-runner-service` into `~/.local/bin` by default
+- on macOS, also installs the local `credimi-runner` binary into `~/.local/bin`
+- on Linux, asks whether to run a USB phone or the Android emulator, then uses the matching published container instead of starting a local `credimi-runner serve` process
+- writes config to `~/.config/credimi/runner/.env`
+- writes a minimal Docker Compose file to `~/.config/credimi/runner/docker-compose.yaml`
+- if `~/.config/credimi/runner/.env` already exists, reuses it without overwriting it and only appends any missing runtime settings that older installs did not have yet
+- asks the required questions interactively, then prints the one-line command to start the service
+
+Once you publish the same script behind your own domain, the flow can be:
+
+```bash
+curl -fsSL https://credimi.run | sh
+```
 
 ## Quickstart (first-time users)
 
@@ -51,16 +79,30 @@ If your device doesn’t show **Wireless debugging**, you can enable **ADB debug
 then use “ADB over network” or “ADB over Wi‑Fi” if your OEM provides it. The goal is to
 have the device listening on a TCP port shown on the phone.
 
-### 2) Run the image (no build required)
+### 2) Start the service (recommended)
 
-Below are the only two commands you need after phone setup.
+Preferred day-to-day entrypoints:
+
+- `task service:phone` runs the published Android phone runner behind Dockerized Caddy and a quick Cloudflare tunnel.
+- `task service:local` runs the local `credimi-runner serve` binary behind Dockerized Caddy and a quick Cloudflare tunnel. This is the preferred path for macOS host runs, including iOS simulator workflows that need host tools such as `xcrun`.
+
+Advanced variants:
+
+- `task -a service:phone:named` for a named Cloudflare tunnel with the published phone image.
+- `task -a service:local:named` for a named Cloudflare tunnel with the local host binary.
+
+Low-level direct container examples are still available below for debugging and one-off usage.
+
+### 3) Low-level container runs (optional)
+
+These examples are useful for debugging or direct device access without Caddy/Tunnel.
 
 > [!IMPORTANT]
 > **Wi‑Fi (Wireless debugging)**
 > ```bash
 > # If your phone shows IP:PORT, pass it as a single argument
 > docker run --rm -it --network host \
->   -e CREDIMI_URL=http://127.0.0.1:8090 \
+>   -e CREDIMI_URL=https://credimi.io \
 >   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/org-id/runner-phone-01 \
 >   -v adbkeys:/root/.android \
@@ -71,7 +113,7 @@ Below are the only two commands you need after phone setup.
 > **USB (cable)**
 > ```bash
 > docker run --rm -it --privileged --network host \
->   -e CREDIMI_URL=http://127.0.0.1:8090 \
+>   -e CREDIMI_URL=https://credimi.io \
 >   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-phone-01 \
 >   -v /dev/bus/usb:/dev/bus/usb \
@@ -83,7 +125,7 @@ Below are the only two commands you need after phone setup.
 > **Emulator (requires KVM)**
 > ```bash
 > docker run --rm -it --device /dev/kvm --network host \
->   -e CREDIMI_URL=http://127.0.0.1:8090 \
+>   -e CREDIMI_URL=https://credimi.io \
 >   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-emulator-01 \
 >   -e GOLDEN_PATH=/avd-golden/credimi-golden \
@@ -93,17 +135,17 @@ Below are the only two commands you need after phone setup.
 >   ghcr.io/ForkbombEu/credimi-runner-emulator:latest
 > ```
 
-Required environment variables (all modes):
-- `CREDIMI_URL`
+Minimum useful environment variables (all modes):
 - `CREDIMI_RUNNER_ID`
 
 Authentication options (choose one):
 - `CREDIMI_USER_API_KEY`
 - `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
 
-Optional environment variables (all modes):
+Defaulted/optional environment variables (all modes):
+- `CREDIMI_URL` (default: `https://credimi.io`)
 - `TEMPORAL_ADDRESS` (default: `temporal.credimi.io:7233`)
-- `CREDIMI_INTERNAL_ADMIN_KEY` (added as `X-Api-Key` header on internal Credimi API requests)
+- `CREDIMI_INTERNAL_ADMIN_KEY` (added as `Credimi-Api-Key` on internal Credimi API requests)
 
 Emulator-only optional environment variables:
 - `BASE_NAME` (default: `credimi`)
@@ -151,7 +193,7 @@ docker run --rm -it --network host \
 
 ```bash
 docker run --rm -it --network host \
-  -e CREDIMI_URL=http://127.0.0.1:8090 \
+  -e CREDIMI_URL=https://credimi.io \
   -e CREDIMI_USER_API_KEY=your-user-api-key \
   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-phone-01 \
   ghcr.io/ForkbombEu/credimi-runner-phone:latest --no-device
@@ -256,21 +298,26 @@ Environment variables used by `serve`:
 - `CREDIMI_DEV_URL` (optional, but if set should have matching creds)
 - `CREDIMI_DEV_USER_API_KEY` or `CREDIMI_DEV_PB_ADMIN` + `CREDIMI_DEV_PB_PASS` for `CREDIMI_DEV_URL`
 - `TEMPORAL_ADDRESS` (optional, default: `temporal.credimi.io:7233`)
-- `CREDIMI_INTERNAL_ADMIN_KEY` (optional, forwarded on internal Credimi API requests)
+- `CREDIMI_INTERNAL_ADMIN_KEY` (optional, forwarded as `Credimi-Api-Key` on internal Credimi API requests)
+
+Local env loading for `serve`:
+
+- If a `.env` file exists in the current working directory, it is loaded before startup.
+- Otherwise `serve` falls back to `$XDG_CONFIG_HOME/credimi/runner/.env`, or `~/.config/credimi/runner/.env` when `XDG_CONFIG_HOME` is unset.
 
 Runner container envs (phone/emulator):
 
-Required:
-- `CREDIMI_URL`
+Minimum useful:
 - `CREDIMI_RUNNER_ID`
 
 Authentication options:
 - `CREDIMI_USER_API_KEY`
 - `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
 
-Optional:
+Defaulted/optional:
+- `CREDIMI_URL` (default: `https://credimi.io`)
 - `TEMPORAL_ADDRESS` (default: `temporal.credimi.io:7233`)
-- `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded on internal Credimi API requests)
+- `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded as `Credimi-Api-Key` on internal Credimi API requests)
 - `BASE_NAME` (emulator only, default: `credimi`)
 - `GOLDEN_PATH` (emulator only, default: `/avd-golden/<BASE_NAME>-golden`)
 - `ADB_PRIVATE_KEY` and `ADB_PUBLIC_KEY` (emulator only, provide to inject ADB keys; otherwise the container uses mounted keys if present, or disables ADB auth keys)
@@ -343,11 +390,10 @@ The tunnel URL is printed in the running output.
 Quick tunnel with the local macOS/Linux binary instead of Docker:
 
 ```bash
-brew install cloudflared
 task service:local
 ```
 
-This starts `./bin/credimi-runner serve --host 127.0.0.1 --port 8050` and points `cloudflared` at it.
+This starts the local `credimi-runner serve` binary on the host and runs `runner_host`, `caddy`, and `cloudflared` from `docker-compose.yaml`. It is the recommended path for macOS/iOS simulator workflows.
 
 Named tunnel (your own domain):
 
@@ -365,7 +411,6 @@ Named tunnel with the local macOS/Linux binary:
 # Configure in .env (recommended)
 # CLOUDFLARE_TUNNEL_TOKEN=xxxxxxxx
 # RUNNER_DOMAIN=api.example.com
-brew install cloudflared
 task -a service:local:named
 ```
 
@@ -380,7 +425,8 @@ Notes:
 - `docker compose --profile named up` starts both `tunnel` and `tunnel_named`; prefer explicit services as above.
 - The compose file uses `ghcr.io/forkbombeu/credimi-runner-phone:latest` by default.
 - To run your local image instead: `task -a service:phone:local:named`.
-- The local Taskfile flow requires `cloudflared` installed on the host.
+- The local Taskfile flow uses Dockerized `caddy` and `cloudflared`; `cloudflared` does not need to be installed on the host.
+- The local host-binary flow binds `credimi-runner serve` on `RUNNER_HOST` so Docker can reach it. The Taskfile default is `0.0.0.0`.
 - Stop everything: `docker compose down --remove-orphans`.
 
 </details>
@@ -427,6 +473,8 @@ task run:service:emulator
 
 `HOST_AVD_HOME_PATH` and `HOST_AVD_GOLDEN_PATH` are host folders. `GOLDEN_PATH` is the
 path inside the container and must stay under `/avd-golden`.
+If your bind already points at the extracted `credimi-golden` directory itself, use
+`GOLDEN_PATH=/avd-golden` instead of the nested default.
 
 
 

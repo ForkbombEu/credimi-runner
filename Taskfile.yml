@@ -12,7 +12,7 @@ vars:
   ADBKEYS_VOL: adbkeys
   # Override like: task dev:phone PHONE=192.168.1.42:38349
   PHONE: 192.168.1.42:38349
-  RUNNER_HOST: 127.0.0.1
+  RUNNER_HOST: 0.0.0.0
   RUNNER_PORT: "8050"
 
   # Build and test outputs
@@ -121,7 +121,7 @@ tasks:
       - docker compose up runner caddy tunnel
 
   "service:local":
-    desc: Build the local binary and expose it with a quick Cloudflare tunnel
+    desc: Build the local binary and expose it with Dockerized caddy + quick Cloudflare tunnel
     deps: ["build"]
     cmds:
       - >-
@@ -216,13 +216,13 @@ tasks:
       - docker compose --profile phone up
 
   "run:service:local":
-    desc: Build local binary and expose it with a quick Cloudflare tunnel
+    desc: Build local binary and expose it with Dockerized caddy + quick Cloudflare tunnel
     deps: ["build"]
     cmds:
       - BIN_PATH=./{{.BIN_DIR}}/{{.APP_NAME}} RUNNER_HOST={{.RUNNER_HOST}} RUNNER_PORT={{.RUNNER_PORT}} ./scripts/run-local-cloudflare-tunnel.sh quick
 
   "run:service:local:named":
-    desc: Build local binary and expose it with a named Cloudflare tunnel
+    desc: Build local binary and expose it with Dockerized caddy + named Cloudflare tunnel
     deps: ["build"]
     cmds:
       - BIN_PATH=./{{.BIN_DIR}}/{{.APP_NAME}} RUNNER_HOST={{.RUNNER_HOST}} RUNNER_PORT={{.RUNNER_PORT}} ./scripts/run-local-cloudflare-tunnel.sh named
