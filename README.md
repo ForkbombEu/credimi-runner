@@ -38,10 +38,13 @@ curl -fsSL https://raw.githubusercontent.com/ForkbombEu/credimi-runner/main/inst
 
 What it does:
 
-- downloads the latest release binary for your OS and CPU
-- installs `credimi-runner` and `credimi-runner-service` into `~/.local/bin` by default
+- on macOS, downloads the latest release binary for your OS and CPU
+- installs `credimi-runner-service` into `~/.local/bin` by default
+- on macOS, also installs the local `credimi-runner` binary into `~/.local/bin`
+- on Linux, uses the published `ghcr.io/forkbombeu/credimi-runner-phone:latest` container instead of starting a local `credimi-runner serve` process
 - writes config to `~/.config/credimi/runner/.env`
 - writes a minimal Docker Compose file to `~/.config/credimi/runner/docker-compose.yaml`
+- if `~/.config/credimi/runner/.env` already exists, reuses it and skips the interactive questions instead of overwriting it
 - asks the required questions interactively, then prints the one-line command to start the service
 
 Once you publish the same script behind your own domain, the flow can be:

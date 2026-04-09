@@ -15,17 +15,67 @@ if [ -r /dev/tty ]; then
   tty_path="/dev/tty"
 fi
 
+supports_color() {
+  [ -t 2 ] || return 1
+  [ "${TERM:-}" != "dumb" ]
+}
+
+if supports_color; then
+  c_reset="$(printf '\033[0m')"
+  c_red="$(printf '\033[31m')"
+  c_green="$(printf '\033[32m')"
+  c_yellow="$(printf '\033[33m')"
+  c_blue="$(printf '\033[34m')"
+  c_bold="$(printf '\033[1m')"
+else
+  c_reset=""
+  c_red=""
+  c_green=""
+  c_yellow=""
+  c_blue=""
+  c_bold=""
+fi
+
 say() {
-  printf '%s\n' "$*" >&2
+  printf '%s%s%s\n' "${c_blue}" "$*" "${c_reset}" >&2
+}
+
+warn() {
+  printf '%s%s%s\n' "${c_yellow}" "$*" "${c_reset}" >&2
+}
+
+success() {
+  printf '%s%s%s\n' "${c_green}" "$*" "${c_reset}" >&2
 }
 
 die() {
-  say "Error: $*"
+  printf '%sError:%s %s\n' "${c_red}${c_bold}" "${c_reset}" "$*" >&2
   exit 1
 }
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+load_env_defaults() {
+  env_file="$1"
+  [ -f "$env_file" ] || return 0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ""|\#*)
+        continue
+        ;;
+      *=*)
+        key="${line%%=*}"
+        value="${line#*=}"
+        current_value="$(printenv "$key" 2>/dev/null || true)"
+        if [ -z "$current_value" ]; then
+          export "$key=$value"
+        fi
+        ;;
+    esac
+  done <"$env_file"
 }
 
 prompt_value() {
@@ -119,10 +169,31 @@ normalize_asset_name() {
   printf '%s-%s-%s' "$PROJECT_NAME" "$os_part" "$arch_part"
 }
 
+default_service_backend() {
+  case "$(uname -s)" in
+    Darwin) printf 'host' ;;
+    Linux) printf 'container' ;;
+    *) die "unsupported operating system: $(uname -s)" ;;
+  esac
+}
+
 write_compose_file() {
   compose_file="$1"
   cat >"$compose_file" <<'EOF'
 services:
+  runner:
+    image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner-phone:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    expose:
+      - "8050"
+    labels:
+      caddy: "${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "{{upstreams 8050}}"
+    networks:
+      - ingress
+
   runner_host:
     image: alpine:3.21
     restart: unless-stopped
@@ -194,6 +265,7 @@ config_dir="${CREDIMI_RUNNER_CONFIG_DIR:-${config_home}/credimi/runner}"
 env_file="${config_dir}/.env"
 compose_file="${config_dir}/docker-compose.yaml"
 bin_path="${script_dir}/credimi-runner"
+backend="${CREDIMI_RUNNER_BACKEND:-container}"
 
 if [[ -f "${env_file}" ]]; then
   set -a
@@ -205,7 +277,8 @@ fi
 mode="${1:-${CREDIMI_SERVICE_MODE:-quick}}"
 runner_host="${RUNNER_HOST:-0.0.0.0}"
 runner_port="${RUNNER_PORT:-8050}"
-compose_services=(runner_host caddy)
+backend="${CREDIMI_RUNNER_BACKEND:-${backend}}"
+compose_services=(caddy)
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -241,10 +314,6 @@ wait_for_runner() {
   return 1
 }
 
-[[ -x "${bin_path}" ]] || {
-  printf 'missing installed binary: %s\n' "${bin_path}" >&2
-  exit 1
-}
 [[ -f "${compose_file}" ]] || {
   printf 'missing compose file: %s\n' "${compose_file}" >&2
   exit 1
@@ -255,11 +324,28 @@ wait_for_runner() {
 }
 
 require_cmd docker
-require_cmd curl
 docker compose version >/dev/null 2>&1 || {
   printf 'docker compose is required\n' >&2
   exit 1
 }
+
+case "${backend}" in
+  host)
+    [[ -x "${bin_path}" ]] || {
+      printf 'missing installed binary: %s\n' "${bin_path}" >&2
+      exit 1
+    }
+    require_cmd curl
+    compose_services=(runner_host caddy)
+    ;;
+  container)
+    compose_services=(runner caddy)
+    ;;
+  *)
+    printf 'invalid CREDIMI_RUNNER_BACKEND: %s\n' "${backend}" >&2
+    exit 1
+    ;;
+esac
 
 case "${mode}" in
   quick)
@@ -292,10 +378,12 @@ esac
 
 trap cleanup EXIT INT TERM
 
-"${bin_path}" serve --host "${runner_host}" --port "${runner_port}" &
-runner_pid=$!
+if [[ "${backend}" == "host" ]]; then
+  "${bin_path}" serve --host "${runner_host}" --port "${runner_port}" &
+  runner_pid=$!
 
-wait_for_runner
+  wait_for_runner
+fi
 
 docker compose --env-file "${env_file}" -f "${compose_file}" up "${compose_services[@]}"
 EOF
@@ -312,17 +400,18 @@ CREDIMI_PB_ADMIN=${CREDIMI_PB_ADMIN}
 CREDIMI_PB_PASS=${CREDIMI_PB_PASS}
 CREDIMI_INTERNAL_ADMIN_KEY=${CREDIMI_INTERNAL_ADMIN_KEY}
 TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS}
+CREDIMI_RUNNER_BACKEND=${CREDIMI_RUNNER_BACKEND}
 RUNNER_HOST=${RUNNER_HOST}
 RUNNER_PORT=${RUNNER_PORT}
 RUNNER_DOMAIN=${RUNNER_DOMAIN}
 RUNNER_CADDY_SITE=${RUNNER_CADDY_SITE}
 CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
 CREDIMI_SERVICE_MODE=${CREDIMI_SERVICE_MODE}
+RUNNER_IMAGE=${RUNNER_IMAGE}
 EOF
 }
 
 main() {
-  need_cmd curl
   need_cmd chmod
   need_cmd mkdir
 
@@ -333,52 +422,112 @@ main() {
   launcher_path="${bin_dir}/${PROJECT_NAME}-service"
   compose_file="${config_dir}/docker-compose.yaml"
   env_file="${config_dir}/.env"
-  asset_name="$(normalize_asset_name)"
-  binary_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${asset_name}"
-
-  say "Installing ${PROJECT_NAME} for ${asset_name}"
-
-  CREDIMI_URL="$(prompt_value CREDIMI_URL "Credimi API URL" "${DEFAULT_CREDIMI_URL}")"
-  TEMPORAL_ADDRESS="$(prompt_value TEMPORAL_ADDRESS "Temporal address" "${DEFAULT_TEMPORAL_ADDRESS}")"
-  CREDIMI_RUNNER_ID="$(prompt_value CREDIMI_RUNNER_ID "Runner ID")"
-  auth_mode="$(prompt_choice CREDIMI_INSTALL_AUTH_MODE "Auth mode (api_key/admin)" "api_key" "api_key admin")"
-
-  CREDIMI_USER_API_KEY=""
-  CREDIMI_PB_ADMIN=""
-  CREDIMI_PB_PASS=""
-  if [ "$auth_mode" = "api_key" ]; then
-    CREDIMI_USER_API_KEY="$(prompt_value CREDIMI_USER_API_KEY "Credimi user API key" "" 1)"
-  else
-    CREDIMI_PB_ADMIN="$(prompt_value CREDIMI_PB_ADMIN "Credimi admin email")"
-    CREDIMI_PB_PASS="$(prompt_value CREDIMI_PB_PASS "Credimi admin password" "" 1)"
+  existing_env="0"
+  if [ -f "$env_file" ]; then
+    existing_env="1"
+    load_env_defaults "$env_file"
   fi
+  CREDIMI_RUNNER_BACKEND="${CREDIMI_RUNNER_BACKEND:-$(default_service_backend)}"
+  RUNNER_IMAGE="${RUNNER_IMAGE-}"
 
-  CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "" 1)"
-  CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "quick" "quick named")"
-  RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "${DEFAULT_RUNNER_HOST}")"
-  RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "${DEFAULT_RUNNER_PORT}")"
-  RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "${DEFAULT_RUNNER_CADDY_SITE}")"
+  case "$CREDIMI_RUNNER_BACKEND" in
+    host)
+      need_cmd curl
+      asset_name="$(normalize_asset_name)"
+      binary_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${asset_name}"
+      say "Installing ${PROJECT_NAME} for ${asset_name}"
+      ;;
+    container)
+      say "Installing ${PROJECT_NAME} service using the published runner container"
+      ;;
+    *)
+      die "unsupported CREDIMI_RUNNER_BACKEND: $CREDIMI_RUNNER_BACKEND"
+      ;;
+  esac
 
-  RUNNER_DOMAIN=""
-  CLOUDFLARE_TUNNEL_TOKEN=""
-  if [ "$CREDIMI_SERVICE_MODE" = "named" ]; then
-    RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain")"
-    CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "" 1)"
+  if [ "$existing_env" = "1" ]; then
+    warn "Existing configuration found at ${env_file}; keeping it unchanged."
+    CREDIMI_URL="${CREDIMI_URL:-${DEFAULT_CREDIMI_URL}}"
+    TEMPORAL_ADDRESS="${TEMPORAL_ADDRESS:-${DEFAULT_TEMPORAL_ADDRESS}}"
+    RUNNER_HOST="${RUNNER_HOST:-${DEFAULT_RUNNER_HOST}}"
+    RUNNER_PORT="${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
+    RUNNER_CADDY_SITE="${RUNNER_CADDY_SITE:-${DEFAULT_RUNNER_CADDY_SITE}}"
+    CREDIMI_SERVICE_MODE="${CREDIMI_SERVICE_MODE:-quick}"
+
+    CREDIMI_RUNNER_ID="${CREDIMI_RUNNER_ID:-}"
+    [ -n "$CREDIMI_RUNNER_ID" ] || die "existing config is missing CREDIMI_RUNNER_ID: ${env_file}"
+
+    if [ -n "${CREDIMI_USER_API_KEY:-}" ]; then
+      CREDIMI_PB_ADMIN=""
+      CREDIMI_PB_PASS=""
+    else
+      CREDIMI_PB_ADMIN="${CREDIMI_PB_ADMIN:-}"
+      CREDIMI_PB_PASS="${CREDIMI_PB_PASS:-}"
+      [ -n "$CREDIMI_PB_ADMIN" ] || die "existing config is missing CREDIMI_PB_ADMIN: ${env_file}"
+      [ -n "$CREDIMI_PB_PASS" ] || die "existing config is missing CREDIMI_PB_PASS: ${env_file}"
+      CREDIMI_USER_API_KEY=""
+    fi
+
+    CREDIMI_INTERNAL_ADMIN_KEY="${CREDIMI_INTERNAL_ADMIN_KEY:-}"
+    if [ "$CREDIMI_SERVICE_MODE" = "named" ]; then
+      RUNNER_DOMAIN="${RUNNER_DOMAIN:-}"
+      CLOUDFLARE_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+      [ -n "$RUNNER_DOMAIN" ] || die "existing config is missing RUNNER_DOMAIN for named mode: ${env_file}"
+      [ -n "$CLOUDFLARE_TUNNEL_TOKEN" ] || die "existing config is missing CLOUDFLARE_TUNNEL_TOKEN for named mode: ${env_file}"
+    else
+      RUNNER_DOMAIN=""
+      CLOUDFLARE_TUNNEL_TOKEN=""
+    fi
+  else
+    CREDIMI_URL="$(prompt_value CREDIMI_URL "Credimi API URL" "${DEFAULT_CREDIMI_URL}")"
+    TEMPORAL_ADDRESS="$(prompt_value TEMPORAL_ADDRESS "Temporal address" "${DEFAULT_TEMPORAL_ADDRESS}")"
+    CREDIMI_RUNNER_ID="$(prompt_value CREDIMI_RUNNER_ID "Runner ID")"
+    auth_mode="$(prompt_choice CREDIMI_INSTALL_AUTH_MODE "Auth mode (api_key/admin)" "api_key" "api_key admin")"
+
+    if [ "$auth_mode" = "api_key" ]; then
+      CREDIMI_USER_API_KEY="$(prompt_value CREDIMI_USER_API_KEY "Credimi user API key" "" 1)"
+      CREDIMI_PB_ADMIN=""
+      CREDIMI_PB_PASS=""
+    else
+      CREDIMI_PB_ADMIN="$(prompt_value CREDIMI_PB_ADMIN "Credimi admin email")"
+      CREDIMI_PB_PASS="$(prompt_value CREDIMI_PB_PASS "Credimi admin password" "" 1)"
+      CREDIMI_USER_API_KEY=""
+    fi
+
+    CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "" 1)"
+    CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "quick" "quick named")"
+    RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "${DEFAULT_RUNNER_HOST}")"
+    RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "${DEFAULT_RUNNER_PORT}")"
+    RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "${DEFAULT_RUNNER_CADDY_SITE}")"
+
+    if [ "$CREDIMI_SERVICE_MODE" = "named" ]; then
+      RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain")"
+      CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "" 1)"
+    else
+      RUNNER_DOMAIN=""
+      CLOUDFLARE_TUNNEL_TOKEN=""
+    fi
   fi
 
   mkdir -p "$bin_dir" "$config_dir"
 
-  say "Downloading ${binary_url}"
-  curl -fsSL "$binary_url" -o "$binary_path"
-  chmod +x "$binary_path"
+  if [ "$CREDIMI_RUNNER_BACKEND" = "host" ]; then
+    say "Downloading ${binary_url}"
+    curl -fsSL "$binary_url" -o "$binary_path"
+    chmod +x "$binary_path"
+  fi
 
   write_compose_file "$compose_file"
   write_launcher "$launcher_path"
-  write_env_file "$env_file"
+  if [ "$existing_env" = "0" ]; then
+    write_env_file "$env_file"
+  fi
 
   say ""
-  say "Installed:"
-  say "- ${binary_path}"
+  success "Installed:"
+  if [ "$CREDIMI_RUNNER_BACKEND" = "host" ]; then
+    say "- ${binary_path}"
+  fi
   say "- ${launcher_path}"
   say "- ${compose_file}"
   say "- ${env_file}"
@@ -389,6 +538,12 @@ main() {
     say ""
   fi
   say "Before starting the service, make sure Docker is installed and the daemon is running."
+  if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+    say "This install uses the published runner container and does not start a local ${PROJECT_NAME} binary."
+  fi
+  if [ "$existing_env" = "1" ]; then
+    say "Reused existing configuration from ${env_file}."
+  fi
   say ""
   say "Start the service with:"
   say "${PROJECT_NAME}-service"
