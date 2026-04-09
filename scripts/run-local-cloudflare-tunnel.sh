@@ -4,18 +4,35 @@ set -euo pipefail
 
 mode="${1:-quick}"
 
-if [[ -f .env ]]; then
+find_env_file() {
+  if [[ -f .env ]]; then
+    printf '.env\n'
+    return 0
+  fi
+
+  local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  local config_env="${config_home}/credimi/runner/.env"
+  if [[ -f "${config_env}" ]]; then
+    printf '%s\n' "${config_env}"
+    return 0
+  fi
+
+  return 1
+}
+
+if env_file="$(find_env_file)"; then
   set -a
-  # shellcheck disable=SC1091
-  source .env
+  # shellcheck disable=SC1090
+  source "${env_file}"
   set +a
 fi
 
 bin_path="${BIN_PATH:-./bin/credimi-runner}"
-runner_host="${RUNNER_HOST:-127.0.0.1}"
+runner_host="${RUNNER_HOST:-0.0.0.0}"
 runner_port="${RUNNER_PORT:-8050}"
 runner_domain="${RUNNER_DOMAIN:-}"
 cloudflare_token="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+compose_services=(runner_host caddy)
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -29,13 +46,16 @@ cleanup() {
     kill "${runner_pid}" >/dev/null 2>&1 || true
     wait "${runner_pid}" >/dev/null 2>&1 || true
   fi
+
+  docker compose stop "${compose_services[@]}" >/dev/null 2>&1 || true
+  docker compose rm -f "${compose_services[@]}" >/dev/null 2>&1 || true
 }
 
 wait_for_runner() {
   local attempt
 
   for attempt in $(seq 1 50); do
-    if curl --silent --output /dev/null "http://${runner_host}:${runner_port}/" >/dev/null 2>&1; then
+    if curl --silent --output /dev/null "http://127.0.0.1:${runner_port}/" >/dev/null 2>&1; then
       return 0
     fi
 
@@ -47,12 +67,12 @@ wait_for_runner() {
     sleep 0.2
   done
 
-  printf 'runner did not become ready on http://%s:%s/\n' "${runner_host}" "${runner_port}" >&2
+  printf 'runner did not become ready on http://127.0.0.1:%s/\n' "${runner_port}" >&2
   return 1
 }
 
 require_cmd "${bin_path}"
-require_cmd cloudflared
+require_cmd docker
 require_cmd curl
 
 if [[ "${mode}" == "named" ]] && [[ -z "${cloudflare_token}" ]]; then
@@ -65,6 +85,12 @@ if [[ "${mode}" == "quick" ]] && [[ -n "${runner_domain}" ]]; then
   exit 1
 fi
 
+if [[ "${mode}" == "named" ]]; then
+  compose_services+=(tunnel_named)
+else
+  compose_services+=(tunnel)
+fi
+
 trap cleanup EXIT INT TERM
 
 "${bin_path}" serve --host "${runner_host}" --port "${runner_port}" &
@@ -72,9 +98,4 @@ runner_pid=$!
 
 wait_for_runner
 
-if [[ "${mode}" == "named" ]]; then
-  TUNNEL_TOKEN="${cloudflare_token}" cloudflared tunnel --no-autoupdate run
-  exit $?
-fi
-
-cloudflared tunnel --no-autoupdate --url "http://${runner_host}:${runner_port}"
+docker compose up "${compose_services[@]}"

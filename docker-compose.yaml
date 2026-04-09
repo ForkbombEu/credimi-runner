@@ -40,6 +40,22 @@ services:
       - ./pkg/gen/http:/src/pkg/gen/http:ro
     network_mode: host
 
+  runner_host:
+    image: alpine:3.21
+    restart: unless-stopped
+    profiles: ["local"]
+    command:
+      - /bin/sh
+      - -c
+      - "trap : TERM INT; while true; do sleep 3600; done"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    labels:
+      caddy: "${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "host.docker.internal:${RUNNER_PORT:-8050}"
+    networks:
+      - ingress
+
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine
     restart: unless-stopped
