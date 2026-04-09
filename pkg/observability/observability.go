@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -60,6 +61,10 @@ func ConfigFromEnv() Config {
 	if serviceName == "" {
 		serviceName = defaultServiceName
 	}
+	serviceVersion := strings.TrimSpace(os.Getenv("OTEL_SERVICE_VERSION"))
+	if serviceVersion == "" {
+		serviceVersion = buildinfo.String()
+	}
 
 	environment := strings.TrimSpace(os.Getenv("OTEL_DEPLOYMENT_ENVIRONMENT"))
 	if environment == "" {
@@ -78,7 +83,7 @@ func ConfigFromEnv() Config {
 	return Config{
 		Enabled:        enabled,
 		ServiceName:    serviceName,
-		ServiceVersion: strings.TrimSpace(os.Getenv("OTEL_SERVICE_VERSION")),
+		ServiceVersion: serviceVersion,
 		Environment:    environment,
 		RunnerID:       runnerID,
 		InstanceID:     instanceID,

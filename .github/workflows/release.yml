@@ -12,6 +12,9 @@ permissions:
 
 env:
   CREDIMI_EXTRA_PAT: ${{ secrets.CREDIMI_EXTRA_PAT }}
+  DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
 jobs:
   go-test:
@@ -152,11 +155,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub (optional)
+        if: env.DOCKERHUB_NAMESPACE != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
       - name: Extract Docker metadata (${{ matrix.target }})
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/credimi-runner-${{ matrix.target }}
+          tags: |
+            type=raw,value=latest
+            type=sha
+
+      - name: Extract Docker metadata for Docker Hub (${{ matrix.target }}) (optional)
+        id: meta_dockerhub
+        if: env.DOCKERHUB_NAMESPACE != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
+        uses: docker/metadata-action@v5
+        with:
+          images: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/credimi-runner-${{ matrix.target }}
           tags: |
             type=raw,value=latest
             type=sha
@@ -169,7 +190,11 @@ jobs:
           target: ${{ matrix.target }}
           push: true
           platforms: ${{ matrix.platforms }}
-          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ needs.semantic-release.outputs.release_created == 'true' && needs.semantic-release.outputs.tag || format('main-{0}', github.sha) }}
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ steps.meta_dockerhub.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           secret-envs: |
             credimi_extra_pat=CREDIMI_EXTRA_PAT
@@ -195,4 +220,3 @@ jobs:
           fi
           curl -fsS --request GET "${COOLIFY_WEBHOOK_URL}" \
             --header "Authorization: Bearer ${COOLIFY_WEBHOOK_TOKEN}"
-

@@ -18,7 +18,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w
+      - -s -w -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version=v{{ .Version }}
 
 archives:
   - id: binaries
