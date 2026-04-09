@@ -13,7 +13,6 @@ import (
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
-	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -31,9 +30,12 @@ var serverCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start HTTP server to control  credimi mobile runner",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Load env (optional)
-		if err := godotenv.Load(); err != nil {
-			stdlog.Println("No .env file found, using environment variables")
+		// Load env from the working directory first, then from the XDG config dir.
+		envPath, err := loadDotEnv()
+		if err != nil {
+			stdlog.Printf("Failed to load .env file: %v", err)
+		} else if envPath == "" {
+			stdlog.Println("No .env file found in current directory or config directory, using environment variables")
 		}
 
 		format := cluelog.FormatJSON
