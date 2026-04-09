@@ -17,7 +17,8 @@ DEFAULT_HOST_AVD_HOME_PATH="/srv/credimi/avd-home"
 DEFAULT_HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden"
 
 tty_path=""
-if tty >/dev/null 2>&1 && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+# stdin is often a pipe during `curl ... | sh`; use /dev/tty directly when it is available.
+if [ -r /dev/tty ] && [ -w /dev/tty ] && ( : </dev/tty >/dev/tty ) 2>/dev/null; then
   tty_path="/dev/tty"
 fi
 
