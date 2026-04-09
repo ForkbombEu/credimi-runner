@@ -25,6 +25,8 @@ import (
 
 var clientCache sync.Map
 
+const defaultTemporalAddress = "temporal.credimi.io:7233"
+
 type temporalWorker interface {
 	RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions)
 	RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions)
@@ -209,7 +211,7 @@ func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to create tracing interceptor: %w", err)
 	}
-	hostPort := utils.GetEnvironmentVariable("TEMPORAL_ADDRESS", client.DefaultHostPort)
+	hostPort := utils.GetEnvironmentVariable("TEMPORAL_ADDRESS", defaultTemporalAddress)
 	c, err := client.NewLazyClient(client.Options{
 		HostPort:  hostPort,
 		Namespace: namespace,
