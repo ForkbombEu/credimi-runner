@@ -6,10 +6,10 @@ services:
     privileged: true
     init: true
     stop_grace_period: 2m
-    cpuset: "${CPUSET:-5}"
+    cpuset: "${CPUSET:-3-6}"
     cpus: "${CPUS:-4.0}"
-    mem_reservation: "${MEM_RESERVATION:-2g}"
-    shm_size: "${SHM_SIZE:-1g}"
+    mem_reservation: "${MEM_RESERVATION:-4g}"
+    shm_size: "${SHM_SIZE:-2g}"
 
     pids_limit: 4096
     ulimits:
