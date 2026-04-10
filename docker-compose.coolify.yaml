@@ -3,7 +3,20 @@ services:
     image: ghcr.io/forkbombeu/credimi-runner-emulator:latest
     pull_policy: always
     restart: unless-stopped
-    privileged: true             # needed for qemu/kvm/emulator access
+    privileged: true
+    init: true
+    stop_grace_period: 2m
+    cpuset: "${CPUSET:-3-6}"
+    cpus: "${CPUS:-4.0}"
+    mem_reservation: "${MEM_RESERVATION:-4g}"
+    shm_size: "${SHM_SIZE:-2g}"
+
+    pids_limit: 4096
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
     devices:
       - /dev/kvm:/dev/kvm
 
@@ -16,6 +29,7 @@ services:
         target: /avd-golden
 
     environment:
+      QEMU_AUDIO_DRV: none
       CREDIMI_URL: ${CREDIMI_URL:?https://credimi.io}
       CREDIMI_INTERNAL_ADMIN_KEY: ${CREDIMI_INTERNAL_ADMIN_KEY:?}
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?temporal.credimi.io:7233}

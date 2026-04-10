@@ -35,7 +35,7 @@ FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
 ############################
 # Base runtime (physical devices)
 ############################
-FROM debian:bookworm-slim AS device
+FROM ubuntu:22.04 AS device
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -106,6 +106,21 @@ RUN apt-get update \
     libvirt-daemon-system \
     libvirt-clients \
     bridge-utils \
+    libxkbfile1 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxi6 \
+    libxrandr2 \
+    libxtst6 \
+    libnss3 \
+    libxdamage1 \
+    libxrender1 \
+    libatk1.0-0 \
+    libcairo2 \
+    libdbus-1-3 \
+    libgl1 \
+    libgtk-3-0 \
+    libpulse0 \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -134,6 +149,14 @@ RUN sdkmanager --install \
     "system-images;android-35;google_apis_playstore;x86_64" \
     "emulator" \
     "build-tools;35.0.0"
+
+RUN rm -rf ${ANDROID_HOME}/emulator \
+    && wget -q https://dl.google.com/android/repository/emulator-linux_x64-13025442.zip -O emulator-linux_x64-13025442.zip \
+    && unzip -q emulator-linux_x64-13025442.zip -d ${ANDROID_HOME}/ \
+    && rm emulator-linux_x64-13025442.zip \
+    && ${ANDROID_HOME}/emulator/emulator -version
+
+RUN echo "auto.update=false" >> ${ANDROID_HOME}/emulator/emulator-user.ini
 
 # AVDs are stored outside /root/.android so mounting adb keys does not hide base AVDs.
 ENV ANDROID_AVD_HOME=/avd-home
