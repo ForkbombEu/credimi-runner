@@ -8,7 +8,6 @@ services:
     stop_grace_period: 2m
     cpuset: "${CPUSET:-5}"
     cpus: "${CPUS:-4.0}"
-    mem_limit: "${MEM_LIMIT:-6g}"
     mem_reservation: "${MEM_RESERVATION:-2g}"
     shm_size: "${SHM_SIZE:-1g}"
 
