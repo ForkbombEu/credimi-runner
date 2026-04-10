@@ -90,16 +90,50 @@ set -euo pipefail
 printf '%s\n' "$*" >>"${MOCK_LOG_DIR}/curl.log"
 
 out=""
+write_out=""
+url=""
 previous=""
 for arg in "$@"; do
   if [[ "${previous}" == "-o" ]]; then
     out="${arg}"
-    break
+  fi
+  if [[ "${previous}" == "--output" ]]; then
+    out="${arg}"
+  fi
+  if [[ "${previous}" == "--write-out" ]]; then
+    write_out="${arg}"
   fi
   previous="${arg}"
+  url="${arg}"
 done
 
+case "${url}" in
+  *"/api/collections/_superusers/auth-with-password")
+    [[ -n "${out}" ]] || exit 1
+    printf '{"token":"admin-token"}' >"${out}"
+    printf '200'
+    exit 0
+    ;;
+  *"/api/mobile-runner/preview-id")
+    [[ -n "${out}" ]] || exit 1
+    printf '{"organization":"%s","runner_id":"%s"}' \
+      "${MOCK_PREVIEW_ORG:-org-id}" \
+      "${MOCK_PREVIEW_RUNNER_ID:-/org-id/runner-01}" >"${out}"
+    printf '200'
+    exit 0
+    ;;
+  *"/api/mobile-runner")
+    [[ -n "${out}" ]] || exit 1
+    printf '{"runner_id":"%s"}' "${MOCK_STORE_RUNNER_ID:-/org-id/runner-01}" >"${out}"
+    printf '200'
+    exit 0
+    ;;
+esac
+
 if [[ -n "${out}" ]]; then
+  if [[ "${out}" == "/dev/null" ]]; then
+    exit 0
+  fi
   printf '#!/usr/bin/env bash\nexit 0\n' >"${out}"
   chmod +x "${out}"
 fi
@@ -114,6 +148,11 @@ set -euo pipefail
 printf '%s\n' "$*" >>"${MOCK_LOG_DIR}/docker.log"
 
 if [[ "${1:-}" == "compose" ]]; then
+  case "$*" in
+    *" logs tunnel"*)
+      printf 'INF quick tunnel ready at %s\n' "${MOCK_TUNNEL_URL:-https://runner.example.trycloudflare.com}"
+      ;;
+  esac
   exit 0
 fi
 
@@ -194,6 +233,8 @@ run_linux_usb_case() {
   assert_contains "CREDIMI_RUNNER_BACKEND=container" "${env_file}"
   assert_contains "CREDIMI_CONTAINER_MODE=usb" "${env_file}"
   assert_contains "CREDIMI_TEMP_DIR=/tmp/credimi-runner-tmp" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_NAME=runner-01" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_ORGANIZATION=org-id" "${env_file}"
   assert_contains "runner:" "${compose_file}"
   assert_contains "--usb" "${compose_file}"
   assert_contains "privileged: true" "${compose_file}"
@@ -207,8 +248,11 @@ run_linux_usb_case() {
   "${launcher}" quick >/dev/null
 
   assert_contains "compose version" "${docker_log}"
-  assert_contains "up runner caddy tunnel" "${docker_log}"
+  assert_contains "up -d runner caddy tunnel" "${docker_log}"
+  assert_contains "logs tunnel" "${docker_log}"
+  assert_contains "logs -f runner caddy tunnel" "${docker_log}"
   assert_not_contains "runner_host caddy tunnel" "${docker_log}"
+  assert_contains "/api/mobile-runner" "${curl_log}"
 }
 
 run_linux_emulator_case() {
@@ -322,7 +366,11 @@ run_quick_mode_with_domain_case() {
   local docker_log="${case_dir}/logs/docker.log"
 
   cat >"${env_file}" <<'EOF'
+CREDIMI_URL=https://credimi.example
 CREDIMI_RUNNER_BACKEND=container
+CREDIMI_RUNNER_ID=/org-id/runner-01
+CREDIMI_RUNNER_NAME=runner-01
+CREDIMI_USER_API_KEY=user-api-key
 RUNNER_DOMAIN=runner.example.com
 RUNNER_CADDY_SITE=:80
 EOF
@@ -333,7 +381,8 @@ EOF
   MOCK_LOG_DIR="${case_dir}/logs" \
   "${launcher}" quick >/dev/null
 
-  assert_contains "up runner caddy tunnel" "${docker_log}"
+  assert_contains "up -d runner caddy tunnel" "${docker_log}"
+  assert_contains "/api/mobile-runner" "${case_dir}/logs/curl.log"
 }
 
 run_literal_env_loading_case() {
@@ -350,7 +399,11 @@ run_literal_env_loading_case() {
   local marker="${case_dir}/command-substitution-ran"
 
   cat >"${env_file}" <<EOF
+CREDIMI_URL=https://credimi.example
 CREDIMI_RUNNER_BACKEND=container
+CREDIMI_RUNNER_ID=/org-id/runner-01
+CREDIMI_RUNNER_NAME=runner-01
+CREDIMI_USER_API_KEY=user-api-key
 RUNNER_DOMAIN=runner.example.com
 CLOUDFLARE_TUNNEL_TOKEN=\$(touch "${marker}")
 RUNNER_CADDY_SITE=:80
@@ -363,7 +416,7 @@ EOF
   "${launcher}" named >/dev/null
 
   assert_file_absent "${marker}"
-  assert_contains "up runner caddy tunnel_named" "${docker_log}"
+  assert_contains "up -d runner caddy tunnel_named" "${docker_log}"
 }
 
 run_host_bind_host_readiness_case() {
@@ -386,7 +439,11 @@ EOF
   chmod +x "${binary}"
 
   cat >"${env_file}" <<'EOF'
+CREDIMI_URL=https://credimi.example
 CREDIMI_RUNNER_BACKEND=host
+CREDIMI_RUNNER_ID=/org-id/runner-01
+CREDIMI_RUNNER_NAME=runner-01
+CREDIMI_USER_API_KEY=user-api-key
 RUNNER_HOST=192.0.2.10
 RUNNER_PORT=9000
 RUNNER_CADDY_SITE=:80
@@ -399,6 +456,7 @@ EOF
   "${launcher}" quick >/dev/null
 
   assert_contains "http://192.0.2.10:9000/" "${curl_log}"
+  assert_contains "/api/mobile-runner" "${curl_log}"
 }
 
 run_existing_env_case() {
@@ -411,6 +469,9 @@ run_existing_env_case() {
   local original_env
   original_env='CREDIMI_URL=https://persisted.example
 CREDIMI_RUNNER_ID=/org-id/persisted-runner
+CREDIMI_RUNNER_NAME=persisted-runner
+CREDIMI_RUNNER_DESCRIPTION=
+CREDIMI_RUNNER_ORGANIZATION=org-id
 CREDIMI_USER_API_KEY=persisted-user-api-key
 CREDIMI_PB_ADMIN=
 CREDIMI_PB_PASS=
@@ -443,6 +504,7 @@ RUNNER_IMAGE=ghcr.io/example/custom-runner:latest'
   assert_file_exists "${compose_file}"
   assert_contains "CREDIMI_URL=https://persisted.example" "${env_file}"
   assert_contains "CREDIMI_RUNNER_ID=/org-id/persisted-runner" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_NAME=persisted-runner" "${env_file}"
   assert_contains "CREDIMI_USER_API_KEY=persisted-user-api-key" "${env_file}"
   assert_contains "CREDIMI_TEMP_DIR=/tmp/credimi-runner-tmp" "${env_file}"
   assert_contains "CREDIMI_CONTAINER_MODE=usb" "${env_file}"
@@ -462,6 +524,9 @@ run_existing_env_mode_switch_case() {
   cat >"${env_file}" <<'EOF'
 CREDIMI_URL=https://persisted.example
 CREDIMI_RUNNER_ID=/org-id/persisted-runner
+CREDIMI_RUNNER_NAME=persisted-runner
+CREDIMI_RUNNER_DESCRIPTION=
+CREDIMI_RUNNER_ORGANIZATION=org-id
 CREDIMI_USER_API_KEY=persisted-user-api-key
 CREDIMI_PB_ADMIN=
 CREDIMI_PB_PASS=
@@ -520,6 +585,49 @@ run_temp_dir_creation_case() {
   assert_contains "CREDIMI_TEMP_DIR=${temp_dir}" "${env_file}"
 }
 
+run_launcher_preview_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_NAME="preview-runner" \
+  CREDIMI_RUNNER_ORGANIZATION="org-id" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_INTERNAL_ADMIN_KEY="" \
+  CREDIMI_SERVICE_MODE="quick" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  sh "${install_script}" >/dev/null
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local curl_log="${case_dir}/logs/curl.log"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/preview-runner" \
+  MOCK_STORE_RUNNER_ID="/org-id/preview-runner" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains "CREDIMI_RUNNER_ID=/org-id/preview-runner" "${env_file}"
+  assert_contains "/api/mobile-runner/preview-id" "${curl_log}"
+  assert_contains "/api/mobile-runner" "${curl_log}"
+}
+
 run_linux_usb_case
 run_linux_emulator_case
 run_darwin_case
@@ -531,5 +639,6 @@ run_host_bind_host_readiness_case
 run_existing_env_case
 run_existing_env_mode_switch_case
 run_temp_dir_creation_case
+run_launcher_preview_case
 
 printf 'install.sh tests passed\n'

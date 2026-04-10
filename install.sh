@@ -305,6 +305,30 @@ default_service_backend() {
   esac
 }
 
+runner_name_from_id() {
+  runner_id="${1#/}"
+  case "$runner_id" in
+    */*)
+      printf '%s' "${runner_id##*/}"
+      ;;
+    *)
+      printf '%s' "$runner_id"
+      ;;
+  esac
+}
+
+runner_org_from_id() {
+  runner_id="${1#/}"
+  case "$runner_id" in
+    */*)
+      printf '%s' "${runner_id%%/*}"
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
 write_compose_file() {
   compose_file="$1"
   runner_mode="${CREDIMI_CONTAINER_MODE:-${DEFAULT_CONTAINER_MODE}}"
@@ -462,6 +486,7 @@ env_file="${config_dir}/.env"
 compose_file="${config_dir}/docker-compose.yaml"
 bin_path="${script_dir}/credimi-runner"
 backend="${CREDIMI_RUNNER_BACKEND:-container}"
+auth_headers=()
 
 load_env_file() {
   local path="$1"
@@ -479,6 +504,16 @@ load_env_file() {
         ;;
     esac
   done <"${path}"
+}
+
+join_url() {
+  local base="${1%/}"
+  shift
+
+  printf '%s' "${base}"
+  for part in "$@"; do
+    printf '/%s' "${part#/}"
+  done
 }
 
 runner_ready_url() {
@@ -499,6 +534,265 @@ runner_ready_url() {
       printf 'http://%s:%s/\n' "${host}" "${port}"
       ;;
   esac
+}
+
+runner_name_from_id() {
+  local runner_id="${1#/}"
+
+  case "${runner_id}" in
+    */*)
+      printf '%s' "${runner_id##*/}"
+      ;;
+    *)
+      printf '%s' "${runner_id}"
+      ;;
+  esac
+}
+
+runner_org_from_id() {
+  local runner_id="${1#/}"
+
+  case "${runner_id}" in
+    */*)
+      printf '%s' "${runner_id%%/*}"
+      ;;
+    *)
+      printf ''
+      ;;
+  esac
+}
+
+json_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/\\/\\\\/g' \
+    -e 's/"/\\"/g' \
+    -e ':a' -e 'N' -e '$!ba' \
+    -e 's/\r/\\r/g' \
+    -e 's/\n/\\n/g'
+}
+
+extract_json_string() {
+  local key="$1"
+  local body="$2"
+
+  printf '%s' "${body}" |
+    tr -d '\r\n' |
+    sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+normalize_public_url() {
+  local value="${1:-}"
+
+  case "${value}" in
+    http://*|https://*)
+      printf '%s' "${value}"
+      ;;
+    *)
+      printf 'https://%s' "${value}"
+      ;;
+  esac
+}
+
+upsert_env_value() {
+  local path="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file
+  local found=0
+  local line
+
+  tmp_file="$(mktemp)"
+  if [[ -f "${path}" ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" == "${key}="* ]]; then
+        printf '%s=%s\n' "${key}" "${value}" >>"${tmp_file}"
+        found=1
+        continue
+      fi
+      printf '%s\n' "${line}" >>"${tmp_file}"
+    done <"${path}"
+  fi
+
+  if [[ "${found}" == "0" ]]; then
+    printf '%s=%s\n' "${key}" "${value}" >>"${tmp_file}"
+  fi
+
+  mv "${tmp_file}" "${path}"
+}
+
+authenticate_superuser() {
+  local auth_url auth_payload response token
+
+  auth_url="$(join_url "${CREDIMI_URL}" "api" "collections" "_superusers" "auth-with-password")"
+  auth_payload="{\"identity\":\"$(json_escape "${CREDIMI_PB_ADMIN}")\",\"password\":\"$(json_escape "${CREDIMI_PB_PASS}")\"}"
+  response="$(post_json "${auth_url}" "${auth_payload}")"
+  token="$(extract_json_string "token" "${response}")"
+  [[ -n "${token}" ]] || {
+    printf 'failed to extract superuser token from %s\n' "${auth_url}" >&2
+    return 1
+  }
+
+  printf '%s' "${token}"
+}
+
+configure_auth_headers() {
+  if [[ -n "${CREDIMI_USER_API_KEY:-}" ]]; then
+    auth_headers=(-H "Credimi-Api-Key: ${CREDIMI_USER_API_KEY}")
+    return 0
+  fi
+
+  if [[ -n "${CREDIMI_INTERNAL_ADMIN_KEY:-}" ]]; then
+    auth_headers=(-H "Credimi-Api-Key: ${CREDIMI_INTERNAL_ADMIN_KEY}")
+    return 0
+  fi
+
+  if [[ -n "${CREDIMI_PB_ADMIN:-}" ]] && [[ -n "${CREDIMI_PB_PASS:-}" ]]; then
+    auth_headers=(-H "Authorization: Bearer $(authenticate_superuser)")
+    return 0
+  fi
+
+  printf 'missing Credimi credentials: set CREDIMI_USER_API_KEY, CREDIMI_INTERNAL_ADMIN_KEY, or CREDIMI_PB_ADMIN/CREDIMI_PB_PASS\n' >&2
+  return 1
+}
+
+post_json() {
+  local url="$1"
+  local payload="$2"
+  local body_file
+  local status
+  local body
+
+  body_file="$(mktemp)"
+  status="$(
+    curl \
+      --silent \
+      --show-error \
+      --output "${body_file}" \
+      --write-out '%{http_code}' \
+      -H 'Content-Type: application/json' \
+      "${auth_headers[@]}" \
+      -X POST \
+      --data "${payload}" \
+      "${url}"
+  )"
+  body="$(cat "${body_file}")"
+  rm -f "${body_file}"
+
+  if [[ "${status}" -lt 200 || "${status}" -ge 300 ]]; then
+    printf 'request to %s failed (%s): %s\n' "${url}" "${status}" "${body}" >&2
+    return 1
+  fi
+
+  printf '%s' "${body}"
+}
+
+resolve_runner_identity() {
+  local preview_url preview_payload preview_response preview_runner_id
+
+  if [[ -z "${CREDIMI_RUNNER_NAME:-}" ]] && [[ -n "${CREDIMI_RUNNER_ID:-}" ]]; then
+    CREDIMI_RUNNER_NAME="$(runner_name_from_id "${CREDIMI_RUNNER_ID}")"
+  fi
+  if [[ -z "${CREDIMI_RUNNER_ORGANIZATION:-}" ]] && [[ -n "${CREDIMI_RUNNER_ID:-}" ]]; then
+    CREDIMI_RUNNER_ORGANIZATION="$(runner_org_from_id "${CREDIMI_RUNNER_ID}")"
+  fi
+
+  if [[ -n "${CREDIMI_RUNNER_ID:-}" ]]; then
+    export CREDIMI_RUNNER_ID CREDIMI_RUNNER_NAME CREDIMI_RUNNER_ORGANIZATION
+    return 0
+  fi
+
+  [[ -n "${CREDIMI_RUNNER_NAME:-}" ]] || {
+    printf 'CREDIMI_RUNNER_NAME is required when CREDIMI_RUNNER_ID is not set\n' >&2
+    return 1
+  }
+
+  preview_payload="{\"name\":\"$(json_escape "${CREDIMI_RUNNER_NAME}")\""
+  if [[ -n "${CREDIMI_RUNNER_ORGANIZATION:-}" ]]; then
+    preview_payload+=",\"organization\":\"$(json_escape "${CREDIMI_RUNNER_ORGANIZATION}")\""
+  fi
+  preview_payload+="}"
+
+  preview_url="$(join_url "${CREDIMI_URL}" "api" "mobile-runner" "preview-id")"
+  preview_response="$(post_json "${preview_url}" "${preview_payload}")"
+  preview_runner_id="$(extract_json_string "runner_id" "${preview_response}")"
+  [[ -n "${preview_runner_id}" ]] || {
+    printf 'failed to extract runner_id from %s\n' "${preview_url}" >&2
+    return 1
+  }
+
+  CREDIMI_RUNNER_ID="${preview_runner_id}"
+  if [[ -z "${CREDIMI_RUNNER_ORGANIZATION:-}" ]]; then
+    CREDIMI_RUNNER_ORGANIZATION="$(extract_json_string "organization" "${preview_response}")"
+  fi
+  export CREDIMI_RUNNER_ID CREDIMI_RUNNER_ORGANIZATION
+  upsert_env_value "${env_file}" "CREDIMI_RUNNER_ID" "${CREDIMI_RUNNER_ID}"
+  upsert_env_value "${env_file}" "CREDIMI_RUNNER_ORGANIZATION" "${CREDIMI_RUNNER_ORGANIZATION:-}"
+}
+
+wait_for_public_runner_url() {
+  local attempt
+  local tunnel_logs
+  local public_url
+
+  if [[ "${mode}" == "named" ]]; then
+    printf '%s' "$(normalize_public_url "${RUNNER_DOMAIN}")"
+    return 0
+  fi
+
+  for attempt in $(seq 1 60); do
+    tunnel_logs="$(
+      docker compose --env-file "${env_file}" -f "${compose_file}" logs tunnel 2>/dev/null || true
+    )"
+    public_url="$(
+      printf '%s\n' "${tunnel_logs}" |
+        grep -Eo 'https://[-[:alnum:].]+trycloudflare.com' |
+        tail -n 1
+    )"
+    if [[ -n "${public_url}" ]]; then
+      printf '%s' "${public_url}"
+      return 0
+    fi
+
+    if [[ -n "${runner_pid:-}" ]] && ! kill -0 "${runner_pid}" >/dev/null 2>&1; then
+      printf 'runner exited before the public tunnel URL was available\n' >&2
+      return 1
+    fi
+
+    sleep 1
+  done
+
+  printf 'failed to detect the public tunnel URL from cloudflared logs\n' >&2
+  return 1
+}
+
+register_mobile_runner() {
+  local public_url="$1"
+  local store_url
+  local store_payload
+  local store_response
+  local stored_runner_id
+
+  [[ -n "${CREDIMI_RUNNER_NAME:-}" ]] || {
+    printf 'CREDIMI_RUNNER_NAME is required to register the runner\n' >&2
+    return 1
+  }
+
+  store_payload="{\"runner_id\":\"$(json_escape "${CREDIMI_RUNNER_ID}")\",\"name\":\"$(json_escape "${CREDIMI_RUNNER_NAME}")\",\"ip\":\"$(json_escape "${public_url}")\""
+  if [[ -n "${CREDIMI_RUNNER_DESCRIPTION:-}" ]]; then
+    store_payload+=",\"description\":\"$(json_escape "${CREDIMI_RUNNER_DESCRIPTION}")\""
+  fi
+  if [[ -n "${CREDIMI_RUNNER_ORGANIZATION:-}" ]]; then
+    store_payload+=",\"organization\":\"$(json_escape "${CREDIMI_RUNNER_ORGANIZATION}")\""
+  fi
+  store_payload+="}"
+
+  store_url="$(join_url "${CREDIMI_URL}" "api" "mobile-runner")"
+  store_response="$(post_json "${store_url}" "${store_payload}")"
+  stored_runner_id="$(extract_json_string "runner_id" "${store_response}")"
+  if [[ -n "${stored_runner_id}" ]] && [[ "${stored_runner_id}" != "${CREDIMI_RUNNER_ID}" ]]; then
+    printf 'stored runner_id mismatch: expected %s, got %s\n' "${CREDIMI_RUNNER_ID}" "${stored_runner_id}" >&2
+    return 1
+  fi
 }
 
 if [[ -f "${env_file}" ]]; then
@@ -604,6 +898,10 @@ case "${mode}" in
     ;;
 esac
 
+require_cmd curl
+configure_auth_headers
+resolve_runner_identity
+
 trap cleanup EXIT INT TERM
 
 if [[ "${backend}" == "host" ]]; then
@@ -613,7 +911,10 @@ if [[ "${backend}" == "host" ]]; then
   wait_for_runner
 fi
 
-docker compose --env-file "${env_file}" -f "${compose_file}" up "${compose_services[@]}"
+docker compose --env-file "${env_file}" -f "${compose_file}" up -d "${compose_services[@]}"
+public_runner_url="$(wait_for_public_runner_url)"
+register_mobile_runner "${public_runner_url}"
+docker compose --env-file "${env_file}" -f "${compose_file}" logs -f "${compose_services[@]}"
 EOF
   chmod +x "$launcher_path"
 }
@@ -623,6 +924,9 @@ write_env_file() {
   cat >"$env_file" <<EOF
 CREDIMI_URL=${CREDIMI_URL}
 CREDIMI_RUNNER_ID=${CREDIMI_RUNNER_ID}
+CREDIMI_RUNNER_NAME=${CREDIMI_RUNNER_NAME}
+CREDIMI_RUNNER_DESCRIPTION=${CREDIMI_RUNNER_DESCRIPTION}
+CREDIMI_RUNNER_ORGANIZATION=${CREDIMI_RUNNER_ORGANIZATION}
 CREDIMI_USER_API_KEY=${CREDIMI_USER_API_KEY}
 CREDIMI_PB_ADMIN=${CREDIMI_PB_ADMIN}
 CREDIMI_PB_PASS=${CREDIMI_PB_PASS}
@@ -653,6 +957,9 @@ write_missing_env_values() {
   append_env_if_missing "$env_file" "CREDIMI_RUNNER_BACKEND" "${CREDIMI_RUNNER_BACKEND}"
   append_env_if_missing "$env_file" "CREDIMI_CONTAINER_MODE" "${CREDIMI_CONTAINER_MODE}"
   append_env_if_missing "$env_file" "CREDIMI_TEMP_DIR" "${CREDIMI_TEMP_DIR}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_NAME" "${CREDIMI_RUNNER_NAME}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_DESCRIPTION" "${CREDIMI_RUNNER_DESCRIPTION}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_ORGANIZATION" "${CREDIMI_RUNNER_ORGANIZATION}"
   append_env_if_missing "$env_file" "RUNNER_IMAGE" "${RUNNER_IMAGE}"
   append_env_if_missing "$env_file" "RUNNER_HOST" "${RUNNER_HOST}"
   append_env_if_missing "$env_file" "RUNNER_PORT" "${RUNNER_PORT}"
@@ -714,7 +1021,6 @@ main() {
 
   CREDIMI_URL="$(prompt_value CREDIMI_URL "Credimi API URL" "$(resolved_value CREDIMI_URL "${DEFAULT_CREDIMI_URL}")")"
   TEMPORAL_ADDRESS="$(prompt_value TEMPORAL_ADDRESS "Temporal address" "$(resolved_value TEMPORAL_ADDRESS "${DEFAULT_TEMPORAL_ADDRESS}")")"
-  CREDIMI_RUNNER_ID="$(prompt_value CREDIMI_RUNNER_ID "Runner ID" "$(resolved_value CREDIMI_RUNNER_ID)")"
 
   if [ -n "$(resolved_value CREDIMI_USER_API_KEY)" ]; then
     auth_mode_default="api_key"
@@ -734,6 +1040,19 @@ main() {
     CREDIMI_PB_PASS="$(prompt_value CREDIMI_PB_PASS "Credimi admin password" "$(resolved_value CREDIMI_PB_PASS)" 1)"
     CREDIMI_USER_API_KEY=""
   fi
+
+  existing_runner_id="$(resolved_value CREDIMI_RUNNER_ID)"
+  runner_name_default="$(resolved_value CREDIMI_RUNNER_NAME "$(runner_name_from_id "${existing_runner_id}")")"
+  runner_org_default="$(resolved_value CREDIMI_RUNNER_ORGANIZATION "$(runner_org_from_id "${existing_runner_id}")")"
+
+  CREDIMI_RUNNER_NAME="$(prompt_value CREDIMI_RUNNER_NAME "Runner name" "${runner_name_default}")"
+  CREDIMI_RUNNER_DESCRIPTION="$(prompt_value CREDIMI_RUNNER_DESCRIPTION "Runner description (optional)" "$(resolved_value CREDIMI_RUNNER_DESCRIPTION)" 0 1)"
+  if [ "$auth_mode" = "admin" ]; then
+    CREDIMI_RUNNER_ORGANIZATION="$(prompt_value CREDIMI_RUNNER_ORGANIZATION "Runner organization canonified name" "${runner_org_default}")"
+  else
+    CREDIMI_RUNNER_ORGANIZATION="$(prompt_value CREDIMI_RUNNER_ORGANIZATION "Runner organization canonified name (optional for admin API keys)" "${runner_org_default}" 0 1)"
+  fi
+  CREDIMI_RUNNER_ID="${existing_runner_id}"
 
   CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "$(resolved_value CREDIMI_INTERNAL_ADMIN_KEY)" 1 1)"
   CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named")"
