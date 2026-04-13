@@ -67,10 +67,84 @@ var _ = Service("runner", func() {
 
 var _ = Service("docs", func() {
 	Description("Static API documentation.")
-	Files("/", "pkg/server/docs/index.html")
-	Files("/docs/openapi.yaml", "pkg/gen/http/openapi.yaml")
-	Files("/docs/openapi3.yaml", "pkg/gen/http/openapi3.yaml")
-	Files("/docs/openapi3-public.json", "pkg/gen/http/openapi3-public.json")
+
+	Error("internal_error", APIError)
+
+	Method("index", func() {
+		Result(func() {
+			Attribute("length", Int64, "Content length in bytes")
+			Attribute("encoding", String, "Response content type")
+			Required("length", "encoding")
+		})
+		Error("internal_error", APIError)
+
+		HTTP(func() {
+			GET("/")
+			SkipResponseBodyEncodeDecode()
+			Response(func() {
+				Header("length:Content-Length")
+				Header("encoding:Content-Type")
+			})
+			Response("internal_error", StatusInternalServerError)
+		})
+	})
+
+	Method("openapi", func() {
+		Result(func() {
+			Attribute("length", Int64, "Content length in bytes")
+			Attribute("encoding", String, "Response content type")
+			Required("length", "encoding")
+		})
+		Error("internal_error", APIError)
+
+		HTTP(func() {
+			GET("/docs/openapi.yaml")
+			SkipResponseBodyEncodeDecode()
+			Response(func() {
+				Header("length:Content-Length")
+				Header("encoding:Content-Type")
+			})
+			Response("internal_error", StatusInternalServerError)
+		})
+	})
+
+	Method("openapi3", func() {
+		Result(func() {
+			Attribute("length", Int64, "Content length in bytes")
+			Attribute("encoding", String, "Response content type")
+			Required("length", "encoding")
+		})
+		Error("internal_error", APIError)
+
+		HTTP(func() {
+			GET("/docs/openapi3.yaml")
+			SkipResponseBodyEncodeDecode()
+			Response(func() {
+				Header("length:Content-Length")
+				Header("encoding:Content-Type")
+			})
+			Response("internal_error", StatusInternalServerError)
+		})
+	})
+
+	Method("openapi3_public", func() {
+		Result(func() {
+			Attribute("length", Int64, "Content length in bytes")
+			Attribute("encoding", String, "Response content type")
+			Required("length", "encoding")
+		})
+		Error("internal_error", APIError)
+
+		HTTP(func() {
+			GET("/docs/openapi3-public.json")
+			SkipResponseBodyEncodeDecode()
+			Response(func() {
+				Header("length:Content-Length")
+				Header("encoding:Content-Type")
+			})
+			Response("internal_error", StatusInternalServerError)
+		})
+	})
 })
 
 var _ = Service("worker", func() {
