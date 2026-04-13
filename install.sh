@@ -16,6 +16,7 @@ DEFAULT_EMULATOR_IMAGE="ghcr.io/forkbombeu/credimi-runner-emulator:latest"
 DEFAULT_BASE_NAME="credimi"
 DEFAULT_HOST_AVD_HOME_PATH="/srv/credimi/avd-home"
 DEFAULT_HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden"
+DEFAULT_ANDROID_WIFI_PORT="5555"
 
 tty_path=""
 # stdin is often a pipe during `curl ... | sh`; use /dev/tty directly when it is available.
@@ -305,6 +306,93 @@ default_service_backend() {
   esac
 }
 
+default_runner_type() {
+  backend="$1"
+  saved_type="$(resolved_value CREDIMI_RUNNER_TYPE)"
+  saved_mode="$(resolved_value CREDIMI_CONTAINER_MODE)"
+
+  if [ -n "$saved_type" ]; then
+    printf '%s' "$saved_type"
+    return 0
+  fi
+
+  case "$saved_mode" in
+    emulator)
+      printf 'android_emulator'
+      ;;
+    usb|wifi)
+      printf 'android_phone'
+      ;;
+    *)
+      case "$(uname -s):$backend" in
+        Darwin:host)
+          printf 'ios_simulator'
+          ;;
+        *)
+          printf 'android_phone'
+          ;;
+      esac
+      ;;
+  esac
+}
+
+runner_type_choices() {
+  case "$(uname -s)" in
+    Darwin)
+      printf 'android_emulator ios_simulator ios_phone redroid android_phone'
+      ;;
+    Linux)
+      printf 'android_emulator redroid android_phone'
+      ;;
+    *)
+      die "unsupported operating system: $(uname -s)"
+      ;;
+  esac
+}
+
+validate_runner_type_supported() {
+  runner_type="$1"
+
+  case "$(uname -s):$runner_type" in
+    Linux:ios_simulator|Linux:ios_phone)
+      die "runner type ${runner_type} is not supported on Linux"
+      ;;
+  esac
+}
+
+default_android_device_mode() {
+  saved_mode="$(resolved_value CREDIMI_RUNNER_DEVICE_MODE)"
+  if [ -n "$saved_mode" ]; then
+    printf '%s' "$saved_mode"
+    return 0
+  fi
+
+  case "$(resolved_value CREDIMI_CONTAINER_MODE)" in
+    wifi)
+      printf 'wifi'
+      ;;
+    *)
+      printf 'usb'
+      ;;
+  esac
+}
+
+detect_connected_android_usb_serial() {
+  adb_output="$(adb devices -l 2>/dev/null || true)"
+  serials="$(
+    printf '%s\n' "$adb_output" |
+      awk 'NR > 1 && $2 == "device" && $1 !~ /:/ { print $1 }'
+  )"
+  serial_count="$(printf '%s\n' "$serials" | awk 'NF { count++ } END { print count + 0 }')"
+
+  if [ "$serial_count" = "1" ]; then
+    printf '%s' "$(printf '%s\n' "$serials" | awk 'NF { print; exit }')"
+    return 0
+  fi
+
+  return 1
+}
+
 runner_name_from_id() {
   runner_id="${1#/}"
   case "$runner_id" in
@@ -339,6 +427,28 @@ services:
 EOF
 
   case "$runner_mode" in
+    wifi)
+      cat >>"$compose_file" <<EOF
+  runner:
+    image: ${runner_image}
+    restart: unless-stopped
+    command:
+      - "\${CREDIMI_RUNNER_WIFI_IP}:\${CREDIMI_RUNNER_WIFI_PORT:-${DEFAULT_ANDROID_WIFI_PORT}}"
+    env_file:
+      - .env
+    environment:
+      PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
+    volumes:
+      - adbkeys:/root/.android
+    expose:
+      - "8050"
+    labels:
+      caddy: "\${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "{{upstreams 8050}}"
+    networks:
+      - ingress
+EOF
+      ;;
     usb)
       cat >>"$compose_file" <<EOF
   runner:
@@ -349,6 +459,8 @@ EOF
     privileged: true
     env_file:
       - .env
+    environment:
+      PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - adbkeys:/root/.android
@@ -371,6 +483,7 @@ EOF
     env_file:
       - .env
     environment:
+      PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
       BASE_NAME: "\${BASE_NAME:-${DEFAULT_BASE_NAME}}"
       GOLDEN_PATH: "\${GOLDEN_PATH:-/avd-golden/\${BASE_NAME:-${DEFAULT_BASE_NAME}}-golden}"
     devices:
@@ -397,6 +510,8 @@ EOF
       - --no-device
     env_file:
       - .env
+    environment:
+      PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
     expose:
       - "8050"
     labels:
@@ -781,6 +896,12 @@ register_mobile_runner() {
   if [[ -n "${CREDIMI_RUNNER_DESCRIPTION:-}" ]]; then
     store_payload+=",\"description\":\"$(json_escape "${CREDIMI_RUNNER_DESCRIPTION}")\""
   fi
+  if [[ -n "${CREDIMI_RUNNER_TYPE:-}" ]]; then
+    store_payload+=",\"type\":\"$(json_escape "${CREDIMI_RUNNER_TYPE}")\""
+  fi
+  if [[ -n "${CREDIMI_RUNNER_SERIAL:-}" ]]; then
+    store_payload+=",\"serial\":\"$(json_escape "${CREDIMI_RUNNER_SERIAL}")\""
+  fi
   if [[ -n "${CREDIMI_RUNNER_ORGANIZATION:-}" ]]; then
     store_payload+=",\"organization\":\"$(json_escape "${CREDIMI_RUNNER_ORGANIZATION}")\""
   fi
@@ -927,6 +1048,11 @@ CREDIMI_RUNNER_ID=${CREDIMI_RUNNER_ID}
 CREDIMI_RUNNER_NAME=${CREDIMI_RUNNER_NAME}
 CREDIMI_RUNNER_DESCRIPTION=${CREDIMI_RUNNER_DESCRIPTION}
 CREDIMI_RUNNER_ORGANIZATION=${CREDIMI_RUNNER_ORGANIZATION}
+CREDIMI_RUNNER_TYPE=${CREDIMI_RUNNER_TYPE}
+CREDIMI_RUNNER_SERIAL=${CREDIMI_RUNNER_SERIAL}
+CREDIMI_RUNNER_DEVICE_MODE=${CREDIMI_RUNNER_DEVICE_MODE}
+CREDIMI_RUNNER_WIFI_IP=${CREDIMI_RUNNER_WIFI_IP}
+CREDIMI_RUNNER_WIFI_PORT=${CREDIMI_RUNNER_WIFI_PORT}
 CREDIMI_USER_API_KEY=${CREDIMI_USER_API_KEY}
 CREDIMI_PB_ADMIN=${CREDIMI_PB_ADMIN}
 CREDIMI_PB_PASS=${CREDIMI_PB_PASS}
@@ -960,6 +1086,11 @@ write_missing_env_values() {
   append_env_if_missing "$env_file" "CREDIMI_RUNNER_NAME" "${CREDIMI_RUNNER_NAME}"
   append_env_if_missing "$env_file" "CREDIMI_RUNNER_DESCRIPTION" "${CREDIMI_RUNNER_DESCRIPTION}"
   append_env_if_missing "$env_file" "CREDIMI_RUNNER_ORGANIZATION" "${CREDIMI_RUNNER_ORGANIZATION}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_TYPE" "${CREDIMI_RUNNER_TYPE}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_SERIAL" "${CREDIMI_RUNNER_SERIAL}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_DEVICE_MODE" "${CREDIMI_RUNNER_DEVICE_MODE}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_WIFI_IP" "${CREDIMI_RUNNER_WIFI_IP}"
+  append_env_if_missing "$env_file" "CREDIMI_RUNNER_WIFI_PORT" "${CREDIMI_RUNNER_WIFI_PORT}"
   append_env_if_missing "$env_file" "RUNNER_IMAGE" "${RUNNER_IMAGE}"
   append_env_if_missing "$env_file" "RUNNER_HOST" "${RUNNER_HOST}"
   append_env_if_missing "$env_file" "RUNNER_PORT" "${RUNNER_PORT}"
@@ -993,6 +1124,11 @@ main() {
   CREDIMI_RUNNER_BACKEND="$(resolved_value CREDIMI_RUNNER_BACKEND "$(default_service_backend)")"
   CREDIMI_CONTAINER_MODE="${CREDIMI_CONTAINER_MODE-}"
   CREDIMI_TEMP_DIR="$(resolved_value CREDIMI_TEMP_DIR "${DEFAULT_CREDIMI_TEMP_DIR}")"
+  CREDIMI_RUNNER_TYPE="${CREDIMI_RUNNER_TYPE-}"
+  CREDIMI_RUNNER_SERIAL="${CREDIMI_RUNNER_SERIAL-}"
+  CREDIMI_RUNNER_DEVICE_MODE="${CREDIMI_RUNNER_DEVICE_MODE-}"
+  CREDIMI_RUNNER_WIFI_IP="${CREDIMI_RUNNER_WIFI_IP-}"
+  CREDIMI_RUNNER_WIFI_PORT="${CREDIMI_RUNNER_WIFI_PORT-}"
   RUNNER_IMAGE="${RUNNER_IMAGE-}"
   ANDROID_KEYS_DIR="${ANDROID_KEYS_DIR-}"
   HOST_AVD_HOME_PATH="${HOST_AVD_HOME_PATH-}"
@@ -1055,6 +1191,9 @@ main() {
   CREDIMI_RUNNER_ID="${existing_runner_id}"
 
   CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key (optional)" "$(resolved_value CREDIMI_INTERNAL_ADMIN_KEY)" 1 1)"
+  runner_type_options="$(runner_type_choices)"
+  CREDIMI_RUNNER_TYPE="$(prompt_choice CREDIMI_RUNNER_TYPE "Mobile runner type (${runner_type_options})" "$(default_runner_type "${CREDIMI_RUNNER_BACKEND}")" "${runner_type_options}")"
+  validate_runner_type_supported "${CREDIMI_RUNNER_TYPE}"
   CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named")"
   RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")")"
   RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")")"
@@ -1068,43 +1207,96 @@ main() {
     CLOUDFLARE_TUNNEL_TOKEN=""
   fi
 
-  if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
-    CREDIMI_CONTAINER_MODE="$(prompt_choice CREDIMI_CONTAINER_MODE "Linux runner mode (usb/emulator/no_device)" "$(resolved_value CREDIMI_CONTAINER_MODE "${DEFAULT_CONTAINER_MODE}")" "usb emulator no_device")"
+  CREDIMI_RUNNER_SERIAL="$(resolved_value CREDIMI_RUNNER_SERIAL)"
+  CREDIMI_RUNNER_DEVICE_MODE="$(resolved_value CREDIMI_RUNNER_DEVICE_MODE)"
+  CREDIMI_RUNNER_WIFI_IP="$(resolved_value CREDIMI_RUNNER_WIFI_IP)"
+  CREDIMI_RUNNER_WIFI_PORT="$(resolved_value CREDIMI_RUNNER_WIFI_PORT)"
 
-    case "$CREDIMI_CONTAINER_MODE" in
-      usb)
-        RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
-        ANDROID_KEYS_DIR=""
-        HOST_AVD_HOME_PATH=""
-        HOST_AVD_GOLDEN_PATH=""
-        BASE_NAME=""
-        GOLDEN_PATH=""
-        ;;
-      emulator)
+  case "$CREDIMI_RUNNER_TYPE" in
+    android_emulator)
+      CREDIMI_RUNNER_SERIAL=""
+      if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+        CREDIMI_CONTAINER_MODE="emulator"
         RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_EMULATOR_IMAGE}")"
         ANDROID_KEYS_DIR="$(prompt_value ANDROID_KEYS_DIR "ADB keys directory" "$(resolved_value ANDROID_KEYS_DIR "${HOME}/.android")")"
         HOST_AVD_HOME_PATH="$(prompt_value HOST_AVD_HOME_PATH "Host AVD home path" "$(resolved_value HOST_AVD_HOME_PATH "${DEFAULT_HOST_AVD_HOME_PATH}")")"
         HOST_AVD_GOLDEN_PATH="$(prompt_value HOST_AVD_GOLDEN_PATH "Host golden assets path (parent or extracted dir)" "$(resolved_value HOST_AVD_GOLDEN_PATH "${DEFAULT_HOST_AVD_GOLDEN_PATH}")")"
         BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")")"
         GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Container golden path" "$(resolved_value GOLDEN_PATH "/avd-golden/${BASE_NAME}-golden")")"
-        ;;
-      no_device)
-        RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
+      else
+        CREDIMI_CONTAINER_MODE=""
         ANDROID_KEYS_DIR=""
         HOST_AVD_HOME_PATH=""
         HOST_AVD_GOLDEN_PATH=""
-        BASE_NAME=""
+        BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
         GOLDEN_PATH=""
-        ;;
-    esac
-  else
-    CREDIMI_CONTAINER_MODE=""
-    ANDROID_KEYS_DIR=""
-    HOST_AVD_HOME_PATH=""
-    HOST_AVD_GOLDEN_PATH=""
-    BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
-    GOLDEN_PATH=""
-  fi
+      fi
+      ;;
+    ios_simulator)
+      CREDIMI_RUNNER_SERIAL=""
+      if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+        CREDIMI_CONTAINER_MODE="no_device"
+        RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
+      else
+        CREDIMI_CONTAINER_MODE=""
+      fi
+      ANDROID_KEYS_DIR=""
+      HOST_AVD_HOME_PATH=""
+      HOST_AVD_GOLDEN_PATH=""
+      BASE_NAME=""
+      GOLDEN_PATH=""
+      ;;
+    ios_phone)
+      CREDIMI_RUNNER_SERIAL="$(prompt_value CREDIMI_RUNNER_SERIAL "iOS phone serial" "$(resolved_value CREDIMI_RUNNER_SERIAL)")"
+      if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+        CREDIMI_CONTAINER_MODE="no_device"
+        RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
+      else
+        CREDIMI_CONTAINER_MODE=""
+      fi
+      ANDROID_KEYS_DIR=""
+      HOST_AVD_HOME_PATH=""
+      HOST_AVD_GOLDEN_PATH=""
+      BASE_NAME=""
+      GOLDEN_PATH=""
+      ;;
+    redroid|android_phone)
+      CREDIMI_RUNNER_DEVICE_MODE="$(prompt_choice CREDIMI_RUNNER_DEVICE_MODE "Android connection mode (usb/wifi)" "$(default_android_device_mode)" "usb wifi")"
+      RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
+      ANDROID_KEYS_DIR=""
+      HOST_AVD_HOME_PATH=""
+      HOST_AVD_GOLDEN_PATH=""
+      BASE_NAME=""
+      GOLDEN_PATH=""
+
+      case "$CREDIMI_RUNNER_DEVICE_MODE" in
+        usb)
+          usb_serial_default="$(resolved_value CREDIMI_RUNNER_SERIAL)"
+          if [ -z "$usb_serial_default" ] && command -v adb >/dev/null 2>&1; then
+            usb_serial_default="$(detect_connected_android_usb_serial || true)"
+          fi
+          CREDIMI_RUNNER_SERIAL="$(prompt_value CREDIMI_RUNNER_SERIAL "Android device serial" "$usb_serial_default")"
+          CREDIMI_RUNNER_WIFI_IP=""
+          CREDIMI_RUNNER_WIFI_PORT=""
+          if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+            CREDIMI_CONTAINER_MODE="usb"
+          else
+            CREDIMI_CONTAINER_MODE=""
+          fi
+          ;;
+        wifi)
+          CREDIMI_RUNNER_WIFI_IP="$(prompt_value CREDIMI_RUNNER_WIFI_IP "Android Wi-Fi IP" "$(resolved_value CREDIMI_RUNNER_WIFI_IP)")"
+          CREDIMI_RUNNER_WIFI_PORT="$(prompt_value CREDIMI_RUNNER_WIFI_PORT "Android Wi-Fi port" "$(resolved_value CREDIMI_RUNNER_WIFI_PORT "${DEFAULT_ANDROID_WIFI_PORT}")")"
+          CREDIMI_RUNNER_SERIAL="${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT}"
+          if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+            CREDIMI_CONTAINER_MODE="wifi"
+          else
+            CREDIMI_CONTAINER_MODE=""
+          fi
+          ;;
+      esac
+      ;;
+  esac
 
   if [ -z "$CREDIMI_TEMP_DIR" ]; then
     CREDIMI_TEMP_DIR="${DEFAULT_CREDIMI_TEMP_DIR}"
@@ -1154,15 +1346,19 @@ main() {
   say "Before starting the service, make sure Docker is installed and the daemon is running."
   if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
     say "This install uses the published runner container and does not start a local ${PROJECT_NAME} binary."
+    say "Configured mobile runner type: ${CREDIMI_RUNNER_TYPE}."
     case "$CREDIMI_CONTAINER_MODE" in
+      wifi)
+        say "Configured Android transport: Wi-Fi (${CREDIMI_RUNNER_SERIAL})."
+        ;;
       usb)
-        say "Configured Linux runner mode: USB phone."
+        say "Configured Android transport: USB (${CREDIMI_RUNNER_SERIAL})."
         ;;
       emulator)
-        say "Configured Linux runner mode: Android emulator."
+        say "Configured Android transport: emulator container."
         ;;
       no_device)
-        say "Configured Linux runner mode: no-device."
+        say "Configured container mode: no-device."
         ;;
     esac
   fi
