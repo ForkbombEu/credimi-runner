@@ -421,6 +421,19 @@ write_compose_file() {
   compose_file="$1"
   runner_mode="${CREDIMI_CONTAINER_MODE:-${DEFAULT_CONTAINER_MODE}}"
   runner_image="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
+  runner_connectivity_block='    expose:
+      - "8050"
+    labels:
+      caddy: "\${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "{{upstreams 8050}}"
+    networks:
+      - ingress'
+
+  if [ "${CREDIMI_RUNNER_BACKEND:-}" = "container" ] &&
+    [ "${CREDIMI_SERVICE_MODE:-quick}" = "direct" ] &&
+    [ "$(uname -s)" = "Linux" ]; then
+    runner_connectivity_block='    network_mode: host'
+  fi
 
   cat >"$compose_file" <<EOF
 services:
@@ -440,13 +453,7 @@ EOF
       PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
     volumes:
       - adbkeys:/root/.android
-    expose:
-      - "8050"
-    labels:
-      caddy: "\${RUNNER_CADDY_SITE:-:80}"
-      caddy.reverse_proxy: "{{upstreams 8050}}"
-    networks:
-      - ingress
+${runner_connectivity_block}
 EOF
       ;;
     usb)
@@ -464,13 +471,7 @@ EOF
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - adbkeys:/root/.android
-    expose:
-      - "8050"
-    labels:
-      caddy: "\${RUNNER_CADDY_SITE:-:80}"
-      caddy.reverse_proxy: "{{upstreams 8050}}"
-    networks:
-      - ingress
+${runner_connectivity_block}
 EOF
       ;;
     emulator)
@@ -492,13 +493,7 @@ EOF
       - \${ANDROID_KEYS_DIR}:/root/.android
       - \${HOST_AVD_HOME_PATH}:/avd-home
       - \${HOST_AVD_GOLDEN_PATH}:/avd-golden
-    expose:
-      - "8050"
-    labels:
-      caddy: "\${RUNNER_CADDY_SITE:-:80}"
-      caddy.reverse_proxy: "{{upstreams 8050}}"
-    networks:
-      - ingress
+${runner_connectivity_block}
 EOF
       ;;
     no_device)
@@ -512,13 +507,7 @@ EOF
       - .env
     environment:
       PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
-    expose:
-      - "8050"
-    labels:
-      caddy: "\${RUNNER_CADDY_SITE:-:80}"
-      caddy.reverse_proxy: "{{upstreams 8050}}"
-    networks:
-      - ingress
+${runner_connectivity_block}
 EOF
       ;;
     *)
@@ -881,7 +870,8 @@ wait_for_public_runner_url() {
 }
 
 register_mobile_runner() {
-  local public_url="$1"
+  local runner_ip="$1"
+  local runner_port="${2:-}"
   local store_url
   local store_payload
   local store_response
@@ -892,12 +882,15 @@ register_mobile_runner() {
     return 1
   }
 
-  store_payload="{\"runner_id\":\"$(json_escape "${CREDIMI_RUNNER_ID}")\",\"name\":\"$(json_escape "${CREDIMI_RUNNER_NAME}")\",\"ip\":\"$(json_escape "${public_url}")\""
+  store_payload="{\"runner_id\":\"$(json_escape "${CREDIMI_RUNNER_ID}")\",\"name\":\"$(json_escape "${CREDIMI_RUNNER_NAME}")\",\"ip\":\"$(json_escape "${runner_ip}")\""
   if [[ -n "${CREDIMI_RUNNER_DESCRIPTION:-}" ]]; then
     store_payload+=",\"description\":\"$(json_escape "${CREDIMI_RUNNER_DESCRIPTION}")\""
   fi
   if [[ -n "${CREDIMI_RUNNER_TYPE:-}" ]]; then
     store_payload+=",\"type\":\"$(json_escape "${CREDIMI_RUNNER_TYPE}")\""
+  fi
+  if [[ -n "${runner_port}" ]]; then
+    store_payload+=",\"port\":\"$(json_escape "${runner_port}")\""
   fi
   if [[ -n "${CREDIMI_RUNNER_SERIAL:-}" ]]; then
     store_payload+=",\"serial\":\"$(json_escape "${CREDIMI_RUNNER_SERIAL}")\""
@@ -939,8 +932,10 @@ cleanup() {
     kill "${runner_pid}" >/dev/null 2>&1 || true
     wait "${runner_pid}" >/dev/null 2>&1 || true
   fi
-  docker compose --env-file "${env_file}" -f "${compose_file}" stop "${compose_services[@]}" >/dev/null 2>&1 || true
-  docker compose --env-file "${env_file}" -f "${compose_file}" rm -f "${compose_services[@]}" >/dev/null 2>&1 || true
+  if [[ "${#compose_services[@]}" -gt 0 ]]; then
+    docker compose --env-file "${env_file}" -f "${compose_file}" stop "${compose_services[@]}" >/dev/null 2>&1 || true
+    docker compose --env-file "${env_file}" -f "${compose_file}" rm -f "${compose_services[@]}" >/dev/null 2>&1 || true
+  fi
 }
 
 wait_for_runner() {
@@ -961,18 +956,8 @@ wait_for_runner() {
   return 1
 }
 
-[[ -f "${compose_file}" ]] || {
-  printf 'missing compose file: %s\n' "${compose_file}" >&2
-  exit 1
-}
 [[ -f "${env_file}" ]] || {
   printf 'missing env file: %s\n' "${env_file}" >&2
-  exit 1
-}
-
-require_cmd docker
-docker compose version >/dev/null 2>&1 || {
-  printf 'docker compose is required\n' >&2
   exit 1
 }
 
@@ -1009,15 +994,41 @@ case "${mode}" in
     fi
     compose_services+=(tunnel_named)
     ;;
+  direct)
+    if [[ -z "${RUNNER_PUBLIC_IP:-}" ]]; then
+      printf 'RUNNER_PUBLIC_IP is required in direct mode\n' >&2
+      exit 1
+    fi
+    if [[ "${backend}" == "host" ]]; then
+      compose_services=()
+    else
+      compose_services=(runner)
+    fi
+    ;;
   down)
+    [[ -f "${compose_file}" ]] || exit 0
+    require_cmd docker
     docker compose --env-file "${env_file}" -f "${compose_file}" down --remove-orphans
     exit 0
     ;;
   *)
-    printf 'usage: %s [quick|named|down]\n' "$(basename "$0")" >&2
+    printf 'usage: %s [quick|named|direct|down]\n' "$(basename "$0")" >&2
     exit 1
     ;;
 esac
+
+if [[ "${#compose_services[@]}" -gt 0 ]]; then
+  [[ -f "${compose_file}" ]] || {
+    printf 'missing compose file: %s\n' "${compose_file}" >&2
+    exit 1
+  }
+
+  require_cmd docker
+  docker compose version >/dev/null 2>&1 || {
+    printf 'docker compose is required\n' >&2
+    exit 1
+  }
+fi
 
 require_cmd curl
 configure_auth_headers
@@ -1032,10 +1043,22 @@ if [[ "${backend}" == "host" ]]; then
   wait_for_runner
 fi
 
-docker compose --env-file "${env_file}" -f "${compose_file}" up -d "${compose_services[@]}"
-public_runner_url="$(wait_for_public_runner_url)"
-register_mobile_runner "${public_runner_url}"
-docker compose --env-file "${env_file}" -f "${compose_file}" logs -f "${compose_services[@]}"
+if [[ "${#compose_services[@]}" -gt 0 ]]; then
+  docker compose --env-file "${env_file}" -f "${compose_file}" up -d "${compose_services[@]}"
+fi
+
+if [[ "${mode}" == "direct" ]]; then
+  register_mobile_runner "${RUNNER_PUBLIC_IP}" "${RUNNER_PUBLIC_PORT:-}"
+else
+  public_runner_url="$(wait_for_public_runner_url)"
+  register_mobile_runner "${public_runner_url}"
+fi
+
+if [[ "${#compose_services[@]}" -gt 0 ]]; then
+  docker compose --env-file "${env_file}" -f "${compose_file}" logs -f "${compose_services[@]}"
+elif [[ -n "${runner_pid:-}" ]]; then
+  wait "${runner_pid}"
+fi
 EOF
   chmod +x "$launcher_path"
 }
@@ -1067,6 +1090,8 @@ RUNNER_DOMAIN=${RUNNER_DOMAIN}
 RUNNER_CADDY_SITE=${RUNNER_CADDY_SITE}
 CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
 CREDIMI_SERVICE_MODE=${CREDIMI_SERVICE_MODE}
+RUNNER_PUBLIC_IP=${RUNNER_PUBLIC_IP}
+RUNNER_PUBLIC_PORT=${RUNNER_PUBLIC_PORT}
 RUNNER_IMAGE=${RUNNER_IMAGE}
 ANDROID_KEYS_DIR=${ANDROID_KEYS_DIR}
 HOST_AVD_HOME_PATH=${HOST_AVD_HOME_PATH}
@@ -1098,6 +1123,8 @@ write_missing_env_values() {
   append_env_if_missing "$env_file" "RUNNER_CADDY_SITE" "${RUNNER_CADDY_SITE}"
   append_env_if_missing "$env_file" "CLOUDFLARE_TUNNEL_TOKEN" "${CLOUDFLARE_TUNNEL_TOKEN}"
   append_env_if_missing "$env_file" "CREDIMI_SERVICE_MODE" "${CREDIMI_SERVICE_MODE}"
+  append_env_if_missing "$env_file" "RUNNER_PUBLIC_IP" "${RUNNER_PUBLIC_IP}"
+  append_env_if_missing "$env_file" "RUNNER_PUBLIC_PORT" "${RUNNER_PUBLIC_PORT}"
   append_env_if_missing "$env_file" "ANDROID_KEYS_DIR" "${ANDROID_KEYS_DIR}"
   append_env_if_missing "$env_file" "HOST_AVD_HOME_PATH" "${HOST_AVD_HOME_PATH}"
   append_env_if_missing "$env_file" "HOST_AVD_GOLDEN_PATH" "${HOST_AVD_GOLDEN_PATH}"
@@ -1130,6 +1157,8 @@ main() {
   CREDIMI_RUNNER_WIFI_IP="${CREDIMI_RUNNER_WIFI_IP-}"
   CREDIMI_RUNNER_WIFI_PORT="${CREDIMI_RUNNER_WIFI_PORT-}"
   RUNNER_IMAGE="${RUNNER_IMAGE-}"
+  RUNNER_PUBLIC_IP="${RUNNER_PUBLIC_IP-}"
+  RUNNER_PUBLIC_PORT="${RUNNER_PUBLIC_PORT-}"
   ANDROID_KEYS_DIR="${ANDROID_KEYS_DIR-}"
   HOST_AVD_HOME_PATH="${HOST_AVD_HOME_PATH-}"
   HOST_AVD_GOLDEN_PATH="${HOST_AVD_GOLDEN_PATH-}"
@@ -1194,18 +1223,31 @@ main() {
   runner_type_options="$(runner_type_choices)"
   CREDIMI_RUNNER_TYPE="$(prompt_choice CREDIMI_RUNNER_TYPE "Mobile runner type (${runner_type_options})" "$(default_runner_type "${CREDIMI_RUNNER_BACKEND}")" "${runner_type_options}")"
   validate_runner_type_supported "${CREDIMI_RUNNER_TYPE}"
-  CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Tunnel mode (quick/named)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named")"
+  CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Exposure mode (quick/named/direct)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named direct")"
   RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")")"
   RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")")"
   RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")")"
 
-  if [ "$CREDIMI_SERVICE_MODE" = "named" ]; then
-    RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain" "$(resolved_value RUNNER_DOMAIN)")"
-    CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "$(resolved_value CLOUDFLARE_TUNNEL_TOKEN)" 1)"
-  else
-    RUNNER_DOMAIN=""
-    CLOUDFLARE_TUNNEL_TOKEN=""
-  fi
+  case "$CREDIMI_SERVICE_MODE" in
+    named)
+      RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain" "$(resolved_value RUNNER_DOMAIN)")"
+      CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "$(resolved_value CLOUDFLARE_TUNNEL_TOKEN)" 1)"
+      RUNNER_PUBLIC_IP=""
+      RUNNER_PUBLIC_PORT=""
+      ;;
+    direct)
+      RUNNER_DOMAIN=""
+      CLOUDFLARE_TUNNEL_TOKEN=""
+      RUNNER_PUBLIC_IP="$(prompt_value RUNNER_PUBLIC_IP "Public runner IP/host" "$(resolved_value RUNNER_PUBLIC_IP)")"
+      RUNNER_PUBLIC_PORT="$(prompt_value RUNNER_PUBLIC_PORT "Public runner port (optional)" "$(resolved_value RUNNER_PUBLIC_PORT)" 0 1)"
+      ;;
+    *)
+      RUNNER_DOMAIN=""
+      CLOUDFLARE_TUNNEL_TOKEN=""
+      RUNNER_PUBLIC_IP=""
+      RUNNER_PUBLIC_PORT=""
+      ;;
+  esac
 
   CREDIMI_RUNNER_SERIAL="$(resolved_value CREDIMI_RUNNER_SERIAL)"
   CREDIMI_RUNNER_DEVICE_MODE="$(resolved_value CREDIMI_RUNNER_DEVICE_MODE)"
@@ -1372,6 +1414,7 @@ main() {
   say "Other commands:"
   say "${PROJECT_NAME}-service quick"
   say "${PROJECT_NAME}-service named"
+  say "${PROJECT_NAME}-service direct"
   say "${PROJECT_NAME}-service down"
 }
 

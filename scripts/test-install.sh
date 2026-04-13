@@ -358,6 +358,62 @@ run_linux_wifi_case() {
   assert_contains '"serial":"192.168.1.42:38349"' "${curl_payload_log}"
 }
 
+run_direct_container_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_ID="/org-id/direct-runner" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_INTERNAL_ADMIN_KEY="" \
+  CREDIMI_SERVICE_MODE="direct" \
+  RUNNER_PUBLIC_IP="198.51.100.10" \
+  RUNNER_PUBLIC_PORT="9443" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  CREDIMI_RUNNER_TYPE="android_phone" \
+  CREDIMI_RUNNER_DEVICE_MODE="usb" \
+  sh "${install_script}" >/dev/null
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local compose_file="${case_dir}/config/credimi/runner/docker-compose.yaml"
+  local docker_log="${case_dir}/logs/docker.log"
+  local curl_payload_log="${case_dir}/logs/curl.payload.log"
+
+  assert_contains "CREDIMI_SERVICE_MODE=direct" "${env_file}"
+  assert_contains "RUNNER_PUBLIC_IP=198.51.100.10" "${env_file}"
+  assert_contains "RUNNER_PUBLIC_PORT=9443" "${env_file}"
+  assert_contains "network_mode: host" "${compose_file}"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_STORE_RUNNER_ID="/org-id/direct-runner" \
+  "${launcher}" direct >/dev/null
+
+  assert_contains "compose version" "${docker_log}"
+  assert_contains "up -d runner" "${docker_log}"
+  assert_contains "logs -f runner" "${docker_log}"
+  assert_not_contains "logs tunnel" "${docker_log}"
+  assert_not_contains "caddy tunnel" "${docker_log}"
+  assert_contains '"ip":"198.51.100.10"' "${curl_payload_log}"
+  assert_contains '"port":"9443"' "${curl_payload_log}"
+}
+
 run_darwin_case() {
   local case_dir
   case_dir="$(mktemp -d)"
@@ -530,6 +586,54 @@ EOF
 
   assert_contains "http://192.0.2.10:9000/" "${curl_log}"
   assert_contains "/api/mobile-runner" "${curl_log}"
+}
+
+run_direct_host_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Darwin" FAKE_UNAME_M="arm64" run_install "${case_dir}"
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local binary="${case_dir}/bin/credimi-runner"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local docker_log="${case_dir}/logs/docker.log"
+  local curl_payload_log="${case_dir}/logs/curl.payload.log"
+
+  cat >"${binary}" <<'EOF'
+#!/usr/bin/env bash
+sleep 2
+EOF
+  chmod +x "${binary}"
+
+  cat >"${env_file}" <<'EOF'
+CREDIMI_URL=https://credimi.example
+CREDIMI_RUNNER_BACKEND=host
+CREDIMI_RUNNER_ID=/org-id/direct-host
+CREDIMI_RUNNER_NAME=direct-host
+CREDIMI_RUNNER_TYPE=ios_simulator
+CREDIMI_USER_API_KEY=user-api-key
+CREDIMI_SERVICE_MODE=direct
+RUNNER_PUBLIC_IP=198.51.100.20
+RUNNER_PUBLIC_PORT=8080
+RUNNER_HOST=127.0.0.1
+RUNNER_PORT=9000
+RUNNER_CADDY_SITE=:80
+EOF
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_STORE_RUNNER_ID="/org-id/direct-host" \
+  "${launcher}" direct >/dev/null
+
+  assert_empty_or_missing "${docker_log}"
+  assert_contains '"ip":"198.51.100.20"' "${curl_payload_log}"
+  assert_contains '"port":"8080"' "${curl_payload_log}"
+  assert_contains '"type":"ios_simulator"' "${curl_payload_log}"
 }
 
 run_existing_env_case() {
@@ -743,12 +847,14 @@ run_linux_rejects_ios_types_case() {
 run_linux_usb_case
 run_linux_emulator_case
 run_linux_wifi_case
+run_direct_container_case
 run_darwin_case
 run_linux_arm64_host_case
 run_noninteractive_empty_optional_case
 run_quick_mode_with_domain_case
 run_literal_env_loading_case
 run_host_bind_host_readiness_case
+run_direct_host_case
 run_existing_env_case
 run_existing_env_mode_switch_case
 run_temp_dir_creation_case
