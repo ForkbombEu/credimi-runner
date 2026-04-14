@@ -701,12 +701,16 @@ upsert_env_value() {
   local path="$1"
   local key="$2"
   local value="$3"
+  local tmp_dir
   local tmp_file
   local found=0
   local line
 
-  tmp_file="$(mktemp)"
+  tmp_dir="$(dirname "${path}")"
+  tmp_file="$(mktemp "${tmp_dir}/.env.tmp.XXXXXX")"
   if [[ -f "${path}" ]]; then
+    cp -p "${path}" "${tmp_file}"
+    : >"${tmp_file}"
     while IFS= read -r line || [[ -n "${line}" ]]; do
       if [[ "${line}" == "${key}="* ]]; then
         printf '%s=%s\n' "${key}" "${value}" >>"${tmp_file}"

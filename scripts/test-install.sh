@@ -60,6 +60,26 @@ assert_file_starts_with() {
   [[ "${actual}" == "${expected_prefix}"* ]] || fail "unexpected prefix in ${path}"
 }
 
+file_mode() {
+  local path="$1"
+
+  if stat -c '%a' "$path" >/dev/null 2>&1; then
+    stat -c '%a' "$path"
+    return 0
+  fi
+
+  stat -f '%Lp' "$path"
+}
+
+assert_file_mode() {
+  local path="$1"
+  local expected_mode="$2"
+  local actual_mode
+
+  actual_mode="$(file_mode "$path")"
+  [[ "${actual_mode}" == "${expected_mode}" ]] || fail "unexpected mode for ${path}: got ${actual_mode}, want ${expected_mode}"
+}
+
 create_mocks() {
   local mock_dir="$1"
   mkdir -p "$mock_dir"
@@ -817,6 +837,51 @@ run_launcher_preview_case() {
   assert_contains "/api/mobile-runner" "${curl_log}"
 }
 
+run_direct_preview_preserves_env_mode_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_NAME="direct-preview" \
+  CREDIMI_RUNNER_ORGANIZATION="org-id" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_INTERNAL_ADMIN_KEY="" \
+  CREDIMI_SERVICE_MODE="direct" \
+  RUNNER_PUBLIC_IP="198.51.100.20" \
+  RUNNER_PUBLIC_PORT="8080" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  sh "${install_script}" >/dev/null
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+
+  chmod 644 "${env_file}"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/direct-preview" \
+  MOCK_STORE_RUNNER_ID="/org-id/direct-preview" \
+  "${launcher}" direct >/dev/null
+
+  assert_file_mode "${env_file}" "644"
+  assert_contains "CREDIMI_RUNNER_ID=/org-id/direct-preview" "${env_file}"
+}
+
 run_linux_rejects_ios_types_case() {
   local case_dir
   case_dir="$(mktemp -d)"
@@ -859,6 +924,7 @@ run_existing_env_case
 run_existing_env_mode_switch_case
 run_temp_dir_creation_case
 run_launcher_preview_case
+run_direct_preview_preserves_env_mode_case
 run_linux_rejects_ios_types_case
 
 printf 'install.sh tests passed\n'
