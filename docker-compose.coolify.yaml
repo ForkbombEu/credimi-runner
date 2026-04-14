@@ -29,7 +29,7 @@ services:
       CREDIMI_INTERNAL_ADMIN_KEY: ${CREDIMI_INTERNAL_ADMIN_KEY:?}
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?temporal.credimi.io:7233}
       OTEL_ENABLED: ${OTEL_ENABLED:-true}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?https://otel-collector.credimi.io}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-credimi-runner}     
       BASE_NAME: ${BASE_NAME:?credimi}
       GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
