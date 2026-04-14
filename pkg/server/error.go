@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/docs"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/health"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
@@ -106,6 +107,25 @@ func wrapMobileAPIError(apiErr *runner.APIError) error {
 		Reason:  apiErr.Reason,
 		Message: apiErr.Message,
 	}
+}
+
+func wrapDocsAPIError(apiErr *docs.APIError) error {
+	if apiErr == nil {
+		return &docs.APIError{
+			Name:    "internal_error",
+			Code:    http.StatusInternalServerError,
+			Domain:  "server",
+			Reason:  "internal error",
+			Message: "internal server error",
+		}
+	}
+	if apiErr.Code == 0 {
+		apiErr.Code = http.StatusInternalServerError
+	}
+	if apiErr.Name == "" {
+		apiErr.Name = "internal_error"
+	}
+	return apiErr
 }
 
 // Implements goahttp.Statuser and matches your API error JSON.
@@ -211,6 +231,27 @@ func wireFrommobileAPIError(e *mobile.APIError) *apiErrorWire {
 	}
 }
 
+func wireFromdocsAPIError(e *docs.APIError) *apiErrorWire {
+	if e == nil {
+		return wireFromrunnerAPIError(nil)
+	}
+	status := e.Code
+	if status == 0 {
+		status = http.StatusInternalServerError
+	}
+	name := e.Name
+	if name == "" {
+		name = "internal_error"
+	}
+	return &apiErrorWire{
+		Name:    name,
+		Status:  status,
+		Domain:  e.Domain,
+		Reason:  e.Reason,
+		Message: e.Message,
+	}
+}
+
 func wireFromhealthAPIError(e *health.APIError) *apiErrorWire {
 	if e == nil {
 		return wireFromrunnerAPIError(nil)
@@ -253,6 +294,11 @@ func GoaErrorFormatter(_ context.Context, err error) goahttp.Statuser {
 	var mobileAPIErr *mobile.APIError
 	if errors.As(err, &mobileAPIErr) && mobileAPIErr != nil {
 		return wireFrommobileAPIError(mobileAPIErr)
+	}
+
+	var docsAPIErr *docs.APIError
+	if errors.As(err, &docsAPIErr) && docsAPIErr != nil {
+		return wireFromdocsAPIError(docsAPIErr)
 	}
 
 	var healthAPIErr *health.APIError

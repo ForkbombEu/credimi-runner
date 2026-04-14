@@ -1,10 +1,8 @@
 package server
 
 import (
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"context"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -33,42 +31,31 @@ func TestResolvePublicServerURL(t *testing.T) {
 func TestOpenAPIPublicServersOverride(t *testing.T) {
 	t.Setenv("RUNNER_DOMAIN", "api.example.com")
 
-	path := filepath.Join(projectRootDirForFS(), "pkg", "gen", "http", "openapi3-public.json")
-	orig, err := os.ReadFile(path)
+	content, err := readOpenAPI3PublicContent()
 	require.NoError(t, err)
-	t.Cleanup(func() {
-		_ = os.WriteFile(path, orig, 0o644)
-	})
-
-	err = os.WriteFile(path, []byte(`{"openapi":"3.0.3","servers":[{"url":"/"}]}`), 0o644)
-	require.NoError(t, err)
-
-	h := withPublicOpenAPIServerURL(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-	}))
-
-	req := httptest.NewRequest(http.MethodGet, "/docs/openapi3-public.json", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.Contains(t, rec.Body.String(), `"url": "https://api.example.com"`)
-
-	req = httptest.NewRequest(http.MethodGet, "/workers", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusTeapot, rec.Code)
+	require.Contains(t, string(content), `"servers": [`)
+	require.Contains(t, string(content), `"url": "https://api.example.com"`)
 }
 
 func TestOpenAPIPublicNoOverrideWhenDomainDefault(t *testing.T) {
 	t.Setenv("RUNNER_DOMAIN", ":80")
 
-	h := withPublicOpenAPIServerURL(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	content, err := readOpenAPI3PublicContent()
+	require.NoError(t, err)
+	require.Contains(t, string(content), `"url": "/"`)
+}
 
-	req := httptest.NewRequest(http.MethodGet, "/docs/openapi3-public.json", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNoContent, rec.Code)
+func TestOpenapi3Public_Method(t *testing.T) {
+	t.Setenv("RUNNER_DOMAIN", "api.example.com")
+
+	srv := NewRunnerService(NewProcessStore(), nil)
+	result, body, err := srv.Openapi3Public(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = body.Close() })
+
+	content, err := io.ReadAll(body)
+	require.NoError(t, err)
+	require.Equal(t, "application/json; charset=utf-8", result.Encoding)
+	require.Equal(t, int64(len(content)), result.Length)
+	require.Contains(t, string(content), `"url": "https://api.example.com"`)
 }

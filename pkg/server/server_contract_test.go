@@ -257,6 +257,28 @@ func TestServerContract_Docs(t *testing.T) {
 		require.NotContains(t, resp.Body.String(), `"/docs/openapi.yaml"`)
 		require.NotContains(t, resp.Body.String(), `"name": "docs"`)
 	})
+
+	t.Run("docs stay available outside repository working directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		cwd, err := os.Getwd()
+		require.NoError(t, err)
+		require.NoError(t, os.Chdir(tmpDir))
+		t.Cleanup(func() {
+			_ = os.Chdir(cwd)
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, req)
+		require.Equal(t, http.StatusOK, resp.Code)
+		require.Contains(t, resp.Body.String(), "<elements-api")
+
+		req = httptest.NewRequest(http.MethodGet, "/docs/openapi3-public.json", nil)
+		resp = httptest.NewRecorder()
+		server.ServeHTTP(resp, req)
+		require.Equal(t, http.StatusOK, resp.Code)
+		require.Contains(t, resp.Body.String(), `"openapi": "3.0.3"`)
+	})
 }
 
 func TestServerContract_FetchInstallerAndAction(t *testing.T) {

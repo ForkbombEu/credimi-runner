@@ -2,50 +2,48 @@ package server
 
 import (
 	"encoding/json"
-	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
+
+	docs "github.com/forkbombeu/credimi-runner/pkg/gen/docs"
 )
 
-func withPublicOpenAPIServerURL(next http.Handler) http.Handler {
-	serverURL, ok := resolvePublicServerURL()
-	if !ok {
-		return next
+func readOpenAPI3PublicContent() ([]byte, error) {
+	content, err := readOpenAPI3PublicJSON()
+	if err != nil {
+		return nil, internalDocsAssetError("read openapi3 public json", err)
 	}
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/docs/openapi3-public.json" {
-			next.ServeHTTP(w, r)
-			return
-		}
+	serverURL, ok := resolvePublicServerURL()
+	if !ok {
+		return content, nil
+	}
 
-		path := filepath.Join(projectRootDirForFS(), "pkg", "gen", "http", "openapi3-public.json")
-		content, err := os.ReadFile(path)
-		if err != nil {
-			http.Error(w, "404 page not found", http.StatusNotFound)
-			return
-		}
+	var spec map[string]any
+	if err := json.Unmarshal(content, &spec); err != nil {
+		return nil, internalDocsAssetError("decode openapi3 public json", err)
+	}
 
-		var spec map[string]any
-		if err := json.Unmarshal(content, &spec); err != nil {
-			http.Error(w, "500 internal error", http.StatusInternalServerError)
-			return
-		}
+	spec["servers"] = []any{
+		map[string]any{"url": serverURL},
+	}
 
-		spec["servers"] = []any{
-			map[string]any{"url": serverURL},
-		}
+	body, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return nil, internalDocsAssetError("encode openapi3 public json", err)
+	}
 
-		body, err := json.MarshalIndent(spec, "", "  ")
-		if err != nil {
-			http.Error(w, "500 internal error", http.StatusInternalServerError)
-			return
-		}
+	return append(body, '\n'), nil
+}
 
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(append(body, '\n'))
-	})
+func internalDocsAssetError(reason string, err error) *docs.APIError {
+	return &docs.APIError{
+		Name:    "internal_error",
+		Code:    500,
+		Domain:  "server",
+		Reason:  reason,
+		Message: err.Error(),
+	}
 }
 
 func resolvePublicServerURL() (string, bool) {
@@ -60,4 +58,3 @@ func resolvePublicServerURL() (string, bool) {
 
 	return "https://" + domain, true
 }
-
