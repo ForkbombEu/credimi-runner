@@ -418,6 +418,7 @@ run_linux_redroid_no_device_case() {
   CREDIMI_RUNNER_WIFI_PORT="5557" \
   AVDCTL_SSH_TARGET="credimi@remote-host" \
   AVDCTL_SSH_PASSWORD="ssh-secret" \
+  AVDCTL_SSH_KNOWN_HOSTS_PATH="/home/bario/.ssh/known_hosts" \
   AVDCTL_SUDO="true" \
   AVDCTL_SUDO_PASSWORD="sudo-secret" \
   REDROID_DATA_DIR="/srv/redroid-data" \
@@ -439,11 +440,13 @@ run_linux_redroid_no_device_case() {
   assert_contains "CREDIMI_CONTAINER_MODE=no_device" "${env_file}"
   assert_contains "AVDCTL_SSH_TARGET=credimi@remote-host" "${env_file}"
   assert_contains "AVDCTL_SSH_PASSWORD=ssh-secret" "${env_file}"
+  assert_contains "AVDCTL_SSH_KNOWN_HOSTS_PATH=/home/bario/.ssh/known_hosts" "${env_file}"
   assert_contains "AVDCTL_SUDO=true" "${env_file}"
   assert_contains "AVDCTL_SUDO_PASSWORD=sudo-secret" "${env_file}"
   assert_contains "REDROID_DATA_DIR=/srv/redroid-data" "${env_file}"
   assert_contains "REDROID_DATA_TAR=/srv/redroid-data.tar" "${env_file}"
   assert_contains "--no-device" "${compose_file}"
+  assert_contains '${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro' "${compose_file}"
   assert_contains 'PORT: "${RUNNER_PORT:-8050}"' "${compose_file}"
 
   PATH="${case_dir}/mocks:${PATH}" \
@@ -834,6 +837,7 @@ BASE_NAME=
 GOLDEN_PATH=
 AVDCTL_SSH_TARGET=credimi@remote-host
 AVDCTL_SSH_PASSWORD=ssh-secret
+AVDCTL_SSH_KNOWN_HOSTS_PATH=/home/bario/.ssh/known_hosts
 AVDCTL_SUDO=true
 AVDCTL_SUDO_PASSWORD=sudo-secret
 REDROID_DATA_DIR=/srv/redroid-data
@@ -859,6 +863,7 @@ EOF
   assert_contains "GOLDEN_PATH=" "${env_file}"
   assert_contains "AVDCTL_SSH_TARGET=credimi@remote-host" "${env_file}"
   assert_contains "AVDCTL_SSH_PASSWORD=ssh-secret" "${env_file}"
+  assert_contains "AVDCTL_SSH_KNOWN_HOSTS_PATH=/home/bario/.ssh/known_hosts" "${env_file}"
   assert_contains "AVDCTL_SUDO=true" "${env_file}"
   assert_contains "AVDCTL_SUDO_PASSWORD=sudo-secret" "${env_file}"
   assert_contains "REDROID_DATA_DIR=" "${env_file}"

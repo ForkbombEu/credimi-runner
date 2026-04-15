@@ -503,6 +503,8 @@ write_compose_file() {
   compose_file="$1"
   runner_mode="${CREDIMI_CONTAINER_MODE:-${DEFAULT_CONTAINER_MODE}}"
   runner_image="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
+  runner_ssh_known_hosts_volume=""
+  runner_no_device_volumes_block=""
   runner_connectivity_block='    expose:
       - "8050"
     labels:
@@ -515,6 +517,12 @@ write_compose_file() {
     [ "${CREDIMI_SERVICE_MODE:-quick}" = "direct" ] &&
     [ "$(uname -s)" = "Linux" ]; then
     runner_connectivity_block='    network_mode: host'
+  fi
+
+  if [ -n "${AVDCTL_SSH_TARGET:-}" ] && [ -n "${AVDCTL_SSH_KNOWN_HOSTS_PATH:-}" ]; then
+    runner_ssh_known_hosts_volume='      - ${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro'
+    runner_no_device_volumes_block='    volumes:
+      - ${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro'
   fi
 
   cat >"$compose_file" <<EOF
@@ -535,6 +543,7 @@ EOF
       PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
     volumes:
       - adbkeys:/root/.android
+${runner_ssh_known_hosts_volume}
 ${runner_connectivity_block}
 EOF
       ;;
@@ -553,6 +562,7 @@ EOF
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - adbkeys:/root/.android
+${runner_ssh_known_hosts_volume}
 ${runner_connectivity_block}
 EOF
       ;;
@@ -575,6 +585,7 @@ EOF
       - \${ANDROID_KEYS_DIR}:/root/.android
       - \${HOST_AVD_HOME_PATH}:/avd-home
       - \${HOST_AVD_GOLDEN_PATH}:/avd-golden
+${runner_ssh_known_hosts_volume}
 ${runner_connectivity_block}
 EOF
       ;;
@@ -589,6 +600,7 @@ EOF
       - .env
     environment:
       PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
+${runner_no_device_volumes_block}
 ${runner_connectivity_block}
 EOF
       ;;
@@ -1197,6 +1209,7 @@ BASE_NAME=${BASE_NAME}
 GOLDEN_PATH=${GOLDEN_PATH}
 AVDCTL_SSH_TARGET=${AVDCTL_SSH_TARGET}
 AVDCTL_SSH_PASSWORD=${AVDCTL_SSH_PASSWORD}
+AVDCTL_SSH_KNOWN_HOSTS_PATH=${AVDCTL_SSH_KNOWN_HOSTS_PATH}
 AVDCTL_SUDO=${AVDCTL_SUDO}
 AVDCTL_SUDO_PASSWORD=${AVDCTL_SUDO_PASSWORD}
 REDROID_DATA_DIR=${REDROID_DATA_DIR}
@@ -1238,6 +1251,7 @@ write_missing_env_values() {
   append_env_if_missing "$env_file" "GOLDEN_PATH" "${GOLDEN_PATH}"
   append_env_if_missing "$env_file" "AVDCTL_SSH_TARGET" "${AVDCTL_SSH_TARGET}"
   append_env_if_missing "$env_file" "AVDCTL_SSH_PASSWORD" "${AVDCTL_SSH_PASSWORD}"
+  append_env_if_missing "$env_file" "AVDCTL_SSH_KNOWN_HOSTS_PATH" "${AVDCTL_SSH_KNOWN_HOSTS_PATH}"
   append_env_if_missing "$env_file" "AVDCTL_SUDO" "${AVDCTL_SUDO}"
   append_env_if_missing "$env_file" "AVDCTL_SUDO_PASSWORD" "${AVDCTL_SUDO_PASSWORD}"
   append_env_if_missing "$env_file" "REDROID_DATA_DIR" "${REDROID_DATA_DIR}"
@@ -1279,6 +1293,7 @@ main() {
   GOLDEN_PATH="${GOLDEN_PATH-}"
   AVDCTL_SSH_TARGET="${AVDCTL_SSH_TARGET-}"
   AVDCTL_SSH_PASSWORD="${AVDCTL_SSH_PASSWORD-}"
+  AVDCTL_SSH_KNOWN_HOSTS_PATH="${AVDCTL_SSH_KNOWN_HOSTS_PATH-}"
   AVDCTL_SUDO="${AVDCTL_SUDO-}"
   AVDCTL_SUDO_PASSWORD="${AVDCTL_SUDO_PASSWORD-}"
   REDROID_DATA_DIR="${REDROID_DATA_DIR-}"
@@ -1422,6 +1437,7 @@ main() {
       GOLDEN_PATH=""
       AVDCTL_SSH_TARGET=""
       AVDCTL_SSH_PASSWORD=""
+      AVDCTL_SSH_KNOWN_HOSTS_PATH=""
       AVDCTL_SUDO=""
       AVDCTL_SUDO_PASSWORD=""
       REDROID_DATA_DIR=""
@@ -1442,6 +1458,7 @@ main() {
       GOLDEN_PATH=""
       AVDCTL_SSH_TARGET=""
       AVDCTL_SSH_PASSWORD=""
+      AVDCTL_SSH_KNOWN_HOSTS_PATH=""
       AVDCTL_SUDO=""
       AVDCTL_SUDO_PASSWORD=""
       REDROID_DATA_DIR=""
@@ -1502,6 +1519,11 @@ main() {
         yes)
           AVDCTL_SSH_TARGET="$(prompt_value AVDCTL_SSH_TARGET "AVDCTL SSH target" "$(resolved_value AVDCTL_SSH_TARGET)")"
           AVDCTL_SSH_PASSWORD="$(prompt_value AVDCTL_SSH_PASSWORD "AVDCTL SSH password (optional)" "$(resolved_value AVDCTL_SSH_PASSWORD)" 1 1)"
+          if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+            AVDCTL_SSH_KNOWN_HOSTS_PATH="$(prompt_value AVDCTL_SSH_KNOWN_HOSTS_PATH "SSH known_hosts path to mount into the runner container" "$(resolved_value AVDCTL_SSH_KNOWN_HOSTS_PATH "${HOME}/.ssh/known_hosts")")"
+          else
+            AVDCTL_SSH_KNOWN_HOSTS_PATH=""
+          fi
           avdctl_sudo_choice="$(prompt_choice AVDCTL_USE_SUDO_PROMPT "Does avdctl need sudo (yes/no)" "$(default_avdctl_sudo_choice)" "yes no")"
           case "$avdctl_sudo_choice" in
             yes)
@@ -1517,6 +1539,7 @@ main() {
         *)
           AVDCTL_SSH_TARGET=""
           AVDCTL_SSH_PASSWORD=""
+          AVDCTL_SSH_KNOWN_HOSTS_PATH=""
           AVDCTL_SUDO="false"
           AVDCTL_SUDO_PASSWORD=""
           ;;
