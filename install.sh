@@ -19,6 +19,8 @@ DEFAULT_BASE_NAME="credimi"
 DEFAULT_HOST_AVD_HOME_PATH="/srv/credimi/avd-home"
 DEFAULT_HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden"
 DEFAULT_ANDROID_WIFI_PORT="5555"
+DEFAULT_REDROID_DATA_DIR="/home/credimi/redroid-data"
+DEFAULT_REDROID_DATA_TAR="/home/credimi/redroid-data.tar"
 
 tty_path=""
 # stdin is often a pipe during `curl ... | sh`; use /dev/tty directly when it is available.
@@ -375,9 +377,19 @@ validate_runner_type_supported() {
 }
 
 default_android_device_mode() {
+  runner_type="${1-}"
   saved_mode="$(resolved_value CREDIMI_RUNNER_DEVICE_MODE)"
   if [ -n "$saved_mode" ]; then
-    printf '%s' "$saved_mode"
+    case "$runner_type:$saved_mode" in
+      redroid:no_device|redroid:usb|redroid:wifi|android_phone:usb|android_phone:wifi)
+        printf '%s' "$saved_mode"
+        return 0
+        ;;
+    esac
+  fi
+
+  if [ "$runner_type" = "redroid" ]; then
+    printf 'no_device'
     return 0
   fi
 
@@ -389,6 +401,42 @@ default_android_device_mode() {
       printf 'usb'
       ;;
   esac
+}
+
+default_yes_no_choice() {
+  var_name="$1"
+  fallback="${2:-no}"
+  value="$(resolved_value "$var_name")"
+
+  case "$value" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+      printf 'yes'
+      ;;
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      printf 'no'
+      ;;
+    *)
+      printf '%s' "$fallback"
+      ;;
+  esac
+}
+
+default_avdctl_ssh_choice() {
+  if [ -n "$(resolved_value AVDCTL_SSH_TARGET)" ]; then
+    printf 'yes'
+    return 0
+  fi
+
+  printf 'no'
+}
+
+default_avdctl_sudo_choice() {
+  if [ -n "$(resolved_value AVDCTL_SUDO_PASSWORD)" ]; then
+    printf 'yes'
+    return 0
+  fi
+
+  printf '%s' "$(default_yes_no_choice AVDCTL_SUDO no)"
 }
 
 detect_connected_android_usb_serial() {
@@ -613,9 +661,12 @@ EOF
 
 write_launcher() {
   launcher_path="$1"
-  cat >"$launcher_path" <<'EOF'
+cat >"$launcher_path" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "ERROR at ${BASH_SOURCE}:${LINENO}: ${BASH_COMMAND}"' ERR
+
+echo "WARNING: This script does NOT work if Docker is installed via snap. See: https://stackoverflow.com/questions/73290497/getting-docker-open-env-permission-denied-when-trying-to-pass-a-env-file. Install Docker via apt or the official shell script instead." >&2
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
@@ -1144,6 +1195,12 @@ HOST_AVD_HOME_PATH=${HOST_AVD_HOME_PATH}
 HOST_AVD_GOLDEN_PATH=${HOST_AVD_GOLDEN_PATH}
 BASE_NAME=${BASE_NAME}
 GOLDEN_PATH=${GOLDEN_PATH}
+AVDCTL_SSH_TARGET=${AVDCTL_SSH_TARGET}
+AVDCTL_SSH_PASSWORD=${AVDCTL_SSH_PASSWORD}
+AVDCTL_SUDO=${AVDCTL_SUDO}
+AVDCTL_SUDO_PASSWORD=${AVDCTL_SUDO_PASSWORD}
+REDROID_DATA_DIR=${REDROID_DATA_DIR}
+REDROID_DATA_TAR=${REDROID_DATA_TAR}
 EOF
 }
 
@@ -1179,6 +1236,12 @@ write_missing_env_values() {
   append_env_if_missing "$env_file" "HOST_AVD_GOLDEN_PATH" "${HOST_AVD_GOLDEN_PATH}"
   append_env_if_missing "$env_file" "BASE_NAME" "${BASE_NAME}"
   append_env_if_missing "$env_file" "GOLDEN_PATH" "${GOLDEN_PATH}"
+  append_env_if_missing "$env_file" "AVDCTL_SSH_TARGET" "${AVDCTL_SSH_TARGET}"
+  append_env_if_missing "$env_file" "AVDCTL_SSH_PASSWORD" "${AVDCTL_SSH_PASSWORD}"
+  append_env_if_missing "$env_file" "AVDCTL_SUDO" "${AVDCTL_SUDO}"
+  append_env_if_missing "$env_file" "AVDCTL_SUDO_PASSWORD" "${AVDCTL_SUDO_PASSWORD}"
+  append_env_if_missing "$env_file" "REDROID_DATA_DIR" "${REDROID_DATA_DIR}"
+  append_env_if_missing "$env_file" "REDROID_DATA_TAR" "${REDROID_DATA_TAR}"
 }
 
 main() {
@@ -1214,6 +1277,12 @@ main() {
   HOST_AVD_GOLDEN_PATH="${HOST_AVD_GOLDEN_PATH-}"
   BASE_NAME="${BASE_NAME-}"
   GOLDEN_PATH="${GOLDEN_PATH-}"
+  AVDCTL_SSH_TARGET="${AVDCTL_SSH_TARGET-}"
+  AVDCTL_SSH_PASSWORD="${AVDCTL_SSH_PASSWORD-}"
+  AVDCTL_SUDO="${AVDCTL_SUDO-}"
+  AVDCTL_SUDO_PASSWORD="${AVDCTL_SUDO_PASSWORD-}"
+  REDROID_DATA_DIR="${REDROID_DATA_DIR-}"
+  REDROID_DATA_TAR="${REDROID_DATA_TAR-}"
 
   case "$CREDIMI_RUNNER_BACKEND" in
     host)
@@ -1313,10 +1382,10 @@ main() {
       ;;
   esac
 
-  CREDIMI_RUNNER_SERIAL="$(resolved_value CREDIMI_RUNNER_SERIAL)"
-  CREDIMI_RUNNER_DEVICE_MODE="$(resolved_value CREDIMI_RUNNER_DEVICE_MODE)"
-  CREDIMI_RUNNER_WIFI_IP="$(resolved_value CREDIMI_RUNNER_WIFI_IP)"
-  CREDIMI_RUNNER_WIFI_PORT="$(resolved_value CREDIMI_RUNNER_WIFI_PORT)"
+  CREDIMI_RUNNER_SERIAL="$(explicit_env_or_default CREDIMI_RUNNER_SERIAL)"
+  CREDIMI_RUNNER_DEVICE_MODE="$(explicit_env_or_default CREDIMI_RUNNER_DEVICE_MODE)"
+  CREDIMI_RUNNER_WIFI_IP="$(explicit_env_or_default CREDIMI_RUNNER_WIFI_IP)"
+  CREDIMI_RUNNER_WIFI_PORT="$(explicit_env_or_default CREDIMI_RUNNER_WIFI_PORT)"
 
   case "$CREDIMI_RUNNER_TYPE" in
     android_emulator)
@@ -1351,6 +1420,12 @@ main() {
       HOST_AVD_GOLDEN_PATH=""
       BASE_NAME=""
       GOLDEN_PATH=""
+      AVDCTL_SSH_TARGET=""
+      AVDCTL_SSH_PASSWORD=""
+      AVDCTL_SUDO=""
+      AVDCTL_SUDO_PASSWORD=""
+      REDROID_DATA_DIR=""
+      REDROID_DATA_TAR=""
       ;;
     ios_phone)
       CREDIMI_RUNNER_SERIAL="$(prompt_value CREDIMI_RUNNER_SERIAL "iOS phone serial" "$(resolved_value CREDIMI_RUNNER_SERIAL)")"
@@ -1365,9 +1440,19 @@ main() {
       HOST_AVD_GOLDEN_PATH=""
       BASE_NAME=""
       GOLDEN_PATH=""
+      AVDCTL_SSH_TARGET=""
+      AVDCTL_SSH_PASSWORD=""
+      AVDCTL_SUDO=""
+      AVDCTL_SUDO_PASSWORD=""
+      REDROID_DATA_DIR=""
+      REDROID_DATA_TAR=""
       ;;
     redroid|android_phone)
-      CREDIMI_RUNNER_DEVICE_MODE="$(prompt_choice CREDIMI_RUNNER_DEVICE_MODE "Android connection mode (usb/wifi)" "$(default_android_device_mode)" "usb wifi")"
+      android_device_mode_options="usb wifi"
+      if [ "$CREDIMI_RUNNER_TYPE" = "redroid" ]; then
+        android_device_mode_options="no_device usb wifi"
+      fi
+      CREDIMI_RUNNER_DEVICE_MODE="$(prompt_choice CREDIMI_RUNNER_DEVICE_MODE "Android connection mode (${android_device_mode_options})" "$(default_android_device_mode "${CREDIMI_RUNNER_TYPE}")" "${android_device_mode_options}")"
       RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
       ANDROID_KEYS_DIR=""
       HOST_AVD_HOME_PATH=""
@@ -1376,6 +1461,16 @@ main() {
       GOLDEN_PATH=""
 
       case "$CREDIMI_RUNNER_DEVICE_MODE" in
+        no_device)
+          CREDIMI_RUNNER_WIFI_IP="$(prompt_value CREDIMI_RUNNER_WIFI_IP "Android Wi-Fi IP" "$(resolved_value CREDIMI_RUNNER_WIFI_IP)")"
+          CREDIMI_RUNNER_WIFI_PORT="$(prompt_value CREDIMI_RUNNER_WIFI_PORT "Android Wi-Fi port" "$(resolved_value CREDIMI_RUNNER_WIFI_PORT "${DEFAULT_ANDROID_WIFI_PORT}")")"
+          CREDIMI_RUNNER_SERIAL="${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT}"
+          if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+            CREDIMI_CONTAINER_MODE="no_device"
+          else
+            CREDIMI_CONTAINER_MODE=""
+          fi
+          ;;
         usb)
           usb_serial_default="$(resolved_value CREDIMI_RUNNER_SERIAL)"
           if [ -z "$usb_serial_default" ] && command -v adb >/dev/null 2>&1; then
@@ -1401,6 +1496,43 @@ main() {
           fi
           ;;
       esac
+
+      avdctl_ssh_choice="$(prompt_choice AVDCTL_USE_SSH_PROMPT "Use avdctl via SSH (yes/no)" "$(default_avdctl_ssh_choice)" "yes no")"
+      case "$avdctl_ssh_choice" in
+        yes)
+          AVDCTL_SSH_TARGET="$(prompt_value AVDCTL_SSH_TARGET "AVDCTL SSH target" "$(resolved_value AVDCTL_SSH_TARGET)")"
+          AVDCTL_SSH_PASSWORD="$(prompt_value AVDCTL_SSH_PASSWORD "AVDCTL SSH password (optional)" "$(resolved_value AVDCTL_SSH_PASSWORD)" 1 1)"
+          avdctl_sudo_choice="$(prompt_choice AVDCTL_USE_SUDO_PROMPT "Does avdctl need sudo (yes/no)" "$(default_avdctl_sudo_choice)" "yes no")"
+          case "$avdctl_sudo_choice" in
+            yes)
+              AVDCTL_SUDO="true"
+              AVDCTL_SUDO_PASSWORD="$(prompt_value AVDCTL_SUDO_PASSWORD "AVDCTL sudo password" "$(resolved_value AVDCTL_SUDO_PASSWORD)" 1)"
+              ;;
+            *)
+              AVDCTL_SUDO="false"
+              AVDCTL_SUDO_PASSWORD=""
+              ;;
+          esac
+          ;;
+        *)
+          AVDCTL_SSH_TARGET=""
+          AVDCTL_SSH_PASSWORD=""
+          AVDCTL_SUDO="false"
+          AVDCTL_SUDO_PASSWORD=""
+          ;;
+      esac
+
+      if [ "$CREDIMI_RUNNER_TYPE" = "redroid" ]; then
+        redroid_data_location_note=""
+        if [ -n "$AVDCTL_SSH_TARGET" ]; then
+          redroid_data_location_note=" on the remote machine"
+        fi
+        REDROID_DATA_DIR="$(prompt_value REDROID_DATA_DIR "Redroid data dir${redroid_data_location_note}" "$(resolved_value REDROID_DATA_DIR "${DEFAULT_REDROID_DATA_DIR}")")"
+        REDROID_DATA_TAR="$(prompt_value REDROID_DATA_TAR "Redroid data tar${redroid_data_location_note}" "$(resolved_value REDROID_DATA_TAR "${DEFAULT_REDROID_DATA_TAR}")")"
+      else
+        REDROID_DATA_DIR=""
+        REDROID_DATA_TAR=""
+      fi
       ;;
   esac
 

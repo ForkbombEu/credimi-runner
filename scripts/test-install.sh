@@ -274,6 +274,8 @@ run_linux_usb_case() {
   local curl_payload_log="${case_dir}/logs/curl.payload.log"
 
   assert_file_exists "${launcher}"
+  assert_contains "trap 'echo \"ERROR at \${BASH_SOURCE}:\${LINENO}: \${BASH_COMMAND}\"' ERR" "${launcher}"
+  assert_contains 'echo "WARNING: This script does NOT work if Docker is installed via snap. See: https://stackoverflow.com/questions/73290497/getting-docker-open-env-permission-denied-when-trying-to-pass-a-env-file. Install Docker via apt or the official shell script instead." >&2' "${launcher}"
   assert_file_exists "${env_file}"
   assert_file_exists "${compose_file}"
   assert_file_absent "${binary}"
@@ -400,6 +402,58 @@ run_linux_wifi_case() {
 
   assert_contains '"type":"android_phone"' "${curl_payload_log}"
   assert_contains '"serial":"192.168.1.42:38349"' "${curl_payload_log}"
+}
+
+run_linux_redroid_no_device_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  CREDIMI_RUNNER_TYPE="redroid" \
+  CREDIMI_RUNNER_DEVICE_MODE="no_device" \
+  CREDIMI_RUNNER_WIFI_IP="192.168.1.77" \
+  CREDIMI_RUNNER_WIFI_PORT="5557" \
+  AVDCTL_SSH_TARGET="credimi@remote-host" \
+  AVDCTL_SSH_PASSWORD="ssh-secret" \
+  AVDCTL_SUDO="true" \
+  AVDCTL_SUDO_PASSWORD="sudo-secret" \
+  REDROID_DATA_DIR="/srv/redroid-data" \
+  REDROID_DATA_TAR="/srv/redroid-data.tar" \
+  run_install "${case_dir}"
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local config_dir="${case_dir}/config/credimi/runner"
+  local env_file="${config_dir}/.env"
+  local compose_file="${config_dir}/docker-compose.yaml"
+  local curl_payload_log="${case_dir}/logs/curl.payload.log"
+
+  assert_file_exists "${launcher}"
+  assert_contains "CREDIMI_RUNNER_TYPE=redroid" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_DEVICE_MODE=no_device" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_WIFI_IP=192.168.1.77" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_WIFI_PORT=5557" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_SERIAL=192.168.1.77:5557" "${env_file}"
+  assert_contains "CREDIMI_CONTAINER_MODE=no_device" "${env_file}"
+  assert_contains "AVDCTL_SSH_TARGET=credimi@remote-host" "${env_file}"
+  assert_contains "AVDCTL_SSH_PASSWORD=ssh-secret" "${env_file}"
+  assert_contains "AVDCTL_SUDO=true" "${env_file}"
+  assert_contains "AVDCTL_SUDO_PASSWORD=sudo-secret" "${env_file}"
+  assert_contains "REDROID_DATA_DIR=/srv/redroid-data" "${env_file}"
+  assert_contains "REDROID_DATA_TAR=/srv/redroid-data.tar" "${env_file}"
+  assert_contains "--no-device" "${compose_file}"
+  assert_contains 'PORT: "${RUNNER_PORT:-8050}"' "${compose_file}"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains '"type":"redroid"' "${curl_payload_log}"
+  assert_contains '"serial":"192.168.1.77:5557"' "${curl_payload_log}"
 }
 
 run_direct_container_case() {
@@ -760,24 +814,30 @@ CREDIMI_PB_PASS=
 CREDIMI_INTERNAL_ADMIN_KEY=
 TEMPORAL_ADDRESS=temporal.persisted.example:7233
 CREDIMI_RUNNER_BACKEND=container
-CREDIMI_RUNNER_TYPE=android_emulator
+CREDIMI_RUNNER_TYPE=redroid
 CREDIMI_RUNNER_SERIAL=
-CREDIMI_RUNNER_DEVICE_MODE=
-CREDIMI_RUNNER_WIFI_IP=
-CREDIMI_RUNNER_WIFI_PORT=
-CREDIMI_CONTAINER_MODE=emulator
+CREDIMI_RUNNER_DEVICE_MODE=no_device
+CREDIMI_RUNNER_WIFI_IP=192.168.1.88
+CREDIMI_RUNNER_WIFI_PORT=5555
+CREDIMI_CONTAINER_MODE=no_device
 RUNNER_HOST=127.0.0.1
 RUNNER_PORT=9000
 RUNNER_DOMAIN=
 RUNNER_CADDY_SITE=:8080
 CLOUDFLARE_TUNNEL_TOKEN=
 CREDIMI_SERVICE_MODE=quick
-RUNNER_IMAGE=ghcr.io/forkbombeu/credimi-runner-emulator:latest
-ANDROID_KEYS_DIR=/srv/android-keys
-HOST_AVD_HOME_PATH=/srv/credimi/avd-home
-HOST_AVD_GOLDEN_PATH=/srv/credimi/avd-golden
-BASE_NAME=credimi
-GOLDEN_PATH=/avd-golden/credimi-golden
+RUNNER_IMAGE=ghcr.io/forkbombeu/credimi-runner-phone:latest
+ANDROID_KEYS_DIR=
+HOST_AVD_HOME_PATH=
+HOST_AVD_GOLDEN_PATH=
+BASE_NAME=
+GOLDEN_PATH=
+AVDCTL_SSH_TARGET=credimi@remote-host
+AVDCTL_SSH_PASSWORD=ssh-secret
+AVDCTL_SUDO=true
+AVDCTL_SUDO_PASSWORD=sudo-secret
+REDROID_DATA_DIR=/srv/redroid-data
+REDROID_DATA_TAR=/srv/redroid-data.tar
 EOF
 
   FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64" \
@@ -797,6 +857,12 @@ EOF
   assert_contains "HOST_AVD_GOLDEN_PATH=" "${env_file}"
   assert_contains "BASE_NAME=" "${env_file}"
   assert_contains "GOLDEN_PATH=" "${env_file}"
+  assert_contains "AVDCTL_SSH_TARGET=credimi@remote-host" "${env_file}"
+  assert_contains "AVDCTL_SSH_PASSWORD=ssh-secret" "${env_file}"
+  assert_contains "AVDCTL_SUDO=true" "${env_file}"
+  assert_contains "AVDCTL_SUDO_PASSWORD=sudo-secret" "${env_file}"
+  assert_contains "REDROID_DATA_DIR=" "${env_file}"
+  assert_contains "REDROID_DATA_TAR=" "${env_file}"
 }
 
 run_existing_env_invalid_key_case() {
@@ -967,6 +1033,7 @@ run_linux_usb_case
 run_linux_usb_otel_disabled_case
 run_linux_emulator_case
 run_linux_wifi_case
+run_linux_redroid_no_device_case
 run_direct_container_case
 run_darwin_case
 run_linux_arm64_host_case
