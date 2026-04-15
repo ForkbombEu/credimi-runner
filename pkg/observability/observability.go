@@ -74,7 +74,7 @@ func ConfigFromEnv() Config {
 		environment = strings.TrimSpace(os.Getenv("GO_ENV"))
 	}
 
-	runnerID := strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_ID"))
+	runnerID := normalizeRunnerID(os.Getenv("CREDIMI_RUNNER_ID"))
 	instanceID := strings.TrimSpace(os.Getenv("OTEL_SERVICE_INSTANCE_ID"))
 	if instanceID == "" {
 		instanceID = defaultInstanceID()
@@ -119,9 +119,11 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 		return nil, err
 	}
 
+	spanAttrs := buildSpanAttributes(cfg)
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.AlwaysSample())),
+		sdktrace.WithSpanProcessor(staticSpanAttributeProcessor{attrs: spanAttrs}),
 		sdktrace.WithBatcher(traceExporter),
 	)
 	meterProvider := sdkmetric.NewMeterProvider(
@@ -154,6 +156,27 @@ func Setup(ctx context.Context, cfg Config) (func(context.Context) error, error)
 		}
 		return shutdownErr
 	}, nil
+}
+
+type staticSpanAttributeProcessor struct {
+	attrs []attribute.KeyValue
+}
+
+func (p staticSpanAttributeProcessor) OnStart(_ context.Context, span sdktrace.ReadWriteSpan) {
+	if len(p.attrs) == 0 {
+		return
+	}
+	span.SetAttributes(p.attrs...)
+}
+
+func (staticSpanAttributeProcessor) OnEnd(sdktrace.ReadOnlySpan) {}
+
+func (staticSpanAttributeProcessor) Shutdown(context.Context) error {
+	return nil
+}
+
+func (staticSpanAttributeProcessor) ForceFlush(context.Context) error {
+	return nil
 }
 
 func WrapHandler(handler http.Handler, name string) http.Handler {
@@ -200,6 +223,7 @@ func Tracer(name string) trace.Tracer {
 }
 
 func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
+	runnerID := normalizeRunnerID(cfg.RunnerID)
 	attrs := []attribute.KeyValue{
 		semconv.ServiceNameKey.String(cfg.ServiceName),
 		attribute.String("service.instance.id", cfg.InstanceID),
@@ -210,8 +234,8 @@ func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) 
 	if strings.TrimSpace(cfg.Environment) != "" {
 		attrs = append(attrs, attribute.String("deployment.environment", cfg.Environment))
 	}
-	if strings.TrimSpace(cfg.RunnerID) != "" {
-		attrs = append(attrs, attribute.String("runner_id", cfg.RunnerID))
+	if runnerID != "" {
+		attrs = append(attrs, attribute.String("runner_id", runnerID))
 	}
 	for key, value := range parseResourceAttributes(os.Getenv("OTEL_RESOURCE_ATTRIBUTES")) {
 		attrs = append(attrs, attribute.String(key, value))
@@ -223,6 +247,19 @@ func buildResource(ctx context.Context, cfg Config) (*resource.Resource, error) 
 		resource.WithTelemetrySDK(),
 		resource.WithAttributes(attrs...),
 	)
+}
+
+func buildSpanAttributes(cfg Config) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	runnerID := normalizeRunnerID(cfg.RunnerID)
+	if runnerID != "" {
+		attrs = append(attrs, attribute.String("runner_id", runnerID))
+	}
+	return attrs
+}
+
+func normalizeRunnerID(raw string) string {
+	return strings.TrimLeft(strings.TrimSpace(raw), "/")
 }
 
 func parseResourceAttributes(raw string) map[string]string {
