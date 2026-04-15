@@ -282,6 +282,9 @@ run_linux_usb_case() {
   assert_contains "CREDIMI_CONTAINER_MODE=usb" "${env_file}"
   assert_contains "CREDIMI_RUNNER_SERIAL=SERIAL-USB-01" "${env_file}"
   assert_contains "CREDIMI_TEMP_DIR=/tmp/credimi-runner-tmp" "${env_file}"
+  assert_contains "OTEL_ENABLED=true" "${env_file}"
+  assert_contains "OTEL_EXPORTER_OTLP_ENDPOINT=https://otel-collector.credimi.io" "${env_file}"
+  assert_contains "OTEL_SERVICE_NAME=credimi-runner" "${env_file}"
   assert_contains "CREDIMI_RUNNER_NAME=runner-01" "${env_file}"
   assert_contains "CREDIMI_RUNNER_ORGANIZATION=org-id" "${env_file}"
   assert_contains "runner:" "${compose_file}"
@@ -305,6 +308,26 @@ run_linux_usb_case() {
   assert_contains "/api/mobile-runner" "${curl_log}"
   assert_contains '"type":"android_phone"' "${curl_payload_log}"
   assert_contains '"serial":"SERIAL-USB-01"' "${curl_payload_log}"
+}
+
+run_linux_usb_otel_disabled_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  CREDIMI_CONTAINER_MODE="usb" \
+  OTEL_ENABLED="false" \
+  run_install "${case_dir}"
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+
+  assert_file_exists "${env_file}"
+  assert_contains "OTEL_ENABLED=false" "${env_file}"
+  assert_contains "OTEL_EXPORTER_OTLP_ENDPOINT=" "${env_file}"
+  assert_contains "OTEL_SERVICE_NAME=credimi-runner" "${env_file}"
 }
 
 run_linux_emulator_case() {
@@ -910,6 +933,7 @@ run_linux_rejects_ios_types_case() {
 }
 
 run_linux_usb_case
+run_linux_usb_otel_disabled_case
 run_linux_emulator_case
 run_linux_wifi_case
 run_direct_container_case
