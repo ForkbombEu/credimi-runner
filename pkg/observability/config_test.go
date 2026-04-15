@@ -10,6 +10,8 @@ import (
 
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
 )
 
@@ -49,7 +51,7 @@ func TestConfigFromEnvExplicit(t *testing.T) {
 	t.Setenv("OTEL_DEPLOYMENT_ENVIRONMENT", "")
 	t.Setenv("CREDIMI_ENV", "staging")
 	t.Setenv("GO_ENV", "ignored")
-	t.Setenv("CREDIMI_RUNNER_ID", "runner-42")
+	t.Setenv("CREDIMI_RUNNER_ID", " /runner-42")
 	t.Setenv("OTEL_SERVICE_INSTANCE_ID", "instance-1")
 
 	cfg := ConfigFromEnv()
@@ -86,7 +88,7 @@ func TestBuildResourceIncludesConfiguredAttributes(t *testing.T) {
 		ServiceName:    "runner-test",
 		ServiceVersion: "1.0.0",
 		Environment:    "dev",
-		RunnerID:       "runner-id",
+		RunnerID:       "/runner-id",
 		InstanceID:     "instance-id",
 	})
 	if err != nil {
@@ -174,6 +176,32 @@ func TestTracerAndTemporalInterceptor(t *testing.T) {
 	}
 }
 
+func TestStaticSpanAttributeProcessorAddsRunnerID(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(staticSpanAttributeProcessor{
+			attrs: buildSpanAttributes(Config{RunnerID: " /runner-1"}),
+		}),
+		sdktrace.WithSpanProcessor(recorder),
+	)
+
+	_, span := tp.Tracer("test").Start(context.Background(), "span")
+	span.End()
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("expected exactly one ended span, got %d", len(spans))
+	}
+
+	got, ok := findSpanAttribute(spans[0].Attributes(), attribute.Key("runner_id"))
+	if !ok {
+		t.Fatalf("expected runner_id span attribute to be present")
+	}
+	if got != "runner-1" {
+		t.Fatalf("expected runner_id span attribute to be runner-1, got %q", got)
+	}
+}
+
 func TestSetupDisabledAndEnabled(t *testing.T) {
 	shutdown, err := Setup(context.Background(), Config{})
 	if err != nil {
@@ -246,4 +274,13 @@ func assertResourceAttr(t *testing.T, res interface{ Set() *attribute.Set }, key
 	if value.AsString() != want {
 		t.Fatalf("resource attribute %q = %q, want %q", key, value.AsString(), want)
 	}
+}
+
+func findSpanAttribute(attrs []attribute.KeyValue, key attribute.Key) (string, bool) {
+	for _, attr := range attrs {
+		if attr.Key == key {
+			return attr.Value.AsString(), true
+		}
+	}
+	return "", false
 }

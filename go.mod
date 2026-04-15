@@ -49,7 +49,7 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/forkbombeu/avdctl v0.10.1 // indirect
-	github.com/forkbombeu/credimi-extra v1.10.2 // indirect
+	github.com/forkbombeu/credimi-extra v1.10.3 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/ganigeorgiev/fexpr v0.4.1 // indirect
 	github.com/go-chi/chi/v5 v5.2.4 // indirect

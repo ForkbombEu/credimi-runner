@@ -7,6 +7,8 @@ PROJECT_NAME="credimi-runner"
 DEFAULT_CREDIMI_URL="https://credimi.io"
 DEFAULT_CREDIMI_TEMP_DIR="/tmp/credimi-runner-tmp"
 DEFAULT_TEMPORAL_ADDRESS="temporal.credimi.io:7233"
+DEFAULT_OTEL_EXPORTER_OTLP_ENDPOINT="https://otel-collector.credimi.io"
+DEFAULT_OTEL_SERVICE_NAME="credimi-runner"
 DEFAULT_RUNNER_HOST="0.0.0.0"
 DEFAULT_RUNNER_PORT="8050"
 DEFAULT_RUNNER_CADDY_SITE=":80"
@@ -415,6 +417,26 @@ runner_org_from_id() {
       printf ''
       ;;
   esac
+}
+
+default_otel_enabled_choice() {
+  case "$(resolved_value OTEL_ENABLED)" in
+    1|true|TRUE|True|yes|YES|Yes|on|ON|On)
+      printf 'yes'
+      return 0
+      ;;
+    0|false|FALSE|False|no|NO|No|off|OFF|Off)
+      printf 'no'
+      return 0
+      ;;
+  esac
+
+  if [ -n "$(resolved_value OTEL_EXPORTER_OTLP_ENDPOINT)" ]; then
+    printf 'yes'
+    return 0
+  fi
+
+  printf 'yes'
 }
 
 write_compose_file() {
@@ -1086,6 +1108,9 @@ CREDIMI_PB_PASS=${CREDIMI_PB_PASS}
 CREDIMI_INTERNAL_ADMIN_KEY=${CREDIMI_INTERNAL_ADMIN_KEY}
 CREDIMI_TEMP_DIR=${CREDIMI_TEMP_DIR}
 TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS}
+OTEL_ENABLED=${OTEL_ENABLED}
+OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
+OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME}
 CREDIMI_RUNNER_BACKEND=${CREDIMI_RUNNER_BACKEND}
 CREDIMI_CONTAINER_MODE=${CREDIMI_CONTAINER_MODE}
 RUNNER_HOST=${RUNNER_HOST}
@@ -1123,6 +1148,9 @@ write_missing_env_values() {
   append_env_if_missing "$env_file" "RUNNER_IMAGE" "${RUNNER_IMAGE}"
   append_env_if_missing "$env_file" "RUNNER_HOST" "${RUNNER_HOST}"
   append_env_if_missing "$env_file" "RUNNER_PORT" "${RUNNER_PORT}"
+  append_env_if_missing "$env_file" "OTEL_ENABLED" "${OTEL_ENABLED}"
+  append_env_if_missing "$env_file" "OTEL_EXPORTER_OTLP_ENDPOINT" "${OTEL_EXPORTER_OTLP_ENDPOINT}"
+  append_env_if_missing "$env_file" "OTEL_SERVICE_NAME" "${OTEL_SERVICE_NAME}"
   append_env_if_missing "$env_file" "RUNNER_DOMAIN" "${RUNNER_DOMAIN}"
   append_env_if_missing "$env_file" "RUNNER_CADDY_SITE" "${RUNNER_CADDY_SITE}"
   append_env_if_missing "$env_file" "CLOUDFLARE_TUNNEL_TOKEN" "${CLOUDFLARE_TUNNEL_TOKEN}"
@@ -1163,6 +1191,7 @@ main() {
   RUNNER_IMAGE="${RUNNER_IMAGE-}"
   RUNNER_PUBLIC_IP="${RUNNER_PUBLIC_IP-}"
   RUNNER_PUBLIC_PORT="${RUNNER_PUBLIC_PORT-}"
+  OTEL_SERVICE_NAME="$(resolved_value OTEL_SERVICE_NAME "${DEFAULT_OTEL_SERVICE_NAME}")"
   ANDROID_KEYS_DIR="${ANDROID_KEYS_DIR-}"
   HOST_AVD_HOME_PATH="${HOST_AVD_HOME_PATH-}"
   HOST_AVD_GOLDEN_PATH="${HOST_AVD_GOLDEN_PATH-}"
@@ -1190,6 +1219,20 @@ main() {
 
   CREDIMI_URL="$(prompt_value CREDIMI_URL "Credimi API URL" "$(resolved_value CREDIMI_URL "${DEFAULT_CREDIMI_URL}")")"
   TEMPORAL_ADDRESS="$(prompt_value TEMPORAL_ADDRESS "Temporal address" "$(resolved_value TEMPORAL_ADDRESS "${DEFAULT_TEMPORAL_ADDRESS}")")"
+  otel_enabled_choice="$(prompt_choice OTEL_ENABLED "Enable OpenTelemetry (yes/no)" "$(default_otel_enabled_choice)" "yes no")"
+  case "$otel_enabled_choice" in
+    yes|true|TRUE|True|1|on|ON|On)
+      OTEL_ENABLED="true"
+      OTEL_EXPORTER_OTLP_ENDPOINT="$(prompt_value OTEL_EXPORTER_OTLP_ENDPOINT "OTEL collector endpoint" "$(resolved_value OTEL_EXPORTER_OTLP_ENDPOINT "${DEFAULT_OTEL_EXPORTER_OTLP_ENDPOINT}")")"
+      ;;
+    no|false|FALSE|False|0|off|OFF|Off)
+      OTEL_ENABLED="false"
+      OTEL_EXPORTER_OTLP_ENDPOINT=""
+      ;;
+    *)
+      die "unsupported OTEL_ENABLED value: ${otel_enabled_choice}"
+      ;;
+  esac
 
   if [ -n "$(resolved_value CREDIMI_USER_API_KEY)" ]; then
     auth_mode_default="api_key"

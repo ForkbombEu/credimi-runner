@@ -14,6 +14,9 @@ import (
 	"github.com/forkbombeu/credimi/pkg/workflowengine"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/activities"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/workflows"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/activity"
@@ -41,6 +44,17 @@ var (
 	sleepWithContextFn = sleepWithContext
 )
 
+func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String("namespace", namespace),
+		attribute.String("task_queue", taskqueue),
+	}
+	if runnerID != "" {
+		attrs = append(attrs, attribute.String("runner_id", runnerID))
+	}
+	return attrs
+}
+
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
@@ -51,18 +65,24 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
 		runnerID = strings.TrimLeft(strings.TrimSpace(runnerID), "/")
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
+		ctx, span := observability.Tracer("credimi-runner.temporal").Start(ctx, "temporal_worker.run", trace.WithAttributes(temporalWorkerTraceAttrs(namespace, taskqueue, runnerID)...))
+		defer span.End()
 		backoff := time.Second
 		const maxBackoff = 30 * time.Second
 
 		for {
 			if ctx.Err() != nil {
+				span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "context_canceled")))
 				log.Printf("Temporal worker stopped for namespace %s", namespace)
 				return nil
 			}
 
 			c, err := temporalClientGetter(namespace)
 			if err != nil {
+				span.AddEvent("temporal_worker.init_failed", trace.WithAttributes(attribute.String("backoff", backoff.String()), attribute.String("error", err.Error())))
 				if !shouldRetryTemporalWorker(err) {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, "temporal worker initialization failed")
 					return err
 				}
 				observability.Warn(ctx, "credimi-runner.temporal", "temporal worker initialization failed",
@@ -72,8 +92,10 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 					observability.String("runner_id", runnerID),
 					observability.String("error", err.Error()),
 				)
+				span.AddEvent("temporal_worker.retry_scheduled", trace.WithAttributes(attribute.String("reason", "init_failed"), attribute.String("backoff", backoff.String())))
 				log.Printf("Temporal worker failed to initialize for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
+					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "retry_canceled")))
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
@@ -119,6 +141,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 			}()
 
 			log.Printf("Temporal worker running for namespace %s", namespace)
+			span.AddEvent("temporal_worker.started")
 			observability.Info(ctx, "credimi-runner.temporal", "temporal worker running",
 				observability.String("namespace", namespace),
 				observability.String("task_queue", taskqueue),
@@ -126,10 +149,14 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 			)
 			if err := w.Run(shutdownCh); err != nil {
 				if ctx.Err() != nil {
+					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "context_canceled")))
 					log.Printf("Temporal worker stopped for namespace %s", namespace)
 					return nil
 				}
 				if !shouldRetryTemporalWorker(err) {
+					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "non_retryable_error"), attribute.String("error", err.Error())))
+					span.RecordError(err)
+					span.SetStatus(codes.Error, "temporal worker stopped with non-retryable error")
 					observability.Error(ctx, "credimi-runner.temporal", "temporal worker stopped with non-retryable error", err,
 						observability.String("namespace", namespace),
 						observability.String("task_queue", taskqueue),
@@ -145,8 +172,11 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 					observability.String("backoff", backoff.String()),
 					observability.String("error", err.Error()),
 				)
+				span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "retryable_error"), attribute.String("error", err.Error())))
+				span.AddEvent("temporal_worker.retry_scheduled", trace.WithAttributes(attribute.String("reason", "run_failed"), attribute.String("backoff", backoff.String())))
 				log.Printf("Temporal worker stopped with retryable error for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
+					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "retry_canceled")))
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
@@ -154,6 +184,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 			}
 
 			log.Printf("Temporal worker stopped for namespace %s", namespace)
+			span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "graceful_shutdown")))
 			return nil
 		}
 	}

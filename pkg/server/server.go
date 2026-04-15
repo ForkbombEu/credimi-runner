@@ -140,6 +140,20 @@ func traceWithAttrs(attrs ...attribute.KeyValue) trace.EventOption {
 	return trace.WithAttributes(attrs...)
 }
 
+func workerTraceAttrs(instanceName, orgName, namespace, runnerID string) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String("instance.name", instanceName),
+		attribute.String("namespace", namespace),
+	}
+	if orgName != "" {
+		attrs = append(attrs, attribute.String("organization.name", orgName))
+	}
+	if runnerID != "" {
+		attrs = append(attrs, attribute.String("runner_id", runnerID))
+	}
+	return attrs
+}
+
 func (s *runnerService) fetchUserNamespace(
 	ctx context.Context,
 	inst utils.Instance,
@@ -193,10 +207,13 @@ func (s *runnerService) startWorkerIfNeeded(
 	startAttempts int,
 	startDelay time.Duration,
 ) int {
+	attrs := workerTraceAttrs(instanceName, orgName, namespace, runnerID)
 	if namespace == "" {
+		span.AddEvent("worker.start_skipped", trace.WithAttributes(append(attrs, attribute.String("reason", "namespace_empty"))...))
 		return startAttempts
 	}
 	if proc, exists := s.Store.Get(namespace); exists && proc.Running {
+		span.AddEvent("worker.already_running", trace.WithAttributes(attrs...))
 		log.Printf("Worker already running for namespace %s", namespace)
 		observability.Info(ctx, "credimi-runner.startup", "worker already running for namespace",
 			observability.String("instance.name", instanceName),
@@ -209,6 +226,7 @@ func (s *runnerService) startWorkerIfNeeded(
 		s.Deps.Sleeper(startDelay)
 	}
 	startAttempts++
+	span.AddEvent("worker.start_requested", trace.WithAttributes(attrs...))
 
 	log.Printf("Starting worker for organization %s (%s)", orgName, namespace)
 	observability.RecordWorkerStart(ctx,
@@ -226,6 +244,7 @@ func (s *runnerService) startWorkerIfNeeded(
 	s.Store.Add(proc)
 
 	if err := proc.Start(); err != nil {
+		span.AddEvent("worker.start_failed", trace.WithAttributes(append(attrs, attribute.String("error", err.Error()))...))
 		span.RecordError(err)
 		log.Printf("Failed to start worker for %s: %v", namespace, err)
 		observability.RecordWorkerStartFailure(ctx,
@@ -239,7 +258,9 @@ func (s *runnerService) startWorkerIfNeeded(
 			observability.String("organization.name", orgName),
 			observability.String("namespace", namespace),
 		)
+		return startAttempts
 	}
+	span.AddEvent("worker.started", trace.WithAttributes(attrs...))
 
 	return startAttempts
 }

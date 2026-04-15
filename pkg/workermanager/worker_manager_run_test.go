@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	otelapi "go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
@@ -50,8 +53,40 @@ func setWorkerManagerTestHooks(t *testing.T) {
 	})
 }
 
+func installWorkerManagerTracer(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+
+	prev := otelapi.GetTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otelapi.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		require.NoError(t, tp.Shutdown(context.Background()))
+		otelapi.SetTracerProvider(prev)
+	})
+
+	return recorder
+}
+
+func requireWorkerManagerSpanEvent(t *testing.T, recorder *tracetest.SpanRecorder, spanName, eventName string) {
+	t.Helper()
+
+	for _, span := range recorder.Ended() {
+		if span.Name() != spanName {
+			continue
+		}
+		for _, event := range span.Events() {
+			if event.Name == eventName {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected event %q on span %q", eventName, spanName)
+}
+
 func TestRunTemporalWorker_RetriesInitErrorUntilCanceled(t *testing.T) {
 	setWorkerManagerTestHooks(t)
+	recorder := installWorkerManagerTracer(t)
 	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
 
 	temporalClientGetter = func(namespace string) (client.Client, error) {
@@ -74,6 +109,9 @@ func TestRunTemporalWorker_RetriesInitErrorUntilCanceled(t *testing.T) {
 	err := run(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []time.Duration{time.Second}, sleeps)
+	requireWorkerManagerSpanEvent(t, recorder, "temporal_worker.run", "temporal_worker.init_failed")
+	requireWorkerManagerSpanEvent(t, recorder, "temporal_worker.run", "temporal_worker.retry_scheduled")
+	requireWorkerManagerSpanEvent(t, recorder, "temporal_worker.run", "temporal_worker.stopped")
 }
 
 func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {

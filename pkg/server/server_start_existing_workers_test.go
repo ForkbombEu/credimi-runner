@@ -12,6 +12,10 @@ import (
 
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
+	otelapi "go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type startWorkersHTTPClient struct {
@@ -48,6 +52,54 @@ func httpResp(status int, body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     make(http.Header),
 	}
+}
+
+func installStartWorkersTracer(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+
+	prev := otelapi.GetTracerProvider()
+	recorder := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	otelapi.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		require.NoError(t, tp.Shutdown(context.Background()))
+		otelapi.SetTracerProvider(prev)
+	})
+
+	return recorder
+}
+
+func findRecordedSpan(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+
+	for _, span := range spans {
+		if span.Name() == name {
+			return span
+		}
+	}
+	t.Fatalf("expected span %q to be recorded", name)
+	return nil
+}
+
+func findRecordedEvent(t *testing.T, span sdktrace.ReadOnlySpan, name string) sdktrace.Event {
+	t.Helper()
+
+	for _, event := range span.Events() {
+		if event.Name == name {
+			return event
+		}
+	}
+	t.Fatalf("expected event %q on span %q", name, span.Name())
+	return sdktrace.Event{}
+}
+
+func eventAttributeValue(event sdktrace.Event, key attribute.Key) string {
+	for _, attr := range event.Attributes {
+		if attr.Key == key {
+			return attr.Value.AsString()
+		}
+	}
+	return ""
 }
 
 func TestStartExistingWorkers_Success(t *testing.T) {
@@ -99,6 +151,51 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 	proc, ok := store.Get("new-ns")
 	require.True(t, ok)
 	require.True(t, proc.Running)
+	proc.Stop()
+}
+
+func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {
+	recorder := installStartWorkersTracer(t)
+
+	store := NewProcessStore()
+	existing := NewProcess("already-running", nil)
+	existing.Running = true
+	store.Add(existing)
+
+	client := &startWorkersHTTPClient{
+		responder: func(req *http.Request) (*http.Response, error) {
+			return httpResp(http.StatusOK, `{"items":[{"name":"A","canonified_name":"already-running"},{"name":"B","canonified_name":"new-ns"}]}`), nil
+		},
+	}
+
+	deps := Deps{
+		HTTPClient: client,
+		TokenProvider: func(instance utils.Instance) (string, error) {
+			return "token-123", nil
+		},
+		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
+			return func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			}
+		},
+	}
+
+	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
+		"prod": {URL: "http://example.local"},
+	}, deps)
+
+	require.NoError(t, srv.StartExistingWorkers(context.Background()))
+
+	span := findRecordedSpan(t, recorder.Ended(), "start_existing_workers")
+	alreadyRunning := findRecordedEvent(t, span, "worker.already_running")
+	started := findRecordedEvent(t, span, "worker.started")
+	require.Equal(t, "already-running", eventAttributeValue(alreadyRunning, attribute.Key("namespace")))
+	require.Equal(t, "new-ns", eventAttributeValue(started, attribute.Key("namespace")))
+	require.Equal(t, "prod", eventAttributeValue(started, attribute.Key("instance.name")))
+
+	proc, ok := store.Get("new-ns")
+	require.True(t, ok)
 	proc.Stop()
 }
 
