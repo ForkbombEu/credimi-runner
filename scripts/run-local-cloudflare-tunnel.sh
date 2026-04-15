@@ -20,11 +20,26 @@ find_env_file() {
   return 1
 }
 
+load_env_file() {
+  local path="$1"
+  local line key value
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      ''|\#*)
+        continue
+        ;;
+      *=*)
+        key="${line%%=*}"
+        value="${line#*=}"
+        export "${key}=${value}"
+        ;;
+    esac
+  done <"${path}"
+}
+
 if env_file="$(find_env_file)"; then
-  set -a
-  # shellcheck disable=SC1090
-  source "${env_file}"
-  set +a
+  load_env_file "${env_file}"
 fi
 
 bin_path="${BIN_PATH:-./bin/credimi-runner}"

@@ -290,6 +290,7 @@ run_linux_usb_case() {
   assert_contains "runner:" "${compose_file}"
   assert_contains "--usb" "${compose_file}"
   assert_contains 'PORT: "${RUNNER_PORT:-8050}"' "${compose_file}"
+  assert_not_contains '\${RUNNER_CADDY_SITE:-:80}' "${compose_file}"
   assert_contains "privileged: true" "${compose_file}"
   assert_contains "/dev/bus/usb:/dev/bus/usb" "${compose_file}"
   assert_empty_or_missing "${curl_log}"
@@ -798,6 +799,36 @@ EOF
   assert_contains "GOLDEN_PATH=" "${env_file}"
 }
 
+run_existing_env_invalid_key_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs" "${case_dir}/config/credimi/runner"
+  create_mocks "${case_dir}/mocks"
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local marker="${case_dir}/invalid-key-ran"
+  cat >"${env_file}" <<EOF
+CREDIMI_URL=https://persisted.example
+CREDIMI_RUNNER_NAME=persisted-runner
+CREDIMI_USER_API_KEY=persisted-user-api-key
+RUNNER_HOST=127.0.0.1
+RUNNER_PORT=9000
+BAD\$(touch "${marker}")=boom
+EOF
+
+  FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64" \
+  CREDIMI_CONTAINER_MODE="usb" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  sh "${install_script}" >/dev/null
+
+  assert_file_absent "${marker}"
+  assert_contains "CREDIMI_RUNNER_NAME=persisted-runner" "${env_file}"
+}
+
 run_temp_dir_creation_case() {
   local case_dir
   case_dir="$(mktemp -d)"
@@ -946,6 +977,7 @@ run_host_bind_host_readiness_case
 run_direct_host_case
 run_existing_env_case
 run_existing_env_mode_switch_case
+run_existing_env_invalid_key_case
 run_temp_dir_creation_case
 run_launcher_preview_case
 run_direct_preview_preserves_env_mode_case

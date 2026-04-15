@@ -68,6 +68,17 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+valid_env_key() {
+  case "$1" in
+    ''|[0-9]*|*[!A-Za-z0-9_]*)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 load_env_defaults() {
   env_file="$1"
   [ -f "$env_file" ] || return 0
@@ -80,6 +91,7 @@ load_env_defaults() {
       *=*)
         key="${line%%=*}"
         value="${line#*=}"
+        valid_env_key "$key" || continue
         eval "INSTALL_DEFAULT_${key}=\$value"
         eval "INSTALL_DEFAULT_SET_${key}=1"
         ;;
@@ -446,7 +458,7 @@ write_compose_file() {
   runner_connectivity_block='    expose:
       - "8050"
     labels:
-      caddy: "\${RUNNER_CADDY_SITE:-:80}"
+      caddy: "${RUNNER_CADDY_SITE:-:80}"
       caddy.reverse_proxy: "{{upstreams 8050}}"
     networks:
       - ingress'
@@ -689,12 +701,14 @@ runner_org_from_id() {
 }
 
 json_escape() {
-  printf '%s' "$1" | sed \
-    -e 's/\\/\\\\/g' \
-    -e 's/"/\\"/g' \
-    -e ':a' -e 'N' -e '$!ba' \
-    -e 's/\r/\\r/g' \
-    -e 's/\n/\\n/g'
+  local value="${1-}"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\n'/\\n}"
+
+  printf '%s' "${value}"
 }
 
 extract_json_string() {
@@ -843,7 +857,10 @@ resolve_runner_identity() {
   preview_payload+="}"
 
   preview_url="$(join_url "${CREDIMI_URL}" "api" "mobile-runner" "preview-id")"
-  preview_response="$(post_json "${preview_url}" "${preview_payload}")"
+  if ! preview_response="$(post_json "${preview_url}" "${preview_payload}")"; then
+    printf 'preview-id payload: %s\n' "${preview_payload}" >&2
+    return 1
+  fi
   preview_runner_id="$(extract_json_string "runner_id" "${preview_response}")"
   [[ -n "${preview_runner_id}" ]] || {
     printf 'failed to extract runner_id from %s\n' "${preview_url}" >&2
