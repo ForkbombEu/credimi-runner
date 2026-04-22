@@ -142,6 +142,12 @@ case "${url}" in
     printf '200'
     exit 0
     ;;
+  *"/api/organizations/my")
+    [[ -n "${out}" ]] || exit 1
+    printf '{"canonified_name":"%s"}' "${MOCK_MY_ORG:-org-id}" >"${out}"
+    printf '200'
+    exit 0
+    ;;
   *"/api/mobile-runner/preview-id")
     [[ -n "${out}" ]] || exit 1
     printf '{"organization":"%s","runner_id":"%s"}' \
@@ -935,7 +941,6 @@ run_launcher_preview_case() {
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_RUNNER_NAME="preview-runner" \
-  CREDIMI_RUNNER_ORGANIZATION="org-id" \
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="" \
@@ -958,6 +963,7 @@ run_launcher_preview_case() {
   "${launcher}" quick >/dev/null
 
   assert_contains "CREDIMI_RUNNER_ID=/org-id/preview-runner" "${env_file}"
+  assert_contains "/api/organizations/my" "${curl_log}"
   assert_contains "/api/mobile-runner/preview-id" "${curl_log}"
   assert_contains "/api/mobile-runner" "${curl_log}"
 }
@@ -978,7 +984,6 @@ run_direct_preview_preserves_env_mode_case() {
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_RUNNER_NAME="direct-preview" \
-  CREDIMI_RUNNER_ORGANIZATION="org-id" \
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="" \
@@ -1005,6 +1010,240 @@ run_direct_preview_preserves_env_mode_case() {
 
   assert_file_mode "${env_file}" "644"
   assert_contains "CREDIMI_RUNNER_ID=/org-id/direct-preview" "${env_file}"
+}
+
+run_admin_requires_internal_key_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  if FAKE_UNAME_S="Linux" \
+    FAKE_UNAME_M="x86_64" \
+    PATH="${case_dir}/mocks:${PATH}" \
+    HOME="${case_dir}/home" \
+    XDG_BIN_HOME="${case_dir}/bin" \
+    XDG_CONFIG_HOME="${case_dir}/config" \
+    MOCK_LOG_DIR="${case_dir}/logs" \
+    CREDIMI_URL="https://credimi.example" \
+    TEMPORAL_ADDRESS="temporal.example:7233" \
+    CREDIMI_INSTALL_AUTH_MODE="admin" \
+    CREDIMI_RUNNER_NAME="admin-runner" \
+    CREDIMI_RUNNER_ORGANIZATION="org-id" \
+    sh "${install_script}" >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"; then
+    fail "expected admin install without internal admin key to fail"
+  fi
+
+  assert_contains "CREDIMI_INTERNAL_ADMIN_KEY is required for non-interactive install" "${case_dir}/stderr.log"
+}
+
+run_admin_requires_pb_credentials_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  if FAKE_UNAME_S="Linux" \
+    FAKE_UNAME_M="x86_64" \
+    PATH="${case_dir}/mocks:${PATH}" \
+    HOME="${case_dir}/home" \
+    XDG_BIN_HOME="${case_dir}/bin" \
+    XDG_CONFIG_HOME="${case_dir}/config" \
+    MOCK_LOG_DIR="${case_dir}/logs" \
+    CREDIMI_URL="https://credimi.example" \
+    TEMPORAL_ADDRESS="temporal.example:7233" \
+    CREDIMI_INSTALL_AUTH_MODE="admin" \
+    CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
+    CREDIMI_RUNNER_NAME="admin-runner" \
+    CREDIMI_RUNNER_ORGANIZATION="org-id" \
+    sh "${install_script}" >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"; then
+    fail "expected admin install without PB credentials to fail"
+  fi
+
+  assert_contains "CREDIMI_PB_ADMIN is required for non-interactive install" "${case_dir}/stderr.log"
+}
+
+run_admin_computes_runner_id_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_INSTALL_AUTH_MODE="admin" \
+  CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
+  CREDIMI_PB_ADMIN="admin@example.org" \
+  CREDIMI_PB_PASS="admin-password" \
+  CREDIMI_RUNNER_NAME="Admin Runner" \
+  CREDIMI_RUNNER_ORGANIZATION="org-id" \
+  CREDIMI_SERVICE_MODE="quick" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  sh "${install_script}" >/dev/null
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/admin-runner" \
+  MOCK_STORE_RUNNER_ID="/org-id/admin-runner" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains "CREDIMI_RUNNER_ID=/org-id/admin-runner" "${env_file}"
+  assert_contains "CREDIMI_INTERNAL_ADMIN_KEY=internal-admin-key" "${env_file}"
+  assert_contains "CREDIMI_PB_ADMIN=admin@example.org" "${env_file}"
+  assert_contains "CREDIMI_PB_PASS=admin-password" "${env_file}"
+  assert_contains "CREDIMI_USER_API_KEY=" "${env_file}"
+}
+
+run_recompute_runner_id_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs" "${case_dir}/config/credimi/runner"
+  create_mocks "${case_dir}/mocks"
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  cat >"${env_file}" <<'EOF'
+CREDIMI_URL=https://persisted.example
+CREDIMI_RUNNER_ID=/org-id/old-runner
+CREDIMI_RUNNER_NAME=old-runner
+CREDIMI_RUNNER_DESCRIPTION=
+CREDIMI_RUNNER_ORGANIZATION=org-id
+CREDIMI_USER_API_KEY=
+CREDIMI_PB_ADMIN=
+CREDIMI_PB_PASS=
+CREDIMI_INTERNAL_ADMIN_KEY=internal-admin-key
+TEMPORAL_ADDRESS=temporal.persisted.example:7233
+EOF
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_INSTALL_AUTH_MODE="admin" \
+  CREDIMI_USE_EXISTING_RUNNER_ID="no" \
+  CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
+  CREDIMI_PB_ADMIN="admin@example.org" \
+  CREDIMI_PB_PASS="admin-password" \
+  CREDIMI_RUNNER_NAME="New Runner" \
+  CREDIMI_RUNNER_ORGANIZATION="org-id" \
+  CREDIMI_SERVICE_MODE="quick" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  sh "${install_script}" >/dev/null
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/new-runner" \
+  MOCK_STORE_RUNNER_ID="/org-id/new-runner" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains "CREDIMI_RUNNER_ID=/org-id/new-runner" "${env_file}"
+  assert_not_contains "CREDIMI_RUNNER_ID=/org-id/old-runner" "${env_file}"
+}
+
+run_existing_name_updates_by_default_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_NAME="Duplicate Runner" \
+  CREDIMI_RUNNER_DESCRIPTION="updated description" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_SERVICE_MODE="quick" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  sh "${install_script}" >/dev/null
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local curl_payload_log="${case_dir}/logs/curl.payload.log"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/duplicate-runner-1" \
+  MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains "CREDIMI_RUNNER_ID=/org-id/duplicate-runner" "${env_file}"
+  assert_contains '"runner_id":"/org-id/duplicate-runner"' "${curl_payload_log}"
+  assert_not_contains '"runner_id":"/org-id/duplicate-runner-1"' "${curl_payload_log}"
+  assert_contains '"description":"updated description"' "${curl_payload_log}"
+}
+
+run_existing_name_can_create_new_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_NAME="Duplicate Runner" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_SERVICE_MODE="quick" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  sh "${install_script}" >/dev/null
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local curl_payload_log="${case_dir}/logs/curl.payload.log"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/duplicate-runner-1" \
+  MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner-1" \
+  CREDIMI_RUNNER_NAME_CONFLICT_ACTION="create" \
+  "${launcher}" quick >/dev/null
+
+  assert_contains "CREDIMI_RUNNER_ID=/org-id/duplicate-runner-1" "${env_file}"
+  assert_contains '"runner_id":"/org-id/duplicate-runner-1"' "${curl_payload_log}"
 }
 
 run_linux_rejects_ios_types_case() {
@@ -1053,6 +1292,12 @@ run_existing_env_invalid_key_case
 run_temp_dir_creation_case
 run_launcher_preview_case
 run_direct_preview_preserves_env_mode_case
+run_admin_requires_internal_key_case
+run_admin_requires_pb_credentials_case
+run_admin_computes_runner_id_case
+run_recompute_runner_id_case
+run_existing_name_updates_by_default_case
+run_existing_name_can_create_new_case
 run_linux_rejects_ios_types_case
 
 printf 'install.sh tests passed\n'
