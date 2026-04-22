@@ -544,7 +544,27 @@ run_darwin_case() {
   assert_executable "${binary}"
   assert_contains "CREDIMI_RUNNER_BACKEND=host" "${env_file}"
   assert_contains "CREDIMI_RUNNER_TYPE=ios_simulator" "${env_file}"
+  assert_contains "BASE_NAME=credimi" "${env_file}"
   assert_contains "credimi-runner-Darwin-arm64" "${curl_log}"
+}
+
+run_ios_simulator_preserves_base_name_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Darwin" \
+  FAKE_UNAME_M="arm64" \
+  CREDIMI_RUNNER_TYPE="ios_simulator" \
+  BASE_NAME="ios-golden" \
+  run_install "${case_dir}"
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+
+  assert_contains "CREDIMI_RUNNER_TYPE=ios_simulator" "${env_file}"
+  assert_contains "BASE_NAME=ios-golden" "${env_file}"
+  assert_contains "GOLDEN_PATH=" "${env_file}"
 }
 
 run_linux_arm64_host_case() {
@@ -1308,6 +1328,7 @@ run_linux_wifi_case
 run_linux_redroid_no_device_case
 run_direct_container_case
 run_darwin_case
+run_ios_simulator_preserves_base_name_case
 run_linux_arm64_host_case
 run_host_android_emulator_keeps_golden_path_case
 run_noninteractive_empty_optional_case

@@ -1723,7 +1723,7 @@ main() {
       ANDROID_KEYS_DIR=""
       HOST_AVD_HOME_PATH=""
       HOST_AVD_GOLDEN_PATH=""
-      BASE_NAME=""
+      BASE_NAME="$(prompt_value BASE_NAME "Simulator base name" "$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")")"
       GOLDEN_PATH=""
       AVDCTL_SSH_TARGET=""
       AVDCTL_SSH_PASSWORD=""
