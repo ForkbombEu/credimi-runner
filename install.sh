@@ -1662,22 +1662,24 @@ main() {
   CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Exposure mode (quick/named/direct)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named direct")"
   RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")")"
   RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")")"
-  RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")")"
 
   case "$CREDIMI_SERVICE_MODE" in
     named)
+      RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")")"
       RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain" "$(resolved_value RUNNER_DOMAIN)")"
       CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "$(resolved_value CLOUDFLARE_TUNNEL_TOKEN)" 1)"
       RUNNER_PUBLIC_IP=""
       RUNNER_PUBLIC_PORT=""
       ;;
     direct)
+      RUNNER_CADDY_SITE="$(resolved_value RUNNER_CADDY_SITE)"
       RUNNER_DOMAIN=""
       CLOUDFLARE_TUNNEL_TOKEN=""
       RUNNER_PUBLIC_IP="$(prompt_value RUNNER_PUBLIC_IP "Public runner IP/host" "$(resolved_value RUNNER_PUBLIC_IP)")"
       RUNNER_PUBLIC_PORT="$(prompt_value RUNNER_PUBLIC_PORT "Public runner port (optional)" "$(resolved_value RUNNER_PUBLIC_PORT)" 0 1)"
       ;;
     *)
+      RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")")"
       RUNNER_DOMAIN=""
       CLOUDFLARE_TUNNEL_TOKEN=""
       RUNNER_PUBLIC_IP=""

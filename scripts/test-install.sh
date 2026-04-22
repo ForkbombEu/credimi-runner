@@ -491,7 +491,6 @@ run_direct_container_case() {
   RUNNER_PUBLIC_PORT="9443" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
-  RUNNER_CADDY_SITE=":80" \
   CREDIMI_RUNNER_TYPE="android_phone" \
   CREDIMI_RUNNER_DEVICE_MODE="usb" \
   sh "${install_script}" >/dev/null
@@ -505,6 +504,7 @@ run_direct_container_case() {
   assert_contains "CREDIMI_SERVICE_MODE=direct" "${env_file}"
   assert_contains "RUNNER_PUBLIC_IP=198.51.100.10" "${env_file}"
   assert_contains "RUNNER_PUBLIC_PORT=9443" "${env_file}"
+  assert_contains "RUNNER_CADDY_SITE=" "${env_file}"
   assert_contains "network_mode: host" "${compose_file}"
 
   PATH="${case_dir}/mocks:${PATH}" \
@@ -1021,7 +1021,6 @@ run_direct_preview_preserves_env_mode_case() {
   RUNNER_PUBLIC_PORT="8080" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
-  RUNNER_CADDY_SITE=":80" \
   sh "${install_script}" >/dev/null
 
   local launcher="${case_dir}/bin/credimi-runner-service"
@@ -1038,6 +1037,7 @@ run_direct_preview_preserves_env_mode_case() {
 
   assert_file_mode "${env_file}" "644"
   assert_contains "CREDIMI_RUNNER_ID=/org-id/direct-preview" "${env_file}"
+  assert_contains "RUNNER_CADDY_SITE=" "${env_file}"
 }
 
 run_admin_requires_internal_key_case() {
