@@ -1706,8 +1706,8 @@ main() {
         ANDROID_KEYS_DIR=""
         HOST_AVD_HOME_PATH=""
         HOST_AVD_GOLDEN_PATH=""
-        BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
-        GOLDEN_PATH=""
+        BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")")"
+        GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Golden path" "$(resolved_value GOLDEN_PATH "${HOME}/avd-golden/${BASE_NAME}-golden")")"
       fi
       ;;
     ios_simulator)
