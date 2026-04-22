@@ -515,6 +515,181 @@ canonify_plain() {
   printf '%s' "$slug"
 }
 
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+extract_json_string() {
+  key="$1"
+  body="$2"
+
+  printf '%s' "$body" |
+    tr -d '\r\n' |
+    sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+join_url() {
+  base="$1"
+  shift
+
+  base="${base%/}"
+  printf '%s' "$base"
+  for part in "$@"; do
+    part="${part#/}"
+    part="${part%/}"
+    [ -n "$part" ] || continue
+    printf '/%s' "$part"
+  done
+}
+
+configure_install_auth_header() {
+  if [ -n "${CREDIMI_USER_API_KEY:-}" ]; then
+    CREDIMI_INSTALL_AUTH_HEADER_NAME="Credimi-Api-Key"
+    CREDIMI_INSTALL_AUTH_HEADER_VALUE="$CREDIMI_USER_API_KEY"
+    return 0
+  fi
+
+  if [ -n "${CREDIMI_INTERNAL_ADMIN_KEY:-}" ]; then
+    CREDIMI_INSTALL_AUTH_HEADER_NAME="Credimi-Api-Key"
+    CREDIMI_INSTALL_AUTH_HEADER_VALUE="$CREDIMI_INTERNAL_ADMIN_KEY"
+    return 0
+  fi
+
+  die "missing Credimi credentials: set CREDIMI_USER_API_KEY or CREDIMI_INTERNAL_ADMIN_KEY"
+}
+
+install_get_json() {
+  url="$1"
+  body_file="$(mktemp)"
+  status="$(
+    curl \
+      --silent \
+      --show-error \
+      --output "$body_file" \
+      --write-out '%{http_code}' \
+      -H "${CREDIMI_INSTALL_AUTH_HEADER_NAME}: ${CREDIMI_INSTALL_AUTH_HEADER_VALUE}" \
+      "$url"
+  )"
+  body="$(cat "$body_file")"
+  rm -f "$body_file"
+
+  if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+    die "request to ${url} failed (${status}): ${body}"
+  fi
+
+  printf '%s' "$body"
+}
+
+install_post_json() {
+  url="$1"
+  payload="$2"
+  body_file="$(mktemp)"
+  status="$(
+    curl \
+      --silent \
+      --show-error \
+      --output "$body_file" \
+      --write-out '%{http_code}' \
+      -H 'Content-Type: application/json' \
+      -H "${CREDIMI_INSTALL_AUTH_HEADER_NAME}: ${CREDIMI_INSTALL_AUTH_HEADER_VALUE}" \
+      -X POST \
+      --data "$payload" \
+      "$url"
+  )"
+  body="$(cat "$body_file")"
+  rm -f "$body_file"
+
+  if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+    die "request to ${url} failed (${status}): ${body}"
+  fi
+
+  printf '%s' "$body"
+}
+
+resolve_user_runner_organization() {
+  org_url="$(join_url "$CREDIMI_URL" api organizations my)"
+  org_response="$(install_get_json "$org_url")"
+  org_name="$(extract_json_string canonified_name "$org_response")"
+  [ -n "$org_name" ] || die "failed to extract canonified_name from ${org_url}"
+
+  printf '%s' "$org_name"
+}
+
+runner_name_conflict_action() {
+  base_runner_id="$1"
+  preview_runner_id="$2"
+
+  if [ -z "$tty_path" ]; then
+    action="$(resolved_value CREDIMI_RUNNER_NAME_CONFLICT_ACTION update)"
+    case "$action" in
+      update|create)
+        printf '%s' "$action"
+        return 0
+        ;;
+      *)
+        die "unsupported CREDIMI_RUNNER_NAME_CONFLICT_ACTION value: ${action}"
+        ;;
+    esac
+  fi
+
+  while :; do
+    printf 'Runner %s already exists. Update existing or create %s? (update/create) [update]: ' "$base_runner_id" "$preview_runner_id" >"$tty_path"
+    IFS= read -r action <"$tty_path" || true
+    [ -n "$action" ] || action="update"
+    case "$action" in
+      update|create)
+        printf '%s' "$action"
+        return 0
+        ;;
+      *)
+        printf 'Please enter one of: update create\n' >"$tty_path"
+        ;;
+    esac
+  done
+}
+
+resolve_install_runner_identity() {
+  [ -n "${CREDIMI_RUNNER_ID:-}" ] && return 0
+  [ -n "${CREDIMI_RUNNER_NAME:-}" ] || die "CREDIMI_RUNNER_NAME is required when CREDIMI_RUNNER_ID is not set"
+
+  need_cmd curl
+  configure_install_auth_header
+
+  if [ -z "${CREDIMI_RUNNER_ORGANIZATION:-}" ]; then
+    if [ -n "${CREDIMI_USER_API_KEY:-}" ]; then
+      CREDIMI_RUNNER_ORGANIZATION="$(resolve_user_runner_organization)"
+    else
+      die "CREDIMI_RUNNER_ORGANIZATION is required when CREDIMI_RUNNER_ID is not set"
+    fi
+  fi
+
+  runner_slug="$(canonify_plain "$CREDIMI_RUNNER_NAME")"
+  base_runner_id="/${CREDIMI_RUNNER_ORGANIZATION}/${runner_slug}"
+  preview_payload="{\"name\":\"$(json_escape "$CREDIMI_RUNNER_NAME")\""
+  if [ -n "${CREDIMI_RUNNER_ORGANIZATION:-}" ]; then
+    preview_payload="${preview_payload},\"organization\":\"$(json_escape "$CREDIMI_RUNNER_ORGANIZATION")\""
+  fi
+  preview_payload="${preview_payload}}"
+  preview_url="$(join_url "$CREDIMI_URL" api mobile-runner preview-id)"
+  preview_response="$(install_post_json "$preview_url" "$preview_payload")"
+  preview_runner_id="$(extract_json_string runner_id "$preview_response")"
+  [ -n "$preview_runner_id" ] || die "failed to extract runner_id from ${preview_url}"
+
+  if [ "$preview_runner_id" = "$base_runner_id" ]; then
+    CREDIMI_RUNNER_ID="$base_runner_id"
+    return 0
+  fi
+
+  case "$(runner_name_conflict_action "$base_runner_id" "$preview_runner_id")" in
+    update)
+      CREDIMI_RUNNER_ID="$base_runner_id"
+      ;;
+    create)
+      CREDIMI_RUNNER_ID="$preview_runner_id"
+      ;;
+  esac
+}
+
 default_otel_enabled_choice() {
   case "$(resolved_value OTEL_ENABLED)" in
     1|true|TRUE|True|yes|YES|Yes|on|ON|On)
@@ -1022,81 +1197,19 @@ resolve_user_runner_organization() {
 }
 
 resolve_runner_identity() {
-  local runner_slug base_runner_id preview_url preview_payload preview_response preview_runner_id conflict_action
+  if [[ -z "${CREDIMI_RUNNER_ID:-}" ]]; then
+    printf 'CREDIMI_RUNNER_ID is required; rerun install.sh to choose the runner identity\n' >&2
+    return 1
+  fi
 
-  if [[ -z "${CREDIMI_RUNNER_NAME:-}" ]] && [[ -n "${CREDIMI_RUNNER_ID:-}" ]]; then
+  if [[ -z "${CREDIMI_RUNNER_NAME:-}" ]]; then
     CREDIMI_RUNNER_NAME="$(runner_name_from_id "${CREDIMI_RUNNER_ID}")"
   fi
-  if [[ -z "${CREDIMI_RUNNER_ORGANIZATION:-}" ]] && [[ -n "${CREDIMI_RUNNER_ID:-}" ]]; then
+  if [[ -z "${CREDIMI_RUNNER_ORGANIZATION:-}" ]]; then
     CREDIMI_RUNNER_ORGANIZATION="$(runner_org_from_id "${CREDIMI_RUNNER_ID}")"
   fi
 
-  if [[ -n "${CREDIMI_RUNNER_ID:-}" ]]; then
-    export CREDIMI_RUNNER_ID CREDIMI_RUNNER_NAME CREDIMI_RUNNER_ORGANIZATION
-    return 0
-  fi
-
-  [[ -n "${CREDIMI_RUNNER_NAME:-}" ]] || {
-    printf 'CREDIMI_RUNNER_NAME is required when CREDIMI_RUNNER_ID is not set\n' >&2
-    return 1
-  }
-
-  if [[ -z "${CREDIMI_RUNNER_ORGANIZATION:-}" ]]; then
-    if [[ -n "${CREDIMI_USER_API_KEY:-}" ]]; then
-      CREDIMI_RUNNER_ORGANIZATION="$(resolve_user_runner_organization)"
-    else
-      printf 'CREDIMI_RUNNER_ORGANIZATION is required when CREDIMI_RUNNER_ID is not set\n' >&2
-      return 1
-    fi
-  fi
-
-  runner_slug="$(canonify_plain "${CREDIMI_RUNNER_NAME}")"
-  base_runner_id="/${CREDIMI_RUNNER_ORGANIZATION}/${runner_slug}"
-
-  preview_payload="{\"name\":\"$(json_escape "${CREDIMI_RUNNER_NAME}")\""
-  if [[ -n "${CREDIMI_RUNNER_ORGANIZATION:-}" ]]; then
-    preview_payload+=",\"organization\":\"$(json_escape "${CREDIMI_RUNNER_ORGANIZATION}")\""
-  fi
-  preview_payload+="}"
-
-  preview_url="$(join_url "${CREDIMI_URL}" "api" "mobile-runner" "preview-id")"
-  if ! preview_response="$(post_json "${preview_url}" "${preview_payload}")"; then
-    printf 'preview-id payload: %s\n' "${preview_payload}" >&2
-    return 1
-  fi
-  preview_runner_id="$(extract_json_string "runner_id" "${preview_response}")"
-  [[ -n "${preview_runner_id}" ]] || {
-    printf 'failed to extract runner_id from %s\n' "${preview_url}" >&2
-    return 1
-  }
-
-  if [[ "${preview_runner_id}" == "${base_runner_id}" ]]; then
-    CREDIMI_RUNNER_ID="${base_runner_id}"
-  else
-    conflict_action="$(
-      prompt_choice \
-        CREDIMI_RUNNER_NAME_CONFLICT_ACTION \
-        "Runner ${base_runner_id} already exists. Update existing or create ${preview_runner_id}? (update/create)" \
-        "update" \
-        "update create"
-    )"
-    case "${conflict_action}" in
-      update)
-        CREDIMI_RUNNER_ID="${base_runner_id}"
-        ;;
-      create)
-        CREDIMI_RUNNER_ID="${preview_runner_id}"
-        ;;
-      *)
-        printf 'unsupported CREDIMI_RUNNER_NAME_CONFLICT_ACTION value: %s\n' "${conflict_action}" >&2
-        return 1
-        ;;
-    esac
-  fi
-
   export CREDIMI_RUNNER_ID CREDIMI_RUNNER_ORGANIZATION
-  upsert_env_value "${env_file}" "CREDIMI_RUNNER_ID" "${CREDIMI_RUNNER_ID}"
-  upsert_env_value "${env_file}" "CREDIMI_RUNNER_ORGANIZATION" "${CREDIMI_RUNNER_ORGANIZATION:-}"
 }
 
 wait_for_public_runner_url() {
@@ -1545,6 +1658,7 @@ main() {
   runner_type_options="$(runner_type_choices)"
   CREDIMI_RUNNER_TYPE="$(prompt_choice CREDIMI_RUNNER_TYPE "Mobile runner type (${runner_type_options})" "$(default_runner_type "${CREDIMI_RUNNER_BACKEND}")" "${runner_type_options}")"
   validate_runner_type_supported "${CREDIMI_RUNNER_TYPE}"
+  resolve_install_runner_identity
   CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Exposure mode (quick/named/direct)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named direct")"
   RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")")"
   RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")")"

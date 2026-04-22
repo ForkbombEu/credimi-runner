@@ -224,6 +224,7 @@ run_install() {
   XDG_BIN_HOME="${case_dir}/bin" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/preview-runner" \
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_RUNNER_ID="/org-id/runner-01" \
@@ -247,6 +248,7 @@ run_install_with_temp_dir() {
   XDG_BIN_HOME="${case_dir}/bin" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/preview-runner" \
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_RUNNER_ID="/org-id/runner-01" \
@@ -958,7 +960,6 @@ run_launcher_preview_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  MOCK_PREVIEW_RUNNER_ID="/org-id/preview-runner" \
   MOCK_STORE_RUNNER_ID="/org-id/preview-runner" \
   "${launcher}" quick >/dev/null
 
@@ -981,6 +982,7 @@ run_direct_preview_preserves_env_mode_case() {
   XDG_BIN_HOME="${case_dir}/bin" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/direct-preview" \
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_RUNNER_NAME="direct-preview" \
@@ -1004,7 +1006,6 @@ run_direct_preview_preserves_env_mode_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  MOCK_PREVIEW_RUNNER_ID="/org-id/direct-preview" \
   MOCK_STORE_RUNNER_ID="/org-id/direct-preview" \
   "${launcher}" direct >/dev/null
 
@@ -1076,6 +1077,7 @@ run_admin_computes_runner_id_case() {
   XDG_BIN_HOME="${case_dir}/bin" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/admin-runner" \
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_INSTALL_AUTH_MODE="admin" \
@@ -1097,7 +1099,6 @@ run_admin_computes_runner_id_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  MOCK_PREVIEW_RUNNER_ID="/org-id/admin-runner" \
   MOCK_STORE_RUNNER_ID="/org-id/admin-runner" \
   "${launcher}" quick >/dev/null
 
@@ -1135,6 +1136,7 @@ EOF
   XDG_BIN_HOME="${case_dir}/bin" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/new-runner" \
   CREDIMI_INSTALL_AUTH_MODE="admin" \
   CREDIMI_USE_EXISTING_RUNNER_ID="no" \
   CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
@@ -1154,7 +1156,6 @@ EOF
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  MOCK_PREVIEW_RUNNER_ID="/org-id/new-runner" \
   MOCK_STORE_RUNNER_ID="/org-id/new-runner" \
   "${launcher}" quick >/dev/null
 
@@ -1175,6 +1176,7 @@ run_existing_name_updates_by_default_case() {
   XDG_BIN_HOME="${case_dir}/bin" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/duplicate-runner-1" \
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_RUNNER_NAME="Duplicate Runner" \
@@ -1195,7 +1197,6 @@ run_existing_name_updates_by_default_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  MOCK_PREVIEW_RUNNER_ID="/org-id/duplicate-runner-1" \
   MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner" \
   "${launcher}" quick >/dev/null
 
@@ -1218,6 +1219,8 @@ run_existing_name_can_create_new_case() {
   XDG_BIN_HOME="${case_dir}/bin" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/duplicate-runner-1" \
+  CREDIMI_RUNNER_NAME_CONFLICT_ACTION="create" \
   CREDIMI_URL="https://credimi.example" \
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_RUNNER_NAME="Duplicate Runner" \
@@ -1237,9 +1240,7 @@ run_existing_name_can_create_new_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  MOCK_PREVIEW_RUNNER_ID="/org-id/duplicate-runner-1" \
   MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner-1" \
-  CREDIMI_RUNNER_NAME_CONFLICT_ACTION="create" \
   "${launcher}" quick >/dev/null
 
   assert_contains "CREDIMI_RUNNER_ID=/org-id/duplicate-runner-1" "${env_file}"
