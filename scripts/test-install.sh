@@ -181,6 +181,24 @@ set -euo pipefail
 
 printf '%s\n' "$*" >>"${MOCK_LOG_DIR}/docker.log"
 
+if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
+  if [[ -n "${MOCK_DOCKER_IMAGE_DIGEST:-}" ]]; then
+    printf 'ghcr.io/forkbombeu/credimi-runner-phone@%s\n' "${MOCK_DOCKER_IMAGE_DIGEST}"
+  fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "manifest" && "${2:-}" == "inspect" ]]; then
+  if [[ -n "${MOCK_DOCKER_MANIFEST_DIGEST:-}" ]]; then
+    printf '{"Descriptor":{"digest":"%s"}}\n' "${MOCK_DOCKER_MANIFEST_DIGEST}"
+  fi
+  exit 0
+fi
+
+if [[ "${1:-}" == "pull" ]]; then
+  exit 0
+fi
+
 if [[ "${1:-}" == "compose" ]]; then
   case "$*" in
     *" logs tunnel"*)
@@ -702,6 +720,71 @@ EOF
 
   assert_file_absent "${marker}"
   assert_contains "up -d runner caddy tunnel_named" "${docker_log}"
+}
+
+run_outdated_runner_image_warning_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64" CREDIMI_CONTAINER_MODE="usb" run_install "${case_dir}"
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local stderr_log="${case_dir}/stderr.log"
+
+  cat >"${env_file}" <<'EOF'
+CREDIMI_URL=https://credimi.example
+CREDIMI_RUNNER_BACKEND=container
+CREDIMI_RUNNER_ID=/org-id/runner-01
+CREDIMI_RUNNER_NAME=runner-01
+CREDIMI_USER_API_KEY=user-api-key
+RUNNER_DOMAIN=runner.example.com
+RUNNER_CADDY_SITE=:80
+RUNNER_IMAGE=ghcr.io/forkbombeu/credimi-runner-phone:latest
+EOF
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_DOCKER_IMAGE_DIGEST="sha256:installed" \
+  MOCK_DOCKER_MANIFEST_DIGEST="sha256:latest" \
+  "${launcher}" quick >/dev/null 2>"${stderr_log}"
+
+  assert_contains "installed runner image ghcr.io/forkbombeu/credimi-runner-phone:latest is outdated" "${stderr_log}"
+  assert_contains 'Run `credimi-runner-service update-image` to pull the latest runner image before restarting.' "${stderr_log}"
+}
+
+run_update_runner_image_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64" CREDIMI_CONTAINER_MODE="usb" run_install "${case_dir}"
+
+  local launcher="${case_dir}/bin/credimi-runner-service"
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local docker_log="${case_dir}/logs/docker.log"
+
+  cat >"${env_file}" <<'EOF'
+CREDIMI_URL=https://credimi.example
+CREDIMI_RUNNER_BACKEND=container
+CREDIMI_RUNNER_ID=/org-id/runner-01
+CREDIMI_RUNNER_NAME=runner-01
+CREDIMI_USER_API_KEY=user-api-key
+RUNNER_IMAGE=ghcr.io/forkbombeu/credimi-runner-phone:latest
+EOF
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  "${launcher}" update-image >/dev/null
+
+  assert_contains "pull ghcr.io/forkbombeu/credimi-runner-phone:latest" "${docker_log}"
 }
 
 run_host_bind_host_readiness_case() {
@@ -1334,6 +1417,8 @@ run_host_android_emulator_keeps_golden_path_case
 run_noninteractive_empty_optional_case
 run_quick_mode_with_domain_case
 run_literal_env_loading_case
+run_outdated_runner_image_warning_case
+run_update_runner_image_case
 run_host_bind_host_readiness_case
 run_direct_host_case
 run_existing_env_case
