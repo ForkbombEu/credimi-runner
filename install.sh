@@ -892,6 +892,7 @@ trap 'echo "ERROR at ${BASH_SOURCE}:${LINENO}: ${BASH_COMMAND}"' ERR
 echo "WARNING: This script does NOT work if Docker is installed via snap. See: https://stackoverflow.com/questions/73290497/getting-docker-open-env-permission-denied-when-trying-to-pass-a-env-file. Install Docker via apt or the official shell script instead." >&2
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_name="$(basename "${BASH_SOURCE[0]}")"
 config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
 config_dir="${CREDIMI_RUNNER_CONFIG_DIR:-${config_home}/credimi/runner}"
 env_file="${config_dir}/.env"
@@ -1306,6 +1307,55 @@ require_cmd() {
   }
 }
 
+installed_runner_image_digest() {
+  local image="$1"
+
+  docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${image}" 2>/dev/null |
+    sed -n 's/.*@//p' |
+    head -n 1
+}
+
+latest_runner_image_digest() {
+  local image="$1"
+
+  docker manifest inspect --verbose "${image}" 2>/dev/null |
+    sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    head -n 1
+}
+
+warn_if_runner_image_outdated() {
+  local image="${RUNNER_IMAGE:-}"
+  local installed_digest
+  local latest_digest
+
+  [[ "${backend}" == "container" ]] || return 0
+  [[ -n "${image}" ]] || return 0
+
+  installed_digest="$(installed_runner_image_digest "${image}")"
+  [[ -n "${installed_digest}" ]] || return 0
+
+  latest_digest="$(latest_runner_image_digest "${image}")"
+  [[ -n "${latest_digest}" ]] || return 0
+
+  if [[ "${installed_digest}" != "${latest_digest}" ]]; then
+    printf 'WARNING: installed runner image %s is outdated (%s != %s)\n' "${image}" "${installed_digest}" "${latest_digest}" >&2
+    printf 'Run `%s update-image` to pull the latest runner image before restarting.\n' "${script_name}" >&2
+  fi
+}
+
+update_runner_image() {
+  local image="${RUNNER_IMAGE:-}"
+
+  [[ -n "${image}" ]] || {
+    printf 'RUNNER_IMAGE is required to update the container image\n' >&2
+    exit 1
+  }
+
+  require_cmd docker
+  docker pull "${image}"
+  printf 'Updated runner image: %s\n' "${image}" >&2
+}
+
 cleanup() {
   if [[ -n "${runner_pid:-}" ]] && kill -0 "${runner_pid}" >/dev/null 2>&1; then
     kill "${runner_pid}" >/dev/null 2>&1 || true
@@ -1390,8 +1440,12 @@ case "${mode}" in
     docker compose --env-file "${env_file}" -f "${compose_file}" down --remove-orphans
     exit 0
     ;;
+  update-image)
+    update_runner_image
+    exit 0
+    ;;
   *)
-    printf 'usage: %s [quick|named|direct|down]\n' "$(basename "$0")" >&2
+    printf 'usage: %s [quick|named|direct|down|update-image]\n' "$(basename "$0")" >&2
     exit 1
     ;;
 esac
@@ -1408,6 +1462,8 @@ if [[ "${#compose_services[@]}" -gt 0 ]]; then
     exit 1
   }
 fi
+
+warn_if_runner_image_outdated
 
 require_cmd curl
 configure_auth_headers
@@ -1925,6 +1981,7 @@ main() {
   say "${PROJECT_NAME}-service named"
   say "${PROJECT_NAME}-service direct"
   say "${PROJECT_NAME}-service down"
+  say "${PROJECT_NAME}-service update-image"
 }
 
 main "$@"
