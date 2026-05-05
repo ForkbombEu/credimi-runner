@@ -318,7 +318,7 @@ run_linux_usb_case() {
   assert_not_contains '\${RUNNER_CADDY_SITE:-:80}' "${compose_file}"
   assert_not_contains "privileged: true" "${compose_file}"
   assert_not_contains "/dev/bus/usb:/dev/bus/usb" "${compose_file}"
-  assert_contains 'command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://host.docker.internal:80}' "${compose_file}"
+  assert_contains 'command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://127.0.0.1:80}' "${compose_file}"
   assert_empty_or_missing "${curl_log}"
 
   PATH="${case_dir}/mocks:${PATH}" \
@@ -420,7 +420,7 @@ run_linux_wifi_case() {
   assert_contains 'PORT: "${RUNNER_PORT:-8050}"' "${compose_file}"
   assert_contains "network_mode: host" "${compose_file}"
   assert_contains 'caddy.reverse_proxy: "127.0.0.1:${RUNNER_PORT:-8050}"' "${compose_file}"
-  assert_contains 'command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://host.docker.internal:80}' "${compose_file}"
+  assert_contains 'command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://127.0.0.1:80}' "${compose_file}"
 
   PATH="${case_dir}/mocks:${PATH}" \
   HOME="${case_dir}/home" \

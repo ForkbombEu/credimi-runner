@@ -721,6 +721,10 @@ write_compose_file() {
     networks:
       - ingress'
   caddy_proxy_target='host.docker.internal:${RUNNER_PORT:-8050}'
+  tunnel_network_block='    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ingress'
   tunnel_url='http://caddy:80'
   runner_connectivity_block='    expose:
       - "8050"
@@ -743,7 +747,8 @@ write_compose_file() {
       usb|wifi)
         caddy_network_block='    network_mode: host'
         caddy_proxy_target='127.0.0.1:${RUNNER_PORT:-8050}'
-        tunnel_url='http://host.docker.internal:80'
+        tunnel_network_block='    network_mode: host'
+        tunnel_url='http://127.0.0.1:80'
         ;;
     esac
   fi
@@ -878,10 +883,7 @@ ${caddy_network_block}
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate --url \${CREDIMI_TUNNEL_URL:-${tunnel_url}}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - ingress
+${tunnel_network_block}
 EOF
   cat >>"$compose_file" <<'EOF'
 
