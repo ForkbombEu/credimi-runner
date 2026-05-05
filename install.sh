@@ -716,6 +716,12 @@ write_compose_file() {
   runner_image="${RUNNER_IMAGE:-${DEFAULT_PHONE_IMAGE}}"
   runner_ssh_known_hosts_volume=""
   runner_no_device_volumes_block=""
+  caddy_network_block='    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ingress'
+  caddy_proxy_target='host.docker.internal:${RUNNER_PORT:-8050}'
+  tunnel_url='http://caddy:80'
   runner_connectivity_block='    expose:
       - "8050"
     labels:
@@ -728,6 +734,18 @@ write_compose_file() {
     [ "${CREDIMI_SERVICE_MODE:-quick}" = "direct" ] &&
     [ "$(uname -s)" = "Linux" ]; then
     runner_connectivity_block='    network_mode: host'
+  fi
+
+  if [ "${CREDIMI_RUNNER_BACKEND:-}" = "container" ] &&
+    [ "${CREDIMI_SERVICE_MODE:-quick}" = "quick" ] &&
+    [ "$(uname -s)" = "Linux" ]; then
+    case "$runner_mode" in
+      usb|wifi)
+        caddy_network_block='    network_mode: host'
+        caddy_proxy_target='127.0.0.1:${RUNNER_PORT:-8050}'
+        tunnel_url='http://host.docker.internal:80'
+        ;;
+    esac
   fi
 
   if [ -n "${AVDCTL_SSH_TARGET:-}" ] && [ -n "${AVDCTL_SSH_KNOWN_HOSTS_PATH:-}" ]; then
@@ -755,7 +773,10 @@ EOF
     volumes:
       - adbkeys:/root/.android
 ${runner_ssh_known_hosts_volume}
-${runner_connectivity_block}
+    network_mode: host
+    labels:
+      caddy: "\${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "${caddy_proxy_target}"
 EOF
       ;;
     usb)
@@ -764,17 +785,20 @@ EOF
     image: ${runner_image}
     restart: unless-stopped
     command:
+      - --host-adb
       - --usb
-    privileged: true
     env_file:
       - .env
     environment:
       PORT: "\${RUNNER_PORT:-${DEFAULT_RUNNER_PORT}}"
+      ADB_SERVER_SOCKET: "\${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}"
     volumes:
-      - /dev/bus/usb:/dev/bus/usb
       - adbkeys:/root/.android
 ${runner_ssh_known_hosts_volume}
-${runner_connectivity_block}
+    network_mode: host
+    labels:
+      caddy: "\${RUNNER_CADDY_SITE:-:80}"
+      caddy.reverse_proxy: "${caddy_proxy_target}"
 EOF
       ;;
     emulator)
@@ -842,23 +866,24 @@ EOF
     restart: unless-stopped
     environment:
       CADDY_INGRESS_NETWORKS: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - caddy_data:/data
       - caddy_config:/config
-    networks:
-      - ingress
+EOF
+  cat >>"$compose_file" <<EOF
+${caddy_network_block}
 
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate --url http://caddy:80
-    depends_on:
-      - caddy
+    command: tunnel --no-autoupdate --url \${CREDIMI_TUNNEL_URL:-${tunnel_url}}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - ingress
+EOF
+  cat >>"$compose_file" <<'EOF'
 
   tunnel_named:
     image: cloudflare/cloudflared:latest
@@ -1307,53 +1332,35 @@ require_cmd() {
   }
 }
 
-installed_runner_image_digest() {
+runner_image_id() {
   local image="$1"
 
-  docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${image}" 2>/dev/null |
-    sed -n 's/.*@//p' |
+  docker image inspect --format '{{.Id}}' "${image}" 2>/dev/null |
     head -n 1
 }
 
-latest_runner_image_digest() {
-  local image="$1"
-
-  docker manifest inspect --verbose "${image}" 2>/dev/null |
-    sed -n 's/.*"digest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
-    head -n 1
-}
-
-warn_if_runner_image_outdated() {
+check_runner_image() {
   local image="${RUNNER_IMAGE:-}"
-  local installed_digest
-  local latest_digest
-
-  [[ "${backend}" == "container" ]] || return 0
-  [[ -n "${image}" ]] || return 0
-
-  installed_digest="$(installed_runner_image_digest "${image}")"
-  [[ -n "${installed_digest}" ]] || return 0
-
-  latest_digest="$(latest_runner_image_digest "${image}")"
-  [[ -n "${latest_digest}" ]] || return 0
-
-  if [[ "${installed_digest}" != "${latest_digest}" ]]; then
-    printf 'WARNING: installed runner image %s is outdated (%s != %s)\n' "${image}" "${installed_digest}" "${latest_digest}" >&2
-    printf 'Run `%s update-image` to pull the latest runner image before restarting.\n' "${script_name}" >&2
-  fi
-}
-
-update_runner_image() {
-  local image="${RUNNER_IMAGE:-}"
+  local before_id
+  local after_id
 
   [[ -n "${image}" ]] || {
-    printf 'RUNNER_IMAGE is required to update the container image\n' >&2
+    printf 'RUNNER_IMAGE is required to check the container image\n' >&2
     exit 1
   }
 
   require_cmd docker
+  before_id="$(runner_image_id "${image}")"
   docker pull "${image}"
-  printf 'Updated runner image: %s\n' "${image}" >&2
+  after_id="$(runner_image_id "${image}")"
+
+  if [[ -z "${before_id}" ]]; then
+    printf 'Pulled runner image: %s\n' "${image}" >&2
+  elif [[ "${before_id}" == "${after_id}" ]]; then
+    printf 'Runner image is up to date: %s\n' "${image}" >&2
+  else
+    printf 'Updated runner image: %s\n' "${image}" >&2
+  fi
 }
 
 cleanup() {
@@ -1441,7 +1448,7 @@ case "${mode}" in
     exit 0
     ;;
   update-image)
-    update_runner_image
+    check_runner_image
     exit 0
     ;;
   *)
@@ -1462,8 +1469,6 @@ if [[ "${#compose_services[@]}" -gt 0 ]]; then
     exit 1
   }
 fi
-
-warn_if_runner_image_outdated
 
 require_cmd curl
 configure_auth_headers
@@ -1959,7 +1964,7 @@ main() {
         say "Configured Android transport: Wi-Fi (${CREDIMI_RUNNER_SERIAL})."
         ;;
       usb)
-        say "Configured Android transport: USB (${CREDIMI_RUNNER_SERIAL})."
+        say "Configured Android transport: USB via host ADB (${CREDIMI_RUNNER_SERIAL})."
         ;;
       emulator)
         say "Configured Android transport: emulator container."
