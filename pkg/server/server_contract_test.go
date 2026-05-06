@@ -71,7 +71,8 @@ func newTestInstanceServer(t *testing.T, capture *storeCapture) *httptest.Server
 	t.Helper()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/collections/_superusers/auth-with-password", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/apikey/authenticate", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "test-api-key", r.Header.Get("Credimi-Api-Key"))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"token":"test-token"}`))
@@ -327,9 +328,8 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 
 		instances := map[string]utils.Instance{
 			"test": {
-				URL:      upstream.URL,
-				PB_ADMIN: "admin",
-				PB_PASS:  "pass",
+				URL:        upstream.URL,
+				UserAPIKey: "test-api-key",
 			},
 		}
 
@@ -366,9 +366,8 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 
 		instances := map[string]utils.Instance{
 			"test": {
-				URL:      upstream.URL,
-				PB_ADMIN: "admin",
-				PB_PASS:  "pass",
+				URL:        upstream.URL,
+				UserAPIKey: "test-api-key",
 			},
 		}
 
@@ -419,9 +418,8 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 
 		instances := map[string]utils.Instance{
 			"test": {
-				URL:      upstream.URL,
-				PB_ADMIN: "admin",
-				PB_PASS:  "pass",
+				URL:        upstream.URL,
+				UserAPIKey: "test-api-key",
 			},
 		}
 
@@ -500,9 +498,8 @@ func TestServerContract_FetchInstallerAndAction_OptionalCode(t *testing.T) {
 
 	instances := map[string]utils.Instance{
 		"test": {
-			URL:      upstream.URL,
-			PB_ADMIN: "admin",
-			PB_PASS:  "pass",
+			URL:        upstream.URL,
+			UserAPIKey: "test-api-key",
 		},
 	}
 

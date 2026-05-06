@@ -103,8 +103,6 @@ func eventAttributeValue(event sdktrace.Event, key attribute.Key) string {
 }
 
 func TestStartExistingWorkers_Success(t *testing.T) {
-	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
-
 	store := NewProcessStore()
 	existing := NewProcess("already-running", nil)
 	existing.Running = true
@@ -113,17 +111,17 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 	startedCh := make(chan string, 1)
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
-			require.Equal(t, "/api/collections/organizations/records", req.URL.Path)
-			require.Equal(t, "1", req.URL.Query().Get("page"))
-			require.Equal(t, "200", req.URL.Query().Get("perPage"))
-			return httpResp(http.StatusOK, `{"items":[{"name":"A","canonified_name":"already-running"},{"name":"B","canonified_name":"new-ns"},{"name":"C","canonified_name":""}]}`), nil
+			require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+			require.Empty(t, req.URL.RawQuery)
+			return httpResp(http.StatusOK, `{"namespaces":["already-running","new-ns",""]}`), nil
 		},
 	}
 
 	deps := Deps{
 		HTTPClient: client,
 		TokenProvider: func(instance utils.Instance) (string, error) {
-			return "token-123", nil
+			t.Fatal("admin namespace lookup should not fetch bearer token")
+			return "", nil
 		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
@@ -134,12 +132,12 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 		},
 	}
 	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
-		"prod": {URL: "http://example.local"},
+		"prod": {URL: "http://example.local", InternalAdminKey: "internal-admin-key"},
 	}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, "Bearer token-123", client.authHeader())
+	require.Empty(t, client.authHeader())
 	require.Equal(t, "internal-admin-key", client.keyHeader())
 	select {
 	case ns := <-startedCh:
@@ -164,14 +162,16 @@ func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {
 
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
-			return httpResp(http.StatusOK, `{"items":[{"name":"A","canonified_name":"already-running"},{"name":"B","canonified_name":"new-ns"}]}`), nil
+			require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+			return httpResp(http.StatusOK, `{"namespaces":["already-running","new-ns"]}`), nil
 		},
 	}
 
 	deps := Deps{
 		HTTPClient: client,
 		TokenProvider: func(instance utils.Instance) (string, error) {
-			return "token-123", nil
+			t.Fatal("admin namespace lookup should not fetch bearer token")
+			return "", nil
 		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
@@ -199,42 +199,24 @@ func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {
 	proc.Stop()
 }
 
-func TestStartExistingWorkers_PaginatesAllOrganizations(t *testing.T) {
+func TestStartExistingWorkers_StartsAllAdminNamespaces(t *testing.T) {
 	store := NewProcessStore()
-
-	var pages []string
-	var startedMu sync.Mutex
-	started := make(map[string]bool)
 
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
-			require.Equal(t, "/api/collections/organizations/records", req.URL.Path)
-			page := req.URL.Query().Get("page")
-			require.Equal(t, "200", req.URL.Query().Get("perPage"))
-			pages = append(pages, page)
-
-			switch page {
-			case "1":
-				return httpResp(http.StatusOK, `{"page":1,"perPage":200,"totalPages":2,"items":[{"name":"A","canonified_name":"ns-1"}]}`), nil
-			case "2":
-				return httpResp(http.StatusOK, `{"page":2,"perPage":200,"totalPages":2,"items":[{"name":"B","canonified_name":"ns-2"}]}`), nil
-			default:
-				t.Fatalf("unexpected page %q", page)
-				return nil, nil
-			}
+			require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+			return httpResp(http.StatusOK, `{"namespaces":["ns-1","ns-2"]}`), nil
 		},
 	}
 
 	deps := Deps{
 		HTTPClient: client,
 		TokenProvider: func(instance utils.Instance) (string, error) {
-			return "token-123", nil
+			t.Fatal("admin namespace lookup should not fetch bearer token")
+			return "", nil
 		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
-				startedMu.Lock()
-				started[namespace] = true
-				startedMu.Unlock()
 				<-ctx.Done()
 				return nil
 			}
@@ -247,7 +229,6 @@ func TestStartExistingWorkers_PaginatesAllOrganizations(t *testing.T) {
 
 	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{"1", "2"}, pages)
 
 	proc1, ok := store.Get("ns-1")
 	require.True(t, ok)
@@ -266,8 +247,8 @@ func TestStartExistingWorkers_AppliesStartupDelayBetweenStarts(t *testing.T) {
 	store := NewProcessStore()
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
-			require.Equal(t, "/api/collections/organizations/records", req.URL.Path)
-			return httpResp(http.StatusOK, `{"items":[{"name":"A","canonified_name":"ns-1"},{"name":"B","canonified_name":"ns-2"}]}`), nil
+			require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+			return httpResp(http.StatusOK, `{"namespaces":["ns-1","ns-2"]}`), nil
 		},
 	}
 
@@ -275,7 +256,8 @@ func TestStartExistingWorkers_AppliesStartupDelayBetweenStarts(t *testing.T) {
 	deps := Deps{
 		HTTPClient: client,
 		TokenProvider: func(instance utils.Instance) (string, error) {
-			return "token-123", nil
+			t.Fatal("admin namespace lookup should not fetch bearer token")
+			return "", nil
 		},
 		Sleeper: func(d time.Duration) {
 			sleeps = append(sleeps, d)
@@ -310,8 +292,8 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 	store := NewProcessStore()
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
-			require.Equal(t, "/api/collections/organizations/records", req.URL.Path)
-			return httpResp(http.StatusOK, `{"items":[{"name":"A","canonified_name":"ns-1"},{"name":"B","canonified_name":"ns-2"}]}`), nil
+			require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+			return httpResp(http.StatusOK, `{"namespaces":["ns-1","ns-2"]}`), nil
 		},
 	}
 
@@ -319,7 +301,8 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 	deps := Deps{
 		HTTPClient: client,
 		TokenProvider: func(instance utils.Instance) (string, error) {
-			return "token-123", nil
+			t.Fatal("admin namespace lookup should not fetch bearer token")
+			return "", nil
 		},
 		Sleeper: func(d time.Duration) {
 			sleeps = append(sleeps, d)
@@ -351,7 +334,8 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
-			return httpResp(http.StatusOK, `{"items":[]}`), nil
+			require.Equal(t, "/api/organizations/my", req.URL.Path)
+			return httpResp(http.StatusOK, `{"name":"Good Org","canonified_name":"good-ns"}`), nil
 		},
 	}
 
@@ -363,10 +347,16 @@ func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
 			}
 			return "ok-token", nil
 		},
+		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
+			return func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			}
+		},
 	}
 	srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"bad":  {URL: "http://broken.local"},
-		"good": {URL: "http://good.local"},
+		"bad":  {URL: "http://broken.local", UserAPIKey: "bad-key"},
+		"good": {URL: "http://good.local", UserAPIKey: "good-key"},
 	}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
@@ -486,11 +476,10 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 					return nil, errors.New("dial failed")
 				},
 			},
-			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
 		})
 
 		err := srv.StartExistingWorkers(context.Background())
-		require.ErrorContains(t, err, "failed to fetch organizations")
+		require.ErrorContains(t, err, "failed to fetch organization namespaces")
 	})
 
 	t.Run("non-200 response", func(t *testing.T) {
@@ -502,11 +491,10 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 					return httpResp(http.StatusUnauthorized, ""), nil
 				},
 			},
-			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
 		})
 
 		err := srv.StartExistingWorkers(context.Background())
-		require.ErrorContains(t, err, "failed to fetch organizations")
+		require.ErrorContains(t, err, "failed to fetch organization namespaces")
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {
@@ -518,11 +506,10 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 					return httpResp(http.StatusOK, "{"), nil
 				},
 			},
-			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
 		})
 
 		err := srv.StartExistingWorkers(context.Background())
-		require.ErrorContains(t, err, "failed to parse organizations response")
+		require.ErrorContains(t, err, "failed to parse organization namespaces response")
 	})
 }
 

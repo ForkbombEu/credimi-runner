@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -15,10 +14,9 @@ import (
 )
 
 type Instance struct {
-	URL        string
-	PB_ADMIN   string
-	PB_PASS    string
-	UserAPIKey string
+	URL              string
+	UserAPIKey       string
+	InternalAdminKey string
 }
 
 const defaultCredimiURL = "https://credimi.io"
@@ -117,57 +115,9 @@ func GetEnvironmentVariableAsInteger(name string, others ...any) (int, error) {
 	return int(outputAsInt), nil
 }
 
-// GetBearerToken returns a PocketBase bearer token using the configured auth mode.
+// GetBearerToken exchanges a configured user API key for a PocketBase bearer token.
 func GetBearerToken(instance Instance) (string, error) {
-	if strings.TrimSpace(instance.UserAPIKey) != "" {
-		return GetUserAPIKeyToken(instance)
-	}
-	return GetAdminToken(instance)
-}
-
-// GetAdminToken authenticates with PocketBase using admin credentials.
-func GetAdminToken(instance Instance) (string, error) {
-	if strings.TrimSpace(instance.PB_ADMIN) == "" || strings.TrimSpace(instance.PB_PASS) == "" {
-		return "", fmt.Errorf(
-			"missing admin credentials for %s: set CREDIMI_USER_API_KEY or CREDIMI_PB_ADMIN/CREDIMI_PB_PASS",
-			instance.URL,
-		)
-	}
-
-	return getCachedToken(instance.tokenCacheKey(), func() (string, error) {
-		url := JoinURL(instance.URL, "api", "collections", "_superusers", "auth-with-password")
-
-		payload := map[string]string{
-			"identity": instance.PB_ADMIN,
-			"password": instance.PB_PASS,
-		}
-
-		body, err := json.Marshal(payload)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal payload: %w", err)
-		}
-		resp, err := http.Post(url, "application/json", bytes.NewReader(body))
-		if err != nil {
-			return "", fmt.Errorf("failed to contact PocketBase: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("auth failed: %s", resp.Status)
-		}
-
-		var res struct {
-			Token string `json:"token"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-			return "", fmt.Errorf("failed to decode PocketBase response: %w", err)
-		}
-
-		if res.Token == "" {
-			return "", fmt.Errorf("no token returned by PocketBase")
-		}
-		return res.Token, nil
-	})
+	return GetUserAPIKeyToken(instance)
 }
 
 // GetUserAPIKeyToken exchanges a user API key for a PocketBase bearer token.
@@ -238,30 +188,24 @@ func getCachedToken(cacheKey string, fetch func() (string, error)) (string, erro
 }
 
 func (i Instance) tokenCacheKey() string {
-	if strings.TrimSpace(i.UserAPIKey) != "" {
-		return i.URL + "|user_api_key"
-	}
-	return i.URL + "|admin"
+	return i.URL + "|user_api_key"
 }
 func LoadInstances() map[string]Instance {
 	return map[string]Instance{
 		"production": {
-			URL:        GetEnvironmentVariable("CREDIMI_URL", defaultCredimiURL),
-			PB_ADMIN:   GetEnvironmentVariable("CREDIMI_PB_ADMIN"),
-			PB_PASS:    GetEnvironmentVariable("CREDIMI_PB_PASS"),
-			UserAPIKey: GetEnvironmentVariable("CREDIMI_USER_API_KEY"),
+			URL:              GetEnvironmentVariable("CREDIMI_URL", defaultCredimiURL),
+			UserAPIKey:       GetEnvironmentVariable("CREDIMI_USER_API_KEY"),
+			InternalAdminKey: GetEnvironmentVariable("CREDIMI_INTERNAL_ADMIN_KEY"),
 		},
 		"staging": {
-			URL:        GetEnvironmentVariable("CREDIMI_STAGING_URL"),
-			PB_ADMIN:   GetEnvironmentVariable("CREDIMI_STAGING_PB_ADMIN"),
-			PB_PASS:    GetEnvironmentVariable("CREDIMI_STAGING_PB_PASS"),
-			UserAPIKey: GetEnvironmentVariable("CREDIMI_STAGING_USER_API_KEY"),
+			URL:              GetEnvironmentVariable("CREDIMI_STAGING_URL"),
+			UserAPIKey:       GetEnvironmentVariable("CREDIMI_STAGING_USER_API_KEY"),
+			InternalAdminKey: GetEnvironmentVariable("CREDIMI_STAGING_INTERNAL_ADMIN_KEY"),
 		},
 		"dev": {
-			URL:        GetEnvironmentVariable("CREDIMI_DEV_URL"),
-			PB_ADMIN:   GetEnvironmentVariable("CREDIMI_DEV_PB_ADMIN"),
-			PB_PASS:    GetEnvironmentVariable("CREDIMI_DEV_PB_PASS"),
-			UserAPIKey: GetEnvironmentVariable("CREDIMI_DEV_USER_API_KEY"),
+			URL:              GetEnvironmentVariable("CREDIMI_DEV_URL"),
+			UserAPIKey:       GetEnvironmentVariable("CREDIMI_DEV_USER_API_KEY"),
+			InternalAdminKey: GetEnvironmentVariable("CREDIMI_DEV_INTERNAL_ADMIN_KEY"),
 		},
 	}
 }

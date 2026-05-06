@@ -451,7 +451,7 @@ func TestStorePipelineResult_TokenProviderError(t *testing.T) {
 		Code:    http.StatusUnauthorized,
 		Domain:  "authorization",
 		Reason:  "invalid token",
-		Message: "failed to get admin token: bad token",
+		Message: "failed to get auth token: bad token",
 	}, apiErr)
 }
 

@@ -52,7 +52,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 			Code:    http.StatusUnauthorized,
 			Domain:  "authorization",
 			Reason:  "invalid token",
-			Message: "failed to get admin token: " + err.Error(),
+			Message: "failed to get auth token: " + err.Error(),
 		}
 	}
 
@@ -61,7 +61,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 
 	var actionCode *string
 	if payload.ActionIdentifier != "" {
-		code, err := validateActionIdentifier(validateURL, payload.ActionIdentifier, token, s.Deps.HTTPClient)
+		code, err := validateActionIdentifier(validateURL, payload.ActionIdentifier, token, instance.InternalAdminKey, s.Deps.HTTPClient)
 		if err != nil {
 			var apiErr *runner.APIError
 			if errors.As(err, &apiErr) {
@@ -105,7 +105,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 
 	req, _ := http.NewRequest("POST", getInstallerURL, bytes.NewReader(md5ReqBody))
 	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req)
+	setInternalAdminKeyHeader(req, instance.InternalAdminKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.Deps.HTTPClient.Do(req)
@@ -163,6 +163,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		md5Resp.InstallerIdentifier,
 		md5Resp.InstallerName,
 		platform,
+		instance.InternalAdminKey,
 		s.Deps.HTTPClient,
 		s.Deps.FileStore,
 	)
@@ -182,8 +183,8 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 	}, nil
 }
 
-func downloadInstallerIfMissing(fileURL, token, localName, installerName, platform string, client HTTPClient, fileStore FileStore) (string, error) {
-	localPath, err := downloadFileIfMissing(fileURL, token, localName, installerName, client, fileStore)
+func downloadInstallerIfMissing(fileURL, token, localName, installerName, platform, internalAdminKey string, client HTTPClient, fileStore FileStore) (string, error) {
+	localPath, err := downloadFileIfMissing(fileURL, token, localName, installerName, internalAdminKey, client, fileStore)
 	if err != nil {
 		return "", err
 	}
@@ -195,7 +196,7 @@ func downloadInstallerIfMissing(fileURL, token, localName, installerName, platfo
 	return unzipIOSAppIfNeeded(localPath, localName, fileStore)
 }
 
-func downloadFileIfMissing(fileURL, token, localName, installerName string, client HTTPClient, fileStore FileStore) (string, error) {
+func downloadFileIfMissing(fileURL, token, localName, installerName, internalAdminKey string, client HTTPClient, fileStore FileStore) (string, error) {
 	if err := fileStore.MkdirAll("apps", 0755); err != nil {
 		return "", fmt.Errorf("failed to create apps directory: %v", err)
 	}
@@ -211,7 +212,7 @@ func downloadFileIfMissing(fileURL, token, localName, installerName string, clie
 		return "", fmt.Errorf("failed to create request: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req)
+	setInternalAdminKeyHeader(req, internalAdminKey)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download file: %v", err)
@@ -381,11 +382,11 @@ func writeStoredAppPath(path, appPath string, fileStore FileStore) error {
 	return err
 }
 
-func validateActionIdentifier(url, identifier, token string, client HTTPClient) (string, error) {
+func validateActionIdentifier(url, identifier, token, internalAdminKey string, client HTTPClient) (string, error) {
 	body, _ := json.Marshal(map[string]string{"canonified_name": identifier})
 	req, _ := http.NewRequest("POST", url, strings.NewReader(string(body)))
 	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req)
+	setInternalAdminKeyHeader(req, internalAdminKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
