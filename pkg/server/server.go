@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -47,93 +45,70 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")
 
 	for name, inst := range s.Instances {
+		if inst.URL == "" {
+			continue
+		}
+		if inst.UserAPIKey == "" {
+			namespaces, err := s.fetchAdminNamespaces(ctx, inst)
+			if err != nil {
+				return err
+			}
+			for _, namespace := range namespaces {
+				startAttempts = s.startWorkerIfNeeded(ctx, span, name, namespace, namespace, runnerID, startAttempts, startDelay)
+			}
+			continue
+		}
+
 		token, err := s.Deps.TokenProvider(inst)
 		if err != nil {
 			span.AddEvent("instance.skipped", traceWithAttrs(
 				attribute.String("instance.name", name),
 				attribute.String("instance.url", inst.URL),
-				attribute.String("reason", "admin_token_failed"),
+				attribute.String("reason", "token_failed"),
 			))
-			log.Printf("[WARN] Skipping instance %q: cannot fetch admin token: %v", name, err)
-			continue
-		}
-		if inst.UserAPIKey != "" {
-			orgName, namespace, err := s.fetchUserNamespace(ctx, inst, token)
-			if err != nil {
-				return err
-			}
-			startAttempts = s.startWorkerIfNeeded(ctx, span, name, orgName, namespace, runnerID, startAttempts, startDelay)
+			log.Printf("[WARN] Skipping instance %q: cannot fetch auth token: %v", name, err)
 			continue
 		}
 
-		orgsURL := utils.JoinURL(inst.URL, "api", "collections", "organizations", "records")
-
-		const perPage = 200
-		for page := 1; ; page++ {
-			req, err := http.NewRequestWithContext(ctx, "GET", orgsURL, nil)
-			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, "request creation failed")
-				return fmt.Errorf("failed to create request: %w", err)
-			}
-			query := req.URL.Query()
-			query.Set("page", strconv.Itoa(page))
-			query.Set("perPage", strconv.Itoa(perPage))
-			req.URL.RawQuery = query.Encode()
-			req.Header.Set("Authorization", "Bearer "+token)
-			setInternalAdminKeyHeader(req)
-
-			resp, err := s.Deps.HTTPClient.Do(req)
-			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, "organization fetch failed")
-				return fmt.Errorf("failed to fetch organizations: %w", err)
-			}
-
-			if resp.StatusCode != http.StatusOK {
-				status := resp.Status
-				_ = resp.Body.Close()
-				span.SetStatus(codes.Error, status)
-				return fmt.Errorf("failed to fetch organizations: %s", status)
-			}
-
-			var data struct {
-				Page       int `json:"page"`
-				PerPage    int `json:"perPage"`
-				TotalPages int `json:"totalPages"`
-				Items      []struct {
-					Name      string `json:"name"`
-					Namespace string `json:"canonified_name"`
-				} `json:"items"`
-			}
-
-			if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-				_ = resp.Body.Close()
-				return fmt.Errorf("failed to parse organizations response: %w", err)
-			}
-			_ = resp.Body.Close()
-
-			for _, org := range data.Items {
-				if org.Namespace == "" {
-					continue
-				}
-
-				startAttempts = s.startWorkerIfNeeded(ctx, span, name, org.Name, org.Namespace, runnerID, startAttempts, startDelay)
-			}
-
-			if data.TotalPages > 0 {
-				if page >= data.TotalPages {
-					break
-				}
-				continue
-			}
-
-			if data.PerPage <= 0 || len(data.Items) < data.PerPage {
-				break
-			}
+		orgName, namespace, err := s.fetchUserNamespace(ctx, inst, token)
+		if err != nil {
+			return err
 		}
+		startAttempts = s.startWorkerIfNeeded(ctx, span, name, orgName, namespace, runnerID, startAttempts, startDelay)
 	}
 	return nil
+}
+
+func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Instance) ([]string, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		utils.JoinURL(inst.URL, "api", "organizations", "namespaces"),
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create organizations namespace request: %w", err)
+	}
+	setInternalAdminKeyHeader(req, inst.InternalAdminKey)
+
+	resp, err := s.Deps.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch organization namespaces: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch organization namespaces: %s", resp.Status)
+	}
+
+	var data struct {
+		Namespaces []string `json:"namespaces"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to parse organization namespaces response: %w", err)
+	}
+
+	return data.Namespaces, nil
 }
 
 func traceWithAttrs(attrs ...attribute.KeyValue) trace.EventOption {

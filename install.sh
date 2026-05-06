@@ -16,8 +16,9 @@ DEFAULT_CONTAINER_MODE="usb"
 DEFAULT_PHONE_IMAGE="ghcr.io/forkbombeu/credimi-runner-phone:latest"
 DEFAULT_EMULATOR_IMAGE="ghcr.io/forkbombeu/credimi-runner-emulator:latest"
 DEFAULT_BASE_NAME="credimi"
-DEFAULT_HOST_AVD_HOME_PATH="/srv/credimi/avd-home"
-DEFAULT_HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden"
+DEFAULT_HOST_AVD_HOME_PATH="${HOME}/.android/avd"
+DEFAULT_HOST_AVD_GOLDEN_PATH="${HOME}/avd-golden"
+DEFAULT_GOLDEN_PATH="/avd-golden"
 DEFAULT_ANDROID_WIFI_PORT="5555"
 DEFAULT_REDROID_DATA_DIR="/home/credimi/redroid-data"
 DEFAULT_REDROID_DATA_TAR="/home/credimi/redroid-data.tar"
@@ -39,6 +40,7 @@ if supports_color; then
   c_green="$(printf '\033[32m')"
   c_yellow="$(printf '\033[33m')"
   c_blue="$(printf '\033[34m')"
+  c_cyan="$(printf '\033[36m')"
   c_bold="$(printf '\033[1m')"
 else
   c_reset=""
@@ -46,6 +48,7 @@ else
   c_green=""
   c_yellow=""
   c_blue=""
+  c_cyan=""
   c_bold=""
 fi
 
@@ -139,6 +142,19 @@ resolved_value() {
 
   if loaded_default_is_set "$var_name"; then
     loaded_default_value "$var_name"
+    return 0
+  fi
+
+  printf '%s' "$fallback_value"
+}
+
+resolved_non_empty_value() {
+  var_name="$1"
+  fallback_value="${2-}"
+  value="$(resolved_value "$var_name" "$fallback_value")"
+
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
     return 0
   fi
 
@@ -312,6 +328,44 @@ prompt_choice() {
     done
     printf 'Please enter one of: %s\n' "$choices" >"$tty_path"
   done
+}
+
+prompt_intro() {
+  line_one="$1"
+  line_two="${2-}"
+
+  [ -n "$tty_path" ] || return 0
+  printf '%s%s%s\n' "${c_cyan}" "$line_one" "${c_reset}" >"$tty_path"
+  [ -z "$line_two" ] || printf '%s%s%s\n' "${c_cyan}" "$line_two" "${c_reset}" >"$tty_path"
+}
+
+prompt_value_guided() {
+  var_name="$1"
+  label="$2"
+  default_value="${3-}"
+  secret="${4-0}"
+  allow_empty="${5-0}"
+  intro_one="$6"
+  intro_two="${7-}"
+
+  if ! env_var_is_set "$var_name" && [ -n "$tty_path" ]; then
+    prompt_intro "$intro_one" "$intro_two"
+  fi
+  prompt_value "$var_name" "$label" "$default_value" "$secret" "$allow_empty"
+}
+
+prompt_choice_guided() {
+  var_name="$1"
+  label="$2"
+  default_value="$3"
+  choices="$4"
+  intro_one="$5"
+  intro_two="${6-}"
+
+  if ! env_var_is_set "$var_name" && [ -n "$tty_path" ]; then
+    prompt_intro "$intro_one" "$intro_two"
+  fi
+  prompt_choice "$var_name" "$label" "$default_value" "$choices"
 }
 
 normalize_asset_name() {
@@ -710,6 +764,81 @@ default_otel_enabled_choice() {
   printf 'yes'
 }
 
+normalize_service_mode() {
+  case "$1" in
+    auto|quick)
+      printf 'auto'
+      ;;
+    manual|direct)
+      printf 'manual'
+      ;;
+    cloudflare-managed|named)
+      printf 'cloudflare-managed'
+      ;;
+    *)
+      die "unsupported CREDIMI_SERVICE_MODE value: $1"
+      ;;
+  esac
+}
+
+resolved_runner_public_url() {
+  value="$(resolved_value RUNNER_PUBLIC_URL)"
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+    return 0
+  fi
+
+  resolved_value RUNNER_PUBLIC_IP
+}
+
+clear_avdctl_ssh_config() {
+  AVDCTL_SSH_TARGET=""
+  AVDCTL_SSH_PASSWORD=""
+  AVDCTL_SSH_KNOWN_HOSTS_PATH=""
+  AVDCTL_SUDO=""
+  AVDCTL_SUDO_PASSWORD=""
+}
+
+configure_avdctl_ssh() {
+  avdctl_ssh_choice="$(prompt_choice_guided AVDCTL_USE_SSH_PROMPT "Use avdctl via SSH (yes/no)" "$(default_avdctl_ssh_choice)" "yes no" \
+    "Choose here whether emulator or redroid management should happen on another machine over SSH." \
+    "The default is no; choose yes only if the actual emulator/redroid host is remote.")"
+  case "$avdctl_ssh_choice" in
+    yes)
+      AVDCTL_SSH_TARGET="$(prompt_value_guided AVDCTL_SSH_TARGET "AVDCTL SSH target" "$(resolved_value AVDCTL_SSH_TARGET)" 0 0 \
+        "Type here the SSH destination of that remote machine, usually in the form credimi@host." \
+        "There is no useful default here unless one was already saved.")"
+      AVDCTL_SSH_PASSWORD="$(prompt_value_guided AVDCTL_SSH_PASSWORD "AVDCTL SSH password (optional)" "$(resolved_value AVDCTL_SSH_PASSWORD)" 1 1 \
+        "Type here the SSH password for that remote machine if password login is used." \
+        "You can leave it empty when SSH keys are used instead.")"
+      if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+        AVDCTL_SSH_KNOWN_HOSTS_PATH="$(resolved_value AVDCTL_SSH_KNOWN_HOSTS_PATH "${HOME}/.ssh/known_hosts")"
+      else
+        AVDCTL_SSH_KNOWN_HOSTS_PATH=""
+      fi
+      avdctl_sudo_choice="$(prompt_choice_guided AVDCTL_USE_SUDO_PROMPT "Does avdctl need sudo (yes/no)" "$(default_avdctl_sudo_choice)" "yes no" \
+        "Choose here whether avdctl commands on the remote machine need administrator privileges." \
+        "The default follows the saved configuration; choose yes only if that remote machine requires sudo for these operations.")"
+      case "$avdctl_sudo_choice" in
+        yes)
+          AVDCTL_SUDO="true"
+          AVDCTL_SUDO_PASSWORD="$(prompt_value_guided AVDCTL_SUDO_PASSWORD "AVDCTL sudo password" "$(resolved_value AVDCTL_SUDO_PASSWORD)" 1 0 \
+            "Type here the sudo password for the remote machine if those avdctl operations need it." \
+            "There is no useful default here.")"
+          ;;
+        *)
+          AVDCTL_SUDO="false"
+          AVDCTL_SUDO_PASSWORD=""
+          ;;
+      esac
+      ;;
+    *)
+      clear_avdctl_ssh_config
+      AVDCTL_SUDO="false"
+      ;;
+  esac
+}
+
 write_compose_file() {
   compose_file="$1"
   runner_mode="${CREDIMI_CONTAINER_MODE:-${DEFAULT_CONTAINER_MODE}}"
@@ -735,13 +864,13 @@ write_compose_file() {
       - ingress'
 
   if [ "${CREDIMI_RUNNER_BACKEND:-}" = "container" ] &&
-    [ "${CREDIMI_SERVICE_MODE:-quick}" = "direct" ] &&
+    [ "${CREDIMI_SERVICE_MODE:-auto}" = "manual" ] &&
     [ "$(uname -s)" = "Linux" ]; then
     runner_connectivity_block='    network_mode: host'
   fi
 
   if [ "${CREDIMI_RUNNER_BACKEND:-}" = "container" ] &&
-    [ "${CREDIMI_SERVICE_MODE:-quick}" = "quick" ] &&
+    [ "${CREDIMI_SERVICE_MODE:-auto}" = "auto" ] &&
     [ "$(uname -s)" = "Linux" ]; then
     case "$runner_mode" in
       usb|wifi)
@@ -1052,6 +1181,24 @@ normalize_public_url() {
   esac
 }
 
+normalize_service_mode() {
+  case "$1" in
+    auto|quick)
+      printf 'auto'
+      ;;
+    manual|direct)
+      printf 'manual'
+      ;;
+    cloudflare-managed|named)
+      printf 'cloudflare-managed'
+      ;;
+    *)
+      printf 'invalid CREDIMI_SERVICE_MODE: %s\n' "$1" >&2
+      return 1
+      ;;
+  esac
+}
+
 upsert_env_value() {
   local path="$1"
   local key="$2"
@@ -1083,21 +1230,6 @@ upsert_env_value() {
   mv "${tmp_file}" "${path}"
 }
 
-authenticate_superuser() {
-  local auth_url auth_payload response token
-
-  auth_url="$(join_url "${CREDIMI_URL}" "api" "collections" "_superusers" "auth-with-password")"
-  auth_payload="{\"identity\":\"$(json_escape "${CREDIMI_PB_ADMIN}")\",\"password\":\"$(json_escape "${CREDIMI_PB_PASS}")\"}"
-  response="$(post_json "${auth_url}" "${auth_payload}")"
-  token="$(extract_json_string "token" "${response}")"
-  [[ -n "${token}" ]] || {
-    printf 'failed to extract superuser token from %s\n' "${auth_url}" >&2
-    return 1
-  }
-
-  printf '%s' "${token}"
-}
-
 configure_auth_headers() {
   if [[ -n "${CREDIMI_USER_API_KEY:-}" ]]; then
     auth_headers=(-H "Credimi-Api-Key: ${CREDIMI_USER_API_KEY}")
@@ -1109,12 +1241,7 @@ configure_auth_headers() {
     return 0
   fi
 
-  if [[ -n "${CREDIMI_PB_ADMIN:-}" ]] && [[ -n "${CREDIMI_PB_PASS:-}" ]]; then
-    auth_headers=(-H "Authorization: Bearer $(authenticate_superuser)")
-    return 0
-  fi
-
-  printf 'missing Credimi credentials: set CREDIMI_USER_API_KEY, CREDIMI_INTERNAL_ADMIN_KEY, or CREDIMI_PB_ADMIN/CREDIMI_PB_PASS\n' >&2
+  printf 'missing Credimi credentials: set CREDIMI_USER_API_KEY or CREDIMI_INTERNAL_ADMIN_KEY\n' >&2
   return 1
 }
 
@@ -1245,7 +1372,7 @@ wait_for_public_runner_url() {
   local tunnel_logs
   local public_url
 
-  if [[ "${mode}" == "named" ]]; then
+  if [[ "${mode}" == "cloudflare-managed" ]]; then
     printf '%s' "$(normalize_public_url "${RUNNER_DOMAIN}")"
     return 0
   fi
@@ -1320,7 +1447,15 @@ if [[ -f "${env_file}" ]]; then
   load_env_file "${env_file}"
 fi
 
-mode="${1:-${CREDIMI_SERVICE_MODE:-quick}}"
+mode_arg="${1:-${CREDIMI_SERVICE_MODE:-auto}}"
+case "${mode_arg}" in
+  down|update-image)
+    mode="${mode_arg}"
+    ;;
+  *)
+    mode="$(normalize_service_mode "${mode_arg}")"
+    ;;
+esac
 runner_host="${RUNNER_HOST:-0.0.0.0}"
 runner_port="${RUNNER_PORT:-8050}"
 runner_url="$(runner_ready_url "${runner_host}" "${runner_port}")"
@@ -1418,23 +1553,24 @@ case "${backend}" in
 esac
 
 case "${mode}" in
-  quick)
+  auto)
     compose_services+=(tunnel)
     ;;
-  named)
+  cloudflare-managed)
     if [[ -z "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
-      printf 'CLOUDFLARE_TUNNEL_TOKEN is required in named mode\n' >&2
+      printf 'CLOUDFLARE_TUNNEL_TOKEN is required in cloudflare-managed mode\n' >&2
       exit 1
     fi
     if [[ -z "${RUNNER_DOMAIN:-}" ]]; then
-      printf 'RUNNER_DOMAIN is required in named mode\n' >&2
+      printf 'RUNNER_DOMAIN is required in cloudflare-managed mode\n' >&2
       exit 1
     fi
     compose_services+=(tunnel_named)
     ;;
-  direct)
-    if [[ -z "${RUNNER_PUBLIC_IP:-}" ]]; then
-      printf 'RUNNER_PUBLIC_IP is required in direct mode\n' >&2
+  manual)
+    RUNNER_PUBLIC_URL="${RUNNER_PUBLIC_URL:-${RUNNER_PUBLIC_IP:-}}"
+    if [[ -z "${RUNNER_PUBLIC_URL:-}" ]]; then
+      printf 'RUNNER_PUBLIC_URL is required in manual mode\n' >&2
       exit 1
     fi
     if [[ "${backend}" == "host" ]]; then
@@ -1454,7 +1590,7 @@ case "${mode}" in
     exit 0
     ;;
   *)
-    printf 'usage: %s [quick|named|direct|down|update-image]\n' "$(basename "$0")" >&2
+    printf 'usage: %s [auto|manual|cloudflare-managed|down|update-image]\n' "$(basename "$0")" >&2
     exit 1
     ;;
 esac
@@ -1489,8 +1625,8 @@ if [[ "${#compose_services[@]}" -gt 0 ]]; then
   docker compose --env-file "${env_file}" -f "${compose_file}" up -d "${compose_services[@]}"
 fi
 
-if [[ "${mode}" == "direct" ]]; then
-  register_mobile_runner "${RUNNER_PUBLIC_IP}" "${RUNNER_PUBLIC_PORT:-}"
+if [[ "${mode}" == "manual" ]]; then
+  register_mobile_runner "${RUNNER_PUBLIC_URL}" "${RUNNER_PUBLIC_PORT:-}"
 else
   public_runner_url="$(wait_for_public_runner_url)"
   register_mobile_runner "${public_runner_url}"
@@ -1519,8 +1655,6 @@ CREDIMI_RUNNER_DEVICE_MODE=${CREDIMI_RUNNER_DEVICE_MODE}
 CREDIMI_RUNNER_WIFI_IP=${CREDIMI_RUNNER_WIFI_IP}
 CREDIMI_RUNNER_WIFI_PORT=${CREDIMI_RUNNER_WIFI_PORT}
 CREDIMI_USER_API_KEY=${CREDIMI_USER_API_KEY}
-CREDIMI_PB_ADMIN=${CREDIMI_PB_ADMIN}
-CREDIMI_PB_PASS=${CREDIMI_PB_PASS}
 CREDIMI_INTERNAL_ADMIN_KEY=${CREDIMI_INTERNAL_ADMIN_KEY}
 CREDIMI_TEMP_DIR=${CREDIMI_TEMP_DIR}
 TEMPORAL_ADDRESS=${TEMPORAL_ADDRESS}
@@ -1535,7 +1669,7 @@ RUNNER_DOMAIN=${RUNNER_DOMAIN}
 RUNNER_CADDY_SITE=${RUNNER_CADDY_SITE}
 CLOUDFLARE_TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
 CREDIMI_SERVICE_MODE=${CREDIMI_SERVICE_MODE}
-RUNNER_PUBLIC_IP=${RUNNER_PUBLIC_IP}
+RUNNER_PUBLIC_URL=${RUNNER_PUBLIC_URL}
 RUNNER_PUBLIC_PORT=${RUNNER_PUBLIC_PORT}
 RUNNER_IMAGE=${RUNNER_IMAGE}
 ANDROID_KEYS_DIR=${ANDROID_KEYS_DIR}
@@ -1578,7 +1712,7 @@ write_missing_env_values() {
   append_env_if_missing "$env_file" "RUNNER_CADDY_SITE" "${RUNNER_CADDY_SITE}"
   append_env_if_missing "$env_file" "CLOUDFLARE_TUNNEL_TOKEN" "${CLOUDFLARE_TUNNEL_TOKEN}"
   append_env_if_missing "$env_file" "CREDIMI_SERVICE_MODE" "${CREDIMI_SERVICE_MODE}"
-  append_env_if_missing "$env_file" "RUNNER_PUBLIC_IP" "${RUNNER_PUBLIC_IP}"
+  append_env_if_missing "$env_file" "RUNNER_PUBLIC_URL" "${RUNNER_PUBLIC_URL}"
   append_env_if_missing "$env_file" "RUNNER_PUBLIC_PORT" "${RUNNER_PUBLIC_PORT}"
   append_env_if_missing "$env_file" "ANDROID_KEYS_DIR" "${ANDROID_KEYS_DIR}"
   append_env_if_missing "$env_file" "HOST_AVD_HOME_PATH" "${HOST_AVD_HOME_PATH}"
@@ -1619,7 +1753,7 @@ main() {
   CREDIMI_RUNNER_WIFI_IP="${CREDIMI_RUNNER_WIFI_IP-}"
   CREDIMI_RUNNER_WIFI_PORT="${CREDIMI_RUNNER_WIFI_PORT-}"
   RUNNER_IMAGE="${RUNNER_IMAGE-}"
-  RUNNER_PUBLIC_IP="${RUNNER_PUBLIC_IP-}"
+  RUNNER_PUBLIC_URL="${RUNNER_PUBLIC_URL-}"
   RUNNER_PUBLIC_PORT="${RUNNER_PUBLIC_PORT-}"
   OTEL_SERVICE_NAME="$(resolved_value OTEL_SERVICE_NAME "${DEFAULT_OTEL_SERVICE_NAME}")"
   ANDROID_KEYS_DIR="${ANDROID_KEYS_DIR-}"
@@ -1654,13 +1788,13 @@ main() {
     warn "Existing configuration found at ${env_file}; loaded as prompt defaults."
   fi
 
-  CREDIMI_URL="$(prompt_value CREDIMI_URL "Credimi API URL" "$(resolved_value CREDIMI_URL "${DEFAULT_CREDIMI_URL}")")"
-  TEMPORAL_ADDRESS="$(prompt_value TEMPORAL_ADDRESS "Temporal address" "$(resolved_value TEMPORAL_ADDRESS "${DEFAULT_TEMPORAL_ADDRESS}")")"
-  otel_enabled_choice="$(prompt_choice OTEL_ENABLED "Enable OpenTelemetry (yes/no)" "$(default_otel_enabled_choice)" "yes no")"
+  CREDIMI_URL="$(resolved_value CREDIMI_URL "${DEFAULT_CREDIMI_URL}")"
+  TEMPORAL_ADDRESS="$(resolved_value TEMPORAL_ADDRESS "${DEFAULT_TEMPORAL_ADDRESS}")"
+  otel_enabled_choice="$(default_yes_no_choice OTEL_ENABLED yes)"
   case "$otel_enabled_choice" in
     yes|true|TRUE|True|1|on|ON|On)
       OTEL_ENABLED="true"
-      OTEL_EXPORTER_OTLP_ENDPOINT="$(prompt_value OTEL_EXPORTER_OTLP_ENDPOINT "OTEL collector endpoint" "$(resolved_value OTEL_EXPORTER_OTLP_ENDPOINT "${DEFAULT_OTEL_EXPORTER_OTLP_ENDPOINT}")")"
+      OTEL_EXPORTER_OTLP_ENDPOINT="$(resolved_value OTEL_EXPORTER_OTLP_ENDPOINT "${DEFAULT_OTEL_EXPORTER_OTLP_ENDPOINT}")"
       ;;
     no|false|FALSE|False|0|off|OFF|Off)
       OTEL_ENABLED="false"
@@ -1673,29 +1807,33 @@ main() {
 
   if [ -n "$(resolved_value CREDIMI_USER_API_KEY)" ]; then
     auth_mode_default="api_key"
-  elif [ -n "$(resolved_value CREDIMI_INTERNAL_ADMIN_KEY)" ] || [ -n "$(resolved_value CREDIMI_PB_ADMIN)" ] || [ -n "$(resolved_value CREDIMI_PB_PASS)" ]; then
+  elif [ -n "$(resolved_value CREDIMI_INTERNAL_ADMIN_KEY)" ]; then
     auth_mode_default="admin"
   else
     auth_mode_default="api_key"
   fi
-  auth_mode="$(prompt_choice CREDIMI_INSTALL_AUTH_MODE "Auth mode (api_key/admin)" "${auth_mode_default}" "api_key admin")"
+  auth_mode="$(prompt_choice_guided CREDIMI_INSTALL_AUTH_MODE "Auth mode (api_key/admin)" "${auth_mode_default}" "api_key admin" \
+    "Choose here how this installer should log into Credimi." \
+    "Use api_key if you already have a Credimi user API key; use admin only if you are setting this up with the internal admin API key.")"
 
   if [ "$auth_mode" = "api_key" ]; then
-    CREDIMI_USER_API_KEY="$(prompt_value CREDIMI_USER_API_KEY "Credimi user API key" "$(resolved_value CREDIMI_USER_API_KEY)" 1)"
-    CREDIMI_PB_ADMIN=""
-    CREDIMI_PB_PASS=""
+    CREDIMI_USER_API_KEY="$(prompt_value_guided CREDIMI_USER_API_KEY "Credimi user API key" "$(resolved_value CREDIMI_USER_API_KEY)" 1 0 \
+      "Paste here the Credimi user API key you want this runner to use." \
+      "There is no useful default here; if you choose api_key, this is the key you must provide.")"
     CREDIMI_INTERNAL_ADMIN_KEY=""
   else
-    CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key" "$(resolved_value CREDIMI_INTERNAL_ADMIN_KEY)" 1)"
-    CREDIMI_PB_ADMIN="$(prompt_value CREDIMI_PB_ADMIN "Credimi admin email" "$(resolved_value CREDIMI_PB_ADMIN)")"
-    CREDIMI_PB_PASS="$(prompt_value CREDIMI_PB_PASS "Credimi admin password" "$(resolved_value CREDIMI_PB_PASS)" 1)"
+    CREDIMI_INTERNAL_ADMIN_KEY="$(prompt_value_guided CREDIMI_INTERNAL_ADMIN_KEY "Internal admin key" "$(resolved_value CREDIMI_INTERNAL_ADMIN_KEY)" 1 0 \
+      "Paste here the privileged Credimi API key to use for setup." \
+      "There is no useful default here; provide it only if you are using the admin setup path (this implies you are using a different deployment than credimi.io).")"
     CREDIMI_USER_API_KEY=""
   fi
 
   existing_runner_id="$(resolved_value CREDIMI_RUNNER_ID)"
   use_existing_runner_id="no"
   if [ -n "$existing_runner_id" ]; then
-    use_existing_runner_id="$(prompt_choice CREDIMI_USE_EXISTING_RUNNER_ID "Use existing runner ID ${existing_runner_id}? (yes/no)" "yes" "yes no")"
+    use_existing_runner_id="$(prompt_choice_guided CREDIMI_USE_EXISTING_RUNNER_ID "Use existing runner ID ${existing_runner_id}? (yes/no)" "yes" "yes no" \
+      "Choose here whether this installation should keep using the runner already saved in the existing configuration." \
+      "The default is yes; choose no only if you want to register this machine as a different runner.")"
   fi
 
   if [ "$use_existing_runner_id" = "yes" ]; then
@@ -1708,44 +1846,68 @@ main() {
     fi
     CREDIMI_RUNNER_ID=""
     runner_name_default="$(resolved_value CREDIMI_RUNNER_NAME "$(runner_name_from_id "${existing_runner_id}")")"
-    CREDIMI_RUNNER_NAME="$(prompt_value CREDIMI_RUNNER_NAME "Runner name" "${runner_name_default}")"
+    CREDIMI_RUNNER_NAME="$(prompt_value_guided CREDIMI_RUNNER_NAME "Runner name" "${runner_name_default}" 0 0 \
+      "Type here the name you want to see for this runner inside Credimi." \
+      "If a previous value exists it will be offered as the default; change it only if you want this runner to appear with a different name.")"
     if [ "$auth_mode" = "admin" ]; then
       runner_org_default="$(resolved_value CREDIMI_RUNNER_ORGANIZATION "$(runner_org_from_id "${existing_runner_id}")")"
-      CREDIMI_RUNNER_ORGANIZATION="$(prompt_value CREDIMI_RUNNER_ORGANIZATION "Runner organization canonified name" "${runner_org_default}")"
+      CREDIMI_RUNNER_ORGANIZATION="$(prompt_value_guided CREDIMI_RUNNER_ORGANIZATION "Runner organization canonified name" "${runner_org_default}" 0 0 \
+        "Type here the organization slug that should own this runner in Credimi; you can find it in https://credimi.io/my/organization in the top right of the page." \
+        "The page has a copy button and a preview button.")"
     else
       CREDIMI_RUNNER_ORGANIZATION=""
     fi
   fi
-  CREDIMI_RUNNER_DESCRIPTION="$(prompt_value CREDIMI_RUNNER_DESCRIPTION "Runner description (optional)" "$(resolved_value CREDIMI_RUNNER_DESCRIPTION)" 0 1)"
+  CREDIMI_RUNNER_DESCRIPTION="$(prompt_value_guided CREDIMI_RUNNER_DESCRIPTION "Runner description (optional)" "$(resolved_value CREDIMI_RUNNER_DESCRIPTION)" 0 1 \
+    "Type here an optional note to help people understand what this runner is for, for example \"Pixel 6 with Android 16 on\" or \"iOS Simulator version 26\"." \
+    "The field is not mandatory, but we recommend filling it with useful information.")"
 
   runner_type_options="$(runner_type_choices)"
-  CREDIMI_RUNNER_TYPE="$(prompt_choice CREDIMI_RUNNER_TYPE "Mobile runner type (${runner_type_options})" "$(default_runner_type "${CREDIMI_RUNNER_BACKEND}")" "${runner_type_options}")"
+  CREDIMI_RUNNER_TYPE="$(prompt_choice_guided CREDIMI_RUNNER_TYPE "Mobile runner type (${runner_type_options})" "$(default_runner_type "${CREDIMI_RUNNER_BACKEND}")" "${runner_type_options}" \
+    "IMPORTANT: choose here what kind of device this runner should control: Android phone, Android emulator, redroid, iOS simulator, or iOS phone." \
+    "This choice has implication on what happens later.")"
   validate_runner_type_supported "${CREDIMI_RUNNER_TYPE}"
   resolve_install_runner_identity
-  CREDIMI_SERVICE_MODE="$(prompt_choice CREDIMI_SERVICE_MODE "Exposure mode (quick/named/direct)" "$(resolved_value CREDIMI_SERVICE_MODE "quick")" "quick named direct")"
-  RUNNER_HOST="$(prompt_value RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")")"
-  RUNNER_PORT="$(prompt_value RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")")"
+  service_mode_default="$(normalize_service_mode "$(resolved_value CREDIMI_SERVICE_MODE "auto")")"
+  service_mode_choice="$(prompt_choice_guided CREDIMI_SERVICE_MODE "Networking (auto/manual/cloudflare-managed)" "${service_mode_default}" "auto manual cloudflare-managed" \
+    "Choose here how Credimi should reach this runner over the network." \
+    "The default is auto; auto uses a temporary domain via a Cloudflare free tunneling service, manual uses the IP or domain that you did setup yourself for this runner, and cloudflare-managed uses your Cloudflare tunnel token and setup.")"
+  CREDIMI_SERVICE_MODE="$(normalize_service_mode "$service_mode_choice")"
+  RUNNER_HOST="$(prompt_value_guided RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")" 0 0 \
+    "Type here the local host address the runner server should listen on." \
+    "The default is 0.0.0.0, which allows connections from anywhere; change it only if you need the runner to bind to a different local address.")"
+  RUNNER_PORT="$(prompt_value_guided RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")" 0 0 \
+    "Type here the local port the runner server should listen on." \
+    "The default is 8050; change it only if that port is already in use or you need a different one.")"
 
   case "$CREDIMI_SERVICE_MODE" in
-    named)
-      RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")")"
-      RUNNER_DOMAIN="$(prompt_value RUNNER_DOMAIN "Public runner domain" "$(resolved_value RUNNER_DOMAIN)")"
-      CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "$(resolved_value CLOUDFLARE_TUNNEL_TOKEN)" 1)"
-      RUNNER_PUBLIC_IP=""
+    cloudflare-managed)
+      RUNNER_CADDY_SITE="$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")"
+      RUNNER_DOMAIN="$(prompt_value_guided RUNNER_DOMAIN "Public runner domain" "$(resolved_value RUNNER_DOMAIN)" 0 0 \
+        "Type here the public domain name that should point to this runner when using a named Cloudflare tunnel (you chose cloudflare-managed before)." \
+        "There is no useful default here, because it depends on your own domain.")"
+      CLOUDFLARE_TUNNEL_TOKEN="$(prompt_value_guided CLOUDFLARE_TUNNEL_TOKEN "Cloudflare tunnel token" "$(resolved_value CLOUDFLARE_TUNNEL_TOKEN)" 1 0 \
+        "Paste here the token of the Cloudflare named tunnel that should expose this runner." \
+        "There is no useful default here.")"
+      RUNNER_PUBLIC_URL=""
       RUNNER_PUBLIC_PORT=""
       ;;
-    direct)
+    manual)
       RUNNER_CADDY_SITE="$(resolved_value RUNNER_CADDY_SITE)"
       RUNNER_DOMAIN=""
       CLOUDFLARE_TUNNEL_TOKEN=""
-      RUNNER_PUBLIC_IP="$(prompt_value RUNNER_PUBLIC_IP "Public runner IP/host" "$(resolved_value RUNNER_PUBLIC_IP)")"
-      RUNNER_PUBLIC_PORT="$(prompt_value RUNNER_PUBLIC_PORT "Public runner port (optional)" "$(resolved_value RUNNER_PUBLIC_PORT)" 0 1)"
+      RUNNER_PUBLIC_URL="$(prompt_value_guided RUNNER_PUBLIC_URL "Public runner URL" "$(resolved_runner_public_url)" 0 0 \
+        "Type here the public URL that Credimi can use to reach this runner directly (you chose manual before)." \
+        "IMPORTANT: if you are using an IP address, which is allowed, you need to use http:// or https:// before the IP.")"
+      RUNNER_PUBLIC_PORT="$(prompt_value_guided RUNNER_PUBLIC_PORT "Public runner port (optional)" "$(resolved_value RUNNER_PUBLIC_PORT)" 0 1 \
+        "Type here the public port that belongs to that public URL (you chose manual before)." \
+        "You can leave it empty if the default public port is already correct for your setup.")"
       ;;
     *)
-      RUNNER_CADDY_SITE="$(prompt_value RUNNER_CADDY_SITE "Caddy listen site" "$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")")"
+      RUNNER_CADDY_SITE="$(resolved_value RUNNER_CADDY_SITE "${DEFAULT_RUNNER_CADDY_SITE}")"
       RUNNER_DOMAIN=""
       CLOUDFLARE_TUNNEL_TOKEN=""
-      RUNNER_PUBLIC_IP=""
+      RUNNER_PUBLIC_URL=""
       RUNNER_PUBLIC_PORT=""
       ;;
   esac
@@ -1761,19 +1923,22 @@ main() {
       if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
         CREDIMI_CONTAINER_MODE="emulator"
         RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_EMULATOR_IMAGE}")"
-        ANDROID_KEYS_DIR="$(prompt_value ANDROID_KEYS_DIR "ADB keys directory" "$(resolved_value ANDROID_KEYS_DIR "${HOME}/.android")")"
-        HOST_AVD_HOME_PATH="$(prompt_value HOST_AVD_HOME_PATH "Host AVD home path" "$(resolved_value HOST_AVD_HOME_PATH "${DEFAULT_HOST_AVD_HOME_PATH}")")"
-        HOST_AVD_GOLDEN_PATH="$(prompt_value HOST_AVD_GOLDEN_PATH "Host golden assets path (parent or extracted dir)" "$(resolved_value HOST_AVD_GOLDEN_PATH "${DEFAULT_HOST_AVD_GOLDEN_PATH}")")"
-        BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")")"
-        GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Container golden path" "$(resolved_value GOLDEN_PATH "/avd-golden/${BASE_NAME}-golden")")"
+        ANDROID_KEYS_DIR="$(resolved_value ANDROID_KEYS_DIR "${HOME}/.android")"
+        HOST_AVD_HOME_PATH="$(resolved_value HOST_AVD_HOME_PATH "${DEFAULT_HOST_AVD_HOME_PATH}")"
+        HOST_AVD_GOLDEN_PATH="$(resolved_value HOST_AVD_GOLDEN_PATH "${DEFAULT_HOST_AVD_GOLDEN_PATH}")"
+        BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
+        GOLDEN_PATH="$(resolved_value GOLDEN_PATH "${DEFAULT_GOLDEN_PATH}")"
       else
         CREDIMI_CONTAINER_MODE=""
         ANDROID_KEYS_DIR=""
         HOST_AVD_HOME_PATH=""
         HOST_AVD_GOLDEN_PATH=""
-        BASE_NAME="$(prompt_value BASE_NAME "Emulator base name" "$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")")"
-        GOLDEN_PATH="$(prompt_value GOLDEN_PATH "Golden path" "$(resolved_value GOLDEN_PATH "${HOME}/avd-golden/${BASE_NAME}-golden")")"
+        BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
+        GOLDEN_PATH="$(resolved_value GOLDEN_PATH "${DEFAULT_GOLDEN_PATH}")"
       fi
+      configure_avdctl_ssh
+      REDROID_DATA_DIR=""
+      REDROID_DATA_TAR=""
       ;;
     ios_simulator)
       CREDIMI_RUNNER_SERIAL=""
@@ -1786,7 +1951,7 @@ main() {
       ANDROID_KEYS_DIR=""
       HOST_AVD_HOME_PATH=""
       HOST_AVD_GOLDEN_PATH=""
-      BASE_NAME="$(prompt_value BASE_NAME "Simulator base name" "$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")")"
+      BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
       GOLDEN_PATH=""
       AVDCTL_SSH_TARGET=""
       AVDCTL_SSH_PASSWORD=""
@@ -1820,9 +1985,12 @@ main() {
     redroid|android_phone)
       android_device_mode_options="usb wifi"
       if [ "$CREDIMI_RUNNER_TYPE" = "redroid" ]; then
-        android_device_mode_options="no_device usb wifi"
+        CREDIMI_RUNNER_DEVICE_MODE="no_device"
+      else
+        CREDIMI_RUNNER_DEVICE_MODE="$(prompt_choice_guided CREDIMI_RUNNER_DEVICE_MODE "Android connection mode (${android_device_mode_options})" "$(default_android_device_mode "${CREDIMI_RUNNER_TYPE}")" "${android_device_mode_options}" \
+          "Choose here how this runner should reach the Android device." \
+          "The default depends on the runner type and saved configuration: if you are using a physical Android phone connected to this machine via USB, choose usb; if the phone is connected via Wi-Fi, choose wifi.")"
       fi
-      CREDIMI_RUNNER_DEVICE_MODE="$(prompt_choice CREDIMI_RUNNER_DEVICE_MODE "Android connection mode (${android_device_mode_options})" "$(default_android_device_mode "${CREDIMI_RUNNER_TYPE}")" "${android_device_mode_options}")"
       RUNNER_IMAGE="$(explicit_env_or_default RUNNER_IMAGE "${DEFAULT_PHONE_IMAGE}")"
       ANDROID_KEYS_DIR=""
       HOST_AVD_HOME_PATH=""
@@ -1832,8 +2000,12 @@ main() {
 
       case "$CREDIMI_RUNNER_DEVICE_MODE" in
         no_device)
-          CREDIMI_RUNNER_WIFI_IP="$(prompt_value CREDIMI_RUNNER_WIFI_IP "Android Wi-Fi IP" "$(resolved_value CREDIMI_RUNNER_WIFI_IP)")"
-          CREDIMI_RUNNER_WIFI_PORT="$(prompt_value CREDIMI_RUNNER_WIFI_PORT "Android Wi-Fi port" "$(resolved_value CREDIMI_RUNNER_WIFI_PORT "${DEFAULT_ANDROID_WIFI_PORT}")")"
+          CREDIMI_RUNNER_WIFI_IP="$(prompt_value_guided CREDIMI_RUNNER_WIFI_IP "Android Wi-Fi IP" "$(resolved_value CREDIMI_RUNNER_WIFI_IP)" 0 0 \
+            "Type here the IP address of the Android device or Android runtime reachable over the network." \
+            "There is no universal default here.")"
+          CREDIMI_RUNNER_WIFI_PORT="$(prompt_value_guided CREDIMI_RUNNER_WIFI_PORT "Android Wi-Fi port" "$(resolved_non_empty_value CREDIMI_RUNNER_WIFI_PORT "${DEFAULT_ANDROID_WIFI_PORT}")" 0 0 \
+            "Type here the ADB port of that network-connected Android device or runtime." \
+            "The default value is 5555; write something else only if your device uses a different ADB port.")"
           CREDIMI_RUNNER_SERIAL="${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT}"
           if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
             CREDIMI_CONTAINER_MODE="no_device"
@@ -1846,7 +2018,9 @@ main() {
           if [ -z "$usb_serial_default" ] && command -v adb >/dev/null 2>&1; then
             usb_serial_default="$(detect_connected_android_usb_serial || true)"
           fi
-          CREDIMI_RUNNER_SERIAL="$(prompt_value CREDIMI_RUNNER_SERIAL "Android device serial" "$usb_serial_default")"
+          CREDIMI_RUNNER_SERIAL="$(prompt_value_guided CREDIMI_RUNNER_SERIAL "Android device serial" "$usb_serial_default" 0 0 \
+            "Type here the serial of the Android device connected over USB." \
+            "If the script can detect exactly one connected device, it will offer that as the default.")"
           CREDIMI_RUNNER_WIFI_IP=""
           CREDIMI_RUNNER_WIFI_PORT=""
           if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
@@ -1856,8 +2030,12 @@ main() {
           fi
           ;;
         wifi)
-          CREDIMI_RUNNER_WIFI_IP="$(prompt_value CREDIMI_RUNNER_WIFI_IP "Android Wi-Fi IP" "$(resolved_value CREDIMI_RUNNER_WIFI_IP)")"
-          CREDIMI_RUNNER_WIFI_PORT="$(prompt_value CREDIMI_RUNNER_WIFI_PORT "Android Wi-Fi port" "$(resolved_value CREDIMI_RUNNER_WIFI_PORT "${DEFAULT_ANDROID_WIFI_PORT}")")"
+          CREDIMI_RUNNER_WIFI_IP="$(prompt_value_guided CREDIMI_RUNNER_WIFI_IP "Android Wi-Fi IP" "$(resolved_value CREDIMI_RUNNER_WIFI_IP)" 0 0 \
+            "Type here the IP address of the Android device or Android runtime reachable over the network." \
+            "There is no universal default here.")"
+          CREDIMI_RUNNER_WIFI_PORT="$(prompt_value_guided CREDIMI_RUNNER_WIFI_PORT "Android Wi-Fi port" "$(resolved_non_empty_value CREDIMI_RUNNER_WIFI_PORT "${DEFAULT_ANDROID_WIFI_PORT}")" 0 0 \
+            "Type here the ADB port of that network-connected Android device or runtime." \
+            "The default value is 5555; write something else only if your device uses a different ADB port.")"
           CREDIMI_RUNNER_SERIAL="${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT}"
           if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
             CREDIMI_CONTAINER_MODE="wifi"
@@ -1867,45 +2045,12 @@ main() {
           ;;
       esac
 
-      avdctl_ssh_choice="$(prompt_choice AVDCTL_USE_SSH_PROMPT "Use avdctl via SSH (yes/no)" "$(default_avdctl_ssh_choice)" "yes no")"
-      case "$avdctl_ssh_choice" in
-        yes)
-          AVDCTL_SSH_TARGET="$(prompt_value AVDCTL_SSH_TARGET "AVDCTL SSH target" "$(resolved_value AVDCTL_SSH_TARGET)")"
-          AVDCTL_SSH_PASSWORD="$(prompt_value AVDCTL_SSH_PASSWORD "AVDCTL SSH password (optional)" "$(resolved_value AVDCTL_SSH_PASSWORD)" 1 1)"
-          if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
-            AVDCTL_SSH_KNOWN_HOSTS_PATH="$(prompt_value AVDCTL_SSH_KNOWN_HOSTS_PATH "SSH known_hosts path to mount into the runner container" "$(resolved_value AVDCTL_SSH_KNOWN_HOSTS_PATH "${HOME}/.ssh/known_hosts")")"
-          else
-            AVDCTL_SSH_KNOWN_HOSTS_PATH=""
-          fi
-          avdctl_sudo_choice="$(prompt_choice AVDCTL_USE_SUDO_PROMPT "Does avdctl need sudo (yes/no)" "$(default_avdctl_sudo_choice)" "yes no")"
-          case "$avdctl_sudo_choice" in
-            yes)
-              AVDCTL_SUDO="true"
-              AVDCTL_SUDO_PASSWORD="$(prompt_value AVDCTL_SUDO_PASSWORD "AVDCTL sudo password" "$(resolved_value AVDCTL_SUDO_PASSWORD)" 1)"
-              ;;
-            *)
-              AVDCTL_SUDO="false"
-              AVDCTL_SUDO_PASSWORD=""
-              ;;
-          esac
-          ;;
-        *)
-          AVDCTL_SSH_TARGET=""
-          AVDCTL_SSH_PASSWORD=""
-          AVDCTL_SSH_KNOWN_HOSTS_PATH=""
-          AVDCTL_SUDO="false"
-          AVDCTL_SUDO_PASSWORD=""
-          ;;
-      esac
-
       if [ "$CREDIMI_RUNNER_TYPE" = "redroid" ]; then
-        redroid_data_location_note=""
-        if [ -n "$AVDCTL_SSH_TARGET" ]; then
-          redroid_data_location_note=" on the remote machine"
-        fi
-        REDROID_DATA_DIR="$(prompt_value REDROID_DATA_DIR "Redroid data dir${redroid_data_location_note}" "$(resolved_value REDROID_DATA_DIR "${DEFAULT_REDROID_DATA_DIR}")")"
-        REDROID_DATA_TAR="$(prompt_value REDROID_DATA_TAR "Redroid data tar${redroid_data_location_note}" "$(resolved_value REDROID_DATA_TAR "${DEFAULT_REDROID_DATA_TAR}")")"
+        configure_avdctl_ssh
+        REDROID_DATA_DIR="$(resolved_value REDROID_DATA_DIR "${DEFAULT_REDROID_DATA_DIR}")"
+        REDROID_DATA_TAR="$(resolved_value REDROID_DATA_TAR "${DEFAULT_REDROID_DATA_TAR}")"
       else
+        clear_avdctl_ssh_config
         REDROID_DATA_DIR=""
         REDROID_DATA_TAR=""
       fi
@@ -1984,9 +2129,9 @@ main() {
   say "${PROJECT_NAME}-service"
   say ""
   say "Other commands:"
-  say "${PROJECT_NAME}-service quick"
-  say "${PROJECT_NAME}-service named"
-  say "${PROJECT_NAME}-service direct"
+  say "${PROJECT_NAME}-service auto"
+  say "${PROJECT_NAME}-service manual"
+  say "${PROJECT_NAME}-service cloudflare-managed"
   say "${PROJECT_NAME}-service down"
   say "${PROJECT_NAME}-service update-image"
 }

@@ -1,13 +1,11 @@
 package utils
 
 import (
-	"errors"
 	"io"
 	"math"
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -80,26 +78,24 @@ func TestGetEnvironmentVariableAsInteger(t *testing.T) {
 
 func TestLoadInstances(t *testing.T) {
 	t.Setenv("CREDIMI_URL", "http://prod.local")
-	t.Setenv("CREDIMI_PB_ADMIN", "admin")
-	t.Setenv("CREDIMI_PB_PASS", "pass")
 	t.Setenv("CREDIMI_USER_API_KEY", "prod-user-key")
+	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "prod-admin-key")
 	t.Setenv("CREDIMI_STAGING_URL", "http://staging.local")
-	t.Setenv("CREDIMI_STAGING_PB_ADMIN", "st-admin")
-	t.Setenv("CREDIMI_STAGING_PB_PASS", "st-pass")
 	t.Setenv("CREDIMI_STAGING_USER_API_KEY", "st-user-key")
+	t.Setenv("CREDIMI_STAGING_INTERNAL_ADMIN_KEY", "st-admin-key")
 	t.Setenv("CREDIMI_DEV_URL", "http://dev.local")
-	t.Setenv("CREDIMI_DEV_PB_ADMIN", "dev-admin")
-	t.Setenv("CREDIMI_DEV_PB_PASS", "dev-pass")
 	t.Setenv("CREDIMI_DEV_USER_API_KEY", "dev-user-key")
+	t.Setenv("CREDIMI_DEV_INTERNAL_ADMIN_KEY", "dev-admin-key")
 
 	instances := LoadInstances()
 	require.Equal(t, "http://prod.local", instances["production"].URL)
-	require.Equal(t, "admin", instances["production"].PB_ADMIN)
 	require.Equal(t, "prod-user-key", instances["production"].UserAPIKey)
-	require.Equal(t, "st-pass", instances["staging"].PB_PASS)
+	require.Equal(t, "prod-admin-key", instances["production"].InternalAdminKey)
 	require.Equal(t, "st-user-key", instances["staging"].UserAPIKey)
+	require.Equal(t, "st-admin-key", instances["staging"].InternalAdminKey)
 	require.Equal(t, "http://dev.local", instances["dev"].URL)
 	require.Equal(t, "dev-user-key", instances["dev"].UserAPIKey)
+	require.Equal(t, "dev-admin-key", instances["dev"].InternalAdminKey)
 }
 
 func TestLoadInstances_DefaultProductionURL(t *testing.T) {
@@ -126,113 +122,6 @@ func TestJoinAndNormalizeURL(t *testing.T) {
 
 	_, err = NormalizeURL("")
 	require.ErrorContains(t, err, "empty URL")
-}
-
-func TestGetAdminToken_CachedToken(t *testing.T) {
-	resetTokenCache()
-	tokenCache["http://cached.local|admin"] = &tokenCacheEntry{
-		token:     "cached-token",
-		expiresAt: time.Now().Add(time.Hour),
-	}
-
-	originalClient := http.DefaultClient
-	t.Cleanup(func() { http.DefaultClient = originalClient })
-	http.DefaultClient = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			t.Fatalf("unexpected HTTP call to %s", req.URL.String())
-			return nil, nil
-		}),
-	}
-
-	token, err := GetAdminToken(Instance{
-		URL:      "http://cached.local",
-		PB_ADMIN: "admin",
-		PB_PASS:  "pass",
-	})
-	require.NoError(t, err)
-	require.Equal(t, "cached-token", token)
-}
-
-func TestGetAdminToken_SuccessAndCache(t *testing.T) {
-	resetTokenCache()
-
-	var calls int
-	originalClient := http.DefaultClient
-	t.Cleanup(func() { http.DefaultClient = originalClient })
-	http.DefaultClient = &http.Client{
-		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			calls++
-			require.Equal(t, "http://example.local/api/collections/_superusers/auth-with-password", req.URL.String())
-			return makeHTTPResponse(http.StatusOK, `{"token":"token-abc"}`), nil
-		}),
-	}
-
-	instance := Instance{
-		URL:      "http://example.local",
-		PB_ADMIN: "admin",
-		PB_PASS:  "pass",
-	}
-	token, err := GetAdminToken(instance)
-	require.NoError(t, err)
-	require.Equal(t, "token-abc", token)
-
-	token2, err := GetAdminToken(instance)
-	require.NoError(t, err)
-	require.Equal(t, "token-abc", token2)
-	require.Equal(t, 1, calls)
-}
-
-func TestGetAdminToken_FailurePaths(t *testing.T) {
-	testCases := []struct {
-		name       string
-		response   *http.Response
-		transport  error
-		errContain string
-	}{
-		{
-			name:       "http transport error",
-			transport:  errors.New("network down"),
-			errContain: "failed to contact PocketBase",
-		},
-		{
-			name:       "non-200 response",
-			response:   makeHTTPResponse(http.StatusUnauthorized, ""),
-			errContain: "auth failed",
-		},
-		{
-			name:       "invalid JSON response",
-			response:   makeHTTPResponse(http.StatusOK, "{"),
-			errContain: "failed to decode PocketBase response",
-		},
-		{
-			name:       "missing token",
-			response:   makeHTTPResponse(http.StatusOK, `{"token":""}`),
-			errContain: "no token returned by PocketBase",
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			resetTokenCache()
-			originalClient := http.DefaultClient
-			t.Cleanup(func() { http.DefaultClient = originalClient })
-			http.DefaultClient = &http.Client{
-				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-					if tc.transport != nil {
-						return nil, tc.transport
-					}
-					return tc.response, nil
-				}),
-			}
-
-			_, err := GetAdminToken(Instance{
-				URL:      "http://failure.local",
-				PB_ADMIN: "admin",
-				PB_PASS:  "pass",
-			})
-			require.ErrorContains(t, err, tc.errContain)
-		})
-	}
 }
 
 func TestGetUserAPIKeyToken_SuccessAndCache(t *testing.T) {
@@ -279,8 +168,6 @@ func TestGetBearerToken_PrefersUserAPIKey(t *testing.T) {
 
 	token, err := GetBearerToken(Instance{
 		URL:        "http://example.local",
-		PB_ADMIN:   "admin",
-		PB_PASS:    "pass",
 		UserAPIKey: "user-key-123",
 	})
 	require.NoError(t, err)

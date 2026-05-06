@@ -140,7 +140,7 @@ Minimum useful environment variables (all modes):
 
 Authentication options (choose one):
 - `CREDIMI_USER_API_KEY`
-- `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
+- `CREDIMI_INTERNAL_ADMIN_KEY`
 
 Defaulted/optional environment variables (all modes):
 - `CREDIMI_URL` (default: `https://credimi.io`)
@@ -292,13 +292,13 @@ Environment variables used by `serve`:
 
 - `CREDIMI_URL` (default: `https://credimi.io`)
 - `CREDIMI_RUNNER_ID` (required when workers are started)
-- `CREDIMI_USER_API_KEY` or `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS` for `CREDIMI_URL`
+- `CREDIMI_USER_API_KEY` for user-scoped workers, or `CREDIMI_INTERNAL_ADMIN_KEY` for admin workers on `CREDIMI_URL`
 - `CREDIMI_STAGING_URL` (optional, but if set should have matching creds)
-- `CREDIMI_STAGING_USER_API_KEY` or `CREDIMI_STAGING_PB_ADMIN` + `CREDIMI_STAGING_PB_PASS` for `CREDIMI_STAGING_URL`
+- `CREDIMI_STAGING_USER_API_KEY` for user-scoped staging workers, or `CREDIMI_STAGING_INTERNAL_ADMIN_KEY` for admin staging workers
 - `CREDIMI_DEV_URL` (optional, but if set should have matching creds)
 - `CREDIMI_DEV_USER_API_KEY` or `CREDIMI_DEV_PB_ADMIN` + `CREDIMI_DEV_PB_PASS` for `CREDIMI_DEV_URL`
 - `TEMPORAL_ADDRESS` (optional, default: `temporal.credimi.io:7233`)
-- `CREDIMI_INTERNAL_ADMIN_KEY` (optional, forwarded as `Credimi-Api-Key` on internal Credimi API requests)
+- `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded as `Credimi-Api-Key` on internal Credimi API requests)
 
 Local env loading for `serve`:
 
@@ -312,7 +312,7 @@ Minimum useful:
 
 Authentication options:
 - `CREDIMI_USER_API_KEY`
-- `CREDIMI_PB_ADMIN` + `CREDIMI_PB_PASS`
+- `CREDIMI_INTERNAL_ADMIN_KEY`
 
 Defaulted/optional:
 - `CREDIMI_URL` (default: `https://credimi.io`)
@@ -331,12 +331,11 @@ CREDIMI_RUNNER_ID=local-runner
 TEMPORAL_ADDRESS=temporal.credimi.io:7233
 ```
 
-Alternative `.env` using admin credentials:
+Alternative `.env` using the internal admin API key:
 
 ```bash
 CREDIMI_URL=https://credimi.io
-CREDIMI_PB_ADMIN=admin@example.com
-CREDIMI_PB_PASS=your-password
+CREDIMI_INTERNAL_ADMIN_KEY=your-internal-admin-api-key
 CREDIMI_RUNNER_ID=local-runner
 TEMPORAL_ADDRESS=temporal.credimi.io:7233
 ```
@@ -358,13 +357,12 @@ TEMPORAL_ADDRESS=temporal.credimi.io:7233
 # Choose one auth mode
 CREDIMI_USER_API_KEY=
 # or
-CREDIMI_PB_ADMIN=
-CREDIMI_PB_PASS=
+CREDIMI_INTERNAL_ADMIN_KEY=
 ```
 
 Notes:
 
-- `CREDIMI_USER_API_KEY` can be used instead of `CREDIMI_PB_ADMIN` and `CREDIMI_PB_PASS`.
+- `CREDIMI_USER_API_KEY` is for user-scoped workers; `CREDIMI_INTERNAL_ADMIN_KEY` is for admin workers.
 - `BASE_NAME` is only used by the Android emulator flow. It is not required for local iOS usage.
 - `CREDIMI_TEMP_DIR` is set in the Docker image, but the local `serve` command does not currently read it.
 

@@ -120,7 +120,7 @@ func TestValidateActionIdentifier(t *testing.T) {
 			},
 		}
 
-		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", client)
+		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", "", client)
 		require.ErrorContains(t, err, "failed to call validate endpoint")
 	})
 
@@ -133,7 +133,7 @@ func TestValidateActionIdentifier(t *testing.T) {
 			},
 		}
 
-		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", client)
+		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", "", client)
 		var apiErr *runner.APIError
 		require.ErrorAs(t, err, &apiErr)
 		require.Equal(t, http.StatusBadRequest, apiErr.Code)
@@ -151,7 +151,7 @@ func TestValidateActionIdentifier(t *testing.T) {
 			},
 		}
 
-		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", client)
+		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", "", client)
 		var apiErr *runner.APIError
 		require.ErrorAs(t, err, &apiErr)
 		require.Equal(t, "bad", apiErr.Reason)
@@ -166,7 +166,7 @@ func TestValidateActionIdentifier(t *testing.T) {
 			},
 		}
 
-		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", client)
+		_, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", "", client)
 		require.ErrorContains(t, err, "record missing 'code' field")
 	})
 
@@ -179,7 +179,7 @@ func TestValidateActionIdentifier(t *testing.T) {
 			},
 		}
 
-		code, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", client)
+		code, err := validateActionIdentifier("http://example.local/validate", "wallet/action", "token", "", client)
 		require.NoError(t, err)
 		require.Equal(t, "ACTION", code)
 	})
@@ -187,14 +187,14 @@ func TestValidateActionIdentifier(t *testing.T) {
 
 func TestDownloadFileIfMissing_ErrorPaths(t *testing.T) {
 	t.Run("mkdir fails", func(t *testing.T) {
-		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", &fakeHTTPClient{}, &failingFileStore{
+		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", "", &fakeHTTPClient{}, &failingFileStore{
 			mkdirErr: errors.New("mkdir boom"),
 		})
 		require.ErrorContains(t, err, "failed to create apps directory")
 	})
 
 	t.Run("invalid request URL", func(t *testing.T) {
-		_, err := downloadFileIfMissing(":", "token", "apk", "file.apk", &fakeHTTPClient{}, &failingFileStore{
+		_, err := downloadFileIfMissing(":", "token", "apk", "file.apk", "", &fakeHTTPClient{}, &failingFileStore{
 			statErr: os.ErrNotExist,
 		})
 		require.ErrorContains(t, err, "failed to create request")
@@ -209,7 +209,7 @@ func TestDownloadFileIfMissing_ErrorPaths(t *testing.T) {
 			},
 		}
 
-		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", client, &failingFileStore{
+		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", "", client, &failingFileStore{
 			statErr: os.ErrNotExist,
 		})
 		require.ErrorContains(t, err, "failed to download file")
@@ -224,7 +224,7 @@ func TestDownloadFileIfMissing_ErrorPaths(t *testing.T) {
 			},
 		}
 
-		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", client, &failingFileStore{
+		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", "", client, &failingFileStore{
 			statErr: os.ErrNotExist,
 		})
 		require.ErrorContains(t, err, "download failed")
@@ -239,7 +239,7 @@ func TestDownloadFileIfMissing_ErrorPaths(t *testing.T) {
 			},
 		}
 
-		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", client, &failingFileStore{
+		_, err := downloadFileIfMissing("http://example.local/file.apk", "token", "apk", "file.apk", "", client, &failingFileStore{
 			statErr:   os.ErrNotExist,
 			createErr: errors.New("create failed"),
 		})
@@ -248,7 +248,7 @@ func TestDownloadFileIfMissing_ErrorPaths(t *testing.T) {
 }
 
 func TestDownloadInstallerIfMissing_ErrorPropagation(t *testing.T) {
-	_, err := downloadInstallerIfMissing(":", "token", "ios", "app.zip", "ios", &fakeHTTPClient{}, &failingFileStore{
+	_, err := downloadInstallerIfMissing(":", "token", "ios", "app.zip", "ios", "", &fakeHTTPClient{}, &failingFileStore{
 		statErr: os.ErrNotExist,
 	})
 	require.ErrorContains(t, err, "failed to create request")

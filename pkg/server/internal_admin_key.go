@@ -8,8 +8,10 @@ import (
 
 const internalAdminKeyHeader = "Credimi-Api-Key"
 
-func setInternalAdminKeyHeader(req *http.Request) {
-	internalAdminKey := utils.GetEnvironmentVariable("CREDIMI_INTERNAL_ADMIN_KEY")
+func setInternalAdminKeyHeader(req *http.Request, internalAdminKey string) {
+	if internalAdminKey == "" {
+		internalAdminKey = utils.GetEnvironmentVariable("CREDIMI_INTERNAL_ADMIN_KEY")
+	}
 	if internalAdminKey == "" {
 		return
 	}

@@ -118,12 +118,12 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 			Code:    http.StatusUnauthorized,
 			Domain:  "authorization",
 			Reason:  "invalid token",
-			Message: "failed to get admin token: " + err.Error(),
+			Message: "failed to get auth token: " + err.Error(),
 		}
 	}
 
 	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req)
+	setInternalAdminKeyHeader(req, instance.InternalAdminKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := s.Deps.HTTPClient.Do(req)

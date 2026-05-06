@@ -136,12 +136,6 @@ if [[ -n "${data}" ]]; then
 fi
 
 case "${url}" in
-  *"/api/collections/_superusers/auth-with-password")
-    [[ -n "${out}" ]] || exit 1
-    printf '{"token":"admin-token"}' >"${out}"
-    printf '200'
-    exit 0
-    ;;
   *"/api/organizations/my")
     [[ -n "${out}" ]] || exit 1
     printf '{"canonified_name":"%s"}' "${MOCK_MY_ORG:-org-id}" >"${out}"
@@ -242,7 +236,7 @@ run_install() {
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -266,7 +260,7 @@ run_install_with_temp_dir() {
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -325,7 +319,7 @@ run_linux_usb_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "compose version" "${docker_log}"
   assert_contains "up -d runner caddy tunnel" "${docker_log}"
@@ -426,7 +420,7 @@ run_linux_wifi_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "up -d runner caddy tunnel" "${docker_log}"
   assert_contains '"type":"android_phone"' "${curl_payload_log}"
@@ -452,7 +446,23 @@ run_linux_redroid_no_device_case() {
   AVDCTL_SUDO_PASSWORD="sudo-secret" \
   REDROID_DATA_DIR="/srv/redroid-data" \
   REDROID_DATA_TAR="/srv/redroid-data.tar" \
-  run_install "${case_dir}"
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  XDG_CONFIG_HOME="${case_dir}/config" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  MOCK_PREVIEW_RUNNER_ID="/org-id/preview-runner" \
+  CREDIMI_URL="https://credimi.example" \
+  TEMPORAL_ADDRESS="temporal.example:7233" \
+  CREDIMI_RUNNER_ID="/org-id/runner-01" \
+  CREDIMI_INSTALL_AUTH_MODE="api_key" \
+  CREDIMI_USER_API_KEY="user-api-key" \
+  CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
+  CREDIMI_SERVICE_MODE="auto" \
+  RUNNER_HOST="0.0.0.0" \
+  RUNNER_PORT="8050" \
+  RUNNER_CADDY_SITE=":80" \
+  sh "${install_script}" >/dev/null
 
   local launcher="${case_dir}/bin/credimi-runner-service"
   local config_dir="${case_dir}/config/credimi/runner"
@@ -482,7 +492,7 @@ run_linux_redroid_no_device_case() {
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains '"type":"redroid"' "${curl_payload_log}"
   assert_contains '"serial":"192.168.1.77:5557"' "${curl_payload_log}"
@@ -507,8 +517,8 @@ run_direct_container_case() {
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="" \
-  CREDIMI_SERVICE_MODE="direct" \
-  RUNNER_PUBLIC_IP="198.51.100.10" \
+  CREDIMI_SERVICE_MODE="manual" \
+  RUNNER_PUBLIC_URL="http://198.51.100.10" \
   RUNNER_PUBLIC_PORT="9443" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
@@ -522,8 +532,8 @@ run_direct_container_case() {
   local docker_log="${case_dir}/logs/docker.log"
   local curl_payload_log="${case_dir}/logs/curl.payload.log"
 
-  assert_contains "CREDIMI_SERVICE_MODE=direct" "${env_file}"
-  assert_contains "RUNNER_PUBLIC_IP=198.51.100.10" "${env_file}"
+  assert_contains "CREDIMI_SERVICE_MODE=manual" "${env_file}"
+  assert_contains "RUNNER_PUBLIC_URL=http://198.51.100.10" "${env_file}"
   assert_contains "RUNNER_PUBLIC_PORT=9443" "${env_file}"
   assert_contains "RUNNER_CADDY_SITE=" "${env_file}"
   assert_contains "network_mode: host" "${compose_file}"
@@ -533,14 +543,14 @@ run_direct_container_case() {
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/direct-runner" \
-  "${launcher}" direct >/dev/null
+  "${launcher}" manual >/dev/null
 
   assert_contains "compose version" "${docker_log}"
   assert_contains "up -d runner" "${docker_log}"
   assert_contains "logs -f runner" "${docker_log}"
   assert_not_contains "logs tunnel" "${docker_log}"
   assert_not_contains "caddy tunnel" "${docker_log}"
-  assert_contains '"ip":"198.51.100.10"' "${curl_payload_log}"
+  assert_contains '"ip":"http://198.51.100.10"' "${curl_payload_log}"
   assert_contains '"port":"9443"' "${curl_payload_log}"
 }
 
@@ -646,7 +656,7 @@ run_noninteractive_empty_optional_case() {
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -685,7 +695,7 @@ EOF
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "up -d runner caddy tunnel" "${docker_log}"
   assert_contains "/api/mobile-runner" "${case_dir}/logs/curl.log"
@@ -719,7 +729,7 @@ EOF
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  "${launcher}" named >/dev/null
+  "${launcher}" cloudflare-managed >/dev/null
 
   assert_file_absent "${marker}"
   assert_contains "up -d runner caddy tunnel_named" "${docker_log}"
@@ -790,7 +800,7 @@ EOF
   HOME="${case_dir}/home" \
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "http://192.0.2.10:9000/" "${curl_log}"
   assert_contains "/api/mobile-runner" "${curl_log}"
@@ -823,8 +833,8 @@ CREDIMI_RUNNER_ID=/org-id/direct-host
 CREDIMI_RUNNER_NAME=direct-host
 CREDIMI_RUNNER_TYPE=ios_simulator
 CREDIMI_USER_API_KEY=user-api-key
-CREDIMI_SERVICE_MODE=direct
-RUNNER_PUBLIC_IP=198.51.100.20
+CREDIMI_SERVICE_MODE=manual
+RUNNER_PUBLIC_URL=http://198.51.100.20
 RUNNER_PUBLIC_PORT=8080
 RUNNER_HOST=127.0.0.1
 RUNNER_PORT=9000
@@ -836,10 +846,10 @@ EOF
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/direct-host" \
-  "${launcher}" direct >/dev/null
+  "${launcher}" manual >/dev/null
 
   assert_empty_or_missing "${docker_log}"
-  assert_contains '"ip":"198.51.100.20"' "${curl_payload_log}"
+  assert_contains '"ip":"http://198.51.100.20"' "${curl_payload_log}"
   assert_contains '"port":"8080"' "${curl_payload_log}"
   assert_contains '"type":"ios_simulator"' "${curl_payload_log}"
 }
@@ -858,8 +868,6 @@ CREDIMI_RUNNER_NAME=persisted-runner
 CREDIMI_RUNNER_DESCRIPTION=
 CREDIMI_RUNNER_ORGANIZATION=org-id
 CREDIMI_USER_API_KEY=persisted-user-api-key
-CREDIMI_PB_ADMIN=
-CREDIMI_PB_PASS=
 CREDIMI_INTERNAL_ADMIN_KEY=persisted-internal-admin-key
 TEMPORAL_ADDRESS=temporal.persisted.example:7233
 CREDIMI_RUNNER_BACKEND=container
@@ -868,7 +876,7 @@ RUNNER_PORT=9000
 RUNNER_DOMAIN=
 RUNNER_CADDY_SITE=:8080
 CLOUDFLARE_TUNNEL_TOKEN=
-CREDIMI_SERVICE_MODE=quick
+CREDIMI_SERVICE_MODE=auto
 CREDIMI_RUNNER_TYPE=android_phone
 CREDIMI_RUNNER_SERIAL=SERIAL-USB-01
 CREDIMI_RUNNER_DEVICE_MODE=usb
@@ -919,8 +927,6 @@ CREDIMI_RUNNER_NAME=persisted-runner
 CREDIMI_RUNNER_DESCRIPTION=
 CREDIMI_RUNNER_ORGANIZATION=org-id
 CREDIMI_USER_API_KEY=persisted-user-api-key
-CREDIMI_PB_ADMIN=
-CREDIMI_PB_PASS=
 CREDIMI_INTERNAL_ADMIN_KEY=
 TEMPORAL_ADDRESS=temporal.persisted.example:7233
 CREDIMI_RUNNER_BACKEND=container
@@ -935,7 +941,7 @@ RUNNER_PORT=9000
 RUNNER_DOMAIN=
 RUNNER_CADDY_SITE=:8080
 CLOUDFLARE_TUNNEL_TOKEN=
-CREDIMI_SERVICE_MODE=quick
+CREDIMI_SERVICE_MODE=auto
 RUNNER_IMAGE=ghcr.io/forkbombeu/credimi-runner-phone:latest
 ANDROID_KEYS_DIR=
 HOST_AVD_HOME_PATH=
@@ -968,11 +974,11 @@ EOF
   assert_contains "HOST_AVD_GOLDEN_PATH=" "${env_file}"
   assert_contains "BASE_NAME=" "${env_file}"
   assert_contains "GOLDEN_PATH=" "${env_file}"
-  assert_contains "AVDCTL_SSH_TARGET=credimi@remote-host" "${env_file}"
-  assert_contains "AVDCTL_SSH_PASSWORD=ssh-secret" "${env_file}"
-  assert_contains "AVDCTL_SSH_KNOWN_HOSTS_PATH=/home/bario/.ssh/known_hosts" "${env_file}"
-  assert_contains "AVDCTL_SUDO=true" "${env_file}"
-  assert_contains "AVDCTL_SUDO_PASSWORD=sudo-secret" "${env_file}"
+  assert_contains "AVDCTL_SSH_TARGET=" "${env_file}"
+  assert_contains "AVDCTL_SSH_PASSWORD=" "${env_file}"
+  assert_contains "AVDCTL_SSH_KNOWN_HOSTS_PATH=" "${env_file}"
+  assert_contains "AVDCTL_SUDO=" "${env_file}"
+  assert_contains "AVDCTL_SUDO_PASSWORD=" "${env_file}"
   assert_contains "REDROID_DATA_DIR=" "${env_file}"
   assert_contains "REDROID_DATA_TAR=" "${env_file}"
 }
@@ -1045,7 +1051,7 @@ run_launcher_preview_case() {
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -1060,7 +1066,7 @@ run_launcher_preview_case() {
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/preview-runner" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "CREDIMI_RUNNER_ID=/org-id/preview-runner" "${env_file}"
   assert_contains "/api/organizations/my" "${curl_log}"
@@ -1088,8 +1094,8 @@ run_direct_preview_preserves_env_mode_case() {
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
   CREDIMI_INTERNAL_ADMIN_KEY="" \
-  CREDIMI_SERVICE_MODE="direct" \
-  RUNNER_PUBLIC_IP="198.51.100.20" \
+  CREDIMI_SERVICE_MODE="manual" \
+  RUNNER_PUBLIC_URL="http://198.51.100.20" \
   RUNNER_PUBLIC_PORT="8080" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
@@ -1105,7 +1111,7 @@ run_direct_preview_preserves_env_mode_case() {
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/direct-preview" \
-  "${launcher}" direct >/dev/null
+  "${launcher}" manual >/dev/null
 
   assert_file_mode "${env_file}" "644"
   assert_contains "CREDIMI_RUNNER_ID=/org-id/direct-preview" "${env_file}"
@@ -1137,32 +1143,6 @@ run_admin_requires_internal_key_case() {
   assert_contains "CREDIMI_INTERNAL_ADMIN_KEY is required for non-interactive install" "${case_dir}/stderr.log"
 }
 
-run_admin_requires_pb_credentials_case() {
-  local case_dir
-  case_dir="$(mktemp -d)"
-  mkdir -p "${case_dir}/logs"
-  create_mocks "${case_dir}/mocks"
-
-  if FAKE_UNAME_S="Linux" \
-    FAKE_UNAME_M="x86_64" \
-    PATH="${case_dir}/mocks:${PATH}" \
-    HOME="${case_dir}/home" \
-    XDG_BIN_HOME="${case_dir}/bin" \
-    XDG_CONFIG_HOME="${case_dir}/config" \
-    MOCK_LOG_DIR="${case_dir}/logs" \
-    CREDIMI_URL="https://credimi.example" \
-    TEMPORAL_ADDRESS="temporal.example:7233" \
-    CREDIMI_INSTALL_AUTH_MODE="admin" \
-    CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
-    CREDIMI_RUNNER_NAME="admin-runner" \
-    CREDIMI_RUNNER_ORGANIZATION="org-id" \
-    sh "${install_script}" >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"; then
-    fail "expected admin install without PB credentials to fail"
-  fi
-
-  assert_contains "CREDIMI_PB_ADMIN is required for non-interactive install" "${case_dir}/stderr.log"
-}
-
 run_admin_computes_runner_id_case() {
   local case_dir
   case_dir="$(mktemp -d)"
@@ -1181,11 +1161,9 @@ run_admin_computes_runner_id_case() {
   TEMPORAL_ADDRESS="temporal.example:7233" \
   CREDIMI_INSTALL_AUTH_MODE="admin" \
   CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
-  CREDIMI_PB_ADMIN="admin@example.org" \
-  CREDIMI_PB_PASS="admin-password" \
   CREDIMI_RUNNER_NAME="Admin Runner" \
   CREDIMI_RUNNER_ORGANIZATION="org-id" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -1199,12 +1177,10 @@ run_admin_computes_runner_id_case() {
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/admin-runner" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "CREDIMI_RUNNER_ID=/org-id/admin-runner" "${env_file}"
   assert_contains "CREDIMI_INTERNAL_ADMIN_KEY=internal-admin-key" "${env_file}"
-  assert_contains "CREDIMI_PB_ADMIN=admin@example.org" "${env_file}"
-  assert_contains "CREDIMI_PB_PASS=admin-password" "${env_file}"
   assert_contains "CREDIMI_USER_API_KEY=" "${env_file}"
 }
 
@@ -1222,8 +1198,6 @@ CREDIMI_RUNNER_NAME=old-runner
 CREDIMI_RUNNER_DESCRIPTION=
 CREDIMI_RUNNER_ORGANIZATION=org-id
 CREDIMI_USER_API_KEY=
-CREDIMI_PB_ADMIN=
-CREDIMI_PB_PASS=
 CREDIMI_INTERNAL_ADMIN_KEY=internal-admin-key
 TEMPORAL_ADDRESS=temporal.persisted.example:7233
 EOF
@@ -1239,11 +1213,9 @@ EOF
   CREDIMI_INSTALL_AUTH_MODE="admin" \
   CREDIMI_USE_EXISTING_RUNNER_ID="no" \
   CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
-  CREDIMI_PB_ADMIN="admin@example.org" \
-  CREDIMI_PB_PASS="admin-password" \
   CREDIMI_RUNNER_NAME="New Runner" \
   CREDIMI_RUNNER_ORGANIZATION="org-id" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -1256,7 +1228,7 @@ EOF
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/new-runner" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "CREDIMI_RUNNER_ID=/org-id/new-runner" "${env_file}"
   assert_not_contains "CREDIMI_RUNNER_ID=/org-id/old-runner" "${env_file}"
@@ -1282,7 +1254,7 @@ run_existing_name_updates_by_default_case() {
   CREDIMI_RUNNER_DESCRIPTION="updated description" \
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -1297,7 +1269,7 @@ run_existing_name_updates_by_default_case() {
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "CREDIMI_RUNNER_ID=/org-id/duplicate-runner" "${env_file}"
   assert_contains '"runner_id":"/org-id/duplicate-runner"' "${curl_payload_log}"
@@ -1325,7 +1297,7 @@ run_existing_name_can_create_new_case() {
   CREDIMI_RUNNER_NAME="Duplicate Runner" \
   CREDIMI_INSTALL_AUTH_MODE="api_key" \
   CREDIMI_USER_API_KEY="user-api-key" \
-  CREDIMI_SERVICE_MODE="quick" \
+  CREDIMI_SERVICE_MODE="auto" \
   RUNNER_HOST="0.0.0.0" \
   RUNNER_PORT="8050" \
   RUNNER_CADDY_SITE=":80" \
@@ -1340,7 +1312,7 @@ run_existing_name_can_create_new_case() {
   XDG_CONFIG_HOME="${case_dir}/config" \
   MOCK_LOG_DIR="${case_dir}/logs" \
   MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner-1" \
-  "${launcher}" quick >/dev/null
+  "${launcher}" auto >/dev/null
 
   assert_contains "CREDIMI_RUNNER_ID=/org-id/duplicate-runner-1" "${env_file}"
   assert_contains '"runner_id":"/org-id/duplicate-runner-1"' "${curl_payload_log}"
@@ -1396,7 +1368,6 @@ run_temp_dir_creation_case
 run_launcher_preview_case
 run_direct_preview_preserves_env_mode_case
 run_admin_requires_internal_key_case
-run_admin_requires_pb_credentials_case
 run_admin_computes_runner_id_case
 run_recompute_runner_id_case
 run_existing_name_updates_by_default_case
