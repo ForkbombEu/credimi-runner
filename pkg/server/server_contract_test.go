@@ -71,18 +71,14 @@ func newTestInstanceServer(t *testing.T, capture *storeCapture) *httptest.Server
 	t.Helper()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/apikey/authenticate", func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "test-api-key", r.Header.Get("Credimi-Api-Key"))
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"token":"test-token"}`))
-	})
 	mux.HandleFunc("/api/canonify/identifier/validate", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "test-api-key", r.Header.Get(internalAdminKeyHeader))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"record":{"code":"ACTION-CODE"}}`))
 	})
 	mux.HandleFunc("/api/wallet/get-installer-md5-or-etag", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "test-api-key", r.Header.Get(internalAdminKeyHeader))
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			capture.setErr(err)
@@ -101,10 +97,12 @@ func newTestInstanceServer(t *testing.T, capture *storeCapture) *httptest.Server
 		_, _ = w.Write([]byte(`{"record_id":"rec-1","installer_name":"app.apk","installer_identifier":"apk-123","version_id":"v1"}`))
 	})
 	mux.HandleFunc("/api/files/wallet_versions/rec-1/app.apk", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "test-api-key", r.Header.Get(internalAdminKeyHeader))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("apk-bytes"))
 	})
 	mux.HandleFunc("/api/wallet/store-pipeline-result", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "test-api-key", r.Header.Get(internalAdminKeyHeader))
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			capture.setErr(err)
 			w.WriteHeader(http.StatusBadRequest)

@@ -44,6 +44,5 @@ func TestWithCORSPassThrough(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "https://puria.credimi.io", rec.Header().Get("Access-Control-Allow-Origin"))
-	require.Equal(t, "Content-Type, Authorization", rec.Header().Get("Access-Control-Allow-Headers"))
+	require.Equal(t, "Content-Type, Credimi-Api-Key", rec.Header().Get("Access-Control-Allow-Headers"))
 }
-

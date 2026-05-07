@@ -38,11 +38,10 @@ func newStorePipelineMethodService(t *testing.T, responseStatus int, responseBod
 	require.NoError(t, writer.Close())
 
 	return NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {URL: baseURL},
+		"prod": {URL: baseURL, UserAPIKey: "user-key"},
 	}, Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+		HTTPClient: client,
+		FileStore:  store,
 	})
 }
 

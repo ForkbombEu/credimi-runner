@@ -59,18 +59,7 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 			continue
 		}
 
-		token, err := s.Deps.TokenProvider(inst)
-		if err != nil {
-			span.AddEvent("instance.skipped", traceWithAttrs(
-				attribute.String("instance.name", name),
-				attribute.String("instance.url", inst.URL),
-				attribute.String("reason", "token_failed"),
-			))
-			log.Printf("[WARN] Skipping instance %q: cannot fetch auth token: %v", name, err)
-			continue
-		}
-
-		orgName, namespace, err := s.fetchUserNamespace(ctx, inst, token)
+		orgName, namespace, err := s.fetchUserNamespace(ctx, inst)
 		if err != nil {
 			return err
 		}
@@ -89,7 +78,7 @@ func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Ins
 	if err != nil {
 		return nil, fmt.Errorf("failed to create organizations namespace request: %w", err)
 	}
-	setInternalAdminKeyHeader(req, inst.InternalAdminKey)
+	setAPIKeyHeader(req, inst.InternalAdminKey)
 
 	resp, err := s.Deps.HTTPClient.Do(req)
 	if err != nil {
@@ -111,10 +100,6 @@ func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Ins
 	return data.Namespaces, nil
 }
 
-func traceWithAttrs(attrs ...attribute.KeyValue) trace.EventOption {
-	return trace.WithAttributes(attrs...)
-}
-
 func workerTraceAttrs(instanceName, orgName, namespace, runnerID string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("instance.name", instanceName),
@@ -132,7 +117,6 @@ func workerTraceAttrs(instanceName, orgName, namespace, runnerID string) []attri
 func (s *runnerService) fetchUserNamespace(
 	ctx context.Context,
 	inst utils.Instance,
-	token string,
 ) (string, string, error) {
 	req, err := http.NewRequestWithContext(
 		ctx,
@@ -143,7 +127,7 @@ func (s *runnerService) fetchUserNamespace(
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create organization lookup request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	setAPIKeyHeader(req, inst.UserAPIKey)
 
 	resp, err := s.Deps.HTTPClient.Do(req)
 	if err != nil {

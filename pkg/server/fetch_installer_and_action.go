@@ -46,13 +46,16 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		}
 	}
 
-	token, err := s.Deps.TokenProvider(instance)
-	if err != nil {
+	apiKey := instance.UserAPIKey
+	if apiKey == "" {
+		apiKey = instance.InternalAdminKey
+	}
+	if apiKey == "" {
 		return nil, &runner.APIError{
 			Code:    http.StatusUnauthorized,
 			Domain:  "authorization",
-			Reason:  "invalid token",
-			Message: "failed to get auth token: " + err.Error(),
+			Reason:  "missing credentials",
+			Message: "missing Credimi credentials: set CREDIMI_USER_API_KEY or CREDIMI_INTERNAL_ADMIN_KEY",
 		}
 	}
 
@@ -61,7 +64,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 
 	var actionCode *string
 	if payload.ActionIdentifier != "" {
-		code, err := validateActionIdentifier(validateURL, payload.ActionIdentifier, token, instance.InternalAdminKey, s.Deps.HTTPClient)
+		code, err := validateActionIdentifier(validateURL, payload.ActionIdentifier, apiKey, s.Deps.HTTPClient)
 		if err != nil {
 			var apiErr *runner.APIError
 			if errors.As(err, &apiErr) {
@@ -104,8 +107,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 	}
 
 	req, _ := http.NewRequest("POST", getInstallerURL, bytes.NewReader(md5ReqBody))
-	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req, instance.InternalAdminKey)
+	setAPIKeyHeader(req, apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.Deps.HTTPClient.Do(req)
@@ -159,11 +161,10 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 	fileURL := utils.JoinURL(payload.InstanceURL, "api", "files", "wallet_versions", md5Resp.RecordID, md5Resp.InstallerName)
 	path, err := downloadInstallerIfMissing(
 		fileURL,
-		token,
+		apiKey,
 		md5Resp.InstallerIdentifier,
 		md5Resp.InstallerName,
 		platform,
-		instance.InternalAdminKey,
 		s.Deps.HTTPClient,
 		s.Deps.FileStore,
 	)
@@ -183,8 +184,8 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 	}, nil
 }
 
-func downloadInstallerIfMissing(fileURL, token, localName, installerName, platform, internalAdminKey string, client HTTPClient, fileStore FileStore) (string, error) {
-	localPath, err := downloadFileIfMissing(fileURL, token, localName, installerName, internalAdminKey, client, fileStore)
+func downloadInstallerIfMissing(fileURL, apiKey, localName, installerName, platform string, client HTTPClient, fileStore FileStore) (string, error) {
+	localPath, err := downloadFileIfMissing(fileURL, apiKey, localName, installerName, client, fileStore)
 	if err != nil {
 		return "", err
 	}
@@ -196,7 +197,7 @@ func downloadInstallerIfMissing(fileURL, token, localName, installerName, platfo
 	return unzipIOSAppIfNeeded(localPath, localName, fileStore)
 }
 
-func downloadFileIfMissing(fileURL, token, localName, installerName, internalAdminKey string, client HTTPClient, fileStore FileStore) (string, error) {
+func downloadFileIfMissing(fileURL, apiKey, localName, installerName string, client HTTPClient, fileStore FileStore) (string, error) {
 	if err := fileStore.MkdirAll("apps", 0755); err != nil {
 		return "", fmt.Errorf("failed to create apps directory: %v", err)
 	}
@@ -211,8 +212,7 @@ func downloadFileIfMissing(fileURL, token, localName, installerName, internalAdm
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %v", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req, internalAdminKey)
+	setAPIKeyHeader(req, apiKey)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download file: %v", err)
@@ -382,11 +382,10 @@ func writeStoredAppPath(path, appPath string, fileStore FileStore) error {
 	return err
 }
 
-func validateActionIdentifier(url, identifier, token, internalAdminKey string, client HTTPClient) (string, error) {
+func validateActionIdentifier(url, identifier, apiKey string, client HTTPClient) (string, error) {
 	body, _ := json.Marshal(map[string]string{"canonified_name": identifier})
 	req, _ := http.NewRequest("POST", url, strings.NewReader(string(body)))
-	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req, internalAdminKey)
+	setAPIKeyHeader(req, apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)

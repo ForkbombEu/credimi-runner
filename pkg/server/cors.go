@@ -15,7 +15,7 @@ func withCORS(next http.Handler) http.Handler {
 
 			reqHeaders := r.Header.Get("Access-Control-Request-Headers")
 			if reqHeaders == "" {
-				reqHeaders = "Content-Type, Authorization"
+				reqHeaders = "Content-Type, Credimi-Api-Key"
 			}
 			w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
 			w.Header().Set("Access-Control-Max-Age", "600")
@@ -33,4 +33,3 @@ func withCORS(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-

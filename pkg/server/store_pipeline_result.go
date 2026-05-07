@@ -112,18 +112,20 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		}
 	}
 
-	token, err := s.Deps.TokenProvider(instance)
-	if err != nil {
+	apiKey := instance.UserAPIKey
+	if apiKey == "" {
+		apiKey = instance.InternalAdminKey
+	}
+	if apiKey == "" {
 		return nil, &runner.APIError{
 			Code:    http.StatusUnauthorized,
 			Domain:  "authorization",
-			Reason:  "invalid token",
-			Message: "failed to get auth token: " + err.Error(),
+			Reason:  "missing credentials",
+			Message: "missing Credimi credentials: set CREDIMI_USER_API_KEY or CREDIMI_INTERNAL_ADMIN_KEY",
 		}
 	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	setInternalAdminKeyHeader(req, instance.InternalAdminKey)
+	setAPIKeyHeader(req, apiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	resp, err := s.Deps.HTTPClient.Do(req)
