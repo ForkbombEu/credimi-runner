@@ -14,6 +14,10 @@ assert_file_exists() {
   [[ -f "$1" ]] || fail "missing file: $1"
 }
 
+assert_dir_exists() {
+  [[ -d "$1" ]] || fail "missing directory: $1"
+}
+
 assert_file_absent() {
   [[ ! -e "$1" ]] || fail "unexpected path: $1"
 }
@@ -199,6 +203,48 @@ printf 'unexpected docker invocation: %s\n' "$*" >&2
 exit 1
 EOF
 
+  cat >"${mock_dir}/tar" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${MOCK_LOG_DIR:?}"
+
+printf '%s\n' "$*" >>"${MOCK_LOG_DIR}/tar.log"
+
+archive=""
+dest_dir=""
+previous=""
+for arg in "$@"; do
+  if [[ "${previous}" == "-C" ]]; then
+    dest_dir="${arg}"
+  elif [[ "${previous}" == "-xzf" ]]; then
+    archive="${arg}"
+  fi
+  previous="${arg}"
+done
+
+[[ -n "${archive}" && -n "${dest_dir}" ]] || {
+  printf 'unexpected tar invocation: %s\n' "$*" >&2
+  exit 1
+}
+
+mkdir -p "${dest_dir}"
+
+case "${archive}" in
+  *credimi_base_image.tar.gz)
+    mkdir -p "${dest_dir}/credimi.avd"
+    : >"${dest_dir}/credimi.ini"
+    ;;
+  *credimi_golden.tar.gz)
+    mkdir -p "${dest_dir}/credimi-golden"
+    ;;
+  *)
+    printf 'unexpected tar archive: %s\n' "${archive}" >&2
+    exit 1
+    ;;
+esac
+EOF
+
   cat >"${mock_dir}/adb" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -217,7 +263,7 @@ case "${1:-}" in
 esac
 EOF
 
-  chmod +x "${mock_dir}/uname" "${mock_dir}/curl" "${mock_dir}/docker" "${mock_dir}/adb"
+  chmod +x "${mock_dir}/uname" "${mock_dir}/curl" "${mock_dir}/docker" "${mock_dir}/tar" "${mock_dir}/adb"
 }
 
 run_install() {
@@ -356,13 +402,15 @@ run_linux_emulator_case() {
   case_dir="$(mktemp -d)"
   mkdir -p "${case_dir}/logs"
   create_mocks "${case_dir}/mocks"
+  local host_avd_home="${case_dir}/seed/avd-home"
+  local host_avd_golden="${case_dir}/seed/avd-golden"
 
   FAKE_UNAME_S="Linux" \
   FAKE_UNAME_M="x86_64" \
   CREDIMI_RUNNER_TYPE="android_emulator" \
   ANDROID_KEYS_DIR="/srv/android-keys" \
-  HOST_AVD_HOME_PATH="/srv/credimi/avd-home" \
-  HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden" \
+  HOST_AVD_HOME_PATH="${host_avd_home}" \
+  HOST_AVD_GOLDEN_PATH="${host_avd_golden}" \
   BASE_NAME="credimi" \
   GOLDEN_PATH="/avd-golden/credimi-golden" \
   run_install "${case_dir}"
@@ -381,6 +429,64 @@ run_linux_emulator_case() {
   assert_contains 'PORT: "${RUNNER_PORT:-8050}"' "${compose_file}"
   assert_contains "/dev/kvm:/dev/kvm" "${compose_file}"
   assert_contains '${ANDROID_KEYS_DIR}:/root/.android' "${compose_file}"
+}
+
+run_linux_emulator_downloads_missing_assets_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  local host_avd_home="${case_dir}/seed/avd-home"
+  local host_avd_golden="${case_dir}/seed/avd-golden"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  CREDIMI_RUNNER_TYPE="android_emulator" \
+  HOST_AVD_HOME_PATH="${host_avd_home}" \
+  HOST_AVD_GOLDEN_PATH="${host_avd_golden}" \
+  run_install "${case_dir}"
+
+  local curl_log="${case_dir}/logs/curl.log"
+  local tar_log="${case_dir}/logs/tar.log"
+
+  assert_dir_exists "${host_avd_home}/credimi.avd"
+  assert_file_exists "${host_avd_home}/credimi.ini"
+  assert_dir_exists "${host_avd_golden}/credimi-golden"
+  assert_file_absent "${host_avd_home}/credimi_base_image.tar.gz"
+  assert_file_absent "${host_avd_golden}/credimi_golden.tar.gz"
+  assert_contains "https://files.pn-a.com/credimi_base_image.tar.gz" "${curl_log}"
+  assert_contains "https://files.pn-a.com/credimi_golden.tar.gz" "${curl_log}"
+  assert_contains "credimi_base_image.tar.gz -C ${host_avd_home}" "${tar_log}"
+  assert_contains "credimi_golden.tar.gz -C ${host_avd_golden}" "${tar_log}"
+}
+
+run_linux_emulator_skips_asset_download_when_present_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  local host_avd_home="${case_dir}/seed/avd-home"
+  local host_avd_golden="${case_dir}/seed/avd-golden"
+  mkdir -p "${host_avd_home}/custom-base.avd" "${host_avd_golden}/credimi-golden"
+  : >"${host_avd_home}/custom-base.ini"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  CREDIMI_RUNNER_TYPE="android_emulator" \
+  HOST_AVD_HOME_PATH="${host_avd_home}" \
+  HOST_AVD_GOLDEN_PATH="${host_avd_golden}" \
+  BASE_NAME="custom-base" \
+  run_install "${case_dir}"
+
+  local curl_log="${case_dir}/logs/curl.log"
+  local tar_log="${case_dir}/logs/tar.log"
+
+  assert_contains "BASE_NAME=custom-base" "${case_dir}/config/credimi/runner/.env"
+  assert_not_contains "https://files.pn-a.com/credimi_base_image.tar.gz" "${curl_log}"
+  assert_not_contains "https://files.pn-a.com/credimi_golden.tar.gz" "${curl_log}"
+  assert_empty_or_missing "${tar_log}"
 }
 
 run_linux_wifi_case() {
@@ -1348,6 +1454,8 @@ run_linux_rejects_ios_types_case() {
 run_linux_usb_case
 run_linux_usb_otel_disabled_case
 run_linux_emulator_case
+run_linux_emulator_downloads_missing_assets_case
+run_linux_emulator_skips_asset_download_when_present_case
 run_linux_wifi_case
 run_linux_redroid_no_device_case
 run_direct_container_case

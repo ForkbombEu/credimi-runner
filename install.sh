@@ -19,6 +19,8 @@ DEFAULT_BASE_NAME="credimi"
 DEFAULT_HOST_AVD_HOME_PATH="${HOME}/.android/avd"
 DEFAULT_HOST_AVD_GOLDEN_PATH="${HOME}/avd-golden"
 DEFAULT_GOLDEN_PATH="/avd-golden"
+DEFAULT_BASE_AVD_ARCHIVE_URL="https://files.pn-a.com/credimi_base_image.tar.gz"
+DEFAULT_GOLDEN_ARCHIVE_URL="https://files.pn-a.com/credimi_golden.tar.gz"
 DEFAULT_ANDROID_WIFI_PORT="5555"
 DEFAULT_REDROID_DATA_DIR="/home/credimi/redroid-data"
 DEFAULT_REDROID_DATA_TAR="/home/credimi/redroid-data.tar"
@@ -184,6 +186,80 @@ append_env_if_missing() {
   if [ ! -f "$env_file" ] || ! env_file_has_key "$env_file" "$key"; then
     printf '%s=%s\n' "$key" "$value" >>"$env_file"
     appended_env_keys="1"
+  fi
+}
+
+avd_assets_exist_for_name() {
+  avd_home="$1"
+  avd_name="$2"
+
+  [ -d "${avd_home}/${avd_name}.avd" ] && [ -f "${avd_home}/${avd_name}.ini" ]
+}
+
+emulator_base_assets_present() {
+  avd_home="$1"
+  base_name="$2"
+
+  if avd_assets_exist_for_name "$avd_home" "$base_name"; then
+    return 0
+  fi
+
+  if [ "$base_name" != "$DEFAULT_BASE_NAME" ] && avd_assets_exist_for_name "$avd_home" "$DEFAULT_BASE_NAME"; then
+    return 0
+  fi
+
+  return 1
+}
+
+golden_assets_present() {
+  golden_root="$1"
+
+  if [ -d "${golden_root}/credimi-golden" ]; then
+    return 0
+  fi
+
+  [ -d "$golden_root" ] && [ "${golden_root##*/}" = "credimi-golden" ]
+}
+
+download_and_extract_tarball() {
+  archive_url="$1"
+  dest_dir="$2"
+  archive_name="$3"
+  archive_path="${dest_dir}/${archive_name}"
+
+  mkdir -p "$dest_dir"
+  rm -f "$archive_path"
+  say "Downloading ${archive_name} into ${dest_dir}"
+  curl -fsSL "$archive_url" -o "$archive_path"
+  if tar -xzf "$archive_path" -C "$dest_dir"; then
+    rm -f "$archive_path"
+    return 0
+  fi
+
+  rm -f "$archive_path"
+  die "failed to extract ${archive_name} into ${dest_dir}"
+}
+
+ensure_android_emulator_seed_assets() {
+  avd_home="$1"
+  golden_root="$2"
+  base_name="$3"
+
+  need_cmd curl
+  need_cmd rm
+  need_cmd tar
+  mkdir -p "$avd_home" "$golden_root"
+
+  if emulator_base_assets_present "$avd_home" "$base_name"; then
+    say "Base AVD assets already present in ${avd_home}"
+  else
+    download_and_extract_tarball "${DEFAULT_BASE_AVD_ARCHIVE_URL}" "$avd_home" "credimi_base_image.tar.gz"
+  fi
+
+  if golden_assets_present "$golden_root"; then
+    say "Golden AVD assets already present in ${golden_root}"
+  else
+    download_and_extract_tarball "${DEFAULT_GOLDEN_ARCHIVE_URL}" "$golden_root" "credimi_golden.tar.gz"
   fi
 }
 
@@ -1925,6 +2001,7 @@ main() {
         HOST_AVD_GOLDEN_PATH="$(resolved_value HOST_AVD_GOLDEN_PATH "${DEFAULT_HOST_AVD_GOLDEN_PATH}")"
         BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
         GOLDEN_PATH="$(resolved_value GOLDEN_PATH "${DEFAULT_GOLDEN_PATH}")"
+        ensure_android_emulator_seed_assets "${HOST_AVD_HOME_PATH}" "${HOST_AVD_GOLDEN_PATH}" "${BASE_NAME}"
       else
         CREDIMI_CONTAINER_MODE=""
         ANDROID_KEYS_DIR=""
