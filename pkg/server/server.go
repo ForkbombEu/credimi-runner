@@ -100,10 +100,6 @@ func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Ins
 	return data.Namespaces, nil
 }
 
-func traceWithAttrs(attrs ...attribute.KeyValue) trace.EventOption {
-	return trace.WithAttributes(attrs...)
-}
-
 func workerTraceAttrs(instanceName, orgName, namespace, runnerID string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("instance.name", instanceName),
