@@ -335,6 +335,7 @@ prompt_intro() {
   line_two="${2-}"
 
   [ -n "$tty_path" ] || return 0
+  printf '\n' >"$tty_path"
   printf '%s%s%s\n' "${c_cyan}" "$line_one" "${c_reset}" >"$tty_path"
   [ -z "$line_two" ] || printf '%s%s%s\n' "${c_cyan}" "$line_two" "${c_reset}" >"$tty_path"
 }
@@ -1873,12 +1874,8 @@ main() {
     "Choose here how Credimi should reach this runner over the network." \
     "The default is auto; auto uses a temporary domain via a Cloudflare free tunneling service, manual uses the IP or domain that you did setup yourself for this runner, and cloudflare-managed uses your Cloudflare tunnel token and setup.")"
   CREDIMI_SERVICE_MODE="$(normalize_service_mode "$service_mode_choice")"
-  RUNNER_HOST="$(prompt_value_guided RUNNER_HOST "Runner bind host" "$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")" 0 0 \
-    "Type here the local host address the runner server should listen on." \
-    "The default is 0.0.0.0, which allows connections from anywhere; change it only if you need the runner to bind to a different local address.")"
-  RUNNER_PORT="$(prompt_value_guided RUNNER_PORT "Runner port" "$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")" 0 0 \
-    "Type here the local port the runner server should listen on." \
-    "The default is 8050; change it only if that port is already in use or you need a different one.")"
+  RUNNER_HOST="$(resolved_value RUNNER_HOST "${DEFAULT_RUNNER_HOST}")"
+  RUNNER_PORT="$(resolved_value RUNNER_PORT "${DEFAULT_RUNNER_PORT}")"
 
   case "$CREDIMI_SERVICE_MODE" in
     cloudflare-managed)
@@ -2084,11 +2081,11 @@ main() {
   say ""
   success "Installed:"
   if [ "$CREDIMI_RUNNER_BACKEND" = "host" ]; then
-    say "- ${binary_path}"
+    say "- ${c_cyan}${c_bold}${binary_path}${c_reset}"
   fi
-  say "- ${launcher_path}"
-  say "- ${compose_file}"
-  say "- ${env_file}"
+  say "- ${c_cyan}${c_bold}${launcher_path}${c_reset}"
+  say "- ${c_cyan}${c_bold}${compose_file}${c_reset}"
+  say "- ${c_cyan}${c_bold}${env_file}${c_reset}"
   say ""
   if ! path_has_dir "$bin_dir"; then
     if [ "$bin_dir" = "${HOME}/.local/bin" ]; then
@@ -2122,7 +2119,7 @@ main() {
     esac
   fi
   if [ "$existing_env" = "1" ]; then
-    say "Updated configuration in ${env_file}."
+    say "Updated configuration in ${c_cyan}${c_bold}${env_file}${c_reset}."
   fi
   say ""
   say "Start the service with:"
