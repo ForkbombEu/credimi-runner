@@ -2001,7 +2001,6 @@ main() {
         HOST_AVD_GOLDEN_PATH="$(resolved_value HOST_AVD_GOLDEN_PATH "${DEFAULT_HOST_AVD_GOLDEN_PATH}")"
         BASE_NAME="$(resolved_value BASE_NAME "${DEFAULT_BASE_NAME}")"
         GOLDEN_PATH="$(resolved_value GOLDEN_PATH "${DEFAULT_GOLDEN_PATH}")"
-        ensure_android_emulator_seed_assets "${HOST_AVD_HOME_PATH}" "${HOST_AVD_GOLDEN_PATH}" "${BASE_NAME}"
       else
         CREDIMI_CONTAINER_MODE=""
         ANDROID_KEYS_DIR=""
@@ -2011,6 +2010,9 @@ main() {
         GOLDEN_PATH="$(resolved_value GOLDEN_PATH "${DEFAULT_GOLDEN_PATH}")"
       fi
       configure_avdctl_ssh
+      if [ "$CREDIMI_RUNNER_BACKEND" = "container" ]; then
+        ensure_android_emulator_seed_assets "${HOST_AVD_HOME_PATH}" "${HOST_AVD_GOLDEN_PATH}" "${BASE_NAME}"
+      fi
       REDROID_DATA_DIR=""
       REDROID_DATA_TAR=""
       ;;
