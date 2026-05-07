@@ -8,15 +8,12 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 )
 
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
-
-type TokenProvider func(instance utils.Instance) (string, error)
 
 type FileStore interface {
 	MkdirAll(path string, perm os.FileMode) error
@@ -34,7 +31,6 @@ type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
 
 type Deps struct {
 	HTTPClient          HTTPClient
-	TokenProvider       TokenProvider
 	FileStore           FileStore
 	CommandRunner       CommandRunner
 	WorkerRunnerFactory WorkerRunnerFactory
@@ -44,9 +40,6 @@ type Deps struct {
 func (d *Deps) WithDefaults() {
 	if d.HTTPClient == nil {
 		d.HTTPClient = http.DefaultClient
-	}
-	if d.TokenProvider == nil {
-		d.TokenProvider = utils.GetBearerToken
 	}
 	if d.FileStore == nil {
 		d.FileStore = osFileStore{}

@@ -20,23 +20,15 @@ import (
 
 type startWorkersHTTPClient struct {
 	mu        sync.Mutex
-	lastAuth  string
 	lastKey   string
 	responder func(req *http.Request) (*http.Response, error)
 }
 
 func (c *startWorkersHTTPClient) Do(req *http.Request) (*http.Response, error) {
 	c.mu.Lock()
-	c.lastAuth = req.Header.Get("Authorization")
 	c.lastKey = req.Header.Get(internalAdminKeyHeader)
 	c.mu.Unlock()
 	return c.responder(req)
-}
-
-func (c *startWorkersHTTPClient) authHeader() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.lastAuth
 }
 
 func (c *startWorkersHTTPClient) keyHeader() string {
@@ -119,10 +111,6 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		TokenProvider: func(instance utils.Instance) (string, error) {
-			t.Fatal("admin namespace lookup should not fetch bearer token")
-			return "", nil
-		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
 				startedCh <- namespace
@@ -137,7 +125,6 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 
 	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
-	require.Empty(t, client.authHeader())
 	require.Equal(t, "internal-admin-key", client.keyHeader())
 	select {
 	case ns := <-startedCh:
@@ -169,10 +156,6 @@ func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		TokenProvider: func(instance utils.Instance) (string, error) {
-			t.Fatal("admin namespace lookup should not fetch bearer token")
-			return "", nil
-		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
 				<-ctx.Done()
@@ -211,10 +194,6 @@ func TestStartExistingWorkers_StartsAllAdminNamespaces(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		TokenProvider: func(instance utils.Instance) (string, error) {
-			t.Fatal("admin namespace lookup should not fetch bearer token")
-			return "", nil
-		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
 				<-ctx.Done()
@@ -255,10 +234,6 @@ func TestStartExistingWorkers_AppliesStartupDelayBetweenStarts(t *testing.T) {
 	var sleeps []time.Duration
 	deps := Deps{
 		HTTPClient: client,
-		TokenProvider: func(instance utils.Instance) (string, error) {
-			t.Fatal("admin namespace lookup should not fetch bearer token")
-			return "", nil
-		},
 		Sleeper: func(d time.Duration) {
 			sleeps = append(sleeps, d)
 		},
@@ -300,10 +275,6 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 	var sleeps []time.Duration
 	deps := Deps{
 		HTTPClient: client,
-		TokenProvider: func(instance utils.Instance) (string, error) {
-			t.Fatal("admin namespace lookup should not fetch bearer token")
-			return "", nil
-		},
 		Sleeper: func(d time.Duration) {
 			sleeps = append(sleeps, d)
 		},
@@ -331,9 +302,12 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 	proc2.Stop()
 }
 
-func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
+func TestStartExistingWorkers_ReturnsLookupFailures(t *testing.T) {
 	client := &startWorkersHTTPClient{
 		responder: func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Host, "broken") {
+				return nil, errors.New("lookup error")
+			}
 			require.Equal(t, "/api/organizations/my", req.URL.Path)
 			return httpResp(http.StatusOK, `{"name":"Good Org","canonified_name":"good-ns"}`), nil
 		},
@@ -341,12 +315,6 @@ func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		TokenProvider: func(instance utils.Instance) (string, error) {
-			if strings.Contains(instance.URL, "broken") {
-				return "", errors.New("token error")
-			}
-			return "ok-token", nil
-		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
 				<-ctx.Done()
@@ -360,8 +328,7 @@ func TestStartExistingWorkers_SkipsTokenFailures(t *testing.T) {
 	}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "Bearer ok-token", client.authHeader())
+	require.ErrorContains(t, err, "lookup error")
 }
 
 func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T) {
@@ -378,10 +345,6 @@ func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T
 
 	deps := Deps{
 		HTTPClient: client,
-		TokenProvider: func(instance utils.Instance) (string, error) {
-			require.Equal(t, "user-api-key", instance.UserAPIKey)
-			return "user-token", nil
-		},
 		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
 			return func(ctx context.Context) error {
 				startedCh <- namespace
@@ -397,8 +360,7 @@ func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T
 
 	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, "Bearer user-token", client.authHeader())
-	require.Empty(t, client.keyHeader())
+	require.Equal(t, "user-api-key", client.keyHeader())
 
 	select {
 	case ns := <-startedCh:
@@ -424,7 +386,6 @@ func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
 					return httpResp(http.StatusForbidden, ""), nil
 				},
 			},
-			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
 		})
 
 		err := srv.StartExistingWorkers(context.Background())
@@ -441,7 +402,6 @@ func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
 					return httpResp(http.StatusOK, "{"), nil
 				},
 			},
-			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
 		})
 
 		err := srv.StartExistingWorkers(context.Background())
@@ -458,7 +418,6 @@ func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
 					return httpResp(http.StatusOK, `{"name":"User Org","canonified_name":""}`), nil
 				},
 			},
-			TokenProvider: func(instance utils.Instance) (string, error) { return "user-token", nil },
 		})
 
 		err := srv.StartExistingWorkers(context.Background())

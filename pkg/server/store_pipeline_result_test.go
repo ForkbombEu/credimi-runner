@@ -58,8 +58,6 @@ func TestStorePipelineResult_MissingVideoPath(t *testing.T) {
 }
 
 func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
-	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
-
 	baseURL := "http://example.local"
 	storeURL := baseURL + "/api/wallet/store-pipeline-result"
 	capture := &multipartCapture{}
@@ -67,7 +65,7 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	client := &fakeHTTPClient{
 		handlers: map[string]func(*http.Request) (*http.Response, error){
 			http.MethodPost + " " + storeURL: func(req *http.Request) (*http.Response, error) {
-				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				require.Equal(t, "user-key", req.Header.Get(internalAdminKeyHeader))
 				reader, err := req.MultipartReader()
 				if err != nil {
 					capture.err = err
@@ -117,11 +115,10 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	require.NoError(t, writer.Close())
 
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+		HTTPClient: client,
+		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 	payload := storePipelineResultPayload{
 		InstanceURL:      baseURL,
 		VideoPath:        videoPath,
@@ -202,10 +199,9 @@ func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 	_, _ = writer.Write([]byte("log"))
 	require.NoError(t, writer.Close())
 
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+		HTTPClient: client,
+		FileStore:  store,
 	})
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
@@ -251,11 +247,10 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 	require.NoError(t, writer.Close())
 
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+		HTTPClient: client,
+		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 	payload := storePipelineResultPayload{
 		InstanceURL:      baseURL,
 		VideoPath:        "results/run-1/video.mp4",
@@ -304,11 +299,10 @@ func TestStorePipelineResult_UpstreamWrappedError(t *testing.T) {
 	require.NoError(t, writer.Close())
 
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+		HTTPClient: client,
+		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
 		InstanceURL:      baseURL,
@@ -356,11 +350,10 @@ func TestStorePipelineResult_UpstreamConcatenatedErrorFallsBackGracefully(t *tes
 	require.NoError(t, writer.Close())
 
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+		HTTPClient: client,
+		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
 		InstanceURL:      baseURL,
@@ -395,11 +388,10 @@ func TestStorePipelineResult_InvalidInstanceURL(t *testing.T) {
 	require.NoError(t, writer.Close())
 
 	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {URL: baseURL},
+		"prod": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"},
 	}, Deps{
-		HTTPClient:    &fakeHTTPClient{},
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+		HTTPClient: &fakeHTTPClient{},
+		FileStore:  store,
 	})
 
 	_, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
@@ -418,7 +410,7 @@ func TestStorePipelineResult_InvalidInstanceURL(t *testing.T) {
 	}, apiErr)
 }
 
-func TestStorePipelineResult_TokenProviderError(t *testing.T) {
+func TestStorePipelineResult_MissingCredentials(t *testing.T) {
 	baseURL := "http://example.local"
 	store := &memoryFileStore{}
 	writer, err := store.Create("results/run-1/video.mp4")
@@ -434,9 +426,8 @@ func TestStorePipelineResult_TokenProviderError(t *testing.T) {
 	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
 		"prod": {URL: baseURL},
 	}, Deps{
-		HTTPClient:    &fakeHTTPClient{},
-		TokenProvider: func(instance utils.Instance) (string, error) { return "", errors.New("bad token") },
-		FileStore:     store,
+		HTTPClient: &fakeHTTPClient{},
+		FileStore:  store,
 	})
 
 	_, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
@@ -450,8 +441,8 @@ func TestStorePipelineResult_TokenProviderError(t *testing.T) {
 	require.Equal(t, &runner.APIError{
 		Code:    http.StatusUnauthorized,
 		Domain:  "authorization",
-		Reason:  "invalid token",
-		Message: "failed to get auth token: bad token",
+		Reason:  "missing credentials",
+		Message: "missing Credimi credentials: set CREDIMI_USER_API_KEY or CREDIMI_INTERNAL_ADMIN_KEY",
 	}, apiErr)
 }
 
@@ -472,11 +463,10 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		require.NoError(t, writer.Close())
 
 		return NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: baseURL},
+			"prod": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"},
 		}, Deps{
-			HTTPClient:    client,
-			TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-			FileStore:     store,
+			HTTPClient: client,
+			FileStore:  store,
 		})
 	}
 

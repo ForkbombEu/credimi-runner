@@ -222,9 +222,8 @@ func TestFetchInstallerAndAction_InvalidInstanceURL(t *testing.T) {
 		"test": {URL: "http://example.local"},
 	}
 	deps := Deps{
-		HTTPClient:    &fakeHTTPClient{},
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+		HTTPClient: &fakeHTTPClient{},
+		FileStore:  &memoryFileStore{},
 	}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), instances, deps)
 	payload := fetchInstallerAndActionPayload{
@@ -252,17 +251,16 @@ func TestFetchInstallerAndAction_ValidateFailure(t *testing.T) {
 	client := &fakeHTTPClient{
 		handlers: map[string]func(*http.Request) (*http.Response, error){
 			http.MethodPost + " " + validateURL: func(req *http.Request) (*http.Response, error) {
-				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				require.Equal(t, "user-key", req.Header.Get(internalAdminKeyHeader))
 				return newResponse(http.StatusBadRequest, `{"status":400,"error":"CredimiAPI","reason":"BadIdentifier","message":"invalid"}`), nil
 			},
 		},
 	}
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+		HTTPClient: client,
+		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 	payload := fetchInstallerAndActionPayload{
 		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
@@ -295,11 +293,10 @@ func TestFetchInstallerAndAction_ValidateFailureWrappedError(t *testing.T) {
 		},
 	}
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+		HTTPClient: client,
+		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 
 	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
 		InstanceURL:       baseURL,
@@ -328,11 +325,10 @@ func TestFetchInstallerAndAction_GetInstallerFailure(t *testing.T) {
 		},
 	}
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+		HTTPClient: client,
+		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 	payload := fetchInstallerAndActionPayload{
 		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
@@ -364,11 +360,10 @@ func TestFetchInstallerAndAction_GetInstallerFailureWrappedError(t *testing.T) {
 		},
 	}
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+		HTTPClient: client,
+		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 
 	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
 		InstanceURL:       baseURL,
@@ -394,15 +389,14 @@ func TestFetchInstallerAndAction_SkipInstallerStillValidatesAction(t *testing.T)
 	client := &fakeHTTPClient{
 		handlers: map[string]func(*http.Request) (*http.Response, error){
 			http.MethodPost + " " + validateURL: func(req *http.Request) (*http.Response, error) {
-				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				require.Equal(t, "user-key", req.Header.Get(internalAdminKeyHeader))
 				return newResponse(http.StatusOK, `{"record":{"code":"ACTION-CODE"}}`), nil
 			},
 		},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+		HTTPClient: client,
+		FileStore:  &memoryFileStore{},
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
@@ -431,25 +425,24 @@ func TestFetchInstallerAndAction_DownloadMissingAndCached(t *testing.T) {
 	client := &fakeHTTPClient{
 		handlers: map[string]func(*http.Request) (*http.Response, error){
 			http.MethodPost + " " + getInstallerURL: func(req *http.Request) (*http.Response, error) {
-				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				require.Equal(t, "user-key", req.Header.Get(internalAdminKeyHeader))
 				var body map[string]string
 				require.NoError(t, json.NewDecoder(req.Body).Decode(&body))
 				require.Equal(t, "android", body["platform"])
 				return newResponse(http.StatusOK, `{"record_id":"rec-1","installer_name":"app.apk","installer_identifier":"apk-123","version_id":"v1"}`), nil
 			},
 			http.MethodGet + " " + downloadURL: func(req *http.Request) (*http.Response, error) {
-				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				require.Equal(t, "user-key", req.Header.Get(internalAdminKeyHeader))
 				return newResponse(http.StatusOK, "apk-bytes"), nil
 			},
 		},
 	}
 	store := &memoryFileStore{}
 	deps := Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+		HTTPClient: client,
+		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
 	payload := fetchInstallerAndActionPayload{
 		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
@@ -472,6 +465,39 @@ func TestFetchInstallerAndAction_DownloadMissingAndCached(t *testing.T) {
 	require.Equal(t, 0, client.callCount(http.MethodGet, downloadURL))
 }
 
+func TestFetchInstallerAndAction_InternalAdminKeyDoesNotRequireUserAPIKey(t *testing.T) {
+	baseURL := "http://example.local"
+	getInstallerURL := baseURL + "/api/wallet/get-installer-md5-or-etag"
+	downloadURL := baseURL + "/api/files/wallet_versions/rec-1/app.apk"
+	client := &fakeHTTPClient{
+		handlers: map[string]func(*http.Request) (*http.Response, error){
+			http.MethodPost + " " + getInstallerURL: func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				return newResponse(http.StatusOK, `{"record_id":"rec-1","installer_name":"app.apk","installer_identifier":"apk-123","version_id":"v1"}`), nil
+			},
+			http.MethodGet + " " + downloadURL: func(req *http.Request) (*http.Response, error) {
+				require.Equal(t, "internal-admin-key", req.Header.Get(internalAdminKeyHeader))
+				return newResponse(http.StatusOK, "apk-bytes"), nil
+			},
+		},
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
+		"test": {URL: baseURL, InternalAdminKey: "internal-admin-key"},
+	}, Deps{
+		HTTPClient: client,
+		FileStore:  &memoryFileStore{},
+	})
+
+	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		InstanceURL:       baseURL,
+		VersionIdentifier: "v1",
+		Platform:          "android",
+	})
+
+	require.Nil(t, apiErr)
+	require.Equal(t, "apps/apk-123.apk", result.InstallerPath)
+}
+
 func TestFetchInstallerAndAction_IOSInstallerUsesIPAExtension(t *testing.T) {
 	baseURL := "http://example.local"
 	getInstallerURL := baseURL + "/api/wallet/get-installer-md5-or-etag"
@@ -490,10 +516,9 @@ func TestFetchInstallerAndAction_IOSInstallerUsesIPAExtension(t *testing.T) {
 		},
 	}
 
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+		HTTPClient: client,
+		FileStore:  &memoryFileStore{},
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
@@ -531,10 +556,9 @@ func TestFetchInstallerAndAction_IOSZipInstallerUnzipsAppAndCachesPath(t *testin
 	}
 
 	store := &memoryFileStore{}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL}}, Deps{
-		HTTPClient:    client,
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     store,
+	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+		HTTPClient: client,
+		FileStore:  store,
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
@@ -569,9 +593,8 @@ func TestFetchInstallerAndAction_InvalidPlatform(t *testing.T) {
 	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
 		"test": {URL: "http://example.local"},
 	}, Deps{
-		HTTPClient:    &fakeHTTPClient{},
-		TokenProvider: func(instance utils.Instance) (string, error) { return "token", nil },
-		FileStore:     &memoryFileStore{},
+		HTTPClient: &fakeHTTPClient{},
+		FileStore:  &memoryFileStore{},
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{

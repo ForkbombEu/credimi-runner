@@ -1,16 +1,12 @@
 package utils
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 )
 
 type Instance struct {
@@ -20,18 +16,6 @@ type Instance struct {
 }
 
 const defaultCredimiURL = "https://credimi.io"
-
-// tokenCacheEntry stores a cached token and its expiration time
-type tokenCacheEntry struct {
-	token     string
-	expiresAt time.Time
-	mutex     sync.Mutex
-}
-
-var tokenCache = make(map[string]*tokenCacheEntry)
-var tokenCacheGlobalMutex sync.Mutex
-
-const userAPIKeyHeader = "Credimi-Api-Key"
 
 // GetEnvironmentVariable retrieves the value of an environment variable.
 //
@@ -115,81 +99,6 @@ func GetEnvironmentVariableAsInteger(name string, others ...any) (int, error) {
 	return int(outputAsInt), nil
 }
 
-// GetBearerToken exchanges a configured user API key for a PocketBase bearer token.
-func GetBearerToken(instance Instance) (string, error) {
-	return GetUserAPIKeyToken(instance)
-}
-
-// GetUserAPIKeyToken exchanges a user API key for a PocketBase bearer token.
-func GetUserAPIKeyToken(instance Instance) (string, error) {
-	if strings.TrimSpace(instance.UserAPIKey) == "" {
-		return "", fmt.Errorf("missing user API key for %s", instance.URL)
-	}
-
-	return getCachedToken(instance.tokenCacheKey(), func() (string, error) {
-		url := JoinURL(instance.URL, "api", "apikey", "authenticate")
-		req, err := http.NewRequest(http.MethodGet, url, nil)
-		if err != nil {
-			return "", fmt.Errorf("failed to create API key auth request: %w", err)
-		}
-		req.Header.Set(userAPIKeyHeader, instance.UserAPIKey)
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return "", fmt.Errorf("failed to contact PocketBase: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("API key auth failed: %s", resp.Status)
-		}
-
-		var res struct {
-			Token string `json:"token"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-			return "", fmt.Errorf("failed to decode PocketBase response: %w", err)
-		}
-		if res.Token == "" {
-			return "", fmt.Errorf("no token returned by PocketBase")
-		}
-		return res.Token, nil
-	})
-}
-
-func getCachedToken(cacheKey string, fetch func() (string, error)) (string, error) {
-	// Ensure thread-safe access to the token cache map.
-	tokenCacheGlobalMutex.Lock()
-	entry, exists := tokenCache[cacheKey]
-	if !exists {
-		entry = &tokenCacheEntry{}
-		tokenCache[cacheKey] = entry
-	}
-	tokenCacheGlobalMutex.Unlock()
-
-	// Lock the entry to prevent concurrent refreshes.
-	entry.mutex.Lock()
-	defer entry.mutex.Unlock()
-
-	// Return cached token if valid.
-	if entry.token != "" && time.Now().Before(entry.expiresAt) {
-		return entry.token, nil
-	}
-
-	token, err := fetch()
-	if err != nil {
-		return "", err
-	}
-	entry.token = token
-	// Keep the cache aligned with PocketBase auth token lifetime.
-	entry.expiresAt = time.Now().Add(1209600 * time.Second)
-
-	return token, nil
-}
-
-func (i Instance) tokenCacheKey() string {
-	return i.URL + "|user_api_key"
-}
 func LoadInstances() map[string]Instance {
 	return map[string]Instance{
 		"production": {
