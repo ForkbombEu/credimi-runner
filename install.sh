@@ -412,8 +412,51 @@ prompt_intro() {
 
   [ -n "$tty_path" ] || return 0
   printf '\n' >"$tty_path"
-  printf '%s%s%s\n' "${c_cyan}" "$line_one" "${c_reset}" >"$tty_path"
-  [ -z "$line_two" ] || printf '%s%s%s\n' "${c_cyan}" "$line_two" "${c_reset}" >"$tty_path"
+  prompt_intro_line "$line_one"
+  [ -z "$line_two" ] || prompt_intro_line "$line_two"
+}
+
+prompt_intro_line() {
+  line="$1"
+
+  case "$line" in
+    IMPORTANT:*)
+      printf '%s%s%s\n' "${c_yellow}${c_bold}" "$line" "${c_reset}" >"$tty_path"
+      ;;
+    *)
+      printf '%s%s%s\n' "${c_cyan}" "$line" "${c_reset}" >"$tty_path"
+      ;;
+  esac
+}
+
+repeat_char() {
+  char="$1"
+  count="$2"
+  result=""
+
+  while [ "$count" -gt 0 ]; do
+    result="${result}${char}"
+    count=$((count - 1))
+  done
+
+  printf '%s' "$result"
+}
+
+print_launch_command_box() {
+  command_text="$1"
+  title="Start the service with"
+  width="${#title}"
+  border=""
+
+  if [ "${#command_text}" -gt "$width" ]; then
+    width="${#command_text}"
+  fi
+
+  border="$(repeat_char "-" $((width + 2)))"
+  printf '%s+%s+%s\n' "${c_cyan}${c_bold}" "$border" "${c_reset}" >&2
+  printf '%s| %-*s |%s\n' "${c_cyan}${c_bold}" "$width" "$title" "${c_reset}" >&2
+  printf '%s| %s%-*s%s |%s\n' "${c_cyan}${c_bold}" "${c_green}${c_bold}" "$width" "$command_text" "${c_cyan}${c_bold}" "${c_reset}" >&2
+  printf '%s+%s+%s\n' "${c_cyan}${c_bold}" "$border" "${c_reset}" >&2
 }
 
 prompt_value_guided() {
@@ -2698,8 +2741,7 @@ main() {
     say "Updated configuration in ${c_cyan}${c_bold}${env_file}${c_reset}."
   fi
   say ""
-  say "Start the service with:"
-  say "${PROJECT_NAME}-service"
+  print_launch_command_box "${PROJECT_NAME}-service"
   say ""
   say "Other commands:"
   say "${PROJECT_NAME}-service auto"
