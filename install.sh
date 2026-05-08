@@ -445,6 +445,499 @@ prompt_choice_guided() {
   prompt_choice "$var_name" "$label" "$default_value" "$choices"
 }
 
+menu_option_count() {
+  printf '%s\n' "$1" | awk 'NF { count += 1 } END { print count + 0 }'
+}
+
+menu_option_value() {
+  options="$1"
+  selected_index="$2"
+  printf '%s\n' "$options" | sed -n "${selected_index}p"
+}
+
+menu_option_index() {
+  options="$1"
+  target="$2"
+  printf '%s\n' "$options" | awk -v target="$target" '
+    $0 == target {
+      print NR
+      found = 1
+      exit
+    }
+    END {
+      if (!found) {
+        print 0
+      }
+    }
+  '
+}
+
+menu_terminal_rows() {
+  if [ -n "$tty_path" ]; then
+    tty_size="$(stty size <"$tty_path" 2>/dev/null || true)"
+    tty_rows="$(printf '%s\n' "$tty_size" | awk 'NF >= 1 { print $1; exit }')"
+    case "$tty_rows" in
+      ''|*[!0-9]*)
+        tty_rows=24
+        ;;
+    esac
+    if [ "$tty_rows" -lt 8 ]; then
+      tty_rows=8
+    fi
+    printf '%s' "$tty_rows"
+    return 0
+  fi
+
+  printf '24'
+}
+
+menu_terminal_cols() {
+  if [ -n "$tty_path" ]; then
+    tty_size="$(stty size <"$tty_path" 2>/dev/null || true)"
+    tty_cols="$(printf '%s\n' "$tty_size" | awk 'NF >= 2 { print $2; exit }')"
+    case "$tty_cols" in
+      ''|*[!0-9]*)
+        tty_cols=80
+        ;;
+    esac
+    if [ "$tty_cols" -lt 20 ]; then
+      tty_cols=20
+    fi
+    printf '%s' "$tty_cols"
+    return 0
+  fi
+
+  printf '80'
+}
+
+menu_visible_count() {
+  terminal_rows="$1"
+  visible_count=$((terminal_rows - 6))
+  if [ "$visible_count" -lt 3 ]; then
+    visible_count=3
+  fi
+  printf '%s' "$visible_count"
+}
+
+menu_initial_window_start() {
+  option_count="$1"
+  visible_count="$2"
+  selected_index="$3"
+
+  half_window=$((visible_count / 2))
+  start_index=$((selected_index - half_window))
+  if [ "$start_index" -lt 1 ]; then
+    start_index=1
+  fi
+
+  max_start=$((option_count - visible_count + 1))
+  if [ "$max_start" -lt 1 ]; then
+    max_start=1
+  fi
+  if [ "$start_index" -gt "$max_start" ]; then
+    start_index="$max_start"
+  fi
+
+  printf '%s' "$start_index"
+}
+
+menu_adjust_window_start() {
+  option_count="$1"
+  visible_count="$2"
+  selected_index="$3"
+  start_index="$4"
+
+  end_index=$((start_index + visible_count - 1))
+  if [ "$end_index" -gt "$option_count" ]; then
+    end_index="$option_count"
+  fi
+
+  scroll_margin=2
+  if [ "$visible_count" -le 5 ]; then
+    scroll_margin=1
+  fi
+
+  upper_threshold=$((start_index + scroll_margin))
+  lower_threshold=$((end_index - scroll_margin))
+
+  if [ "$selected_index" -lt "$upper_threshold" ]; then
+    start_index=$((selected_index - scroll_margin))
+  elif [ "$selected_index" -gt "$lower_threshold" ]; then
+    start_index=$((selected_index - visible_count + scroll_margin + 1))
+  fi
+
+  if [ "$start_index" -lt 1 ]; then
+    start_index=1
+  fi
+
+  max_start=$((option_count - visible_count + 1))
+  if [ "$max_start" -lt 1 ]; then
+    max_start=1
+  fi
+  if [ "$start_index" -gt "$max_start" ]; then
+    start_index="$max_start"
+  fi
+
+  printf '%s' "$start_index"
+}
+
+render_arrow_menu() {
+  label="$1"
+  options="$2"
+  selected_index="$3"
+  option_count="$4"
+  visible_count="$5"
+  start_index="$6"
+  terminal_cols="$7"
+  end_index=$((start_index + visible_count - 1))
+  if [ "$end_index" -gt "$option_count" ]; then
+    end_index="$option_count"
+  fi
+
+  text_width=$((terminal_cols - 4))
+  if [ "$text_width" -lt 8 ]; then
+    text_width=8
+  fi
+
+  printf '\033[H\033[J' >"$tty_path"
+  printf '%s\n' "$(menu_truncate_text "$label" "$terminal_cols")" >"$tty_path"
+  printf '%s\n' "$(menu_truncate_text "Showing ${start_index}-${end_index} of ${option_count}" "$terminal_cols")" >"$tty_path"
+  if [ "$start_index" -gt 1 ]; then
+    printf '%s%s%s\n' "${c_yellow}" "$(menu_truncate_text "^ more above" "$terminal_cols")" "${c_reset}" >"$tty_path"
+  else
+    printf '\n' >"$tty_path"
+  fi
+
+  slot_index=0
+  while [ "$slot_index" -lt "$visible_count" ]; do
+    current_index=$((start_index + slot_index))
+    if [ "$current_index" -le "$option_count" ]; then
+      option="$(menu_option_value "$options" "$current_index")"
+      option="$(menu_truncate_text "$option" "$text_width")"
+      if [ "$current_index" -eq "$selected_index" ]; then
+        printf '%s> %s%s\n' "${c_cyan}${c_bold}" "$option" "${c_reset}" >"$tty_path"
+      else
+        printf '  %s\n' "$option" >"$tty_path"
+      fi
+    else
+      printf '\n' >"$tty_path"
+    fi
+    slot_index=$((slot_index + 1))
+  done
+
+  if [ "$end_index" -lt "$option_count" ]; then
+    printf '%s%s%s\n' "${c_yellow}" "$(menu_truncate_text "v more below" "$terminal_cols")" "${c_reset}" >"$tty_path"
+  else
+    printf '\n' >"$tty_path"
+  fi
+  printf '%s\n' "$(menu_truncate_text "Use arrow keys and press Enter. Ctrl-C cancels." "$terminal_cols")" >"$tty_path"
+}
+
+render_menu_option_row() {
+  row_number="$1"
+  option="$2"
+  is_selected="$3"
+  terminal_cols="$4"
+  text_width=$((terminal_cols - 4))
+
+  if [ "$text_width" -lt 8 ]; then
+    text_width=8
+  fi
+
+  option="$(menu_truncate_text "$option" "$text_width")"
+  printf '\033[%s;1H\033[2K' "$row_number" >"$tty_path"
+  if [ "$is_selected" = "yes" ]; then
+    printf '%s> %s%s' "${c_cyan}${c_bold}" "$option" "${c_reset}" >"$tty_path"
+  else
+    printf '  %s' "$option" >"$tty_path"
+  fi
+}
+
+update_menu_selection_rows() {
+  options="$1"
+  start_index="$2"
+  previous_selected_index="$3"
+  selected_index="$4"
+  visible_count="$5"
+  terminal_cols="$6"
+
+  previous_row_offset=$((previous_selected_index - start_index))
+  if [ "$previous_row_offset" -ge 0 ] && [ "$previous_row_offset" -lt "$visible_count" ]; then
+    previous_row_number=$((4 + previous_row_offset))
+    previous_option="$(menu_option_value "$options" "$previous_selected_index")"
+    render_menu_option_row "$previous_row_number" "$previous_option" "no" "$terminal_cols"
+  fi
+
+  selected_row_offset=$((selected_index - start_index))
+  if [ "$selected_row_offset" -ge 0 ] && [ "$selected_row_offset" -lt "$visible_count" ]; then
+    selected_row_number=$((4 + selected_row_offset))
+    selected_option="$(menu_option_value "$options" "$selected_index")"
+    render_menu_option_row "$selected_row_number" "$selected_option" "yes" "$terminal_cols"
+  fi
+
+  printf '\033[%s;1H' $((visible_count + 5)) >"$tty_path"
+}
+
+menu_truncate_text() {
+  text="$1"
+  max_width="$2"
+
+  if [ "$max_width" -le 3 ]; then
+    printf '%s' "$text" | awk -v max="$max_width" '{ print substr($0, 1, max) }'
+    return 0
+  fi
+
+  printf '%s' "$text" | awk -v max="$max_width" '
+    {
+      if (length($0) <= max) {
+        print $0
+      } else {
+        print substr($0, 1, max - 3) "..."
+      }
+    }
+  '
+}
+
+menu_enter_fullscreen() {
+  printf '\033[?1049h\033[?25l' >"$tty_path"
+}
+
+menu_leave_fullscreen() {
+  printf '\033[0m\033[?25h\033[?1049l' >"$tty_path"
+}
+
+prompt_arrow_choice() {
+  var_name="$1"
+  label="$2"
+  options="$3"
+  default_value="${4-}"
+
+  if env_var_is_set "$var_name"; then
+    eval "existing_value=\${${var_name}}"
+    printf '%s' "$existing_value"
+    return 0
+  fi
+
+  option_count="$(menu_option_count "$options")"
+  [ "$option_count" -gt 0 ] || die "no options available for ${label}"
+
+  if [ -z "$tty_path" ]; then
+    if [ -n "$default_value" ]; then
+      printf '%s' "$default_value"
+      return 0
+    fi
+    die "${var_name} is required for non-interactive install"
+  fi
+
+  selected_index=1
+  if [ -n "$default_value" ]; then
+    default_index="$(menu_option_index "$options" "$default_value")"
+    if [ "$default_index" -gt 0 ]; then
+      selected_index="$default_index"
+    fi
+  fi
+
+  old_stty="$(stty -g <"$tty_path")"
+  esc_char="$(printf '\033')"
+  backspace_char="$(printf '\b')"
+  delete_char="$(printf '\177')"
+  ctrl_c_char="$(printf '\003')"
+  newline_char="$(printf '\n')"
+  carriage_return_char="$(printf '\r')"
+  terminal_rows="$(menu_terminal_rows)"
+  terminal_cols="$(menu_terminal_cols)"
+  visible_count="$(menu_visible_count "$terminal_rows")"
+  start_index="$(menu_initial_window_start "$option_count" "$visible_count" "$selected_index")"
+
+  stty -echo -icanon min 1 time 0 <"$tty_path"
+  menu_enter_fullscreen
+  render_arrow_menu "$label" "$options" "$selected_index" "$option_count" "$visible_count" "$start_index" "$terminal_cols"
+  while :; do
+    previous_selected_index="$selected_index"
+    previous_start_index="$start_index"
+    previous_terminal_rows="$terminal_rows"
+    previous_terminal_cols="$terminal_cols"
+    previous_visible_count="$visible_count"
+    char="$(dd bs=1 count=1 2>/dev/null <"$tty_path" || true)"
+    case "$char" in
+      "$newline_char"|"$carriage_return_char")
+        break
+        ;;
+      "$ctrl_c_char")
+        stty "$old_stty" <"$tty_path"
+        menu_leave_fullscreen
+        printf '\n' >"$tty_path"
+        exit 130
+        ;;
+      "$esc_char")
+        char_two="$(dd bs=1 count=1 2>/dev/null <"$tty_path" || true)"
+        char_three="$(dd bs=1 count=1 2>/dev/null <"$tty_path" || true)"
+        case "${char_two}${char_three}" in
+          "[A"|"OA")
+            if [ "$selected_index" -gt 1 ]; then
+              selected_index=$((selected_index - 1))
+            fi
+            ;;
+          "[B"|"OB")
+            if [ "$selected_index" -lt "$option_count" ]; then
+              selected_index=$((selected_index + 1))
+            fi
+            ;;
+        esac
+        ;;
+      k)
+        if [ "$selected_index" -gt 1 ]; then
+          selected_index=$((selected_index - 1))
+        fi
+        ;;
+      j)
+        if [ "$selected_index" -lt "$option_count" ]; then
+          selected_index=$((selected_index + 1))
+        fi
+        ;;
+      "$backspace_char"|"$delete_char")
+        ;;
+    esac
+    terminal_rows="$(menu_terminal_rows)"
+    terminal_cols="$(menu_terminal_cols)"
+    visible_count="$(menu_visible_count "$terminal_rows")"
+    start_index="$(menu_adjust_window_start "$option_count" "$visible_count" "$selected_index" "$start_index")"
+    if [ "$selected_index" = "$previous_selected_index" ] && \
+       [ "$start_index" = "$previous_start_index" ] && \
+       [ "$terminal_rows" = "$previous_terminal_rows" ] && \
+       [ "$terminal_cols" = "$previous_terminal_cols" ] && \
+       [ "$visible_count" = "$previous_visible_count" ]; then
+      continue
+    fi
+
+    if [ "$start_index" = "$previous_start_index" ] && \
+       [ "$terminal_rows" = "$previous_terminal_rows" ] && \
+       [ "$terminal_cols" = "$previous_terminal_cols" ] && \
+       [ "$visible_count" = "$previous_visible_count" ]; then
+      update_menu_selection_rows "$options" "$start_index" "$previous_selected_index" "$selected_index" "$visible_count" "$terminal_cols"
+    else
+      render_arrow_menu "$label" "$options" "$selected_index" "$option_count" "$visible_count" "$start_index" "$terminal_cols"
+    fi
+  done
+  stty "$old_stty" <"$tty_path"
+  menu_leave_fullscreen
+  printf '\n' >"$tty_path"
+  menu_option_value "$options" "$selected_index"
+}
+
+simctl_list_devices() {
+  xcrun simctl list devices available 2>/dev/null || xcrun simctl list devices 2>/dev/null
+}
+
+need_xcrun_simctl() {
+  need_cmd xcrun
+  xcrun simctl list devicetypes >/dev/null 2>&1 || die "xcrun simctl is required for ios_simulator installs"
+  xcrun simctl list runtimes >/dev/null 2>&1 || die "xcrun simctl is required for ios_simulator installs"
+}
+
+ios_simulator_exists_named() {
+  simulator_name="$1"
+  devices_output="$(simctl_list_devices || true)"
+
+  printf '%s\n' "$devices_output" | awk -v target="$simulator_name" '
+    /^[[:space:]]/ {
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (index(line, target " (") == 1) {
+        found = 1
+        exit 0
+      }
+    }
+    END {
+      exit(found ? 0 : 1)
+    }
+  '
+}
+
+ios_simulator_present() {
+  base_name="$1"
+  ios_simulator_exists_named "$base_name"
+}
+
+ios_simulator_device_type_entries() {
+  xcrun simctl list devicetypes | sed -n '
+    s/^[[:space:]]*//
+    /^==/d
+    /^$/d
+    s/^\(.*\) (\(com\.apple\.CoreSimulator\.SimDeviceType\.[^)]*\))$/\1	\2/p
+  '
+}
+
+ios_simulator_runtime_entries() {
+  xcrun simctl list runtimes | sed -n '
+    s/^[[:space:]]*//
+    /^==/d
+    /^$/d
+    /unavailable/d
+    s/^\(.*\) - \(com\.apple\.CoreSimulator\.SimRuntime\.[^[:space:]]*\)$/\1	\2/p
+  '
+}
+
+simctl_entry_options() {
+  printf '%s\n' "$1" | awk -F '\t' 'NF >= 2 { print $1 }'
+}
+
+simctl_entry_identifier_for_label() {
+  entries="$1"
+  selected_label="$2"
+  printf '%s\n' "$entries" | awk -F '\t' -v label="$selected_label" '$1 == label { print $2; exit }'
+}
+
+simctl_entry_label_for_identifier() {
+  entries="$1"
+  selected_identifier="$2"
+  printf '%s\n' "$entries" | awk -F '\t' -v identifier="$selected_identifier" '$2 == identifier { print $1; exit }'
+}
+
+choose_simctl_identifier() {
+  var_name="$1"
+  label="$2"
+  entries="$3"
+
+  entry_count="$(menu_option_count "$(simctl_entry_options "$entries")")"
+  [ "$entry_count" -gt 0 ] || die "no options available for ${label}"
+
+  preset_identifier="$(resolved_value "$var_name")"
+  if [ -n "$preset_identifier" ]; then
+    preset_label="$(simctl_entry_label_for_identifier "$entries" "$preset_identifier")"
+    [ -n "$preset_label" ] || die "${var_name} must match one of the available ${label} entries"
+    printf '%s' "$preset_identifier"
+    return 0
+  fi
+
+  options="$(simctl_entry_options "$entries")"
+  selected_label="$(prompt_arrow_choice "$var_name" "$label" "$options")"
+  selected_identifier="$(simctl_entry_identifier_for_label "$entries" "$selected_label")"
+  [ -n "$selected_identifier" ] || die "failed to resolve selected ${label}"
+  printf '%s' "$selected_identifier"
+}
+
+ensure_ios_simulator_exists() {
+  base_name="$1"
+
+  need_xcrun_simctl
+  if ios_simulator_present "$base_name"; then
+    say "iOS Simulator ${base_name} already exists"
+    return 0
+  fi
+
+  prompt_intro "No iOS Simulator named ${base_name} was found." \
+    "Choose a device type and runtime to create it now."
+  device_type_entries="$(ios_simulator_device_type_entries)"
+  device_type_identifier="$(choose_simctl_identifier IOS_SIMULATOR_DEVICE_TYPE_IDENTIFIER "iOS Simulator device type" "$device_type_entries")"
+  runtime_entries="$(ios_simulator_runtime_entries)"
+  runtime_identifier="$(choose_simctl_identifier IOS_SIMULATOR_RUNTIME_IDENTIFIER "iOS Simulator runtime" "$runtime_entries")"
+
+  say "Creating iOS Simulator ${base_name}"
+  xcrun simctl create "$base_name" "$device_type_identifier" "$runtime_identifier" >/dev/null 2>&1 || \
+    die "failed to create iOS Simulator ${base_name}"
+}
+
 normalize_asset_name() {
   os_name="$(uname -s)"
   arch_name="$(uname -m)"
@@ -1944,6 +2437,9 @@ main() {
     "IMPORTANT: choose here what kind of device this runner should control: Android phone, Android emulator, redroid, iOS simulator, or iOS phone." \
     "This choice has implication on what happens later.")"
   validate_runner_type_supported "${CREDIMI_RUNNER_TYPE}"
+  if [ "$CREDIMI_RUNNER_TYPE" = "ios_simulator" ]; then
+    need_xcrun_simctl
+  fi
   resolve_install_runner_identity
   service_mode_default="$(normalize_service_mode "$(resolved_value CREDIMI_SERVICE_MODE "auto")")"
   service_mode_choice="$(prompt_choice_guided CREDIMI_SERVICE_MODE "Networking (auto/manual/cloudflare-managed)" "${service_mode_default}" "auto manual cloudflare-managed" \
@@ -2036,6 +2532,7 @@ main() {
       AVDCTL_SUDO_PASSWORD=""
       REDROID_DATA_DIR=""
       REDROID_DATA_TAR=""
+      ensure_ios_simulator_exists "${BASE_NAME}"
       ;;
     ios_phone)
       CREDIMI_RUNNER_SERIAL="$(prompt_value CREDIMI_RUNNER_SERIAL "iOS phone serial" "$(resolved_value CREDIMI_RUNNER_SERIAL)")"
