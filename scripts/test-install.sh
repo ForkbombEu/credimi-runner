@@ -14,6 +14,10 @@ assert_file_exists() {
   [[ -f "$1" ]] || fail "missing file: $1"
 }
 
+assert_dir_exists() {
+  [[ -d "$1" ]] || fail "missing directory: $1"
+}
+
 assert_file_absent() {
   [[ ! -e "$1" ]] || fail "unexpected path: $1"
 }
@@ -199,6 +203,110 @@ printf 'unexpected docker invocation: %s\n' "$*" >&2
 exit 1
 EOF
 
+  cat >"${mock_dir}/tar" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${MOCK_LOG_DIR:?}"
+
+printf '%s\n' "$*" >>"${MOCK_LOG_DIR}/tar.log"
+
+archive=""
+dest_dir=""
+previous=""
+for arg in "$@"; do
+  if [[ "${previous}" == "-C" ]]; then
+    dest_dir="${arg}"
+  elif [[ "${previous}" == "-xzf" ]]; then
+    archive="${arg}"
+  fi
+  previous="${arg}"
+done
+
+[[ -n "${archive}" && -n "${dest_dir}" ]] || {
+  printf 'unexpected tar invocation: %s\n' "$*" >&2
+  exit 1
+}
+
+mkdir -p "${dest_dir}"
+
+case "${archive}" in
+  *credimi_base_image.tar.gz)
+    mkdir -p "${dest_dir}/credimi.avd"
+    : >"${dest_dir}/credimi.ini"
+    ;;
+  *credimi_golden.tar.gz)
+    mkdir -p "${dest_dir}/credimi-golden"
+    ;;
+  *)
+    printf 'unexpected tar archive: %s\n' "${archive}" >&2
+    exit 1
+    ;;
+esac
+EOF
+
+  cat >"${mock_dir}/xcrun" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${MOCK_LOG_DIR:?}"
+
+printf '%s\n' "$*" >>"${MOCK_LOG_DIR}/xcrun.log"
+
+if [[ "${1:-}" != "simctl" ]]; then
+  printf 'unexpected xcrun invocation: %s\n' "$*" >&2
+  exit 1
+fi
+
+if [[ "${MOCK_XCRUN_SIMCTL_FAIL:-0}" == "1" ]]; then
+  printf 'simctl unavailable\n' >&2
+  exit 1
+fi
+
+case "${2:-}" in
+  list)
+    case "${3:-}" in
+      devicetypes)
+        cat <<'LIST'
+== Device Types ==
+iPhone 16 Pro (com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro)
+iPhone SE (3rd generation) (com.apple.CoreSimulator.SimDeviceType.iPhone-SE-3rd-generation)
+LIST
+        ;;
+      runtimes)
+        cat <<'LIST'
+== Runtimes ==
+iOS 18.2 (18.2 - 22C146) - com.apple.CoreSimulator.SimRuntime.iOS-18-2
+iOS 17.5 (17.5 - 21F79) - com.apple.CoreSimulator.SimRuntime.iOS-17-5
+LIST
+        ;;
+      devices)
+        existing_simulator="${MOCK_XCRUN_EXISTING_SIM_NAME:-credimi}"
+        cat <<'LIST'
+== Devices ==
+-- iOS 18.2 --
+LIST
+        if [[ "${MOCK_XCRUN_DEVICES_MODE:-present}" != "missing" && -n "${existing_simulator}" ]]; then
+          printf '    %s (11111111-1111-1111-1111-111111111111) (Shutdown)\n' "${existing_simulator}"
+        fi
+        ;;
+      *)
+        printf 'unexpected simctl list target: %s\n' "${3:-}" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  create)
+    printf '%s|%s|%s\n' "${3:-}" "${4:-}" "${5:-}" >>"${MOCK_LOG_DIR}/xcrun.create.log"
+    printf '11111111-1111-1111-1111-111111111111\n'
+    ;;
+  *)
+    printf 'unexpected simctl action: %s\n' "${2:-}" >&2
+    exit 1
+    ;;
+esac
+EOF
+
   cat >"${mock_dir}/adb" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -217,7 +325,7 @@ case "${1:-}" in
 esac
 EOF
 
-  chmod +x "${mock_dir}/uname" "${mock_dir}/curl" "${mock_dir}/docker" "${mock_dir}/adb"
+  chmod +x "${mock_dir}/uname" "${mock_dir}/curl" "${mock_dir}/docker" "${mock_dir}/tar" "${mock_dir}/xcrun" "${mock_dir}/adb"
 }
 
 run_install() {
@@ -356,13 +464,15 @@ run_linux_emulator_case() {
   case_dir="$(mktemp -d)"
   mkdir -p "${case_dir}/logs"
   create_mocks "${case_dir}/mocks"
+  local host_avd_home="${case_dir}/seed/avd-home"
+  local host_avd_golden="${case_dir}/seed/avd-golden"
 
   FAKE_UNAME_S="Linux" \
   FAKE_UNAME_M="x86_64" \
   CREDIMI_RUNNER_TYPE="android_emulator" \
   ANDROID_KEYS_DIR="/srv/android-keys" \
-  HOST_AVD_HOME_PATH="/srv/credimi/avd-home" \
-  HOST_AVD_GOLDEN_PATH="/srv/credimi/avd-golden" \
+  HOST_AVD_HOME_PATH="${host_avd_home}" \
+  HOST_AVD_GOLDEN_PATH="${host_avd_golden}" \
   BASE_NAME="credimi" \
   GOLDEN_PATH="/avd-golden/credimi-golden" \
   run_install "${case_dir}"
@@ -381,6 +491,64 @@ run_linux_emulator_case() {
   assert_contains 'PORT: "${RUNNER_PORT:-8050}"' "${compose_file}"
   assert_contains "/dev/kvm:/dev/kvm" "${compose_file}"
   assert_contains '${ANDROID_KEYS_DIR}:/root/.android' "${compose_file}"
+}
+
+run_linux_emulator_downloads_missing_assets_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  local host_avd_home="${case_dir}/seed/avd-home"
+  local host_avd_golden="${case_dir}/seed/avd-golden"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  CREDIMI_RUNNER_TYPE="android_emulator" \
+  HOST_AVD_HOME_PATH="${host_avd_home}" \
+  HOST_AVD_GOLDEN_PATH="${host_avd_golden}" \
+  run_install "${case_dir}"
+
+  local curl_log="${case_dir}/logs/curl.log"
+  local tar_log="${case_dir}/logs/tar.log"
+
+  assert_dir_exists "${host_avd_home}/credimi.avd"
+  assert_file_exists "${host_avd_home}/credimi.ini"
+  assert_dir_exists "${host_avd_golden}/credimi-golden"
+  assert_file_absent "${host_avd_home}/credimi_base_image.tar.gz"
+  assert_file_absent "${host_avd_golden}/credimi_golden.tar.gz"
+  assert_contains "https://files.pn-a.com/credimi_base_image.tar.gz" "${curl_log}"
+  assert_contains "https://files.pn-a.com/credimi_golden.tar.gz" "${curl_log}"
+  assert_contains "credimi_base_image.tar.gz -C ${host_avd_home}" "${tar_log}"
+  assert_contains "credimi_golden.tar.gz -C ${host_avd_golden}" "${tar_log}"
+}
+
+run_linux_emulator_skips_asset_download_when_present_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  local host_avd_home="${case_dir}/seed/avd-home"
+  local host_avd_golden="${case_dir}/seed/avd-golden"
+  mkdir -p "${host_avd_home}/custom-base.avd" "${host_avd_golden}/credimi-golden"
+  : >"${host_avd_home}/custom-base.ini"
+
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  CREDIMI_RUNNER_TYPE="android_emulator" \
+  HOST_AVD_HOME_PATH="${host_avd_home}" \
+  HOST_AVD_GOLDEN_PATH="${host_avd_golden}" \
+  BASE_NAME="custom-base" \
+  run_install "${case_dir}"
+
+  local curl_log="${case_dir}/logs/curl.log"
+  local tar_log="${case_dir}/logs/tar.log"
+
+  assert_contains "BASE_NAME=custom-base" "${case_dir}/config/credimi/runner/.env"
+  assert_not_contains "https://files.pn-a.com/credimi_base_image.tar.gz" "${curl_log}"
+  assert_not_contains "https://files.pn-a.com/credimi_golden.tar.gz" "${curl_log}"
+  assert_empty_or_missing "${tar_log}"
 }
 
 run_linux_wifi_case() {
@@ -587,6 +755,7 @@ run_ios_simulator_preserves_base_name_case() {
 
   FAKE_UNAME_S="Darwin" \
   FAKE_UNAME_M="arm64" \
+  MOCK_XCRUN_EXISTING_SIM_NAME="ios-golden" \
   CREDIMI_RUNNER_TYPE="ios_simulator" \
   BASE_NAME="ios-golden" \
   run_install "${case_dir}"
@@ -596,6 +765,60 @@ run_ios_simulator_preserves_base_name_case() {
   assert_contains "CREDIMI_RUNNER_TYPE=ios_simulator" "${env_file}"
   assert_contains "BASE_NAME=ios-golden" "${env_file}"
   assert_contains "GOLDEN_PATH=" "${env_file}"
+}
+
+run_ios_simulator_requires_simctl_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  if FAKE_UNAME_S="Darwin" \
+    FAKE_UNAME_M="arm64" \
+    MOCK_XCRUN_SIMCTL_FAIL="1" \
+    PATH="${case_dir}/mocks:${PATH}" \
+    HOME="${case_dir}/home" \
+    XDG_BIN_HOME="${case_dir}/bin" \
+    XDG_CONFIG_HOME="${case_dir}/config" \
+    MOCK_LOG_DIR="${case_dir}/logs" \
+    CREDIMI_URL="https://credimi.example" \
+    TEMPORAL_ADDRESS="temporal.example:7233" \
+    CREDIMI_RUNNER_ID="/org-id/runner-01" \
+    CREDIMI_INSTALL_AUTH_MODE="api_key" \
+    CREDIMI_USER_API_KEY="user-api-key" \
+    CREDIMI_INTERNAL_ADMIN_KEY="internal-admin-key" \
+    CREDIMI_SERVICE_MODE="auto" \
+    RUNNER_HOST="0.0.0.0" \
+    RUNNER_PORT="8050" \
+    RUNNER_CADDY_SITE=":80" \
+    sh "${install_script}" >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"; then
+    fail "expected ios_simulator install without simctl to fail"
+  fi
+
+  assert_contains "xcrun simctl is required for ios_simulator installs" "${case_dir}/stderr.log"
+}
+
+run_ios_simulator_creates_missing_simulator_case() {
+  local case_dir
+  case_dir="$(mktemp -d)"
+  mkdir -p "${case_dir}/logs"
+  create_mocks "${case_dir}/mocks"
+
+  FAKE_UNAME_S="Darwin" \
+  FAKE_UNAME_M="arm64" \
+  MOCK_XCRUN_DEVICES_MODE="missing" \
+  CREDIMI_RUNNER_TYPE="ios_simulator" \
+  BASE_NAME="ios-created" \
+  IOS_SIMULATOR_DEVICE_TYPE_IDENTIFIER="com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro" \
+  IOS_SIMULATOR_RUNTIME_IDENTIFIER="com.apple.CoreSimulator.SimRuntime.iOS-18-2" \
+  run_install "${case_dir}"
+
+  local env_file="${case_dir}/config/credimi/runner/.env"
+  local xcrun_create_log="${case_dir}/logs/xcrun.create.log"
+
+  assert_contains "CREDIMI_RUNNER_TYPE=ios_simulator" "${env_file}"
+  assert_contains "BASE_NAME=ios-created" "${env_file}"
+  assert_contains "ios-created|com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro|com.apple.CoreSimulator.SimRuntime.iOS-18-2" "${xcrun_create_log}"
 }
 
 run_linux_arm64_host_case() {
@@ -1348,11 +1571,15 @@ run_linux_rejects_ios_types_case() {
 run_linux_usb_case
 run_linux_usb_otel_disabled_case
 run_linux_emulator_case
+run_linux_emulator_downloads_missing_assets_case
+run_linux_emulator_skips_asset_download_when_present_case
 run_linux_wifi_case
 run_linux_redroid_no_device_case
 run_direct_container_case
 run_darwin_case
 run_ios_simulator_preserves_base_name_case
+run_ios_simulator_requires_simctl_case
+run_ios_simulator_creates_missing_simulator_case
 run_linux_arm64_host_case
 run_host_android_emulator_keeps_golden_path_case
 run_noninteractive_empty_optional_case
