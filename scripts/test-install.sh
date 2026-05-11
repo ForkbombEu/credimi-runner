@@ -515,6 +515,7 @@ run_linux_emulator_downloads_missing_assets_case() {
   assert_dir_exists "${host_avd_home}/credimi.avd"
   assert_file_exists "${host_avd_home}/credimi.ini"
   assert_dir_exists "${host_avd_golden}/credimi-golden"
+  assert_contains "GOLDEN_PATH=/avd-golden/credimi-golden" "${case_dir}/config/credimi/runner/.env"
   assert_file_absent "${host_avd_home}/credimi_base_image.tar.gz"
   assert_file_absent "${host_avd_golden}/credimi_golden.tar.gz"
   assert_contains "https://files.pn-a.com/credimi_base_image.tar.gz" "${curl_log}"
