@@ -308,7 +308,7 @@ var _ = Service("health", func() {
 	Method("check", func() {
 		Result(func() {
 			Attribute("status", String)
-			Attribute("emulators", ArrayOf(DeviceInfo))
+			Attribute("devices", ArrayOf(DeviceInfo))
 			Required("status")
 		})
 

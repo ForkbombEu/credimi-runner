@@ -24,7 +24,7 @@ func NewHealthService() *HealthService {
 }
 
 func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, error) {
-	emulators, err := s.getDevicesWithDetails()
+	devices, err := s.getDevicesWithDetails()
 	if err != nil {
 		return nil, &genhealth.APIError{
 			Name:    "service_unavailable",
@@ -36,8 +36,8 @@ func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, erro
 	}
 
 	return &genhealth.CheckResult{
-		Status:    "connected",
-		Emulators: emulators,
+		Status:  "connected",
+		Devices: devices,
 	}, nil
 }
 

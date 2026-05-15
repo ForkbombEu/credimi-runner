@@ -31,8 +31,8 @@ func TestCheck_NoDevices(t *testing.T) {
 		t.Errorf("expected status 'connected', got %q", res.Status)
 	}
 
-	if len(res.Emulators) != 0 {
-		t.Errorf("expected 0 emulators, got %d", len(res.Emulators))
+	if len(res.Devices) != 0 {
+		t.Errorf("expected 0 devices, got %d", len(res.Devices))
 	}
 }
 
@@ -47,11 +47,11 @@ emulator-5554 device product:sdk_google_phone_x86 model:Android_SDK built-in dev
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(res.Emulators) != 1 {
-		t.Fatalf("expected 1 emulator, got %d", len(res.Emulators))
+	if len(res.Devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(res.Devices))
 	}
 
-	device := res.Emulators[0]
+	device := res.Devices[0]
 	if *device.Serial != "emulator-5554" {
 		t.Errorf("unexpected serial: %s", *device.Serial)
 	}
