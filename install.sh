@@ -1166,6 +1166,10 @@ runner_org_from_id() {
   esac
 }
 
+runner_id_without_leading_slash() {
+  printf '%s' "${1#/}"
+}
+
 canonify_plain() {
   value="$1"
   slug="$(
@@ -1331,7 +1335,7 @@ resolve_install_runner_identity() {
   fi
 
   runner_slug="$(canonify_plain "$CREDIMI_RUNNER_NAME")"
-  base_runner_id="/${CREDIMI_RUNNER_ORGANIZATION}/${runner_slug}"
+  base_runner_id="${CREDIMI_RUNNER_ORGANIZATION}/${runner_slug}"
   preview_payload="{\"name\":\"$(json_escape "$CREDIMI_RUNNER_NAME")\""
   if [ -n "${CREDIMI_RUNNER_ORGANIZATION:-}" ]; then
     preview_payload="${preview_payload},\"organization\":\"$(json_escape "$CREDIMI_RUNNER_ORGANIZATION")\""
@@ -1339,7 +1343,7 @@ resolve_install_runner_identity() {
   preview_payload="${preview_payload}}"
   preview_url="$(join_url "$CREDIMI_URL" api mobile-runner preview-id)"
   preview_response="$(install_post_json "$preview_url" "$preview_payload")"
-  preview_runner_id="$(extract_json_string runner_id "$preview_response")"
+  preview_runner_id="$(runner_id_without_leading_slash "$(extract_json_string runner_id "$preview_response")")"
   [ -n "$preview_runner_id" ] || die "failed to extract runner_id from ${preview_url}"
 
   if [ "$preview_runner_id" = "$base_runner_id" ]; then
@@ -1744,6 +1748,10 @@ runner_org_from_id() {
   esac
 }
 
+runner_id_without_leading_slash() {
+  printf '%s' "${1#/}"
+}
+
 canonify_plain() {
   local value="${1-}"
   local slug
@@ -2049,8 +2057,8 @@ register_mobile_runner() {
 
   store_url="$(join_url "${CREDIMI_URL}" "api" "mobile-runner")"
   store_response="$(post_json "${store_url}" "${store_payload}")"
-  stored_runner_id="$(extract_json_string "runner_id" "${store_response}")"
-  if [[ -n "${stored_runner_id}" ]] && [[ "${stored_runner_id}" != "${CREDIMI_RUNNER_ID}" ]]; then
+  stored_runner_id="$(runner_id_without_leading_slash "$(extract_json_string "runner_id" "${store_response}")")"
+  if [[ -n "${stored_runner_id}" ]] && [[ "${stored_runner_id}" != "$(runner_id_without_leading_slash "${CREDIMI_RUNNER_ID}")" ]]; then
     printf 'stored runner_id mismatch: expected %s, got %s\n' "${CREDIMI_RUNNER_ID}" "${stored_runner_id}" >&2
     return 1
   fi

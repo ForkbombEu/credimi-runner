@@ -150,13 +150,13 @@ case "${url}" in
     [[ -n "${out}" ]] || exit 1
     printf '{"organization":"%s","runner_id":"%s"}' \
       "${MOCK_PREVIEW_ORG:-org-id}" \
-      "${MOCK_PREVIEW_RUNNER_ID:-/org-id/runner-01}" >"${out}"
+      "${MOCK_PREVIEW_RUNNER_ID:-org-id/runner-01}" >"${out}"
     printf '200'
     exit 0
     ;;
   *"/api/mobile-runner")
     [[ -n "${out}" ]] || exit 1
-    printf '{"runner_id":"%s"}' "${MOCK_STORE_RUNNER_ID:-/org-id/runner-01}" >"${out}"
+    printf '{"runner_id":"%s"}' "${MOCK_STORE_RUNNER_ID:-org-id/runner-01}" >"${out}"
     printf '200'
     exit 0
     ;;
@@ -1292,7 +1292,7 @@ run_launcher_preview_case() {
   MOCK_STORE_RUNNER_ID="/org-id/preview-runner" \
   "${launcher}" auto >/dev/null
 
-  assert_contains "CREDIMI_RUNNER_ID=/org-id/preview-runner" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_ID=org-id/preview-runner" "${env_file}"
   assert_contains "/api/organizations/my" "${curl_log}"
   assert_contains "/api/mobile-runner/preview-id" "${curl_log}"
   assert_contains "/api/mobile-runner" "${curl_log}"
@@ -1338,7 +1338,7 @@ run_direct_preview_preserves_env_mode_case() {
   "${launcher}" manual >/dev/null
 
   assert_file_mode "${env_file}" "644"
-  assert_contains "CREDIMI_RUNNER_ID=/org-id/direct-preview" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_ID=org-id/direct-preview" "${env_file}"
   assert_contains "RUNNER_CADDY_SITE=" "${env_file}"
 }
 
@@ -1403,7 +1403,7 @@ run_admin_computes_runner_id_case() {
   MOCK_STORE_RUNNER_ID="/org-id/admin-runner" \
   "${launcher}" auto >/dev/null
 
-  assert_contains "CREDIMI_RUNNER_ID=/org-id/admin-runner" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_ID=org-id/admin-runner" "${env_file}"
   assert_contains "CREDIMI_INTERNAL_ADMIN_KEY=internal-admin-key" "${env_file}"
   assert_contains "CREDIMI_USER_API_KEY=" "${env_file}"
 }
@@ -1454,7 +1454,7 @@ EOF
   MOCK_STORE_RUNNER_ID="/org-id/new-runner" \
   "${launcher}" auto >/dev/null
 
-  assert_contains "CREDIMI_RUNNER_ID=/org-id/new-runner" "${env_file}"
+  assert_contains "CREDIMI_RUNNER_ID=org-id/new-runner" "${env_file}"
   assert_not_contains "CREDIMI_RUNNER_ID=/org-id/old-runner" "${env_file}"
 }
 
@@ -1495,9 +1495,9 @@ run_existing_name_updates_by_default_case() {
   MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner" \
   "${launcher}" auto >/dev/null
 
-  assert_contains "CREDIMI_RUNNER_ID=/org-id/duplicate-runner" "${env_file}"
-  assert_contains '"runner_id":"/org-id/duplicate-runner"' "${curl_payload_log}"
-  assert_not_contains '"runner_id":"/org-id/duplicate-runner-1"' "${curl_payload_log}"
+  assert_contains "CREDIMI_RUNNER_ID=org-id/duplicate-runner" "${env_file}"
+  assert_contains '"runner_id":"org-id/duplicate-runner"' "${curl_payload_log}"
+  assert_not_contains '"runner_id":"org-id/duplicate-runner-1"' "${curl_payload_log}"
   assert_contains '"description":"updated description"' "${curl_payload_log}"
 }
 
@@ -1538,8 +1538,8 @@ run_existing_name_can_create_new_case() {
   MOCK_STORE_RUNNER_ID="/org-id/duplicate-runner-1" \
   "${launcher}" auto >/dev/null
 
-  assert_contains "CREDIMI_RUNNER_ID=/org-id/duplicate-runner-1" "${env_file}"
-  assert_contains '"runner_id":"/org-id/duplicate-runner-1"' "${curl_payload_log}"
+  assert_contains "CREDIMI_RUNNER_ID=org-id/duplicate-runner-1" "${env_file}"
+  assert_contains '"runner_id":"org-id/duplicate-runner-1"' "${curl_payload_log}"
 }
 
 run_linux_rejects_ios_types_case() {
