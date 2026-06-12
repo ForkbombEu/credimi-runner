@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -59,5 +60,67 @@ func TestFetchCredimiRunnerPreview(t *testing.T) {
 	}
 	if preview.RunnerID != "org/runner-one" {
 		t.Fatalf("runner ID = %q", preview.RunnerID)
+	}
+}
+
+func TestFetchCredimiCanonify(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/canonify/identifier/validate" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Credimi-Api-Key"); got != "user-key" {
+			t.Fatalf("api key header = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"record": map[string]string{"slug": "runner-one"},
+		})
+	}))
+	defer srv.Close()
+
+	slug, err := fetchCredimiCanonify(context.Background(), srv.URL, "user-key", "Runner One")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "runner-one" {
+		t.Fatalf("slug = %q", slug)
+	}
+}
+
+func TestFetchCredimiCanonifyFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"record": map[string]string{}})
+	}))
+	defer srv.Close()
+
+	slug, err := fetchCredimiCanonify(context.Background(), srv.URL, "user-key", " Runner One!! ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "runner-one" {
+		t.Fatalf("fallback slug = %q", slug)
+	}
+}
+
+func TestCanonifyPlain(t *testing.T) {
+	tests := map[string]string{
+		" Runner One!! ": "runner-one",
+		"---":            "runner",
+		"ACME_123":       "acme-123",
+	}
+	for in, want := range tests {
+		if got := canonifyPlain(in); got != want {
+			t.Fatalf("canonifyPlain(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWriteJSON(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeJSON(rec, map[string]string{"ok": "true"})
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("content type = %q", rec.Header().Get("Content-Type"))
+	}
+	if got := rec.Body.String(); !bytes.Contains([]byte(got), []byte(`"ok":"true"`)) {
+		t.Fatalf("body = %q", got)
 	}
 }

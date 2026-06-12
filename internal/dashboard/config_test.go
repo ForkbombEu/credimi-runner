@@ -77,7 +77,7 @@ func TestMaskSecret(t *testing.T) {
 	}{
 		{"short", "short"},       // 5 chars, <= 8
 		{"12345678", "12345678"}, // exactly 8
-		{"cmu_live_secret_key_12345", "cmu_" + strings.Repeat("•", 21)}, // 25 chars total = 4 prefix + 21 dots
+		{"test_secret_key_12345", "test" + strings.Repeat("•", 17)}, // 21 chars total = 4 prefix + 17 dots
 		{"", ""},
 	}
 
@@ -206,20 +206,76 @@ func TestRawEnv(t *testing.T) {
 	cfg := &Config{
 		values: map[string]string{
 			"CREDIMI_URL":                "https://credimi.io",
-			"CREDIMI_USER_API_KEY":       "cmu_live_secret123",
+			"CREDIMI_USER_API_KEY":       "test-secret-value-123",
 			"CREDIMI_INTERNAL_ADMIN_KEY": "",
 			"TEMPORAL_ADDRESS":           "temporal.credimi.io:7233",
 		},
 	}
 
 	masked := cfg.RawEnv(true)
-	if contains(masked, "cmu_live_secret123") {
+	if contains(masked, "test-secret-value-123") {
 		t.Error("masked env should not contain secret plaintext")
 	}
 
 	clear := cfg.RawEnv(false)
-	if !contains(clear, "cmu_live_secret123") {
+	if !contains(clear, "test-secret-value-123") {
 		t.Error("clear env should contain secret plaintext")
+	}
+}
+
+func TestConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", dir)
+	if got := ConfigDir(); got != dir {
+		t.Fatalf("ConfigDir override = %q, want %q", got, dir)
+	}
+}
+
+func TestLoadConfig_ParsesEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	env := strings.Join([]string{
+		"# comment",
+		"CREDIMI_URL=\"https://custom.example\"",
+		"CREDIMI_RUNNER_ID=org/runner",
+		"OTEL_ENABLED=false",
+		"UNKNOWN_KEY=preserved",
+		"ignored-without-equals",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Get("CREDIMI_URL") != "https://custom.example" {
+		t.Fatalf("CREDIMI_URL = %q", cfg.Get("CREDIMI_URL"))
+	}
+	if cfg.Bool("OTEL_ENABLED") {
+		t.Fatal("OTEL_ENABLED should parse as false")
+	}
+	if len(cfg.rawTail) != 1 || cfg.rawTail[0] != "UNKNOWN_KEY=preserved" {
+		t.Fatalf("rawTail = %#v", cfg.rawTail)
+	}
+}
+
+func TestGroupedFieldsAndSortedKeys(t *testing.T) {
+	groups := GroupedFields()
+	if len(groups) == 0 {
+		t.Fatal("expected grouped fields")
+	}
+	if groups[0].Name != Registry[0].Group || groups[0].Fields[0].Key != Registry[0].Key {
+		t.Fatalf("first group = %#v", groups[0])
+	}
+
+	keys := sortedKeys(map[string]string{"b": "2", "a": "1"})
+	if strings.Join(keys, ",") != "a,b" {
+		t.Fatalf("sortedKeys = %v", keys)
+	}
+	if got := minInt(9, 3); got != 3 {
+		t.Fatalf("minInt = %d", got)
 	}
 }
 
