@@ -20,12 +20,10 @@ func loadDotEnv() (string, error) {
 		return localEnvPath, nil
 	}
 
-	configDir, err := os.UserConfigDir()
+	configEnvPath, err := runtimeConfigEnvPath()
 	if err != nil {
 		return "", nil
 	}
-
-	configEnvPath := runtimeConfigEnvPath(configDir)
 	if !fileExists(configEnvPath) {
 		return "", nil
 	}
@@ -41,7 +39,18 @@ func fileExists(path string) bool {
 	return err == nil || !errors.Is(err, os.ErrNotExist)
 }
 
-func runtimeConfigEnvPath(configDir string) string {
+func runtimeConfigEnvPath() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, ".env"), nil
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return runtimeConfigEnvPathFromConfigHome(configDir), nil
+}
+
+func runtimeConfigEnvPathFromConfigHome(configDir string) string {
 	return filepath.Join(configDir, "credimi", "runner", ".env")
 }
 
@@ -50,13 +59,13 @@ func validateRequiredRuntimeEnv() error {
 		return nil
 	}
 
-	configDir, err := os.UserConfigDir()
+	configPath, err := runtimeConfigEnvPath()
 	if err != nil {
 		return fmt.Errorf("CREDIMI_RUNNER_ID is required")
 	}
 
 	return fmt.Errorf(
 		"CREDIMI_RUNNER_ID is required; set it in .env, %s, or the process environment",
-		runtimeConfigEnvPath(configDir),
+		configPath,
 	)
 }

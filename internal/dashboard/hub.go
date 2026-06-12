@@ -1,0 +1,223 @@
+package dashboard
+
+import (
+	"context"
+	"regexp"
+	"sync"
+	"time"
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SSE hub + background poller.
+//
+// One poller goroutine builds a Snapshot every interval and fans rendered HTML
+// fragments out to every connected client. Clients are plain http flushers
+// registered by the /events/* handlers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+type event struct {
+	name string // SSE event: name (matches htmx sse-swap)
+	data string // rendered HTML fragment (newlines are escaped for SSE framing)
+}
+
+type client struct {
+	ch     chan event
+	stream string // which stream this client subscribed to: health|devices|workers|log
+}
+
+type Hub struct {
+	mu         sync.RWMutex
+	clients    map[*client]struct{}
+	cfg        *Config
+	composeDir string
+	render     *Renderer
+
+	snapMu  sync.RWMutex
+	snap    Snapshot
+	workers []Worker
+}
+
+type Worker struct {
+	ID      string
+	Env     string
+	Host    string
+	Queue   string
+	Scope   string // user | admin
+	Status  Status
+	Enabled bool
+}
+
+func NewHub(cfg *Config, composeDir string, r *Renderer) *Hub {
+	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, composeDir: composeDir, render: r}
+}
+
+func (h *Hub) add(c *client) {
+	h.mu.Lock()
+	h.clients[c] = struct{}{}
+	h.mu.Unlock()
+}
+func (h *Hub) remove(c *client) {
+	h.mu.Lock()
+	delete(h.clients, c)
+	close(c.ch)
+	h.mu.Unlock()
+}
+
+func (h *Hub) broadcast(stream string, ev event) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for c := range h.clients {
+		if c.stream != stream {
+			continue
+		}
+		select {
+		case c.ch <- ev:
+		default: // drop if the client is slow; next tick recovers
+		}
+	}
+}
+
+func (h *Hub) CurrentSnapshot() Snapshot {
+	h.snapMu.RLock()
+	defer h.snapMu.RUnlock()
+	return h.snap
+}
+func (h *Hub) CurrentWorkers() []Worker {
+	h.snapMu.RLock()
+	defer h.snapMu.RUnlock()
+	return h.workers
+}
+
+// Run starts the poll loop until ctx is cancelled.
+func (h *Hub) Run(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	h.poll(ctx) // immediate first sample
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			h.poll(ctx)
+		}
+	}
+}
+
+func (h *Hub) poll(ctx context.Context) {
+	devices := append(probeAndroid(ctx), probeIOS(ctx)...)
+	services := probeServices(ctx, h.composeDir)
+	// Temporal reachability becomes a synthetic service row.
+	temporalAddr := h.cfg.Get("TEMPORAL_ADDRESS")
+	services = append(services, Service{
+		ID: "temporal", Name: "temporal", Role: temporalAddr, Image: "gRPC",
+		Status: dialTemporal(temporalAddr), Uptime: "—",
+	})
+
+	snap := Snapshot{Services: services, Devices: devices, Time: time.Now()}
+	workers := h.deriveWorkers(services)
+
+	h.snapMu.Lock()
+	h.snap = snap
+	h.workers = workers
+	h.snapMu.Unlock()
+
+	// Render and broadcast each live region.
+	h.broadcast("health", event{name: "pill", data: h.render.Fragment("pill", h.pillData(snap))})
+	h.broadcast("devices", event{name: "rows", data: h.render.Fragment("device_rows", devices)})
+	h.broadcast("workers", event{name: "rows", data: h.render.Fragment("worker_rows", workers)})
+}
+
+// deriveWorkers infers worker rows from configured environments + temporal health.
+// If runner serve exposes /internal/workers you can replace this with a real read.
+func (h *Hub) deriveWorkers(services []Service) []Worker {
+	temporalUp := Offline
+	for _, s := range services {
+		if s.ID == "temporal" {
+			temporalUp = s.Status
+		}
+	}
+	scope := h.cfg.AuthMode()
+	org := h.cfg.Get("CREDIMI_RUNNER_ORGANIZATION")
+	if org == "" {
+		org = "runner"
+	}
+	mk := func(env, host, suffix string, configured bool) Worker {
+		w := Worker{
+			ID: env + "-" + suffix, Env: env, Host: host, Scope: scope,
+			Queue: "mobile-runner." + org, Enabled: configured,
+		}
+		switch {
+		case !configured:
+			w.Status = Idle
+		case temporalUp == Online:
+			w.Status = Online
+		default:
+			w.Status = Degraded
+		}
+		return w
+	}
+	out := []Worker{
+		mk("production", h.cfg.Get("CREDIMI_URL"), "mr", h.cfg.Get("CREDIMI_USER_API_KEY") != "" || h.cfg.Get("CREDIMI_INTERNAL_ADMIN_KEY") != ""),
+		mk("staging", h.cfg.Get("CREDIMI_STAGING_URL"), "mr", h.cfg.Get("CREDIMI_STAGING_URL") != ""),
+		mk("dev", h.cfg.Get("CREDIMI_DEV_URL"), "mr", h.cfg.Get("CREDIMI_DEV_URL") != ""),
+	}
+	return out
+}
+
+type PillData struct {
+	Issues int
+	Label  string
+	OK     bool
+}
+
+func (h *Hub) pillData(s Snapshot) PillData {
+	issues := 0
+	for _, sv := range s.Services {
+		if sv.Status == Offline || sv.Status == Degraded {
+			issues++
+		}
+	}
+	for _, d := range s.Devices {
+		if d.Status == Offline {
+			issues++
+		}
+	}
+	p := PillData{Issues: issues, OK: issues == 0, Label: "All healthy"}
+	if issues > 0 {
+		p.Label = pluralIssues(issues)
+	}
+	return p
+}
+
+// ── tiny utils shared across files ──
+
+func mustCompile(expr string) *regexp.Regexp { return regexp.MustCompile(expr) }
+
+func pluralIssues(n int) string {
+	if n == 1 {
+		return "1 issue"
+	}
+	return itoa(n) + " issues"
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}

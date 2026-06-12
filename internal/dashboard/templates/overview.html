@@ -1,0 +1,39 @@
+{{define "main" -}}
+<main class="page">
+  <div class="page-head">
+    <span class="eyebrow">Health monitor</span>
+    <h1>Overview</h1>
+    <p>Live status of the runner service, attached devices, and Credimi workers for <b style="color:var(--fg)">{{or (.Runner.Get "CREDIMI_RUNNER_ID") "this runner"}}</b>.</p>
+  </div>
+
+  <div class="grid-4" style="margin-bottom:16px">
+    <div class="stat"><div class="k">{{icon "shield"}} Service</div><div class="v">{{if .ServicesAllUp}}Healthy{{else}}Degraded{{end}}</div><div class="meta">{{len .Snapshot.Services}} containers</div></div>
+    <div class="stat"><div class="k">{{icon "phone"}} Devices</div><div class="v">{{.DevicesOnline}}<small>/ {{.DevicesTotal}} online</small></div><div class="meta">{{.DevicesDegraded}} degraded · {{.DevicesOffline}} offline</div></div>
+    <div class="stat"><div class="k">{{icon "workers"}} Workers</div><div class="v">{{.WorkersOnline}}<small>/ {{.WorkersTotal}} polling</small></div><div class="meta">across environments</div></div>
+    <div class="stat"><div class="k">{{icon "activity"}} Endpoint</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">exposure mode</div></div>
+  </div>
+
+  <section class="card">
+    <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">docker compose · {{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
+      <div class="right"><span class="health-pill" hx-ext="sse" sse-connect="/events/health" sse-swap="pill">{{template "pill" .Pill}}</span></div></header>
+    <div class="card-b">
+      <div class="grid-2">{{range .Snapshot.Services}}{{template "service_row" .}}{{end}}</div>
+      <div class="divline"></div>
+      <div class="callout {{if .ServicesAllUp}}ok{{else}}warn{{end}}">{{icon "globe"}}<div>Public endpoint: <b style="font-family:var(--font-mono)">{{.PublicURL}}</b>. OpenAPI docs at <b style="font-family:var(--font-mono)">/docs</b>.</div></div>
+    </div>
+  </section>
+
+  <div class="grid-2" style="margin-top:16px;align-items:start">
+    <section class="card">
+      <header class="card-h">{{icon "phone"}}<div><h3>Devices</h3><div class="sub">{{.DevicesOnline}} of {{.DevicesTotal}} online</div></div>
+        <div class="right"><a class="btn btn-out btn-sm" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">Manage</a></div></header>
+      <div class="card-b flush"><div class="list" id="device-snapshot" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
+    </section>
+    <section class="card">
+      <header class="card-h">{{icon "workers"}}<div><h3>Workers</h3><div class="sub">{{.WorkersOnline}} polling</div></div>
+        <div class="right"><a class="btn btn-out btn-sm" href="/workers" hx-get="/workers" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">Manage</a></div></header>
+      <div class="card-b flush"><div class="list" hx-ext="sse" sse-connect="/events/workers" sse-swap="rows">{{template "worker_rows" .Workers}}</div></div>
+    </section>
+  </div>
+</main>
+{{- end}}

@@ -1,0 +1,72 @@
+{{define "main" -}}
+<main class="page">
+  <div class="page-head" style="display:flex;align-items:flex-end;justify-content:space-between">
+    <div>
+      <span class="eyebrow">Device management</span>
+      <h1>Devices</h1>
+      <p>Phones, emulators and simulators attached to this runner via ADB or simctl.</p>
+    </div>
+    <button class="btn btn-pri" data-open-modal="add-device">{{icon "plus"}} Add device</button>
+  </div>
+
+  <section class="card">
+    <div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
+  </section>
+
+  <div class="callout info" style="margin-top:16px">{{icon "info"}}<div><b>Wi-Fi pairing (Android 11+):</b> if the phone shows a pairing code, enter it in the wizard once before connect. The port comes from the phone’s Wireless debugging screen — never assume 5555.</div></div>
+
+  <!-- Add-device modal (hidden until opened by app.js) -->
+  <div class="modal-bk" id="modal-add-device" hidden>
+    <div class="modal">
+      <div class="modal-h"><div><h3>Add a device</h3><p>Attach a new target to this runner</p></div>
+        <button class="iconbtn x" data-close-modal>{{icon "x"}}</button></div>
+      <form hx-post="/devices/connect" hx-target="#device-list" hx-swap="innerHTML" id="add-device-form">
+        <div class="modal-b">
+          <div class="steps" data-steps>
+            <span class="st on"><span class="n">1</span><span class="lb">Type</span></span>
+            <span class="bar"></span>
+            <span class="st"><span class="n">2</span><span class="lb">Connection</span></span>
+            <span class="bar"></span>
+            <span class="st"><span class="n">3</span><span class="lb">Pair &amp; connect</span></span>
+          </div>
+
+          <div data-step="0">
+            <div class="picks">
+              <button type="button" class="pick on" data-pick-type="android_phone"><span class="pic">{{icon "android"}}</span><span><b>Android phone</b><span>Physical device over ADB</span></span></button>
+              <button type="button" class="pick" data-pick-type="android_emulator"><span class="pic">{{icon "android"}}</span><span><b>Android emulator</b><span>KVM-backed AVD</span></span></button>
+              <button type="button" class="pick" data-pick-type="ios_simulator"><span class="pic">{{icon "apple"}}</span><span><b>iOS simulator</b><span>macOS · xcrun simctl</span></span></button>
+              <button type="button" class="pick" data-pick-type="redroid"><span class="pic">{{icon "android"}}</span><span><b>Redroid</b><span>Containerised Android</span></span></button>
+            </div>
+            <input type="hidden" name="type" value="android_phone">
+          </div>
+
+          <div data-step="1" hidden>
+            <div class="field"><label><span class="lbtx">Connection method</span></label>
+              <div class="seg" data-seg="mode">
+                <button type="button" class="on" data-val="wifi">{{icon "wifi"}} Wi-Fi ADB</button>
+                <button type="button" data-val="usb">{{icon "usb"}} USB cable</button>
+              </div>
+              <input type="hidden" name="mode" value="wifi">
+            </div>
+          </div>
+
+          <div data-step="2" hidden>
+            <div class="field"><label><span class="lbtx">Device address</span><span class="req">*</span><span class="envkey">ip:port</span></label>
+              <input class="inp mono" name="address" placeholder="192.168.1.42:38349">
+              <p class="hint">From the phone’s Wireless debugging screen.</p></div>
+            <div class="field"><label><span class="lbtx">Pairing code</span></label>
+              <input class="inp mono" name="pair_code" placeholder="394 521 (optional)">
+              <p class="hint">Only required on first connect for Android 11+.</p></div>
+          </div>
+        </div>
+        <div class="modal-f">
+          <button type="button" class="btn btn-ghost" data-step-back hidden>Back</button>
+          <div style="flex:1"></div>
+          <button type="button" class="btn btn-pri" data-step-next>Continue</button>
+          <button type="submit" class="btn btn-pri" data-step-submit hidden>{{icon "check"}} Connect device</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</main>
+{{- end}}

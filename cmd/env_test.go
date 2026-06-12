@@ -76,6 +76,30 @@ func TestLoadDotEnv_FallsBackToUserConfigDir(t *testing.T) {
 	require.Equal(t, "1", os.Getenv("CREDIMI_RUNNER_TEST_CONFIG_ONLY"))
 }
 
+func TestLoadDotEnv_UsesExplicitRunnerConfigDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	origWD, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() {
+		require.NoError(t, os.Chdir(origWD))
+	})
+
+	configDir := filepath.Join(tmpDir, "runner-config")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+	configPath := filepath.Join(configDir, ".env")
+	require.NoError(t, os.WriteFile(configPath, []byte("CREDIMI_RUNNER_TEST_CONFIG_ONLY=1\n"), 0o600))
+
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "ignored-config-home"))
+	restoreEnv(t, "CREDIMI_RUNNER_TEST_CONFIG_ONLY")
+
+	path, err := loadDotEnv()
+	require.NoError(t, err)
+	require.Equal(t, configPath, path)
+	require.Equal(t, "1", os.Getenv("CREDIMI_RUNNER_TEST_CONFIG_ONLY"))
+}
+
 func TestLoadDotEnv_NoFileAvailable(t *testing.T) {
 	tmpDir := t.TempDir()
 	origWD, err := os.Getwd()

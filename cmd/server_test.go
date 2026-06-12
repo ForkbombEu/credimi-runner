@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -27,6 +28,13 @@ func TestServerCmdRunE_ListenError(t *testing.T) {
 
 	err := serverCmd.RunE(serverCmd, nil)
 	require.Error(t, err)
+}
+
+func TestIsFirstRun_IgnoresInheritedRunnerID(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_ID", "org/runner-from-parent-env")
+
+	require.True(t, isFirstRun(""))
+	require.False(t, isFirstRun(filepath.Join(t.TempDir(), ".env")))
 }
 
 func TestServerCmdRunE_ShutdownOnSignal(t *testing.T) {

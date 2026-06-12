@@ -2,8 +2,8 @@ version: "3"
 
 vars:
   # Images
-  PHONE_IMAGE: ghcr.io/ForkbombEu/credimi-runner-phone:latest
-  EMULATOR_IMAGE: ghcr.io/ForkbombEu/credimi-runner-emulator:latest
+  PHONE_IMAGE: ghcr.io/forkbombeu/credimi-runner-phone:latest
+  EMULATOR_IMAGE: ghcr.io/forkbombeu/credimi-runner-emulator:latest
   LOCAL_PHONE_IMAGE: credimi-runner-phone
   LOCAL_EMULATOR_IMAGE: credimi-runner-emulator
   LOCAL_IMAGE: "{{.LOCAL_EMULATOR_IMAGE}}"
@@ -37,22 +37,34 @@ tasks:
   build:
     desc: Build the Goa app binary locally
     deps: ["go:gen"]
-    sources:
-      - main.go
-      - go.mod
-      - go.sum
-      - cmd/**/*.go
-      - internal/**/*.go
-      - pkg/**/*.go
-    generates:
-      - "{{.BIN_DIR}}/{{.APP_NAME}}"
+
+  dashboard:
+    desc: Build and serve the runner with integrated dashboard (http://localhost:8050)
+    deps: ["build"]
     cmds:
-      - mkdir -p {{.BIN_DIR}}
+      - ./bin/credimi-runner serve
+
+  format:
+    desc: Format Go code
+    cmds:
+      - go fmt ./...
+
+  lint:
+    desc: Run all linting checks
+    cmds:
+      - task: lint:format
+      - task: lint:design
+
+  "lint:format":
+    desc: Check Go formatting
+    cmds:
       - >-
-        go build --tags=credimi_extra
-        -ldflags "{{.GO_LDFLAGS}}"
-        -o {{.BIN_DIR}}/{{.APP_NAME}}
-        .
+        test -z "$(gofmt -l .)" || (echo "gofmt: files need formatting:" && gofmt -l . && exit 1)
+
+  "lint:design":
+    desc: Validate DESIGN.md
+    cmds:
+      - if [ -f DESIGN.md ]; then npx --yes @google/design.md lint DESIGN.md; fi
 
   "go:gen":
     internal: true
