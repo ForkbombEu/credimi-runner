@@ -1,6 +1,11 @@
 package dashboard
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +106,117 @@ func TestPillData(t *testing.T) {
 	}
 	if p.Issues != 1 {
 		t.Errorf("expected 1 issue, got %d", p.Issues)
+	}
+}
+
+func TestProbeAndroidWithFakeADB(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "adb"), `#!/bin/sh
+case "$*" in
+  "devices -l")
+    printf '%s\n' 'List of devices attached' 'emulator-5554 device product:sdk model:Pixel_Emu device:emu transport_id:1' '192.168.1.42:38349 device product:husky model:Pixel_8 device:husky transport_id:2' 'ABCD123 offline product:oriole model:Pixel_6 device:oriole transport_id:3'
+    ;;
+  *"dumpsys battery"*)
+    printf 'level: 87\n'
+    ;;
+  *"dumpsys cpuinfo"*)
+    printf ' 12.5%% TOTAL: 1%% user + 1%% kernel\n'
+    ;;
+esac
+`)
+	t.Setenv("PATH", bin)
+
+	devices := probeAndroid(context.Background())
+	if len(devices) != 3 {
+		t.Fatalf("devices len = %d: %#v", len(devices), devices)
+	}
+	if devices[0].Type != "android_emulator" || devices[0].Mode != "emulator" || devices[0].Status != Online {
+		t.Fatalf("emulator device = %#v", devices[0])
+	}
+	if devices[1].Mode != "wifi" || devices[1].Battery != 87 || devices[1].CPU != 12 {
+		t.Fatalf("wifi device = %#v", devices[1])
+	}
+	if devices[2].Status != Offline || devices[2].Name != "Pixel 6" {
+		t.Fatalf("offline device = %#v", devices[2])
+	}
+}
+
+func TestProbeIOSWithFakeXcrun(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "xcrun"), `#!/bin/sh
+printf '%s\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid":"SIM-1","name":"iPhone 16","state":"Booted"},{"udid":"SIM-2","name":"iPad","state":"Shutdown"}]}}'
+`)
+	t.Setenv("PATH", bin)
+
+	devices := probeIOS(context.Background())
+	if len(devices) != 2 {
+		t.Fatalf("devices len = %d: %#v", len(devices), devices)
+	}
+	if devices[0].Status != Online || devices[0].OS != "iOS 18 0 · Sim" || devices[0].Battery != 100 {
+		t.Fatalf("booted simulator = %#v", devices[0])
+	}
+	if devices[1].Status != Offline {
+		t.Fatalf("shutdown simulator = %#v", devices[1])
+	}
+}
+
+func TestProbeServicesWithFakeDocker(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "docker"), `#!/bin/sh
+printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","Image":"runner:local"}' '{"Service":"caddy","State":"paused","Status":"Paused","Image":"caddy:local"}' '{"Service":"cloudflared","State":"exited","Status":"Exited","Image":"cloudflared:local"}'
+`)
+	t.Setenv("PATH", bin)
+
+	services := probeServices(context.Background(), t.TempDir())
+	if len(services) != 3 {
+		t.Fatalf("services len = %d", len(services))
+	}
+	if services[0].Status != Online || services[0].Image != "runner:local" || services[0].Uptime != "Up 10 seconds" {
+		t.Fatalf("runner service = %#v", services[0])
+	}
+	if services[1].Status != Degraded {
+		t.Fatalf("caddy service = %#v", services[1])
+	}
+	if services[2].Status != Offline {
+		t.Fatalf("cloudflared service = %#v", services[2])
+	}
+}
+
+func TestProbeServicesWithoutDocker(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	services := probeServices(context.Background(), "")
+	for _, svc := range services {
+		if svc.Status != Offline {
+			t.Fatalf("service should be offline without docker: %#v", svc)
+		}
+	}
+}
+
+func TestRunAndDialTemporal(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "ok"), "#!/bin/sh\nprintf works\n")
+	t.Setenv("PATH", bin)
+	out, err := run(context.Background(), "ok")
+	if err != nil || out != "works" {
+		t.Fatalf("run = %q, %v", out, err)
+	}
+
+	if got := dialTemporal(""); got != Idle {
+		t.Fatalf("empty temporal = %s", got)
+	}
+	if runtime.GOOS != "js" {
+		if got := dialTemporal("127.0.0.1:1"); got != Offline {
+			t.Fatalf("closed temporal = %s", got)
+		}
+	}
+}
+
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if !strings.HasPrefix(body, "#!") {
+		t.Fatalf("test executable %s has no shebang", path)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
 	}
 }
