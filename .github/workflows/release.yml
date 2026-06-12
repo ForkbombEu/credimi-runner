@@ -1,4 +1,4 @@
-name: 📢 Tests, Release & Publish
+name: Test and release
 on:
   push:
     branches:
@@ -18,7 +18,7 @@ env:
 
 jobs:
   go-test:
-    name: ✅ Go tests with coverage gate
+    name: ☔ coverage
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.ref == 'refs/heads/main'
     steps:
@@ -58,7 +58,7 @@ jobs:
           git config --global --unset-all url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadof || true
 
   semantic-release:
-    name: 🤖 Semantic release & publish binaries
+    name: 🤖 release
     needs: go-test
     permissions:
       contents: write
@@ -119,7 +119,7 @@ jobs:
           git config --global --unset-all url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadOf || true
 
   publish_docker_image:
-    name: 🐳 Publish Docker image
+    name: 🚢 docker
     needs: semantic-release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
