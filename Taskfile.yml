@@ -37,6 +37,22 @@ tasks:
   build:
     desc: Build the Goa app binary locally
     deps: ["go:gen"]
+    sources:
+      - main.go
+      - go.mod
+      - go.sum
+      - cmd/**/*.go
+      - internal/**/*.go
+      - pkg/**/*.go
+    generates:
+      - "{{.BIN_DIR}}/{{.APP_NAME}}"
+    cmds:
+      - mkdir -p {{.BIN_DIR}}
+      - >-
+        go build -tags=credimi_extra
+        -ldflags "{{.GO_LDFLAGS}}"
+        -o {{.BIN_PATH}}
+        .
 
   dashboard:
     desc: Build and serve the runner with integrated dashboard (http://localhost:8050)

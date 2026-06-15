@@ -2,6 +2,7 @@
 
 # project specific ignores
 pkg/gen
+apps/
 
 # Environment and local configuration
 .env
