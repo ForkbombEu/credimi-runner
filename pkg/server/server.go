@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
@@ -18,6 +19,9 @@ type runnerService struct {
 	Store     *ProcessStore
 	Instances map[string]utils.Instance
 	Deps      Deps
+
+	authCacheMu sync.Mutex
+	authCache   map[string]time.Time
 }
 
 func NewRunnerService(store *ProcessStore, instances map[string]utils.Instance) *runnerService {
@@ -30,6 +34,7 @@ func NewRunnerServiceWithDeps(store *ProcessStore, instances map[string]utils.In
 		Store:     store,
 		Instances: instances,
 		Deps:      deps,
+		authCache: make(map[string]time.Time),
 	}
 }
 

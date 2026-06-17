@@ -110,7 +110,7 @@ func TestTouchFingerprint_MethodError(t *testing.T) {
 		Sleeper: func(d time.Duration) {},
 	})
 
-	_, err := srv.TouchFingerprint(context.Background())
+	_, err := srv.TouchFingerprint(context.Background(), &mobile.TouchFingerprintPayload{})
 	require.Error(t, err)
 	var svcErr *mobile.APIError
 	require.ErrorAs(t, err, &svcErr)

@@ -138,7 +138,7 @@ func (s *runnerService) ProcessStart(ctx context.Context, payload *worker.Proces
 	return &worker.Processstartresult{Status: result.Status, Namespace: result.Namespace}, nil
 }
 
-func (s *runnerService) ProcessList(ctx context.Context) ([]string, error) {
+func (s *runnerService) ProcessList(ctx context.Context, payload *worker.ProcessListPayload) ([]string, error) {
 	return s.processList(), nil
 }
 
@@ -220,7 +220,7 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 	return decoded, nil
 }
 
-func (s *runnerService) TouchFingerprint(ctx context.Context) (*mobile.Touchfingerprintresult, error) {
+func (s *runnerService) TouchFingerprint(ctx context.Context, payload *mobile.TouchFingerprintPayload) (*mobile.Touchfingerprintresult, error) {
 	result, apiErr := s.touchFingerprintLogic()
 	if apiErr != nil {
 		return nil, wrapMobileAPIError(apiErr)
