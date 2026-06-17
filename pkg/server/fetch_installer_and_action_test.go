@@ -197,7 +197,7 @@ func createZipArchive(t *testing.T, files map[string]string) []byte {
 }
 
 func TestFetchInstallerAndAction_InvalidJSON(t *testing.T) {
-	srv := NewRunnerService(NewProcessStore(), nil)
+	srv := NewRunnerService(NewProcessStore(), utils.Instance{})
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 	handler := NewHTTPHandler(ctx, srv, false)
 	req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader("{"))
@@ -217,32 +217,6 @@ func TestFetchInstallerAndAction_InvalidJSON(t *testing.T) {
 	}, apiErr)
 }
 
-func TestFetchInstallerAndAction_InvalidInstanceURL(t *testing.T) {
-	instances := map[string]utils.Instance{
-		"test": {URL: "http://example.local"},
-	}
-	deps := Deps{
-		HTTPClient: &fakeHTTPClient{},
-		FileStore:  &memoryFileStore{},
-	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), instances, deps)
-	payload := fetchInstallerAndActionPayload{
-		InstanceURL:       "http://missing.local",
-		VersionIdentifier: "v1",
-		Platform:          "android",
-	}
-
-	result, err := server.fetchInstallerAndActionLogic(payload)
-
-	require.Nil(t, result)
-	require.Equal(t, &runner.APIError{
-		Code:    http.StatusBadRequest,
-		Domain:  "server",
-		Reason:  "invalid instance url",
-		Message: "no instance found for URL: http://missing.local",
-	}, err)
-}
-
 func TestFetchInstallerAndAction_ValidateFailure(t *testing.T) {
 	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "internal-admin-key")
 
@@ -260,9 +234,8 @@ func TestFetchInstallerAndAction_ValidateFailure(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
 		ActionIdentifier:  "wallet/action",
 		Platform:          "android",
@@ -296,10 +269,9 @@ func TestFetchInstallerAndAction_ValidateFailureWrappedError(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 
 	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
 		ActionIdentifier:  "wallet/action",
 		Platform:          "android",
@@ -328,9 +300,8 @@ func TestFetchInstallerAndAction_GetInstallerFailure(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	}
@@ -363,10 +334,9 @@ func TestFetchInstallerAndAction_GetInstallerFailureWrappedError(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  &memoryFileStore{},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 
 	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	})
@@ -394,13 +364,12 @@ func TestFetchInstallerAndAction_SkipInstallerStillValidatesAction(t *testing.T)
 			},
 		},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, Deps{
 		HTTPClient: client,
 		FileStore:  &memoryFileStore{},
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "installed_from_external_source",
 		ActionIdentifier:  "wallet/action",
 		Platform:          "android",
@@ -442,9 +411,8 @@ func TestFetchInstallerAndAction_DownloadMissingAndCached(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	}
@@ -481,15 +449,15 @@ func TestFetchInstallerAndAction_InternalAdminKeyDoesNotRequireUserAPIKey(t *tes
 			},
 		},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"test": {URL: baseURL, InternalAdminKey: "internal-admin-key"},
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+		URL:              baseURL,
+		InternalAdminKey: "internal-admin-key",
 	}, Deps{
 		HTTPClient: client,
 		FileStore:  &memoryFileStore{},
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	})
@@ -516,13 +484,12 @@ func TestFetchInstallerAndAction_IOSInstallerUsesIPAExtension(t *testing.T) {
 		},
 	}
 
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, Deps{
 		HTTPClient: client,
 		FileStore:  &memoryFileStore{},
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v2",
 		Platform:          "ios",
 	})
@@ -556,13 +523,12 @@ func TestFetchInstallerAndAction_IOSZipInstallerUnzipsAppAndCachesPath(t *testin
 	}
 
 	store := &memoryFileStore{}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, Deps{
 		HTTPClient: client,
 		FileStore:  store,
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v3",
 		Platform:          "ios",
 	})
@@ -579,7 +545,6 @@ func TestFetchInstallerAndAction_IOSZipInstallerUnzipsAppAndCachesPath(t *testin
 
 	client.calls = nil
 	result, apiErr = server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       baseURL,
 		VersionIdentifier: "v3",
 		Platform:          "ios",
 	})
@@ -590,15 +555,14 @@ func TestFetchInstallerAndAction_IOSZipInstallerUnzipsAppAndCachesPath(t *testin
 }
 
 func TestFetchInstallerAndAction_InvalidPlatform(t *testing.T) {
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"test": {URL: "http://example.local"},
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+		URL: "http://example.local",
 	}, Deps{
 		HTTPClient: &fakeHTTPClient{},
 		FileStore:  &memoryFileStore{},
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
-		InstanceURL:       "http://example.local",
 		VersionIdentifier: "v1",
 		Platform:          "desktop",
 	})

@@ -8,6 +8,7 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+.codex
 .task/
 node_modules/
 npm-debug.log*
@@ -18,5 +19,6 @@ maestro-worker
 pkg/gen/
 bin/
 coverage.out
+apps/
 credimi_base_image.tar.gz
 credimi_golden.tar.gz

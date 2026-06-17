@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
+	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +34,7 @@ func TestTouchFingerprint_Success(t *testing.T) {
 			slept = d
 		},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), nil, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, deps)
 
 	result, apiErr := server.touchFingerprintLogic()
 
@@ -50,7 +51,7 @@ func TestTouchFingerprint_Error(t *testing.T) {
 		CommandRunner: fakeRunner,
 		Sleeper:       func(time.Duration) {},
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), nil, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, deps)
 
 	result, apiErr := server.touchFingerprintLogic()
 

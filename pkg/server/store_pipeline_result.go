@@ -15,7 +15,6 @@ import (
 )
 
 type storePipelineResultPayload struct {
-	InstanceURL      string `json:"instance_url"`
 	VideoPath        string `json:"video_path"`
 	LastFramePath    string `json:"last_frame_path"`
 	LogPath          string `json:"log_path"`
@@ -90,7 +89,8 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		}
 	}
 
-	storeURL := utils.JoinURL(payload.InstanceURL, "api", "wallet", "store-pipeline-result")
+	instance := s.Instance
+	storeURL := utils.JoinURL(instance.URL, "api", "wallet", "store-pipeline-result")
 
 	req, err := http.NewRequest("POST", storeURL, &body)
 	if err != nil {
@@ -98,16 +98,6 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",
 			Reason:  "request failed",
-			Message: err.Error(),
-		}
-	}
-
-	instance, err := s.getInstanceByURL(payload.InstanceURL)
-	if err != nil {
-		return nil, &runner.APIError{
-			Code:    http.StatusInternalServerError,
-			Domain:  "server",
-			Reason:  "invalid instance url",
 			Message: err.Error(),
 		}
 	}

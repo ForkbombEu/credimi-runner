@@ -37,8 +37,9 @@ func newStorePipelineMethodService(t *testing.T, responseStatus int, responseBod
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
-	return NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {URL: baseURL, UserAPIKey: "user-key"},
+	return NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+		URL:        baseURL,
+		UserAPIKey: "user-key",
 	}, Deps{
 		HTTPClient: client,
 		FileStore:  store,
@@ -50,13 +51,11 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 	last := "results/run-1/last.png"
 	log := "results/run-1/log.txt"
 	runnerID := "runner-1"
-	baseURL := "http://example.local"
 	platform := "android"
 
 	t.Run("empty body returns empty object", func(t *testing.T) {
 		srv := newStorePipelineMethodService(t, http.StatusOK, "")
 		result, err := srv.StorePipelineResult(context.Background(), &credimi.StorePipelineResultPayload{
-			InstanceURL:      baseURL,
 			VideoPath:        &video,
 			LastFramePath:    &last,
 			LogPath:          &log,
@@ -71,7 +70,6 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 	t.Run("null body returns empty object", func(t *testing.T) {
 		srv := newStorePipelineMethodService(t, http.StatusOK, "null")
 		result, err := srv.StorePipelineResult(context.Background(), &credimi.StorePipelineResultPayload{
-			InstanceURL:      baseURL,
 			VideoPath:        &video,
 			LastFramePath:    &last,
 			LogPath:          &log,
@@ -86,7 +84,6 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 	t.Run("non-object JSON returns internal error", func(t *testing.T) {
 		srv := newStorePipelineMethodService(t, http.StatusOK, "[")
 		_, err := srv.StorePipelineResult(context.Background(), &credimi.StorePipelineResultPayload{
-			InstanceURL:      baseURL,
 			VideoPath:        &video,
 			LastFramePath:    &last,
 			LogPath:          &log,
@@ -102,7 +99,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 }
 
 func TestTouchFingerprint_MethodError(t *testing.T) {
-	srv := NewRunnerServiceWithDeps(NewProcessStore(), nil, Deps{
+	srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, Deps{
 		CommandRunner: &fakeCommandRunner{
 			output: []byte("oops"),
 			err:    errors.New("adb boom"),
@@ -110,7 +107,7 @@ func TestTouchFingerprint_MethodError(t *testing.T) {
 		Sleeper: func(d time.Duration) {},
 	})
 
-	_, err := srv.TouchFingerprint(context.Background())
+	_, err := srv.TouchFingerprint(context.Background(), &mobile.TouchFingerprintPayload{})
 	require.Error(t, err)
 	var svcErr *mobile.APIError
 	require.ErrorAs(t, err, &svcErr)

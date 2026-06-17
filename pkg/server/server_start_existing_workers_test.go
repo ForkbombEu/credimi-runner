@@ -119,8 +119,9 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 			}
 		},
 	}
-	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
-		"prod": {URL: "http://example.local", InternalAdminKey: "internal-admin-key"},
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{
+		URL:              "http://example.local",
+		InternalAdminKey: "internal-admin-key",
 	}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
@@ -164,9 +165,7 @@ func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {
 		},
 	}
 
-	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
-		"prod": {URL: "http://example.local"},
-	}, deps)
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local"}, deps)
 
 	require.NoError(t, srv.StartExistingWorkers(context.Background()))
 
@@ -175,7 +174,7 @@ func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {
 	started := findRecordedEvent(t, span, "worker.started")
 	require.Equal(t, "already-running", eventAttributeValue(alreadyRunning, attribute.Key("namespace")))
 	require.Equal(t, "new-ns", eventAttributeValue(started, attribute.Key("namespace")))
-	require.Equal(t, "prod", eventAttributeValue(started, attribute.Key("instance.name")))
+	require.Equal(t, "", eventAttributeValue(started, attribute.Key("instance.name")))
 
 	proc, ok := store.Get("new-ns")
 	require.True(t, ok)
@@ -202,9 +201,7 @@ func TestStartExistingWorkers_StartsAllAdminNamespaces(t *testing.T) {
 		},
 	}
 
-	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
-		"prod": {URL: "http://example.local"},
-	}, deps)
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local"}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
@@ -245,9 +242,7 @@ func TestStartExistingWorkers_AppliesStartupDelayBetweenStarts(t *testing.T) {
 		},
 	}
 
-	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
-		"prod": {URL: "http://example.local"},
-	}, deps)
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local"}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
@@ -286,9 +281,7 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 		},
 	}
 
-	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
-		"prod": {URL: "http://example.local"},
-	}, deps)
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local"}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
 	require.NoError(t, err)
@@ -322,9 +315,9 @@ func TestStartExistingWorkers_ReturnsLookupFailures(t *testing.T) {
 			}
 		},
 	}
-	srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"bad":  {URL: "http://broken.local", UserAPIKey: "bad-key"},
-		"good": {URL: "http://good.local", UserAPIKey: "good-key"},
+	srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+		URL:        "http://broken.local",
+		UserAPIKey: "bad-key",
 	}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
@@ -354,8 +347,9 @@ func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T
 		},
 	}
 
-	srv := NewRunnerServiceWithDeps(store, map[string]utils.Instance{
-		"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{
+		URL:        "http://example.local",
+		UserAPIKey: "user-api-key",
 	}, deps)
 
 	err := srv.StartExistingWorkers(context.Background())
@@ -377,8 +371,9 @@ func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T
 
 func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
 	t.Run("organization lookup non-200", func(t *testing.T) {
-		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+			URL:        "http://example.local",
+			UserAPIKey: "user-api-key",
 		}, Deps{
 			HTTPClient: &startWorkersHTTPClient{
 				responder: func(req *http.Request) (*http.Response, error) {
@@ -393,8 +388,9 @@ func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
 	})
 
 	t.Run("organization lookup invalid JSON", func(t *testing.T) {
-		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+			URL:        "http://example.local",
+			UserAPIKey: "user-api-key",
 		}, Deps{
 			HTTPClient: &startWorkersHTTPClient{
 				responder: func(req *http.Request) (*http.Response, error) {
@@ -409,8 +405,9 @@ func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
 	})
 
 	t.Run("organization lookup empty namespace", func(t *testing.T) {
-		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: "http://example.local", UserAPIKey: "user-api-key"},
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+			URL:        "http://example.local",
+			UserAPIKey: "user-api-key",
 		}, Deps{
 			HTTPClient: &startWorkersHTTPClient{
 				responder: func(req *http.Request) (*http.Response, error) {
@@ -427,9 +424,7 @@ func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {
 
 func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 	t.Run("http request error", func(t *testing.T) {
-		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: "http://example.local"},
-		}, Deps{
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: "http://example.local"}, Deps{
 			HTTPClient: &startWorkersHTTPClient{
 				responder: func(req *http.Request) (*http.Response, error) {
 					return nil, errors.New("dial failed")
@@ -442,9 +437,7 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 	})
 
 	t.Run("non-200 response", func(t *testing.T) {
-		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: "http://example.local"},
-		}, Deps{
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: "http://example.local"}, Deps{
 			HTTPClient: &startWorkersHTTPClient{
 				responder: func(req *http.Request) (*http.Response, error) {
 					return httpResp(http.StatusUnauthorized, ""), nil
@@ -457,9 +450,7 @@ func TestStartExistingWorkers_ReturnsUpstreamErrors(t *testing.T) {
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {
-		srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: "http://example.local"},
-		}, Deps{
+		srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: "http://example.local"}, Deps{
 			HTTPClient: &startWorkersHTTPClient{
 				responder: func(req *http.Request) (*http.Response, error) {
 					return httpResp(http.StatusOK, "{"), nil

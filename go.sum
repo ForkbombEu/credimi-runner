@@ -63,12 +63,12 @@ github.com/felixge/httpsnoop v1.0.4 h1:NFTV2Zj1bL4mc9sqWACXbQFVBBg2W3GPvqp8/ESS2
 github.com/felixge/httpsnoop v1.0.4/go.mod h1:m8KPJKqk1gH5J9DgRY2ASl2lWCfGKXixSwevea8zH2U=
 github.com/forkbombeu/avdctl v0.10.1 h1:r5nmDcyrW8ADs95otdkRg8GK2dOLI8aVp5dPPJ7GXmE=
 github.com/forkbombeu/avdctl v0.10.1/go.mod h1:agBlpobRnEMlEsvmr8ayHHVW8wFvK0DO3YGr7M4FEOk=
-github.com/forkbombeu/credimi v1.250.0 h1:RRbgb1sBuL2pGVm2rfciinLgxnZctJE9Vh9L8+a4M7A=
-github.com/forkbombeu/credimi v1.250.0/go.mod h1:KY7m/7iOvUfTYHFzH/FQyBHyTlp5ftLd9SHSH1Sl6Ds=
+github.com/forkbombeu/credimi v1.252.0 h1:CaxdQlZran8JvqrfUFLUFoeJ+BEcSq2q4Z4lXK1/8KM=
+github.com/forkbombeu/credimi v1.252.0/go.mod h1:gJxlrDGp6YdzUo2LfjOJZh1w5cuZcO4VKPsClq0sesg=
 github.com/forkbombeu/credimi-conformance-assessment v1.3.1 h1:SfKWEl3Wgegex76xiJT9SmhyJbUGHlUKC9s5OfK8+SU=
 github.com/forkbombeu/credimi-conformance-assessment v1.3.1/go.mod h1:1L+2vRyjOt1CN0MoYgsPG5q6lA5tmbTalc48EtxXfLo=
-github.com/forkbombeu/credimi-extra v1.10.5 h1:FBdEltzYw3O0NDThgZw5g2rvZhMAhZArCnrFJRQGIiI=
-github.com/forkbombeu/credimi-extra v1.10.5/go.mod h1:sar1qfkqcqVR5x/j1x6VsOzKqRkqbulSnHycINg1ti4=
+github.com/forkbombeu/credimi-extra v1.10.6 h1:1eYrlWTmetRighNVKFduPh8SAVDQ9MAekqo3QxcoJEI=
+github.com/forkbombeu/credimi-extra v1.10.6/go.mod h1:UJl1GWn9oy5gybucvQ2ki+Ipm4aK688HXDI6Brx83IQ=
 github.com/forkbombeu/eudi-conformance-evidence v1.0.2 h1:EtGUTYi+3aAWDEFrn6jt10KEFGjDxDU3SJTxgEbU29w=
 github.com/forkbombeu/eudi-conformance-evidence v1.0.2/go.mod h1:APm92tPag1I5LPtMYny5EN1mqMw+YHO8THOCoAbVQ3M=
 github.com/frankban/quicktest v1.14.6 h1:7Xjx+VpznH+oBnejlPUj8oUpdxnVs4f8XU8WnHkI4W8=

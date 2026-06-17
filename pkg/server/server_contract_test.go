@@ -128,16 +128,23 @@ func newTestInstanceServer(t *testing.T, capture *storeCapture) *httptest.Server
 	return httptest.NewServer(mux)
 }
 
-func newRunnerServiceForTest(instances map[string]utils.Instance, store *ProcessStore) http.Handler {
+func newRunnerServiceForTest(instance *utils.Instance, store *ProcessStore) http.Handler {
 	if store == nil {
 		store = NewProcessStore()
+	}
+	if instance == nil {
+		instance = &utils.Instance{UserAPIKey: "test-api-key"}
 	}
 	deps := Deps{
 		Sleeper: func(time.Duration) {},
 	}
-	srv := NewRunnerServiceWithDeps(store, instances, deps)
+	srv := NewRunnerServiceWithDeps(store, *instance, deps)
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 	return NewHTTPHandler(ctx, srv, false)
+}
+
+func addTestAPIKey(req *http.Request) {
+	req.Header.Set(internalAdminKeyHeader, "test-api-key")
 }
 
 func TestServerContract_ProcessStart(t *testing.T) {
@@ -174,6 +181,7 @@ func TestServerContract_ProcessStart(t *testing.T) {
 		store.Add(NewProcess("alpha", nil))
 		server := newRunnerServiceForTest(nil, store)
 		req := httptest.NewRequest(http.MethodPost, "/worker/alpha", strings.NewReader(`{"old_namespace":""}`))
+		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -192,6 +200,7 @@ func TestServerContract_ProcessStart(t *testing.T) {
 		store.Add(proc)
 		server := newRunnerServiceForTest(nil, store)
 		req := httptest.NewRequest(http.MethodPost, "/worker/beta", strings.NewReader(`{"old_namespace":""}`))
+		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -218,6 +227,7 @@ func TestServerContract_ProcessList(t *testing.T) {
 
 	server := newRunnerServiceForTest(nil, store)
 	req := httptest.NewRequest(http.MethodGet, "/workers", nil)
+	addTestAPIKey(req)
 	resp := httptest.NewRecorder()
 
 	server.ServeHTTP(resp, req)
@@ -226,6 +236,17 @@ func TestServerContract_ProcessList(t *testing.T) {
 	var list []string
 	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &list))
 	require.ElementsMatch(t, []string{"alpha", "charlie"}, list)
+}
+
+func TestServerContract_ProtectedEndpointsRequireAPIKey(t *testing.T) {
+	server := newRunnerServiceForTest(nil, nil)
+	req := httptest.NewRequest(http.MethodGet, "/workers", nil)
+	resp := httptest.NewRecorder()
+
+	server.ServeHTTP(resp, req)
+
+	require.Equal(t, http.StatusUnauthorized, resp.Code)
+	require.Contains(t, resp.Body.String(), "api_key_required")
 }
 
 func TestServerContract_Docs(t *testing.T) {
@@ -300,10 +321,11 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 		}, apiErr)
 	})
 
-	t.Run("invalid instance url", func(t *testing.T) {
+	t.Run("rejects legacy instance url field", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
 		payload := `{"instance_url":"http://missing.local","version_identifier":"v1","platform":"android"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
+		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -314,8 +336,8 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 			Name:    "bad_request",
 			Code:    http.StatusBadRequest,
 			Domain:  "server",
-			Reason:  "invalid instance url",
-			Message: "no instance found for URL: http://missing.local",
+			Reason:  "instance_url_not_supported",
+			Message: "instance_url is not supported; configure CREDIMI_URL instead",
 		}, apiErr)
 	})
 
@@ -324,12 +346,7 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 		upstream := newTestInstanceServer(t, capture)
 		defer upstream.Close()
 
-		instances := map[string]utils.Instance{
-			"test": {
-				URL:        upstream.URL,
-				UserAPIKey: "test-api-key",
-			},
-		}
+		instance := &utils.Instance{URL: upstream.URL, UserAPIKey: "test-api-key"}
 
 		tmpDir := t.TempDir()
 		cwd, err := os.Getwd()
@@ -339,9 +356,10 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 			_ = os.Chdir(cwd)
 		})
 
-		server := newRunnerServiceForTest(instances, nil)
-		payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1","action_identifier":"wallet/action","platform":"android"}`
+		server := newRunnerServiceForTest(instance, nil)
+		payload := `{"version_identifier":"v1","action_identifier":"wallet/action","platform":"android"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
+		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -362,16 +380,12 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 		upstream := newTestInstanceServer(t, capture)
 		defer upstream.Close()
 
-		instances := map[string]utils.Instance{
-			"test": {
-				URL:        upstream.URL,
-				UserAPIKey: "test-api-key",
-			},
-		}
+		instance := &utils.Instance{URL: upstream.URL, UserAPIKey: "test-api-key"}
 
-		server := newRunnerServiceForTest(instances, nil)
-		payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"installed_from_external_source","action_identifier":"wallet/action","platform":"android","skip_installer":true}`
+		server := newRunnerServiceForTest(instance, nil)
+		payload := `{"version_identifier":"installed_from_external_source","action_identifier":"wallet/action","platform":"android","skip_installer":true}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
+		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -392,8 +406,9 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 func TestServerContract_StorePipelineResult(t *testing.T) {
 	t.Run("missing video path", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		payload := `{"instance_url":"http://example.local","video_path":"","last_frame_path":"","log_path":"","run_identifier":"run-1","runner_identifier":"runner-1","platform":"android"}`
+		payload := `{"video_path":"","last_frame_path":"","log_path":"","run_identifier":"run-1","runner_identifier":"runner-1","platform":"android"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader(payload))
+		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -409,17 +424,32 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		}, apiErr)
 	})
 
+	t.Run("rejects legacy instance url field", func(t *testing.T) {
+		server := newRunnerServiceForTest(nil, nil)
+		payload := `{"instance_url":"http://example.local","run_identifier":"run-1","platform":"android"}`
+		req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader(payload))
+		addTestAPIKey(req)
+		resp := httptest.NewRecorder()
+
+		server.ServeHTTP(resp, req)
+		require.Equal(t, http.StatusBadRequest, resp.Code)
+		var apiErr runner.APIError
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &apiErr))
+		require.Equal(t, runner.APIError{
+			Name:    "bad_request",
+			Code:    http.StatusBadRequest,
+			Domain:  "server",
+			Reason:  "instance_url_not_supported",
+			Message: "instance_url is not supported; configure CREDIMI_URL instead",
+		}, apiErr)
+	})
+
 	t.Run("success pass-through", func(t *testing.T) {
 		capture := &storeCapture{}
 		upstream := newTestInstanceServer(t, capture)
 		defer upstream.Close()
 
-		instances := map[string]utils.Instance{
-			"test": {
-				URL:        upstream.URL,
-				UserAPIKey: "test-api-key",
-			},
-		}
+		instance := &utils.Instance{URL: upstream.URL, UserAPIKey: "test-api-key"}
 
 		tmpDir := t.TempDir()
 		videoPath := filepath.Join(tmpDir, "video.mp4")
@@ -429,9 +459,8 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		require.NoError(t, os.WriteFile(lastFramePath, []byte("frame"), 0600))
 		require.NoError(t, os.WriteFile(logPath, []byte("log"), 0600))
 
-		server := newRunnerServiceForTest(instances, nil)
+		server := newRunnerServiceForTest(instance, nil)
 		payload := map[string]string{
-			"instance_url":      upstream.URL,
 			"video_path":        videoPath,
 			"last_frame_path":   lastFramePath,
 			"log_path":          logPath,
@@ -442,6 +471,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		buf := &bytes.Buffer{}
 		require.NoError(t, json.NewEncoder(buf).Encode(payload))
 		req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", buf)
+		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 
 		server.ServeHTTP(resp, req)
@@ -469,6 +499,7 @@ func TestServerContract_TouchFingerprint(t *testing.T) {
 
 	server := newRunnerServiceForTest(nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/mobile/fingerprint/touch", nil)
+	addTestAPIKey(req)
 	resp := httptest.NewRecorder()
 
 	server.ServeHTTP(resp, req)
@@ -494,12 +525,7 @@ func TestServerContract_FetchInstallerAndAction_OptionalCode(t *testing.T) {
 	upstream := newTestInstanceServer(t, capture)
 	defer upstream.Close()
 
-	instances := map[string]utils.Instance{
-		"test": {
-			URL:        upstream.URL,
-			UserAPIKey: "test-api-key",
-		},
-	}
+	instance := &utils.Instance{URL: upstream.URL, UserAPIKey: "test-api-key"}
 
 	tmpDir := t.TempDir()
 	cwd, err := os.Getwd()
@@ -509,9 +535,10 @@ func TestServerContract_FetchInstallerAndAction_OptionalCode(t *testing.T) {
 		_ = os.Chdir(cwd)
 	})
 
-	server := newRunnerServiceForTest(instances, nil)
-	payload := `{"instance_url":"` + upstream.URL + `","version_identifier":"v1","platform":"android"}`
+	server := newRunnerServiceForTest(instance, nil)
+	payload := `{"version_identifier":"v1","platform":"android"}`
 	req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
+	addTestAPIKey(req)
 	resp := httptest.NewRecorder()
 
 	server.ServeHTTP(resp, req)

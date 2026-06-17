@@ -5,6 +5,14 @@ import . "goa.design/goa/v3/dsl"
 //go:generate go run goa.design/goa/v3/cmd/goa@v3.24.3 gen github.com/forkbombeu/credimi-runner/pkg/design -o ..
 //go:generate go run ../../scripts/generate_openapi_public.go
 
+var CredimiAPIKey = APIKeySecurity("CredimiAPIKey", func() {
+	Description("Credimi API key passed in the Credimi-Api-Key header.")
+})
+
+func CredimiAPIKeyPayload() {
+	APIKey("CredimiAPIKey", "api_key", String, "Credimi API key used to authorize runner requests.")
+}
+
 var _ = API("runner-server", func() {
 	Title("Runner Server")
 	Description("Credimi runner server API.")
@@ -71,6 +79,7 @@ var _ = Service("docs", func() {
 	Error("internal_error", APIError)
 
 	Method("index", func() {
+		NoSecurity()
 		Result(func() {
 			Attribute("length", Int64, "Content length in bytes")
 			Attribute("encoding", String, "Response content type")
@@ -90,6 +99,7 @@ var _ = Service("docs", func() {
 	})
 
 	Method("openapi", func() {
+		NoSecurity()
 		Result(func() {
 			Attribute("length", Int64, "Content length in bytes")
 			Attribute("encoding", String, "Response content type")
@@ -109,6 +119,7 @@ var _ = Service("docs", func() {
 	})
 
 	Method("openapi3", func() {
+		NoSecurity()
 		Result(func() {
 			Attribute("length", Int64, "Content length in bytes")
 			Attribute("encoding", String, "Response content type")
@@ -128,6 +139,7 @@ var _ = Service("docs", func() {
 	})
 
 	Method("openapi3_public", func() {
+		NoSecurity()
 		Result(func() {
 			Attribute("length", Int64, "Content length in bytes")
 			Attribute("encoding", String, "Response content type")
@@ -149,12 +161,15 @@ var _ = Service("docs", func() {
 
 var _ = Service("worker", func() {
 	Description("Worker process management.")
+	Security(CredimiAPIKey)
 
 	Error("bad_request", APIError)
+	Error("unauthorized", APIError)
 	Error("internal_error", APIError)
 
 	Method("process_start", func() {
 		Payload(func() {
+			CredimiAPIKeyPayload()
 			Attribute("namespace", String, func() {
 				Example("")
 			})
@@ -170,28 +185,37 @@ var _ = Service("worker", func() {
 		Result(ProcessStartResult)
 
 		Error("bad_request", APIError)
+		Error("unauthorized", APIError)
 		Error("internal_error", APIError)
 
 		HTTP(func() {
 			POST("/worker/{namespace}")
+			Header("api_key:Credimi-Api-Key")
 			Param("namespace")
 			Body(func() {
 				Attribute("old_namespace")
 			})
 			Response(StatusAccepted)
 			Response("bad_request", StatusBadRequest)
+			Response("unauthorized", StatusUnauthorized)
 			Response("internal_error", StatusInternalServerError)
 		})
 	})
 
 	Method("process_list", func() {
+		Payload(func() {
+			CredimiAPIKeyPayload()
+		})
 		Result(ArrayOf(String))
 
 		Error("internal_error", APIError)
+		Error("unauthorized", APIError)
 
 		HTTP(func() {
 			GET("/workers")
+			Header("api_key:Credimi-Api-Key")
 			Response(StatusOK)
+			Response("unauthorized", StatusUnauthorized)
 			Response("internal_error", StatusInternalServerError)
 		})
 	})
@@ -199,6 +223,7 @@ var _ = Service("worker", func() {
 
 var _ = Service("credimi", func() {
 	Description("Credimi integration endpoints.")
+	Security(CredimiAPIKey)
 
 	Error("bad_request", APIError)
 	Error("unauthorized", APIError)
@@ -208,14 +233,13 @@ var _ = Service("credimi", func() {
 
 	Method("fetch_installer_and_action", func() {
 		Payload(func() {
-			Attribute("instance_url", String)
+			CredimiAPIKeyPayload()
 			Attribute("version_identifier", String)
 			Attribute("action_identifier", String)
 			Attribute("platform", String)
 			Attribute("skip_installer", Boolean)
-			Required("instance_url", "version_identifier", "platform")
+			Required("version_identifier", "platform")
 			Example(map[string]any{
-				"instance_url":       "",
 				"version_identifier": "",
 				"action_identifier":  "",
 				"platform":           "android",
@@ -232,6 +256,7 @@ var _ = Service("credimi", func() {
 
 		HTTP(func() {
 			POST("/credimi/installer-action")
+			Header("api_key:Credimi-Api-Key")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -243,16 +268,15 @@ var _ = Service("credimi", func() {
 
 	Method("store_pipeline_result", func() {
 		Payload(func() {
-			Attribute("instance_url", String)
+			CredimiAPIKeyPayload()
 			Attribute("video_path", String)
 			Attribute("last_frame_path", String)
 			Attribute("log_path", String)
 			Attribute("run_identifier", String)
 			Attribute("runner_identifier", String)
 			Attribute("platform", String)
-			Required("instance_url", "run_identifier", "platform")
+			Required("run_identifier", "platform")
 			Example(map[string]any{
-				"instance_url":      "",
 				"video_path":        "",
 				"last_frame_path":   "",
 				"log_path":          "",
@@ -271,6 +295,7 @@ var _ = Service("credimi", func() {
 
 		HTTP(func() {
 			POST("/credimi/pipeline-result")
+			Header("api_key:Credimi-Api-Key")
 			Response(StatusOK)
 			Response("bad_request", StatusBadRequest)
 			Response("unauthorized", StatusUnauthorized)
@@ -283,17 +308,25 @@ var _ = Service("credimi", func() {
 
 var _ = Service("mobile", func() {
 	Description("Mobile device control endpoints.")
+	Security(CredimiAPIKey)
 
 	Error("internal_error", APIError)
+	Error("unauthorized", APIError)
 
 	Method("touch_fingerprint", func() {
+		Payload(func() {
+			CredimiAPIKeyPayload()
+		})
 		Result(TouchFingerprintResult)
 
 		Error("internal_error", APIError)
+		Error("unauthorized", APIError)
 
 		HTTP(func() {
 			GET("/mobile/fingerprint/touch")
+			Header("api_key:Credimi-Api-Key")
 			Response(StatusOK)
+			Response("unauthorized", StatusUnauthorized)
 			Response("internal_error", StatusInternalServerError)
 		})
 	})
@@ -306,6 +339,7 @@ var _ = Service("health", func() {
 	Error("service_unavailable", APIError)
 
 	Method("check", func() {
+		NoSecurity()
 		Result(func() {
 			Attribute("status", String)
 			Attribute("devices", ArrayOf(DeviceInfo))

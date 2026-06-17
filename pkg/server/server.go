@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
@@ -15,21 +16,25 @@ import (
 )
 
 type runnerService struct {
-	Store     *ProcessStore
-	Instances map[string]utils.Instance
-	Deps      Deps
+	Store    *ProcessStore
+	Instance utils.Instance
+	Deps     Deps
+
+	authCacheMu sync.Mutex
+	authCache   map[string]time.Time
 }
 
-func NewRunnerService(store *ProcessStore, instances map[string]utils.Instance) *runnerService {
-	return NewRunnerServiceWithDeps(store, instances, Deps{})
+func NewRunnerService(store *ProcessStore, instance utils.Instance) *runnerService {
+	return NewRunnerServiceWithDeps(store, instance, Deps{})
 }
 
-func NewRunnerServiceWithDeps(store *ProcessStore, instances map[string]utils.Instance, deps Deps) *runnerService {
+func NewRunnerServiceWithDeps(store *ProcessStore, instance utils.Instance, deps Deps) *runnerService {
 	deps.WithDefaults()
 	return &runnerService{
 		Store:     store,
-		Instances: instances,
+		Instance:  instance,
 		Deps:      deps,
+		authCache: make(map[string]time.Time),
 	}
 }
 
@@ -44,27 +49,26 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	startAttempts := 0
 	runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")
 
-	for name, inst := range s.Instances {
-		if inst.URL == "" {
-			continue
-		}
-		if inst.UserAPIKey == "" {
-			namespaces, err := s.fetchAdminNamespaces(ctx, inst)
-			if err != nil {
-				return err
-			}
-			for _, namespace := range namespaces {
-				startAttempts = s.startWorkerIfNeeded(ctx, span, name, namespace, namespace, runnerID, startAttempts, startDelay)
-			}
-			continue
-		}
-
-		orgName, namespace, err := s.fetchUserNamespace(ctx, inst)
+	inst := s.Instance
+	if inst.URL == "" {
+		return nil
+	}
+	if inst.UserAPIKey == "" {
+		namespaces, err := s.fetchAdminNamespaces(ctx, inst)
 		if err != nil {
 			return err
 		}
-		startAttempts = s.startWorkerIfNeeded(ctx, span, name, orgName, namespace, runnerID, startAttempts, startDelay)
+		for _, namespace := range namespaces {
+			startAttempts = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+		}
+		return nil
 	}
+
+	orgName, namespace, err := s.fetchUserNamespace(ctx, inst)
+	if err != nil {
+		return err
+	}
+	startAttempts = s.startWorkerIfNeeded(ctx, span, orgName, namespace, runnerID, startAttempts, startDelay)
 	return nil
 }
 
@@ -100,9 +104,8 @@ func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Ins
 	return data.Namespaces, nil
 }
 
-func workerTraceAttrs(instanceName, orgName, namespace, runnerID string) []attribute.KeyValue {
+func workerTraceAttrs(orgName, namespace, runnerID string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
-		attribute.String("instance.name", instanceName),
 		attribute.String("namespace", namespace),
 	}
 	if orgName != "" {
@@ -159,14 +162,13 @@ func (s *runnerService) fetchUserNamespace(
 func (s *runnerService) startWorkerIfNeeded(
 	ctx context.Context,
 	span trace.Span,
-	instanceName string,
 	orgName string,
 	namespace string,
 	runnerID string,
 	startAttempts int,
 	startDelay time.Duration,
 ) int {
-	attrs := workerTraceAttrs(instanceName, orgName, namespace, runnerID)
+	attrs := workerTraceAttrs(orgName, namespace, runnerID)
 	if namespace == "" {
 		span.AddEvent("worker.start_skipped", trace.WithAttributes(append(attrs, attribute.String("reason", "namespace_empty"))...))
 		return startAttempts
@@ -175,7 +177,6 @@ func (s *runnerService) startWorkerIfNeeded(
 		span.AddEvent("worker.already_running", trace.WithAttributes(attrs...))
 		log.Printf("Worker already running for namespace %s", namespace)
 		observability.Info(ctx, "credimi-runner.startup", "worker already running for namespace",
-			observability.String("instance.name", instanceName),
 			observability.String("organization.name", orgName),
 			observability.String("namespace", namespace),
 		)
@@ -189,13 +190,11 @@ func (s *runnerService) startWorkerIfNeeded(
 
 	log.Printf("Starting worker for organization %s (%s)", orgName, namespace)
 	observability.RecordWorkerStart(ctx,
-		attribute.String("instance.name", instanceName),
 		attribute.String("organization.name", orgName),
 		attribute.String("namespace", namespace),
 		attribute.String("runner_id", runnerID),
 	)
 	observability.Info(ctx, "credimi-runner.startup", "starting worker for namespace",
-		observability.String("instance.name", instanceName),
 		observability.String("organization.name", orgName),
 		observability.String("namespace", namespace),
 	)
@@ -207,13 +206,11 @@ func (s *runnerService) startWorkerIfNeeded(
 		span.RecordError(err)
 		log.Printf("Failed to start worker for %s: %v", namespace, err)
 		observability.RecordWorkerStartFailure(ctx,
-			attribute.String("instance.name", instanceName),
 			attribute.String("organization.name", orgName),
 			attribute.String("namespace", namespace),
 			attribute.String("runner_id", runnerID),
 		)
 		observability.Error(ctx, "credimi-runner.startup", "failed to start worker for namespace", err,
-			observability.String("instance.name", instanceName),
 			observability.String("organization.name", orgName),
 			observability.String("namespace", namespace),
 		)
@@ -236,20 +233,4 @@ func startupWorkerDelay() time.Duration {
 		return defaultWorkerStartDelayMS * time.Millisecond
 	}
 	return time.Duration(delayMS) * time.Millisecond
-}
-
-func (s *runnerService) getInstanceByURL(rawURL string) (utils.Instance, error) {
-	normalizedInput, err := utils.NormalizeURL(rawURL)
-	if err != nil {
-		return utils.Instance{}, err
-	}
-
-	for _, inst := range s.Instances {
-
-		if inst.URL == normalizedInput {
-			return inst, nil
-		}
-	}
-
-	return utils.Instance{}, fmt.Errorf("no instance found for URL: %s", rawURL)
 }

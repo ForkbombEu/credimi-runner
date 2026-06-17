@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
+	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
 	cluelog "goa.design/clue/log"
 )
 
 func TestProcessStartEndpoint(t *testing.T) {
 	t.Run("missing namespace", func(t *testing.T) {
-		srv := NewRunnerService(NewProcessStore(), nil)
+		srv := NewRunnerService(NewProcessStore(), utils.Instance{})
 
 		result, apiErr := srv.processStart("", "")
 
@@ -29,7 +30,7 @@ func TestProcessStartEndpoint(t *testing.T) {
 	})
 
 	t.Run("invalid JSON", func(t *testing.T) {
-		srv := NewRunnerService(NewProcessStore(), nil)
+		srv := NewRunnerService(NewProcessStore(), utils.Instance{})
 		ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 		handler := NewHTTPHandler(ctx, srv, false)
 		req := httptest.NewRequest(http.MethodPost, "/worker/example", strings.NewReader("{"))
@@ -56,7 +57,7 @@ func TestProcessStartEndpoint(t *testing.T) {
 				return func(ctx context.Context) error { return nil }
 			},
 		}
-		srv := NewRunnerServiceWithDeps(store, nil, deps)
+		srv := NewRunnerServiceWithDeps(store, utils.Instance{}, deps)
 
 		result, apiErr := srv.processStart("alpha", "")
 
@@ -70,7 +71,7 @@ func TestProcessStartEndpoint(t *testing.T) {
 		proc := NewProcess("beta", nil)
 		proc.Running = true
 		store.Add(proc)
-		srv := NewRunnerService(store, nil)
+		srv := NewRunnerService(store, utils.Instance{})
 
 		result, apiErr := srv.processStart("beta", "")
 
@@ -92,7 +93,7 @@ func TestProcessStartEndpoint(t *testing.T) {
 				return func(ctx context.Context) error { return nil }
 			},
 		}
-		srv := NewRunnerServiceWithDeps(store, nil, deps)
+		srv := NewRunnerServiceWithDeps(store, utils.Instance{}, deps)
 
 		_, apiErr := srv.processStart("new", "old")
 

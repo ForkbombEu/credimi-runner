@@ -293,10 +293,6 @@ Environment variables used by `serve`:
 - `CREDIMI_URL` (default: `https://credimi.io`)
 - `CREDIMI_RUNNER_ID` (required when workers are started)
 - `CREDIMI_USER_API_KEY` for user-scoped workers, or `CREDIMI_INTERNAL_ADMIN_KEY` for admin workers on `CREDIMI_URL`
-- `CREDIMI_STAGING_URL` (optional, but if set should have matching creds)
-- `CREDIMI_STAGING_USER_API_KEY` for user-scoped staging workers, or `CREDIMI_STAGING_INTERNAL_ADMIN_KEY` for admin staging workers
-- `CREDIMI_DEV_URL` (optional, but if set should have matching creds)
-- `CREDIMI_DEV_USER_API_KEY` or `CREDIMI_DEV_PB_ADMIN` + `CREDIMI_DEV_PB_PASS` for `CREDIMI_DEV_URL`
 - `TEMPORAL_ADDRESS` (optional, default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded as `Credimi-Api-Key` on internal Credimi API requests)
 
