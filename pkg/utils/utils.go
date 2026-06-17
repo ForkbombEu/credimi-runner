@@ -99,23 +99,11 @@ func GetEnvironmentVariableAsInteger(name string, others ...any) (int, error) {
 	return int(outputAsInt), nil
 }
 
-func LoadInstances() map[string]Instance {
-	return map[string]Instance{
-		"production": {
-			URL:              GetEnvironmentVariable("CREDIMI_URL", defaultCredimiURL),
-			UserAPIKey:       GetEnvironmentVariable("CREDIMI_USER_API_KEY"),
-			InternalAdminKey: GetEnvironmentVariable("CREDIMI_INTERNAL_ADMIN_KEY"),
-		},
-		"staging": {
-			URL:              GetEnvironmentVariable("CREDIMI_STAGING_URL"),
-			UserAPIKey:       GetEnvironmentVariable("CREDIMI_STAGING_USER_API_KEY"),
-			InternalAdminKey: GetEnvironmentVariable("CREDIMI_STAGING_INTERNAL_ADMIN_KEY"),
-		},
-		"dev": {
-			URL:              GetEnvironmentVariable("CREDIMI_DEV_URL"),
-			UserAPIKey:       GetEnvironmentVariable("CREDIMI_DEV_USER_API_KEY"),
-			InternalAdminKey: GetEnvironmentVariable("CREDIMI_DEV_INTERNAL_ADMIN_KEY"),
-		},
+func LoadInstance() Instance {
+	return Instance{
+		URL:              GetEnvironmentVariable("CREDIMI_URL", defaultCredimiURL),
+		UserAPIKey:       GetEnvironmentVariable("CREDIMI_USER_API_KEY"),
+		InternalAdminKey: GetEnvironmentVariable("CREDIMI_INTERNAL_ADMIN_KEY"),
 	}
 }
 

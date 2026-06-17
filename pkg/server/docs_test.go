@@ -5,11 +5,12 @@ import (
 	"os"
 	"testing"
 
+	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
 func TestDocsMethods(t *testing.T) {
-	srv := NewRunnerService(NewProcessStore(), nil)
+	srv := NewRunnerService(NewProcessStore(), utils.Instance{})
 
 	html, err := srv.Docs(context.Background())
 	require.NoError(t, err)
@@ -21,7 +22,7 @@ func TestDocsMethods(t *testing.T) {
 }
 
 func TestDocsMethodsOutsideRepositoryWorkingDirectory(t *testing.T) {
-	srv := NewRunnerService(NewProcessStore(), nil)
+	srv := NewRunnerService(NewProcessStore(), utils.Instance{})
 	tmpDir := t.TempDir()
 	cwd, err := os.Getwd()
 	require.NoError(t, err)

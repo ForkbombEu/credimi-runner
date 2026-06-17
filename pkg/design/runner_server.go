@@ -234,14 +234,12 @@ var _ = Service("credimi", func() {
 	Method("fetch_installer_and_action", func() {
 		Payload(func() {
 			CredimiAPIKeyPayload()
-			Attribute("instance_url", String)
 			Attribute("version_identifier", String)
 			Attribute("action_identifier", String)
 			Attribute("platform", String)
 			Attribute("skip_installer", Boolean)
-			Required("instance_url", "version_identifier", "platform")
+			Required("version_identifier", "platform")
 			Example(map[string]any{
-				"instance_url":       "",
 				"version_identifier": "",
 				"action_identifier":  "",
 				"platform":           "android",
@@ -271,16 +269,14 @@ var _ = Service("credimi", func() {
 	Method("store_pipeline_result", func() {
 		Payload(func() {
 			CredimiAPIKeyPayload()
-			Attribute("instance_url", String)
 			Attribute("video_path", String)
 			Attribute("last_frame_path", String)
 			Attribute("log_path", String)
 			Attribute("run_identifier", String)
 			Attribute("runner_identifier", String)
 			Attribute("platform", String)
-			Required("instance_url", "run_identifier", "platform")
+			Required("run_identifier", "platform")
 			Example(map[string]any{
-				"instance_url":      "",
 				"video_path":        "",
 				"last_frame_path":   "",
 				"log_path":          "",

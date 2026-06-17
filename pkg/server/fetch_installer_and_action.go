@@ -17,7 +17,6 @@ import (
 )
 
 type fetchInstallerAndActionPayload struct {
-	InstanceURL       string `json:"instance_url"`
 	VersionIdentifier string `json:"version_identifier"`
 	ActionIdentifier  string `json:"action_identifier"`
 	Platform          string `json:"platform"`
@@ -36,16 +35,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		return nil, apiErr
 	}
 
-	instance, err := s.getInstanceByURL(payload.InstanceURL)
-	if err != nil {
-		return nil, &runner.APIError{
-			Code:    http.StatusBadRequest,
-			Domain:  "server",
-			Reason:  "invalid instance url",
-			Message: err.Error(),
-		}
-	}
-
+	instance := s.Instance
 	apiKey := instance.UserAPIKey
 	if apiKey == "" {
 		apiKey = instance.InternalAdminKey
@@ -59,8 +49,8 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		}
 	}
 
-	validateURL := utils.JoinURL(payload.InstanceURL, "api", "canonify", "identifier", "validate")
-	getInstallerURL := utils.JoinURL(payload.InstanceURL, "api", "wallet", "get-installer-md5-or-etag")
+	validateURL := utils.JoinURL(instance.URL, "api", "canonify", "identifier", "validate")
+	getInstallerURL := utils.JoinURL(instance.URL, "api", "wallet", "get-installer-md5-or-etag")
 
 	var actionCode *string
 	if payload.ActionIdentifier != "" {
@@ -158,7 +148,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		}
 	}
 
-	fileURL := utils.JoinURL(payload.InstanceURL, "api", "files", "wallet_versions", md5Resp.RecordID, md5Resp.InstallerName)
+	fileURL := utils.JoinURL(instance.URL, "api", "files", "wallet_versions", md5Resp.RecordID, md5Resp.InstallerName)
 	path, err := downloadInstallerIfMissing(
 		fileURL,
 		apiKey,

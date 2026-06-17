@@ -60,39 +60,35 @@ func (s *runnerService) matchesConfiguredInternalAdminAPIKey(key string) bool {
 
 func (s *runnerService) matchesConfiguredAPIKey(key string, configuredKey func(utils.Instance) string) bool {
 	presented := sha256.Sum256([]byte(key))
-	for _, inst := range s.Instances {
-		configured := strings.TrimSpace(configuredKey(inst))
-		if configured == "" {
-			continue
-		}
-		configuredHash := sha256.Sum256([]byte(configured))
-		if subtle.ConstantTimeCompare(presented[:], configuredHash[:]) == 1 {
-			return true
-		}
+	configured := strings.TrimSpace(configuredKey(s.Instance))
+	if configured == "" {
+		return false
+	}
+	configuredHash := sha256.Sum256([]byte(configured))
+	if subtle.ConstantTimeCompare(presented[:], configuredHash[:]) == 1 {
+		return true
 	}
 	return false
 }
 
 func (s *runnerService) validInternalAdminAPIKey(ctx context.Context, key string) (bool, error) {
-	for _, inst := range s.Instances {
-		instanceURL := strings.TrimSpace(inst.URL)
-		if instanceURL == "" {
-			continue
-		}
+	instanceURL := strings.TrimSpace(s.Instance.URL)
+	if instanceURL == "" {
+		return false, nil
+	}
 
-		cacheKey := adminAPIKeyCacheKey(instanceURL, key)
-		if s.hasCachedAdminAPIKey(cacheKey) {
-			return true, nil
-		}
+	cacheKey := adminAPIKeyCacheKey(instanceURL, key)
+	if s.hasCachedAdminAPIKey(cacheKey) {
+		return true, nil
+	}
 
-		ok, err := s.introspectInternalAdminAPIKey(ctx, instanceURL, key)
-		if err != nil {
-			continue
-		}
-		if ok {
-			s.cacheAdminAPIKey(cacheKey)
-			return true, nil
-		}
+	ok, err := s.introspectInternalAdminAPIKey(ctx, instanceURL, key)
+	if err != nil {
+		return false, nil
+	}
+	if ok {
+		s.cacheAdminAPIKey(cacheKey)
+		return true, nil
 	}
 	return false, nil
 }

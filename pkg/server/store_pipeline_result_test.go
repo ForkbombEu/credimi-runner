@@ -39,11 +39,10 @@ func (t *trackingFileStore) RemoveAll(path string) error {
 }
 
 func TestStorePipelineResult_MissingVideoPath(t *testing.T) {
-	server := NewRunnerService(nil, nil)
+	server := NewRunnerService(nil, utils.Instance{})
 	payload := storePipelineResultPayload{
-		InstanceURL: "http://example.local",
-		VideoPath:   "",
-		Platform:    "android",
+		VideoPath: "",
+		Platform:  "android",
 	}
 
 	result, apiErr := server.storePipelineResultLogic(payload)
@@ -118,9 +117,8 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := storePipelineResultPayload{
-		InstanceURL:      baseURL,
 		VideoPath:        videoPath,
 		LastFramePath:    lastFramePath,
 		LogPath:          logPath,
@@ -199,13 +197,12 @@ func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 	_, _ = writer.Write([]byte("log"))
 	require.NoError(t, writer.Close())
 
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, Deps{
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, Deps{
 		HTTPClient: client,
 		FileStore:  store,
 	})
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		InstanceURL:      baseURL,
 		VideoPath:        videoPath,
 		LastFramePath:    lastFramePath,
 		LogPath:          logPath,
@@ -250,9 +247,8 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := storePipelineResultPayload{
-		InstanceURL:      baseURL,
 		VideoPath:        "results/run-1/video.mp4",
 		LastFramePath:    "results/run-1/last.png",
 		LogPath:          "results/run-1/log.txt",
@@ -302,10 +298,9 @@ func TestStorePipelineResult_UpstreamWrappedError(t *testing.T) {
 		HTTPClient: client,
 		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		InstanceURL:      baseURL,
 		VideoPath:        "results/run-1/video.mp4",
 		LastFramePath:    "results/run-1/last.png",
 		LogPath:          "results/run-1/log.txt",
@@ -353,10 +348,9 @@ func TestStorePipelineResult_UpstreamConcatenatedErrorFallsBackGracefully(t *tes
 		HTTPClient: client,
 		FileStore:  store,
 	}
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{"test": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}}, deps)
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		InstanceURL:      baseURL,
 		VideoPath:        "results/run-1/video.mp4",
 		LastFramePath:    "results/run-1/last.png",
 		LogPath:          "results/run-1/log.txt",
@@ -374,42 +368,6 @@ func TestStorePipelineResult_UpstreamConcatenatedErrorFallsBackGracefully(t *tes
 	}, apiErr)
 }
 
-func TestStorePipelineResult_InvalidInstanceURL(t *testing.T) {
-	baseURL := "http://example.local"
-	store := &memoryFileStore{}
-	writer, err := store.Create("results/run-1/video.mp4")
-	require.NoError(t, err)
-	require.NoError(t, writer.Close())
-	writer, err = store.Create("results/run-1/last.png")
-	require.NoError(t, err)
-	require.NoError(t, writer.Close())
-	writer, err = store.Create("results/run-1/log.txt")
-	require.NoError(t, err)
-	require.NoError(t, writer.Close())
-
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"},
-	}, Deps{
-		HTTPClient: &fakeHTTPClient{},
-		FileStore:  store,
-	})
-
-	_, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		InstanceURL:   "http://missing.local",
-		VideoPath:     "results/run-1/video.mp4",
-		LastFramePath: "results/run-1/last.png",
-		LogPath:       "results/run-1/log.txt",
-		Platform:      "android",
-	})
-
-	require.Equal(t, &runner.APIError{
-		Code:    http.StatusInternalServerError,
-		Domain:  "server",
-		Reason:  "invalid instance url",
-		Message: "no instance found for URL: http://missing.local",
-	}, apiErr)
-}
-
 func TestStorePipelineResult_MissingCredentials(t *testing.T) {
 	baseURL := "http://example.local"
 	store := &memoryFileStore{}
@@ -423,15 +381,12 @@ func TestStorePipelineResult_MissingCredentials(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
-	server := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {URL: baseURL},
-	}, Deps{
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL}, Deps{
 		HTTPClient: &fakeHTTPClient{},
 		FileStore:  store,
 	})
 
 	_, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		InstanceURL:   baseURL,
 		VideoPath:     "results/run-1/video.mp4",
 		LastFramePath: "results/run-1/last.png",
 		LogPath:       "results/run-1/log.txt",
@@ -462,8 +417,10 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, writer.Close())
 
-		return NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-			"prod": {URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"},
+		return NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+			URL:              baseURL,
+			UserAPIKey:       "user-key",
+			InternalAdminKey: "internal-admin-key",
 		}, Deps{
 			HTTPClient: client,
 			FileStore:  store,
@@ -480,7 +437,6 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		}
 
 		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
-			InstanceURL:   baseURL,
 			VideoPath:     "results/run-1/video.mp4",
 			LastFramePath: "results/run-1/last.png",
 			LogPath:       "results/run-1/log.txt",
@@ -506,7 +462,6 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		}
 
 		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
-			InstanceURL:   baseURL,
 			VideoPath:     "results/run-1/video.mp4",
 			LastFramePath: "results/run-1/last.png",
 			LogPath:       "results/run-1/log.txt",
@@ -527,7 +482,6 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		}
 
 		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
-			InstanceURL:   baseURL,
 			VideoPath:     "results/run-1/video.mp4",
 			LastFramePath: "results/run-1/last.png",
 			LogPath:       "results/run-1/log.txt",
@@ -541,7 +495,7 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 }
 
 func TestStorePipelineResult_InvalidJSON(t *testing.T) {
-	server := NewRunnerService(NewProcessStore(), nil)
+	server := NewRunnerService(NewProcessStore(), utils.Instance{})
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
 	handler := NewHTTPHandler(ctx, server, false)
 	req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader("{"))
@@ -562,10 +516,9 @@ func TestStorePipelineResult_InvalidJSON(t *testing.T) {
 }
 
 func TestStorePipelineResult_InvalidPlatform(t *testing.T) {
-	server := NewRunnerService(nil, nil)
+	server := NewRunnerService(nil, utils.Instance{})
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		InstanceURL:   "http://example.local",
 		VideoPath:     "results/run-1/video.mp4",
 		LastFramePath: "results/run-1/last.png",
 		Platform:      "desktop",

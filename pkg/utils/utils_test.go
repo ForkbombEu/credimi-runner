@@ -52,33 +52,22 @@ func TestGetEnvironmentVariableAsInteger(t *testing.T) {
 	}
 }
 
-func TestLoadInstances(t *testing.T) {
+func TestLoadInstance(t *testing.T) {
 	t.Setenv("CREDIMI_URL", "http://prod.local")
 	t.Setenv("CREDIMI_USER_API_KEY", "prod-user-key")
 	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "prod-admin-key")
-	t.Setenv("CREDIMI_STAGING_URL", "http://staging.local")
-	t.Setenv("CREDIMI_STAGING_USER_API_KEY", "st-user-key")
-	t.Setenv("CREDIMI_STAGING_INTERNAL_ADMIN_KEY", "st-admin-key")
-	t.Setenv("CREDIMI_DEV_URL", "http://dev.local")
-	t.Setenv("CREDIMI_DEV_USER_API_KEY", "dev-user-key")
-	t.Setenv("CREDIMI_DEV_INTERNAL_ADMIN_KEY", "dev-admin-key")
 
-	instances := LoadInstances()
-	require.Equal(t, "http://prod.local", instances["production"].URL)
-	require.Equal(t, "prod-user-key", instances["production"].UserAPIKey)
-	require.Equal(t, "prod-admin-key", instances["production"].InternalAdminKey)
-	require.Equal(t, "st-user-key", instances["staging"].UserAPIKey)
-	require.Equal(t, "st-admin-key", instances["staging"].InternalAdminKey)
-	require.Equal(t, "http://dev.local", instances["dev"].URL)
-	require.Equal(t, "dev-user-key", instances["dev"].UserAPIKey)
-	require.Equal(t, "dev-admin-key", instances["dev"].InternalAdminKey)
+	instance := LoadInstance()
+	require.Equal(t, "http://prod.local", instance.URL)
+	require.Equal(t, "prod-user-key", instance.UserAPIKey)
+	require.Equal(t, "prod-admin-key", instance.InternalAdminKey)
 }
 
-func TestLoadInstances_DefaultProductionURL(t *testing.T) {
+func TestLoadInstance_DefaultProductionURL(t *testing.T) {
 	t.Setenv("CREDIMI_URL", "")
 
-	instances := LoadInstances()
-	require.Equal(t, defaultCredimiURL, instances["production"].URL)
+	instance := LoadInstance()
+	require.Equal(t, defaultCredimiURL, instance.URL)
 }
 
 func TestJoinAndNormalizeURL(t *testing.T) {

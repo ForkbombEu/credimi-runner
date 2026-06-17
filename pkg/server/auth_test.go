@@ -12,8 +12,9 @@ import (
 )
 
 func TestAPIKeyAuthConfiguredUserKey(t *testing.T) {
-	srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {URL: "http://example.local", UserAPIKey: "configured-user-key"},
+	srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+		URL:        "http://example.local",
+		UserAPIKey: "configured-user-key",
 	}, Deps{})
 
 	_, err := srv.APIKeyAuth(context.Background(), "configured-user-key", nil)
@@ -28,11 +29,9 @@ func TestAPIKeyAuthConfiguredInternalAdminKey(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {
-			URL:              upstream.URL,
-			InternalAdminKey: "configured-internal-admin-key",
-		},
+	srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
+		URL:              upstream.URL,
+		InternalAdminKey: "configured-internal-admin-key",
 	}, Deps{})
 
 	_, err := srv.APIKeyAuth(context.Background(), "configured-internal-admin-key", nil)
@@ -41,7 +40,7 @@ func TestAPIKeyAuthConfiguredInternalAdminKey(t *testing.T) {
 }
 
 func TestAPIKeyAuthRejectsMissingAndUnknownKeys(t *testing.T) {
-	srv := NewRunnerServiceWithDeps(NewProcessStore(), nil, Deps{})
+	srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, Deps{})
 
 	for _, key := range []string{"", "unknown-key"} {
 		_, err := srv.APIKeyAuth(context.Background(), key, nil)
@@ -65,9 +64,7 @@ func TestAPIKeyAuthInternalAdminIntrospection(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	srv := NewRunnerServiceWithDeps(NewProcessStore(), map[string]utils.Instance{
-		"prod": {URL: upstream.URL},
-	}, Deps{})
+	srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: upstream.URL}, Deps{})
 
 	_, err := srv.APIKeyAuth(context.Background(), "internal-admin-key", nil)
 	require.NoError(t, err)
