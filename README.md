@@ -144,6 +144,9 @@ Authentication options (choose one):
 
 Defaulted/optional environment variables (all modes):
 - `CREDIMI_URL` (default: `https://credimi.io`)
+- `CREDIMI_RUNNER_LIFECYCLE_ENABLED` (default: `true`)
+- `CREDIMI_RUNNER_HEARTBEAT_INTERVAL` (default: `30s`)
+- `CREDIMI_RUNNER_LIFECYCLE_REQUEST_TIMEOUT` (default: `5s`)
 - `TEMPORAL_ADDRESS` (default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (added as `Credimi-Api-Key` on internal Credimi API requests)
 
@@ -293,6 +296,9 @@ Environment variables used by `serve`:
 - `CREDIMI_URL` (default: `https://credimi.io`)
 - `CREDIMI_RUNNER_ID` (required when workers are started)
 - `CREDIMI_USER_API_KEY` for user-scoped workers, or `CREDIMI_INTERNAL_ADMIN_KEY` for admin workers on `CREDIMI_URL`
+- `CREDIMI_RUNNER_LIFECYCLE_ENABLED` (default: `true`)
+- `CREDIMI_RUNNER_HEARTBEAT_INTERVAL` (default: `30s`)
+- `CREDIMI_RUNNER_LIFECYCLE_REQUEST_TIMEOUT` (default: `5s`)
 - `TEMPORAL_ADDRESS` (optional, default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded as `Credimi-Api-Key` on internal Credimi API requests)
 
@@ -300,6 +306,8 @@ Local env loading for `serve`:
 
 - If a `.env` file exists in the current working directory, it is loaded before startup.
 - Otherwise `serve` falls back to `$XDG_CONFIG_HOME/credimi/runner/.env`, or `~/.config/credimi/runner/.env` when `XDG_CONFIG_HOME` is unset.
+- The runner pushes `resume`, `heartbeat`, and best-effort `pause` lifecycle events to Credimi; local `/health` remains local diagnostics only.
+- Heartbeat timeout, shutdown-after timing, and running-run cancellation policy are configured in Credimi, not in the runner.
 
 Runner container envs (phone/emulator):
 
@@ -312,6 +320,9 @@ Authentication options:
 
 Defaulted/optional:
 - `CREDIMI_URL` (default: `https://credimi.io`)
+- `CREDIMI_RUNNER_LIFECYCLE_ENABLED` (default: `true`)
+- `CREDIMI_RUNNER_HEARTBEAT_INTERVAL` (default: `30s`)
+- `CREDIMI_RUNNER_LIFECYCLE_REQUEST_TIMEOUT` (default: `5s`)
 - `TEMPORAL_ADDRESS` (default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded as `Credimi-Api-Key` on internal Credimi API requests)
 - `BASE_NAME` (emulator only, default: `credimi`)
@@ -324,6 +335,9 @@ Example `.env` for local serve:
 CREDIMI_URL=https://credimi.io
 CREDIMI_USER_API_KEY=your-user-api-key
 CREDIMI_RUNNER_ID=local-runner
+CREDIMI_RUNNER_LIFECYCLE_ENABLED=true
+CREDIMI_RUNNER_HEARTBEAT_INTERVAL=30s
+CREDIMI_RUNNER_LIFECYCLE_REQUEST_TIMEOUT=5s
 TEMPORAL_ADDRESS=temporal.credimi.io:7233
 ```
 
@@ -333,6 +347,9 @@ Alternative `.env` using the internal admin API key:
 CREDIMI_URL=https://credimi.io
 CREDIMI_INTERNAL_ADMIN_KEY=your-internal-admin-api-key
 CREDIMI_RUNNER_ID=local-runner
+CREDIMI_RUNNER_LIFECYCLE_ENABLED=true
+CREDIMI_RUNNER_HEARTBEAT_INTERVAL=30s
+CREDIMI_RUNNER_LIFECYCLE_REQUEST_TIMEOUT=5s
 TEMPORAL_ADDRESS=temporal.credimi.io:7233
 ```
 
