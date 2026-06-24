@@ -13,7 +13,6 @@ import (
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi/pkg/workflowengine"
 	"github.com/forkbombeu/credimi/pkg/workflowengine/activities"
-	"github.com/forkbombeu/credimi/pkg/workflowengine/workflows"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -106,10 +105,6 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				Interceptors: []interceptor.WorkerInterceptor{temporalInterceptor},
 			})
 
-			// Register workflows
-			for _, wf := range []workflowengine.Workflow{workflows.NewMobileAutomationWorkflow()} {
-				w.RegisterWorkflowWithOptions(wf.Workflow, workflow.RegisterOptions{Name: wf.Name()})
-			}
 
 			// Register activities
 			for _, act := range []workflowengine.ExecutableActivity{
