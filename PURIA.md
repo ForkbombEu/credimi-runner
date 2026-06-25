@@ -263,7 +263,7 @@ Absence of any:
 
 ```toml
 [tools]
-go = "1.26.2"
+go = "1.26.4"
 task = "latest"
 ```
 
