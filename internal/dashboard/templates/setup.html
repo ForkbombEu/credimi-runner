@@ -31,11 +31,20 @@
           <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" data-org-value>
           <input type="hidden" name="CREDIMI_RUNNER_ID" value="{{$.Runner.Get "CREDIMI_RUNNER_ID"}}" data-runner-id-value>
           <div class="wizard-fields">
-            <div class="field" style="grid-column: 1 / -1">
-              {{template "field" $.Field "CREDIMI_URL"}}
-              <p class="hint" style="margin-top:8px;display:flex;align-items:center;gap:8px">Get your user API key at <button type="button" class="minibtn" data-api-keys-link>credimi.io/my/profile/api-keys</button></p>
+            <div class="field" style="grid-column:1/-1">
+              <label><span class="lbtx">Authentication mode</span></label>
+              <div class="seg" data-auth-seg data-user="CREDIMI_USER_API_KEY" data-admin="CREDIMI_INTERNAL_ADMIN_KEY">
+                <button type="button" class="{{if ne $.Runner.AuthMode "admin"}}on{{end}}" data-val="user">User API key</button>
+                <button type="button" class="{{if eq $.Runner.AuthMode "admin"}}on{{end}}" data-val="admin">Internal admin key</button>
+              </div>
             </div>
-            <div class="field">
+            <div class="field" style="grid-column:1/-1">
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Credimi platform defaults</summary>
+                {{template "field" $.Field "CREDIMI_URL"}}
+              </details>
+            </div>
+            <div class="field" data-auth-field="user" {{if eq $.Runner.AuthMode "admin"}}hidden{{end}}>
               <label><span class="lbtx">User API key</span><span class="req">*</span><span class="envkey">CREDIMI_USER_API_KEY</span></label>
               <div class="inp-wrap">
                 <input class="inp mono" type="password" name="CREDIMI_USER_API_KEY" value="{{$.Runner.Get "CREDIMI_USER_API_KEY"}}" data-secret="CREDIMI_USER_API_KEY" placeholder="credimi_..." autocomplete="off" spellcheck="false">
@@ -44,9 +53,21 @@
                   <button type="button" class="minibtn" data-reveal-secret="CREDIMI_USER_API_KEY" title="Reveal">{{icon "eye"}}</button>
                 </div>
               </div>
+              <p class="hint" style="margin-top:8px;display:flex;align-items:center;gap:8px">Get your user API key at <button type="button" class="minibtn" data-api-keys-link>credimi.io/my/profile/api-keys</button></p>
               <p class="hint" data-api-key-error style="color:var(--down);display:none"></p>
             </div>
+            <div class="field" data-auth-field="admin" {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}>
+              <label><span class="lbtx">Internal admin key</span><span class="req">*</span><span class="envkey">CREDIMI_INTERNAL_ADMIN_KEY</span></label>
+              <div class="inp-wrap">
+                <input class="inp mono" type="password" name="CREDIMI_INTERNAL_ADMIN_KEY" value="{{$.Runner.Get "CREDIMI_INTERNAL_ADMIN_KEY"}}" data-secret="CREDIMI_INTERNAL_ADMIN_KEY" placeholder="internal key" autocomplete="off" spellcheck="false">
+                <div class="acts"><button type="button" class="minibtn" data-reveal-secret="CREDIMI_INTERNAL_ADMIN_KEY" title="Reveal">{{icon "eye"}}</button></div>
+              </div>
+            </div>
             <div data-identity-fields style="grid-column: 1 / -1; display:none">
+              <div class="field" data-admin-org-field {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}>
+                <label><span class="lbtx">Organization</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_ORGANIZATION</span></label>
+                <input class="inp mono" name="CREDIMI_RUNNER_ORGANIZATION_ADMIN" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" placeholder="organization-slug" data-admin-org-input>
+              </div>
               <div class="field" style="grid-column: 1 / -1">
                 <label><span class="lbtx">Runner name</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_NAME</span></label>
                 <div style="display:flex;align-items:center;gap:0;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
@@ -68,14 +89,14 @@
             <div class="field" style="grid-column:1/-1">
               <label><span class="lbtx">Service mode</span><span class="envkey">CREDIMI_SERVICE_MODE</span></label>
               <div class="picks" style="grid-template-columns:repeat(3,1fr)">
-                <label class="pick on" data-net-pick="auto">
-                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="auto" checked style="display:none">{{icon "cloud"}}<span><b>Auto</b><span>Quick tunnel</span></span>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "auto"}}on{{end}}" data-net-pick="auto">
+                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="auto" {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "auto"}}checked{{end}} style="display:none">{{icon "cloud"}}<span><b>Auto</b><span>Quick tunnel</span></span>
                 </label>
-                <label class="pick" data-net-pick="cloudflare-managed">
-                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="cloudflare-managed" style="display:none">{{icon "shield"}}<span><b>Managed</b><span>Named tunnel</span></span>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "cloudflare-managed"}}on{{end}}" data-net-pick="cloudflare-managed">
+                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="cloudflare-managed" {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "cloudflare-managed"}}checked{{end}} style="display:none">{{icon "shield"}}<span><b>Managed</b><span>Named tunnel</span></span>
                 </label>
-                <label class="pick" data-net-pick="manual">
-                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="manual" style="display:none">{{icon "globe"}}<span><b>Manual</b><span>Self-managed</span></span>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "manual"}}on{{end}}" data-net-pick="manual">
+                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="manual" {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "manual"}}checked{{end}} style="display:none">{{icon "globe"}}<span><b>Manual</b><span>Self-managed</span></span>
                 </label>
               </div>
             </div>
@@ -98,17 +119,17 @@
             <div class="field" style="grid-column:1/-1">
               <label><span class="lbtx">Runner type</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_TYPE</span></label>
               <div class="picks" style="grid-template-columns:repeat(3,1fr)">
-                <label class="pick on" data-dev-pick="android_phone">
-                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="android_phone" checked style="display:none">{{icon "android"}}<span><b>Android</b><span>USB or Wi-Fi</span></span>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "android_phone"}}on{{end}}" data-dev-pick="android_phone">
+                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="android_phone" {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "android_phone"}}checked{{end}} style="display:none">{{icon "android"}}<span><b>Android</b><span>USB or Wi-Fi</span></span>
                 </label>
-                <label class="pick" data-dev-pick="android_emulator">
-                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="android_emulator" style="display:none">{{icon "server"}}<span><b>Emulator</b><span>Android AVD</span></span>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "android_emulator"}}on{{end}}" data-dev-pick="android_emulator">
+                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="android_emulator" {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "android_emulator"}}checked{{end}} style="display:none">{{icon "server"}}<span><b>Emulator</b><span>Android AVD</span></span>
                 </label>
-                <label class="pick" data-dev-pick="ios_simulator">
-                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="ios_simulator" style="display:none">{{icon "apple"}}<span><b>iOS Sim</b><span>macOS only</span></span>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "ios_simulator"}}on{{end}}" data-dev-pick="ios_simulator">
+                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="ios_simulator" {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "ios_simulator"}}checked{{end}} style="display:none">{{icon "apple"}}<span><b>iOS Sim</b><span>macOS only</span></span>
                 </label>
-                <label class="pick" data-dev-pick="redroid">
-                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="redroid" style="display:none">{{icon "grid"}}<span><b>Redroid</b><span>Container-based</span></span>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "redroid"}}on{{end}}" data-dev-pick="redroid">
+                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="redroid" {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") "redroid"}}checked{{end}} style="display:none">{{icon "grid"}}<span><b>Redroid</b><span>Container-based</span></span>
                 </label>
               </div>
             </div>
@@ -122,38 +143,33 @@
               {{template "field" $.Field "CREDIMI_RUNNER_SERIAL"}}
             </div>
             <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
-              <div class="divline"></div>
-              {{template "field" $.Field "RUNNER_IMAGE"}}
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Runtime image default</summary>
+                {{template "field" $.Field "RUNNER_IMAGE"}}
+              </details>
             </div>
             <div data-dev-type="android_emulator" style="grid-column:1/-1">
-              <div class="divline"></div>
-              <div class="subhead">Emulator paths</div>
-              {{template "field" $.Field "CREDIMI_TEMP_DIR"}}
-              {{template "field" $.Field "ANDROID_KEYS_DIR"}}
-              {{template "field" $.Field "BASE_NAME"}}
-              {{template "field" $.Field "GOLDEN_PATH"}}
-              {{template "field" $.Field "HOST_AVD_HOME_PATH"}}
-              {{template "field" $.Field "HOST_AVD_GOLDEN_PATH"}}
-              <div class="divline"></div>
-              <div class="subhead">Remote avdctl (SSH)</div>
-              {{template "field" $.Field "AVDCTL_SSH_TARGET"}}
-              {{template "field" $.Field "AVDCTL_SSH_PASSWORD"}}
-              {{template "field" $.Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}
-              {{template "field" $.Field "AVDCTL_SUDO"}}
-              {{template "field" $.Field "AVDCTL_SUDO_PASSWORD"}}
+              <div class="callout info">{{icon "info"}}<div>Emulator paths and base image settings are filled from installer defaults. Change them later from the full configuration page only if this machine needs custom paths.</div></div>
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Emulator defaults</summary>
+                <div class="field-row">{{template "field" $.Field "BASE_NAME"}}{{template "field" $.Field "GOLDEN_PATH"}}</div>
+                <div class="field-row">{{template "field" $.Field "HOST_AVD_HOME_PATH"}}{{template "field" $.Field "HOST_AVD_GOLDEN_PATH"}}</div>
+              </details>
             </div>
             <div data-dev-type="redroid" style="grid-column:1/-1">
-              <div class="divline"></div>
-              <div class="subhead">Redroid volumes</div>
-              {{template "field" $.Field "REDROID_DATA_DIR"}}
-              {{template "field" $.Field "REDROID_DATA_TAR"}}
-              <div class="divline"></div>
-              <div class="subhead">Remote avdctl (SSH)</div>
-              {{template "field" $.Field "AVDCTL_SSH_TARGET"}}
-              {{template "field" $.Field "AVDCTL_SSH_PASSWORD"}}
-              {{template "field" $.Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}
-              {{template "field" $.Field "AVDCTL_SUDO"}}
-              {{template "field" $.Field "AVDCTL_SUDO_PASSWORD"}}
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Redroid and avdctl defaults</summary>
+                <div class="subhead">Redroid volumes</div>
+                {{template "field" $.Field "REDROID_DATA_DIR"}}
+                {{template "field" $.Field "REDROID_DATA_TAR"}}
+                <div class="divline"></div>
+                <div class="subhead">Remote avdctl (SSH)</div>
+                {{template "field" $.Field "AVDCTL_SSH_TARGET"}}
+                {{template "field" $.Field "AVDCTL_SSH_PASSWORD"}}
+                {{template "field" $.Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}
+                {{template "field" $.Field "AVDCTL_SUDO"}}
+                {{template "field" $.Field "AVDCTL_SUDO_PASSWORD"}}
+              </details>
             </div>
           </div>
         {{else if eq $s.ID "review"}}
@@ -207,6 +223,14 @@
                 </dl>
               </div>
             </div>
+          </div>
+        {{else if eq $s.ID "advanced"}}
+          <div class="wizard-fields">
+            {{template "field" $.Field "OTEL_ENABLED"}}
+            <details class="gear-panel" style="grid-column:1/-1">
+              <summary>{{icon "gear"}} Telemetry defaults</summary>
+              <div class="field-row">{{template "field" $.Field "OTEL_EXPORTER_OTLP_ENDPOINT"}}{{template "field" $.Field "OTEL_SERVICE_NAME"}}</div>
+            </details>
           </div>
         {{else}}
           <div class="wizard-fields">

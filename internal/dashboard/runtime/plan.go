@@ -1,6 +1,9 @@
 package runtime
 
-import "strings"
+import (
+	goruntime "runtime"
+	"strings"
+)
 
 type RuntimePlan struct {
 	ConfigDir       string
@@ -105,6 +108,37 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	}
 
 	return plan
+}
+
+func RunnerAPIReachableFromHost(values Values, goos string) bool {
+	if strings.TrimSpace(goos) == "" {
+		goos = goruntime.GOOS
+	}
+	normalized, err := NormalizeValues(values, goos)
+	if err != nil {
+		return false
+	}
+	plan := BuildRuntimePlan("", normalized)
+	if plan.Backend == DefaultHostBackend {
+		return true
+	}
+	if plan.Backend != DefaultContainerBackend || goos != "linux" {
+		return false
+	}
+	return plan.ServiceMode == "manual" ||
+		(plan.ServiceMode == "auto" && (plan.ContainerMode == "usb" || plan.ContainerMode == "wifi"))
+}
+
+func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool {
+	if strings.TrimSpace(goos) == "" {
+		goos = goruntime.GOOS
+	}
+	normalized, err := NormalizeValues(values, goos)
+	if err != nil {
+		return false
+	}
+	plan := BuildRuntimePlan("", normalized)
+	return plan.Backend == DefaultHostBackend
 }
 
 func DiffValues(oldValues, newValues Values) ConfigDiff {

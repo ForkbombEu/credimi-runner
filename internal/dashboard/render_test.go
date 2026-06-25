@@ -11,7 +11,7 @@ func TestIcons_Present(t *testing.T) {
 		"grid", "phone", "workers", "network", "key", "server", "shield",
 		"cloud", "activity", "globe", "check", "x", "plus", "refresh",
 		"trash", "wifi", "usb", "info", "warn", "chev", "eye", "copy",
-		"android", "apple",
+		"gear", "android", "apple",
 	}
 
 	for _, name := range required {
@@ -94,7 +94,7 @@ func TestNewRenderer(t *testing.T) {
 	}
 
 	// Verify all expected pages exist.
-	expected := []string{"overview", "devices", "network", "config", "setup"}
+	expected := []string{"overview", "devices", "workers", "network", "config", "setup"}
 	for _, name := range expected {
 		if _, ok := r.pages[name]; !ok {
 			t.Errorf("missing page template: %s", name)
@@ -223,9 +223,8 @@ func TestRenderer_DevicesTargetPageContract(t *testing.T) {
 	}
 	for _, want := range []string{
 		`Configured target`,
-		`Connection actions`,
-		`id="runner-connection-form"`,
 		`Change target config`,
+		`Single target mode`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)

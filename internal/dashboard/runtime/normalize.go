@@ -47,6 +47,7 @@ var KnownKeys = map[string]struct{}{
 	"CREDIMI_RUNNER_DESCRIPTION":  {},
 	"CREDIMI_RUNNER_DEVICE_MODE":  {},
 	"CREDIMI_RUNNER_ID":           {},
+	"CREDIMI_RUNNER_NAME":         {},
 	"CREDIMI_RUNNER_ORGANIZATION": {},
 	"CREDIMI_RUNNER_SERIAL":       {},
 	"CREDIMI_RUNNER_TYPE":         {},
@@ -117,6 +118,7 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 	normalized["CREDIMI_RUNNER_BACKEND"] = defaultIfEmpty(normalized["CREDIMI_RUNNER_BACKEND"], defaultServiceBackend(goos))
 	normalized["CREDIMI_SERVICE_MODE"] = normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"])
 	normalized["CREDIMI_RUNNER_TYPE"] = defaultRunnerType(normalized, goos)
+	normalizeRunnerIdentity(normalized)
 
 	if err := validateRunnerTypeSupported(goos, normalized["CREDIMI_RUNNER_TYPE"]); err != nil {
 		return nil, err
@@ -140,6 +142,19 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 	}
 
 	return normalized, nil
+}
+
+func normalizeRunnerIdentity(values Values) {
+	runnerID := strings.TrimSpace(values["CREDIMI_RUNNER_ID"])
+	if runnerID == "" {
+		return
+	}
+	if strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]) == "" {
+		values["CREDIMI_RUNNER_NAME"] = runnerNameFromID(runnerID)
+	}
+	if strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]) == "" {
+		values["CREDIMI_RUNNER_ORGANIZATION"] = runnerOrgFromID(runnerID)
+	}
 }
 
 func defaultServiceBackend(goos string) string {
@@ -264,11 +279,11 @@ func clearAVDCTLSSHConfig(values Values) {
 
 func runnerNameFromID(value string) string {
 	value = runnerIDWithoutLeadingSlash(value)
-	_, name, ok := strings.Cut(value, "/")
-	if !ok {
+	index := strings.LastIndex(value, "/")
+	if index < 0 {
 		return value
 	}
-	return name
+	return value[index+1:]
 }
 
 func runnerOrgFromID(value string) string {
@@ -310,6 +325,9 @@ func canonifyPlain(value string) string {
 func normalizeAndroidEmulator(values Values) {
 	backend := values["CREDIMI_RUNNER_BACKEND"]
 	values["CREDIMI_RUNNER_SERIAL"] = ""
+	values["CREDIMI_RUNNER_DEVICE_MODE"] = ""
+	values["CREDIMI_RUNNER_WIFI_IP"] = ""
+	values["CREDIMI_RUNNER_WIFI_PORT"] = ""
 	if strings.TrimSpace(values["RUNNER_IMAGE"]) == "" || values["RUNNER_IMAGE"] == DefaultPhoneImage {
 		values["RUNNER_IMAGE"] = DefaultEmulatorImage
 	}

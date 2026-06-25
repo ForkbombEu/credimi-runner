@@ -22,14 +22,6 @@
     <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">docker compose · {{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
       <div class="right"><span class="health-pill" hx-ext="sse" sse-connect="/events/health" sse-swap="pill">{{template "pill" .Pill}}</span></div></header>
     <div class="card-b">
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-        <form hx-post="/runtime/start" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-pri">Start</button></form>
-        <form hx-post="/runtime/stop" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-out">Stop</button></form>
-        <form hx-post="/runtime/restart" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-out">Restart</button></form>
-        <form hx-post="/runtime/apply" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-out">Apply changes</button></form>
-        <form hx-post="/runtime/update-image" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-out">Update image</button></form>
-        <form hx-post="/runtime/register" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-out">Re-register</button></form>
-      </div>
       <div id="runtime-status" hx-ext="sse" sse-connect="/events/runtime" sse-swap="runtime">{{template "runtime_status" .}}</div>
       <div class="divline"></div>
       <div class="grid-2">{{range .Snapshot.Services}}{{template "service_row" .}}{{end}}</div>

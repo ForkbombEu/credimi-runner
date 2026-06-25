@@ -2,7 +2,11 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
+	"net"
+	"net/http"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -114,7 +118,7 @@ func (h *Hub) poll(ctx context.Context) {
 	})
 
 	snap := Snapshot{Services: services, Devices: devices, Time: time.Now()}
-	workers := h.deriveWorkers(services)
+	workers := h.runningWorkers(ctx, services)
 
 	h.snapMu.Lock()
 	h.snap = snap
@@ -127,8 +131,90 @@ func (h *Hub) poll(ctx context.Context) {
 	h.broadcast("workers", event{name: "rows", data: h.render.Fragment("worker_rows", workers)})
 }
 
-// deriveWorkers infers worker rows from configured environments + temporal health.
-// If runner serve exposes /internal/workers you can replace this with a real read.
+func (h *Hub) runningWorkers(ctx context.Context, services []Service) []Worker {
+	workers, ok := h.fetchRunningWorkers(ctx)
+	if ok {
+		return workers
+	}
+	return h.deriveWorkers(services)
+}
+
+func (h *Hub) fetchRunningWorkers(ctx context.Context) ([]Worker, bool) {
+	url := h.runnerAPIURL() + "/workers"
+	reqCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false
+	}
+	if apiKey := h.cfg.Get("CREDIMI_USER_API_KEY"); apiKey != "" {
+		req.Header.Set("Credimi-Api-Key", apiKey)
+	} else if apiKey := h.cfg.Get("CREDIMI_INTERNAL_ADMIN_KEY"); apiKey != "" {
+		req.Header.Set("Credimi-Api-Key", apiKey)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	var names []string
+	if err := json.NewDecoder(resp.Body).Decode(&names); err != nil {
+		return nil, false
+	}
+	workers := make([]Worker, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		workers = append(workers, Worker{
+			ID:      "runner-" + canonifyWorkerID(name),
+			Env:     "runner",
+			Host:    h.runnerAPIURL(),
+			Queue:   name,
+			Scope:   h.cfg.AuthMode(),
+			Status:  Online,
+			Enabled: true,
+		})
+	}
+	return workers, true
+}
+
+func (h *Hub) runnerAPIURL() string {
+	host := strings.TrimSpace(h.cfg.Get("RUNNER_HOST"))
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	port := strings.TrimSpace(h.cfg.Get("RUNNER_PORT"))
+	if port == "" {
+		port = "8050"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func canonifyWorkerID(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if b.Len() > 0 && !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// deriveWorkers keeps the page useful before the runner API is reachable.
 func (h *Hub) deriveWorkers(services []Service) []Worker {
 	temporalUp := Offline
 	for _, s := range services {

@@ -106,6 +106,11 @@
       };
       const field = (name) => $(`[name="${name}"]`, form);
       const value = (name) => (field(name) || {}).value || '';
+      const authMode = () => {
+        const admin = $('[data-auth-field="admin"]', form);
+        return admin && !admin.hidden ? 'admin' : 'user';
+      };
+      const selectedAPIKey = () => authMode() === 'admin' ? value('CREDIMI_INTERNAL_ADMIN_KEY') : value('CREDIMI_USER_API_KEY');
       const orgPreview = () => $('[data-org-preview]', form);
       const setOrgPreview = (text) => {
         const el = orgPreview();
@@ -113,10 +118,21 @@
         if (el.tagName === 'INPUT') el.value = text;
         else el.textContent = text;
       };
+      const syncAdminOrganization = () => {
+        const adminOrg = $('[data-admin-org-input]', form);
+        if (!adminOrg) return;
+        const orgValue = field('CREDIMI_RUNNER_ORGANIZATION');
+        if (orgValue && authMode() === 'admin') orgValue.value = adminOrg.value.trim();
+        setOrgPreview((orgValue && orgValue.value) || 'org');
+      };
       const resolveOrganization = async () => {
+        if (authMode() === 'admin') {
+          syncAdminOrganization();
+          return value('CREDIMI_RUNNER_ORGANIZATION');
+        }
         const org = await jsonPost('/setup/organization', {
           instance_url: value('CREDIMI_URL'),
-          api_key: value('CREDIMI_USER_API_KEY'),
+          api_key: selectedAPIKey(),
         });
         const orgName = org.canonified_name || '';
         const orgValue = field('CREDIMI_RUNNER_ORGANIZATION');
@@ -130,6 +146,7 @@
       const statusEl = () => $('[data-api-key-status]', form);
       const errorEl = () => $('[data-api-key-error]', form);
       const identityFields = () => $('[data-identity-fields]', form);
+      const showIdentityFields = () => { const idf = identityFields(); if (idf) idf.style.display = 'contents'; };
       if (apiKeyField) {
         apiKeyField.addEventListener('input', () => {
           clearTimeout(apiKeyTimer);
@@ -148,7 +165,7 @@
               await resolveOrganization();
               if (st) { st.style.display = 'flex'; st.innerHTML = check(); st.style.color = 'var(--ok)'; }
               if (err) err.style.display = 'none';
-              if (idf) idf.style.display = 'contents';
+              showIdentityFields();
             } catch (e) {
               if (st) { st.style.display = 'flex'; st.innerHTML = xmark(); st.style.color = 'var(--down)'; }
               if (err) { err.style.display = 'block'; err.textContent = (e && e.message) || 'Invalid API key'; }
@@ -157,6 +174,11 @@
           }, 600);
         });
       }
+      const adminKeyField = field('CREDIMI_INTERNAL_ADMIN_KEY');
+      const adminOrgField = $('[data-admin-org-input]', form);
+      if (adminKeyField) adminKeyField.addEventListener('input', () => { if (adminKeyField.value.trim()) showIdentityFields(); });
+      if (adminOrgField) adminOrgField.addEventListener('input', () => { syncAdminOrganization(); previewRunnerID(); });
+      if (authMode() === 'admin' && selectedAPIKey()) showIdentityFields();
       const canonifyName = async () => {
         const name = value('CREDIMI_RUNNER_NAME');
         const canonified = $('[data-canonified]', form);
@@ -167,7 +189,7 @@
         try {
           const data = await jsonPost('/setup/canonify?name=' + encodeURIComponent(name), {
             instance_url: value('CREDIMI_URL'),
-            api_key: value('CREDIMI_USER_API_KEY'),
+            api_key: selectedAPIKey(),
           });
           if (canonified) canonified.textContent = data.canonified || '';
           const org = value('CREDIMI_RUNNER_ORGANIZATION');
@@ -184,13 +206,31 @@
         if (otelName && runnerID) otelName.value = runnerID;
       };
       const previewRunnerID = async () => {
-        const data = await jsonPost('/setup/runner-id', {
-          instance_url: value('CREDIMI_URL'),
-          api_key: value('CREDIMI_USER_API_KEY'),
-          organization: value('CREDIMI_RUNNER_ORGANIZATION'),
-          name: value('CREDIMI_RUNNER_NAME'),
-        });
-        const rid = data.runner_id || '';
+        const instanceURL = value('CREDIMI_URL');
+        const apiKey = selectedAPIKey();
+        const organization = value('CREDIMI_RUNNER_ORGANIZATION');
+        const name = value('CREDIMI_RUNNER_NAME');
+        if (!instanceURL || !apiKey || !organization || !name) {
+          const fallback = [organization || 'org', (name || 'runner-name').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')].join('/');
+          const runnerID = field('CREDIMI_RUNNER_ID');
+          if (runnerID) runnerID.value = fallback;
+          const runnerPreview = $('[data-runner-id-preview]', form);
+          if (runnerPreview) runnerPreview.textContent = fallback;
+          syncOTELServiceName(fallback);
+          return;
+        }
+        let rid = '';
+        try {
+          const data = await jsonPost('/setup/runner-id', {
+            instance_url: instanceURL,
+            api_key: apiKey,
+            organization: organization,
+            name: name,
+          });
+          rid = data.runner_id || '';
+        } catch (e) {
+          rid = [organization, name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')].join('/');
+        }
         const runnerID = field('CREDIMI_RUNNER_ID');
         if (runnerID) runnerID.value = rid;
         const runnerPreview = $('[data-runner-id-preview]', form);
@@ -203,7 +243,7 @@
       const beforeNext = async () => {
         const panel = panels[current];
         if (!panel) return;
-        if (panel.dataset.step === 'identity') { await canonifyName(); await previewRunnerID(); }
+        if (panel.dataset.step === 'identity') { await resolveOrganization(); await canonifyName(); await previewRunnerID(); }
       };
       buttons.forEach((b, i) => b.addEventListener('click', () => show(i)));
       if (prev) prev.addEventListener('click', () => show(current - 1));
@@ -248,18 +288,24 @@
   initNetMode();
 
   // ── Device step: radio cards + show/hide fields based on runner type and mode ──
+  const setSectionVisible = (el, visible) => {
+    el.style.display = visible ? '' : 'none';
+    el.querySelectorAll('input, select, textarea').forEach(control => {
+      control.disabled = !visible;
+    });
+  };
   const updateDeviceFields = () => {
     const type = (document.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked') || {}).value || '';
     const mode = (document.querySelector('[name="CREDIMI_RUNNER_DEVICE_MODE"]') || {}).value || '';
     document.querySelectorAll('[data-dev-type]').forEach(el => {
       const types = (el.dataset.devType || '').split(/\s+/);
-      el.style.display = types.includes(type) ? '' : 'none';
+      setSectionVisible(el, types.includes(type));
     });
     document.querySelectorAll('[data-dev-mode]').forEach(el => {
       const modes = (el.dataset.devMode || '').split(/\s+/);
       const parent = el.closest('[data-dev-type]');
       const parentHidden = parent && parent.style.display === 'none';
-      el.style.display = !parentHidden && modes.includes(mode) ? '' : 'none';
+      setSectionVisible(el, !parentHidden && modes.includes(mode));
     });
     document.querySelectorAll('[data-dev-pick]').forEach(p => {
       p.classList.toggle('on', p.dataset.devPick === type);
@@ -359,6 +405,8 @@
     btn.classList.add('on');
     const mode = btn.dataset.val;
     $$('[data-auth-field]').forEach((f) => (f.hidden = f.dataset.authField !== mode));
+    $$('[data-admin-org-field]').forEach((f) => (f.hidden = mode !== 'admin'));
+    $$('[data-identity-fields]').forEach((f) => { if (mode === 'admin') f.style.display = 'contents'; });
     // clear the non-selected key so exactly one is persisted
     const clearKey = mode === 'user' ? seg.dataset.admin : seg.dataset.user;
     const inp = document.querySelector(`[name="${clearKey}"]`); if (inp) inp.value = '';
@@ -404,6 +452,14 @@
   // ── Dirty save bar ───────────────────────────────────────────────────────
   function markDirty() { $$('[data-savebar]').forEach((b) => (b.hidden = false)); }
   document.addEventListener('input', (e) => { if (e.target.closest('[data-config-form]')) markDirty(); });
+  document.addEventListener('submit', (e) => {
+    const form = e.target.closest('[data-config-form]');
+    if (!form || form.matches('[data-setup-form]')) return;
+    const savebar = $('[data-savebar]', form);
+    if (savebar && savebar.hidden) return;
+    const ok = window.confirm('Save changes to .env? The dashboard will apply the required restart, recreate, or Credimi registration update automatically.');
+    if (!ok) e.preventDefault();
+  });
   document.addEventListener('click', (e) => {
     if (e.target.closest('[data-discard]')) {
       const form = e.target.closest('[data-config-form]');

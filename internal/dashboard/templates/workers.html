@@ -12,29 +12,10 @@
     <div class="stat"><div class="k">{{icon "activity"}} Temporal</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "TEMPORAL_ADDRESS"}}</div><div class="meta">workflow backend</div></div>
   </div>
 
-  {{range .WorkersByEnv}}
   <section class="card">
-    <header class="card-h">
-      <span class="d" style="width:9px;height:9px;border-radius:50%;background:{{if eq .Env "production"}}var(--ok){{else if eq .Env "staging"}}var(--warn){{else}}var(--idle){{end}}"></span>
-      <div><h3 style="text-transform:capitalize">{{.Env}}</h3><div class="sub">{{.Host}}</div></div>
-      <div class="right">{{if not .Configured}}<span class="tag">Not configured</span>{{end}}<span class="tag mono">{{len .Workers}} worker{{if ne (len .Workers) 1}}s{{end}}</span></div>
-    </header>
-    <div class="list">
-      {{range .Workers}}
-      <div class="row" style="grid-template-columns:auto 1fr auto" id="wrk-{{.ID}}">
-        <button type="button" class="tog {{if .Enabled}}on{{end}}" role="switch" aria-checked="{{.Enabled}}" hx-post="/workers/{{.ID}}/toggle" hx-swap="none" disabled title="Worker lifecycle is owned by the runner process"></button>
-        <div class="nm">
-          <div class="t">{{.Queue}} <span class="tag {{if eq .Scope "admin"}}{{else}}kind{{end}}">{{.Scope}} scope</span></div>
-          <div class="s">task queue · {{.Host}}</div>
-        </div>
-        <div class="rt"><span class="{{chipClass .Status}} pulse"><span class="d"></span>{{statusLabel .Status}}</span></div>
-      </div>
-      {{else}}
-      <div style="padding:24px;text-align:center" class="muted">No workers registered for {{.Env}}.</div>
-      {{end}}
-    </div>
+    <header class="card-h">{{icon "workers"}}<div><h3>Running workers</h3><div class="sub">reported by the runner process</div></div></header>
+    <div class="card-b flush"><div class="list" id="worker-list" hx-ext="sse" sse-connect="/events/workers" sse-swap="rows">{{template "worker_rows" .Workers}}</div></div>
   </section>
-  {{end}}
 
   <div class="callout info" style="margin-top:16px">{{icon "info"}}<div>Workers start automatically when <span class="tag mono">CREDIMI_RUNNER_ID</span> and credentials are set. User-scoped workers use <span class="tag mono">CREDIMI_USER_API_KEY</span>; admin workers use <span class="tag mono">CREDIMI_INTERNAL_ADMIN_KEY</span>.</div></div>
 </main>

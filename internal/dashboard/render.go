@@ -38,6 +38,7 @@ func NewRenderer() (*Renderer, error) {
 	pageFiles := map[string]string{
 		"overview": "templates/overview.html",
 		"devices":  "templates/devices.html",
+		"workers":  "templates/workers.html",
 		"network":  "templates/network.html",
 		"config":   "templates/config.html",
 		"setup":    "templates/setup.html",
@@ -200,6 +201,7 @@ var icons = map[string]string{
 	"chev":     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`,
 	"eye":      `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg>`,
 	"copy":     `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>`,
+	"gear":     `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.04.04a2 2 0 0 1-2.83 2.83l-.04-.04A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .55V20a2 2 0 0 1-4 0v-.05a1.7 1.7 0 0 0-1-.55 1.7 1.7 0 0 0-1.88.34l-.04.04a2 2 0 0 1-2.83-2.83l.04-.04A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.55-1H4a2 2 0 0 1 0-4h.05a1.7 1.7 0 0 0 .55-1 1.7 1.7 0 0 0-.34-1.88l-.04-.04a2 2 0 0 1 2.83-2.83l.04.04A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.55V4a2 2 0 0 1 4 0v.05a1.7 1.7 0 0 0 1 .55 1.7 1.7 0 0 0 1.88-.34l.04-.04a2 2 0 0 1 2.83 2.83l-.04.04A1.7 1.7 0 0 0 19.4 9c.2.36.39.7.55 1H20a2 2 0 0 1 0 4h-.05a1.7 1.7 0 0 0-.55 1z"/></svg>`,
 	"android":  `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M6 9v7a1.5 1.5 0 0 0 1.5 1.5H8V20a1.2 1.2 0 0 0 2.4 0v-2.5h3.2V20a1.2 1.2 0 0 0 2.4 0v-2.5h.5A1.5 1.5 0 0 0 18 16V9H6zM4.2 9A1.2 1.2 0 0 0 3 10.2v4.6a1.2 1.2 0 0 0 2.4 0v-4.6A1.2 1.2 0 0 0 4.2 9zm15.6 0a1.2 1.2 0 0 0-1.2 1.2v4.6a1.2 1.2 0 0 0 2.4 0v-4.6A1.2 1.2 0 0 0 19.8 9zM15.5 4.3l1-1.5a.3.3 0 0 0-.5-.34l-1.1 1.6A5.7 5.7 0 0 0 12 3.5c-1.04 0-2 .2-2.9.56L8 2.46a.3.3 0 1 0-.5.34l1 1.5A5.3 5.3 0 0 0 6 8.3h12a5.3 5.3 0 0 0-2.5-4z"/></svg>`,
 	"apple":    `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16 2c-1.1.07-2.4.77-3.15 1.7-.68.83-1.27 2.06-1.05 3.26 1.2.04 2.45-.68 3.18-1.6.69-.86 1.21-2.07 1.02-3.36zM18.6 12.4c-.03-2.5 2.04-3.7 2.13-3.76-1.16-1.7-2.97-1.93-3.61-1.96-1.54-.15-3 .9-3.78.9-.78 0-1.98-.88-3.25-.86-1.67.03-3.21.97-4.07 2.46-1.73 3-.44 7.44 1.25 9.88.82 1.19 1.8 2.53 3.08 2.48 1.24-.05 1.71-.8 3.2-.8 1.5 0 1.92.8 3.23.78 1.33-.03 2.18-1.21 3-2.41.94-1.38 1.33-2.72 1.35-2.79-.03-.01-2.6-1-2.63-3.96z"/></svg>`,
 }

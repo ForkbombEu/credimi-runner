@@ -2,6 +2,9 @@ package dashboard
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,6 +70,30 @@ func TestHubDeriveWorkers(t *testing.T) {
 	workers = h.deriveWorkers([]Service{{ID: "temporal", Status: Offline}})
 	if workers[0].Status != Degraded {
 		t.Fatalf("offline temporal should degrade configured worker: %#v", workers[0])
+	}
+}
+
+func TestHubFetchRunningWorkers(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Credimi-Api-Key"); got != "key" {
+			t.Fatalf("Credimi-Api-Key = %q", got)
+		}
+		w.Write([]byte(`["acme","other-org"]`))
+	}))
+	defer api.Close()
+	host := strings.TrimPrefix(api.URL, "http://")
+	cfg := &Config{values: map[string]string{
+		"RUNNER_HOST":          strings.Split(host, ":")[0],
+		"RUNNER_PORT":          strings.Split(host, ":")[1],
+		"CREDIMI_USER_API_KEY": "key",
+	}}
+	h := NewHub(cfg, t.TempDir(), nil)
+	workers, ok := h.fetchRunningWorkers(context.Background())
+	if !ok || len(workers) != 2 {
+		t.Fatalf("workers=%#v ok=%v", workers, ok)
+	}
+	if workers[0].Queue != "acme" || workers[0].Status != Online {
+		t.Fatalf("worker = %#v", workers[0])
 	}
 }
 

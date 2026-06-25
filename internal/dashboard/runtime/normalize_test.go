@@ -62,12 +62,21 @@ func TestNormalizeAndroidUSBClearsWiFi(t *testing.T) {
 }
 
 func TestNormalizeAndroidEmulator(t *testing.T) {
-	values, err := NormalizeValues(Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux")
+	values, err := NormalizeValues(Values{
+		"CREDIMI_RUNNER_TYPE":        "android_emulator",
+		"CREDIMI_RUNNER_DEVICE_MODE": "usb",
+		"CREDIMI_RUNNER_SERIAL":      "device-1",
+		"CREDIMI_RUNNER_WIFI_IP":     "192.168.1.10",
+		"CREDIMI_RUNNER_WIFI_PORT":   "5555",
+	}, "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if values["RUNNER_IMAGE"] != DefaultEmulatorImage || values["CREDIMI_CONTAINER_MODE"] != "emulator" {
 		t.Fatalf("normalized = %#v", values)
+	}
+	if values["CREDIMI_RUNNER_DEVICE_MODE"] != "" || values["CREDIMI_RUNNER_SERIAL"] != "" || values["CREDIMI_RUNNER_WIFI_IP"] != "" || values["CREDIMI_RUNNER_WIFI_PORT"] != "" {
+		t.Fatalf("emulator should not keep device connection fields: %#v", values)
 	}
 }
 
@@ -125,6 +134,32 @@ func TestNormalizeOTELDisabledClearsEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	if values["OTEL_EXPORTER_OTLP_ENDPOINT"] != "" {
+		t.Fatalf("normalized = %#v", values)
+	}
+}
+
+func TestNormalizeDerivesRunnerIdentityFromExistingID(t *testing.T) {
+	values, err := NormalizeValues(Values{
+		"CREDIMI_RUNNER_ID": "/acme-labs/lab-phone",
+	}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["CREDIMI_RUNNER_NAME"] != "lab-phone" || values["CREDIMI_RUNNER_ORGANIZATION"] != "acme-labs" {
+		t.Fatalf("normalized = %#v", values)
+	}
+}
+
+func TestNormalizeRunnerIdentityKeepsExplicitValues(t *testing.T) {
+	values, err := NormalizeValues(Values{
+		"CREDIMI_RUNNER_ID":           "/acme-labs/lab-phone",
+		"CREDIMI_RUNNER_NAME":         "Display Phone",
+		"CREDIMI_RUNNER_ORGANIZATION": "other-org",
+	}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["CREDIMI_RUNNER_NAME"] != "Display Phone" || values["CREDIMI_RUNNER_ORGANIZATION"] != "other-org" {
 		t.Fatalf("normalized = %#v", values)
 	}
 }

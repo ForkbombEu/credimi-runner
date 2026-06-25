@@ -19,9 +19,12 @@
     <section class="card">
       <header class="card-h">{{icon "shield"}}<div><h3>Runner identity</h3><div class="sub">Who this runner is on the Credimi platform</div></div></header>
       <div class="card-b">
-        {{template "field" .Field "CREDIMI_URL"}}
         <div class="field-row">{{template "field" .Field "CREDIMI_RUNNER_ID"}}{{template "field" .Field "CREDIMI_RUNNER_TYPE"}}</div>
         <div class="field-row">{{template "field" .Field "CREDIMI_RUNNER_NAME"}}{{template "field" .Field "CREDIMI_RUNNER_ORGANIZATION"}}</div>
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Credimi platform defaults</summary>
+          {{template "field" .Field "CREDIMI_URL"}}
+        </details>
       </div>
     </section>
 
@@ -43,28 +46,41 @@
 
     <section class="card">
       <header class="card-h">{{icon "workers"}}<div><h3>Temporal</h3><div class="sub">Workflow execution backend</div></div></header>
-      <div class="card-b">{{template "field" .Field "TEMPORAL_ADDRESS"}}</div>
+      <div class="card-b">
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Temporal defaults</summary>
+          {{template "field" .Field "TEMPORAL_ADDRESS"}}
+        </details>
+      </div>
     </section>
 
     <section class="card">
       <header class="card-h">{{icon "activity"}}<div><h3>Observability</h3><div class="sub">OpenTelemetry traces &amp; metrics</div></div></header>
       <div class="card-b">
         {{template "field" .Field "OTEL_ENABLED"}}
-        <div style="padding-top:16px"><div class="field-row">{{template "field" .Field "OTEL_EXPORTER_OTLP_ENDPOINT"}}{{template "field" .Field "OTEL_SERVICE_NAME"}}</div></div>
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Telemetry defaults</summary>
+          <div class="field-row">{{template "field" .Field "OTEL_EXPORTER_OTLP_ENDPOINT"}}{{template "field" .Field "OTEL_SERVICE_NAME"}}</div>
+        </details>
       </div>
     </section>
 
     <section class="card">
       <header class="card-h">{{icon "server"}}<div><h3>Advanced</h3><div class="sub">Paths, temp dir &amp; emulator golden image</div></div></header>
       <div class="card-b">
-        {{template "field" .Field "CREDIMI_TEMP_DIR"}}
-        <div class="field-row">{{template "field" .Field "BASE_NAME"}}{{template "field" .Field "GOLDEN_PATH"}}</div>
-        {{template "field" .Field "HOST_AVD_HOME_PATH"}}
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Runtime defaults</summary>
+          {{template "field" .Field "CREDIMI_TEMP_DIR"}}
+          {{template "field" .Field "RUNNER_IMAGE"}}
+          <div class="field-row">{{template "field" .Field "BASE_NAME"}}{{template "field" .Field "GOLDEN_PATH"}}</div>
+          <div class="field-row">{{template "field" .Field "HOST_AVD_HOME_PATH"}}{{template "field" .Field "HOST_AVD_GOLDEN_PATH"}}</div>
+          {{template "field" .Field "ANDROID_KEYS_DIR"}}
+        </details>
       </div>
     </section>
 
     <div class="savebar" data-savebar hidden>
-      <span class="msg">{{icon "warn"}} You have unsaved changes to <b>.env</b></span>
+      <span class="msg">{{icon "warn"}} Save writes <b>.env</b> and applies the required restart, recreate, or Credimi registration update.</span>
       <div class="sp"></div>
       <button type="button" class="btn btn-out btn-sm" data-discard>Discard</button>
       <button type="submit" class="btn btn-pri">{{icon "check"}} Save</button>

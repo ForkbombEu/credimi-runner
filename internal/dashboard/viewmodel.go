@@ -125,6 +125,9 @@ func (d PageData) ServicesAllUp() bool {
 
 // PublicURL computes the externally reachable endpoint from the network config.
 func (d PageData) PublicURL() string {
+	if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
+		return publicURL
+	}
 	mode := d.Runner.Get("CREDIMI_SERVICE_MODE")
 	switch mode {
 	case "cloudflare-managed":

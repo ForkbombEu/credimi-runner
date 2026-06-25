@@ -58,14 +58,14 @@ var dashboardCmd = &cobra.Command{
 		}
 		manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 
-		handler, cancel, err := dashboard.NewHandlerWithManager(configDir, manager)
+		handler, cancelDashboard, err := dashboard.NewHandlerWithManager(configDir, manager)
 		if err != nil {
 			return err
 		}
-		defer cancel()
+		defer cancelDashboard()
 
 		if configFileExists(configDir) {
-			if err := startDashboardRuntime(cmd.Context(), manager, store.Snapshot()); err != nil {
+			if err := startDashboardRuntime(cmd.Context(), manager, values); err != nil {
 				stdlog.Printf("dashboard runtime start failed: %v", err)
 			}
 		}
@@ -94,15 +94,19 @@ var dashboardCmd = &cobra.Command{
 		case <-sigc:
 		}
 
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cancelDashboard()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
-			return err
-		}
-		if configFileExists(configDir) || manager.Status(context.Background()).RunnerRunning || manager.Status(context.Background()).ComposeRunning {
-			if err := manager.Down(shutdownCtx); err != nil {
-				stdlog.Printf("dashboard runtime shutdown failed: %v", err)
+			stdlog.Printf("dashboard HTTP shutdown did not complete cleanly: %v", err)
+			if closeErr := server.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
+				stdlog.Printf("dashboard HTTP close failed: %v", closeErr)
 			}
+		}
+		runtimeShutdownCtx, runtimeShutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer runtimeShutdownCancel()
+		if err := shutdownDashboardRuntime(runtimeShutdownCtx, manager, configFileExists(configDir)); err != nil {
+			stdlog.Printf("dashboard runtime shutdown failed: %v", err)
 		}
 		return nil
 	},
@@ -123,6 +127,17 @@ func dashboardEnvPath(configDir string) string {
 func configFileExists(configDir string) bool {
 	_, err := os.Stat(dashboardEnvPath(configDir))
 	return err == nil
+}
+
+func shutdownDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager, configExists bool) error {
+	if manager == nil {
+		return nil
+	}
+	status := manager.Status(context.Background())
+	if !configExists && !status.RunnerRunning && !status.ComposeRunning {
+		return nil
+	}
+	return manager.Down(ctx)
 }
 
 func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.Values) (string, int) {
@@ -171,16 +186,27 @@ func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager
 	if err := manager.Start(ctx); err != nil {
 		return err
 	}
-	if err := waitForDashboardRunnerReady(ctx, values); err != nil {
-		return err
-	}
 	if strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
 		return nil
 	}
-	return registerDashboardRunner(ctx, manager, values)
+	readyCtx, readyCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer readyCancel()
+	if err := waitForDashboardRunnerReady(readyCtx, values); err != nil {
+		stdlog.Printf("dashboard runtime start pending: %v\n%s", err, runtimeStartupDiagnostics(ctx, manager, values))
+		return nil
+	}
+	registerCtx, registerCancel := context.WithTimeout(ctx, 8*time.Second)
+	defer registerCancel()
+	if err := registerDashboardRunner(registerCtx, manager, values); err != nil {
+		stdlog.Printf("dashboard runtime registration pending: %v", err)
+	}
+	return nil
 }
 
 func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Values) error {
+	if !dashboardruntime.RunnerReadinessRequiredBeforeRegistration(values, runtime.GOOS) {
+		return nil
+	}
 	host := strings.TrimSpace(values["RUNNER_HOST"])
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
@@ -189,30 +215,56 @@ func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Va
 	if port == "" {
 		port = dashboardruntime.DefaultRunnerPort
 	}
-	endpoint := "http://" + net.JoinHostPort(host, port) + "/healthz"
-	client := &http.Client{Timeout: 2 * time.Second}
+	address := net.JoinHostPort(host, port)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	for {
-		req, err := http.NewRequestWithContext(deadline, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := client.Do(req)
+		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				return nil
-			}
+			_ = conn.Close()
+			return nil
 		}
 		select {
 		case <-deadline.Done():
-			return fmt.Errorf("runner did not become ready at %s: %w", endpoint, deadline.Err())
+			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func runtimeStartupDiagnostics(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) string {
+	status := manager.Status(ctx)
+	var parts []string
+	if status.LastError != "" {
+		parts = append(parts, "last runtime error: "+status.LastError)
+	}
+	plan := dashboardruntime.BuildRuntimePlan(strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")), values)
+	if len(plan.ComposeServices) == 0 {
+		if len(parts) == 0 {
+			return "diagnostics: host runner did not bind the expected port; check the runner logs above."
+		}
+		return "diagnostics: " + strings.Join(parts, " | ")
+	}
+	logs, err := manager.Logs(ctx, 40)
+	if err != nil {
+		parts = append(parts, "compose logs unavailable: "+err.Error())
+	} else if len(logs) > 0 {
+		start := 0
+		if len(logs) > 8 {
+			start = len(logs) - 8
+		}
+		var tail []string
+		for _, line := range logs[start:] {
+			tail = append(tail, strings.TrimSpace(line.Message))
+		}
+		parts = append(parts, "recent runtime logs:\n"+strings.Join(tail, "\n"))
+	}
+	if len(parts) == 0 {
+		return "diagnostics: runtime did not expose the runner port and no compose logs were available."
+	}
+	return "diagnostics: " + strings.Join(parts, "\n")
 }
 
 func registerDashboardRunner(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {
@@ -227,12 +279,13 @@ func registerDashboardRunner(ctx context.Context, manager dashboardruntime.Manag
 	if err != nil {
 		return err
 	}
+	manager.SetPublicURL(publicURL)
 	client := &dashboardruntime.CredimiClient{
 		BaseURL:    strings.TrimSpace(values["CREDIMI_URL"]),
 		APIKey:     apiKey,
 		HTTPClient: http.DefaultClient,
 	}
-	return client.RegisterMobileRunner(ctx, dashboardruntime.RegisterRunnerRequest{
+	err = client.RegisterMobileRunnerResolvingName(ctx, dashboardruntime.RegisterRunnerRequest{
 		RunnerID:     strings.TrimSpace(values["CREDIMI_RUNNER_ID"]),
 		Name:         strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]),
 		IP:           publicURL,
@@ -242,6 +295,7 @@ func registerDashboardRunner(ctx context.Context, manager dashboardruntime.Manag
 		Serial:       strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]),
 		Organization: strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]),
 	})
+	return err
 }
 
 func resolveDashboardRegistrationEndpoint(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) (string, string, error) {

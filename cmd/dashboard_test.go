@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,32 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/spf13/cobra"
 )
+
+type dashboardFakeManager struct {
+	startCalls int
+	downCalls  int
+	logs       []dashboardruntime.LogLine
+	status     dashboardruntime.RuntimeStatus
+}
+
+func (f *dashboardFakeManager) Start(context.Context) error {
+	f.startCalls++
+	return nil
+}
+func (f *dashboardFakeManager) Stop(context.Context) error        { return nil }
+func (f *dashboardFakeManager) Restart(context.Context) error     { return nil }
+func (f *dashboardFakeManager) Down(context.Context) error        { f.downCalls++; return nil }
+func (f *dashboardFakeManager) UpdateImage(context.Context) error { return nil }
+func (f *dashboardFakeManager) Configure(dashboardruntime.Values) {}
+func (f *dashboardFakeManager) SetPublicURL(publicURL string) {
+	f.status.PublicURL = publicURL
+}
+func (f *dashboardFakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
+	return f.status
+}
+func (f *dashboardFakeManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
+	return f.logs, nil
+}
 
 func TestDashboardConfigPathHonorsOverride(t *testing.T) {
 	dir := t.TempDir()
@@ -121,5 +148,72 @@ func TestValidateDashboardSecurity(t *testing.T) {
 	}
 	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{"DASHBOARD_TOKEN": "secret"}); err != nil {
 		t.Fatalf("remote bind with token should pass: %v", err)
+	}
+}
+
+func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) {
+	var registered bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			registered = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+
+	manager := &dashboardFakeManager{
+		logs: []dashboardruntime.LogLine{{Message: "tunnel ready https://runner.example.trycloudflare.com"}},
+	}
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_SERVICE_MODE":   "auto",
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_NAME":    "runner",
+		"CREDIMI_URL":            api.URL,
+		"CREDIMI_USER_API_KEY":   "secret",
+		"RUNNER_HOST":            "127.0.0.1",
+		"RUNNER_PORT":            "1",
+	}
+	if err := startDashboardRuntime(context.Background(), manager, values); err != nil {
+		t.Fatalf("startDashboardRuntime = %v", err)
+	}
+	if manager.startCalls != 1 {
+		t.Fatalf("startCalls = %d", manager.startCalls)
+	}
+	if !registered {
+		t.Fatal("startDashboardRuntime should register container runners without waiting for localhost readiness")
+	}
+}
+
+func TestShutdownDashboardRuntimeRunsDownWhenConfigured(t *testing.T) {
+	manager := &dashboardFakeManager{}
+	if err := shutdownDashboardRuntime(context.Background(), manager, true); err != nil {
+		t.Fatalf("shutdownDashboardRuntime = %v", err)
+	}
+	if manager.downCalls != 1 {
+		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
+	}
+}
+
+func TestShutdownDashboardRuntimeRunsDownWhenComposeRunning(t *testing.T) {
+	manager := &dashboardFakeManager{status: dashboardruntime.RuntimeStatus{ComposeRunning: true}}
+	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
+		t.Fatalf("shutdownDashboardRuntime = %v", err)
+	}
+	if manager.downCalls != 1 {
+		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
+	}
+}
+
+func TestShutdownDashboardRuntimeSkipsUnconfiguredStoppedRuntime(t *testing.T) {
+	manager := &dashboardFakeManager{}
+	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
+		t.Fatalf("shutdownDashboardRuntime = %v", err)
+	}
+	if manager.downCalls != 0 {
+		t.Fatalf("downCalls = %d, want 0", manager.downCalls)
 	}
 }

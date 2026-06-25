@@ -41,6 +41,7 @@ func (f *fakeManager) UpdateImage(context.Context) error { f.updateImageCalls++;
 func (f *fakeManager) Configure(values dashboardruntime.Values) {
 	f.status.Configured = strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != ""
 }
+func (f *fakeManager) SetPublicURL(publicURL string)                         { f.status.PublicURL = publicURL }
 func (f *fakeManager) Status(context.Context) dashboardruntime.RuntimeStatus { return f.status }
 func (f *fakeManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
 	return f.logLines, nil
@@ -103,8 +104,8 @@ func TestNewHandlerAndRoutes(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/workers", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("workers route should redirect, got %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("workers route = %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -269,12 +270,91 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusOK || rec.Header().Get("HX-Push-Url") != "/" || !strings.Contains(rec.Body.String(), "Runtime") {
 		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should start runtime")
+	}
+}
+
+func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T) {
+	s := newTestServer(t)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/mobile-runner":
+			http.Error(w, "registration unavailable", http.StatusBadGateway)
+		case "/api/organizations/my":
+			w.Write([]byte(`{"canonified_name":"acme"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	form := url.Values{
+		"CREDIMI_URL":                 {api.URL},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_NAME":         {"runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_SERVICE_MODE":        {"manual"},
+		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	s.finishSetup(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("HX-Push-Url") != "/" || !strings.Contains(rec.Body.String(), "Runtime") {
+		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
+		t.Fatal("finishSetup should keep the runtime start when registration fails")
+	}
+	if !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired) {
+		t.Fatalf("pendingDiff = %#v, want Credimi update required", s.pendingDiff)
+	}
+	if !strings.Contains(s.lastRegistrationStatus, "Runner started") {
+		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
+	}
+}
+
+func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
+	s := newTestServer(t)
+	s.runnerReady = func(context.Context, map[string]string) error {
+		return context.DeadlineExceeded
+	}
+	form := url.Values{
+		"CREDIMI_URL":                 {"https://credimi.example"},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_NAME":         {"runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_SERVICE_MODE":        {"manual"},
+		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	s.finishSetup(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("HX-Push-Url") != "/" || !strings.Contains(rec.Body.String(), "Runtime") {
+		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
+		t.Fatal("finishSetup should keep the runtime start when readiness is not confirmed")
+	}
+	if !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRestartRequired) {
+		t.Fatalf("pendingDiff = %#v, want restart required", s.pendingDiff)
+	}
+	if !strings.Contains(s.lastRegistrationStatus, "readiness was not confirmed") {
+		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
 	}
 }
 
@@ -457,6 +537,7 @@ func (f fakeLogManager) Restart(context.Context) error     { return nil }
 func (f fakeLogManager) Down(context.Context) error        { return nil }
 func (f fakeLogManager) UpdateImage(context.Context) error { return nil }
 func (f fakeLogManager) Configure(dashboardruntime.Values) {}
+func (f fakeLogManager) SetPublicURL(string)               {}
 func (f fakeLogManager) Status(context.Context) dashboardruntime.RuntimeStatus {
 	return dashboardruntime.RuntimeStatus{}
 }

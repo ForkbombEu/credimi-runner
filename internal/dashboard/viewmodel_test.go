@@ -3,6 +3,8 @@ package dashboard
 import (
 	"strings"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
@@ -49,6 +51,10 @@ func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
 	cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
 	if got := d.PublicURL(); got != "https://<name>.trycloudflare.com" {
 		t.Fatalf("auto PublicURL = %q", got)
+	}
+	d.Data = map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{PublicURL: "https://runner.example.trycloudflare.com"}}
+	if got := d.PublicURL(); got != "https://runner.example.trycloudflare.com" {
+		t.Fatalf("runtime PublicURL = %q", got)
 	}
 	if got := d.RunnerAPIURL(); got != "http://127.0.0.1:8050" {
 		t.Fatalf("RunnerAPIURL = %q", got)

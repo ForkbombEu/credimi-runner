@@ -99,6 +99,8 @@
     <span class="{{chipClass .Status}} pulse"><span class="d"></span>{{statusLabel .Status}}</span>
   </div>
 </div>
+{{else}}
+<div style="padding:24px;text-align:center" class="muted">No running workers reported by the runner process.</div>
 {{end}}
 {{- end}}
 

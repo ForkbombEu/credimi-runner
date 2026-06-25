@@ -19,6 +19,7 @@ type Manager interface {
 	Down(context.Context) error
 	UpdateImage(context.Context) error
 	Configure(Values)
+	SetPublicURL(string)
 	Status(context.Context) RuntimeStatus
 	Logs(context.Context, int) ([]LogLine, error)
 }
@@ -83,6 +84,8 @@ type LifecycleManager struct {
 	values    Values
 	runner    Runner
 	cmd       *exec.Cmd
+	logCmd    *exec.Cmd
+	logDone   chan struct{}
 	status    RuntimeStatus
 }
 
@@ -108,7 +111,7 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	if plan.Backend == DefaultHostBackend {
 		if m.cmd == nil {
-			cmd, err := m.runner.Start(ctx, CommandSpec{
+			cmd, err := m.runner.Start(context.WithoutCancel(ctx), CommandSpec{
 				Name: m.binary,
 				Args: []string{
 					"serve",
@@ -128,12 +131,17 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 	}
 
 	if len(plan.ComposeServices) > 0 {
+		if err := WriteComposeFile(m.configDir, m.values); err != nil {
+			m.status.LastError = err.Error()
+			return err
+		}
 		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d"}
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
+		m.startComposeLogFollowerLocked(plan)
 		m.status.ComposeRunning = true
 	}
 
@@ -176,6 +184,7 @@ func (m *LifecycleManager) Stop(ctx context.Context) error {
 
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	if len(plan.ComposeServices) > 0 {
+		m.stopComposeLogFollowerLocked()
 		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop"}
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
@@ -213,6 +222,50 @@ func (m *LifecycleManager) Down(ctx context.Context) error {
 	return nil
 }
 
+func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {
+	if m.logCmd != nil || len(plan.ComposeServices) == 0 {
+		return
+	}
+	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs", "-f", "--tail", "80"}
+	args = append(args, plan.ComposeServices...)
+	cmd, err := m.runner.Start(context.Background(), CommandSpec{Name: "docker", Args: args})
+	if err != nil {
+		m.status.LastError = err.Error()
+		return
+	}
+	m.logCmd = cmd
+	done := make(chan struct{})
+	m.logDone = done
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+		m.mu.Lock()
+		if m.logCmd == cmd {
+			m.logCmd = nil
+			m.logDone = nil
+		}
+		m.mu.Unlock()
+	}()
+}
+
+func (m *LifecycleManager) stopComposeLogFollowerLocked() {
+	if m.logCmd == nil || m.logCmd.Process == nil {
+		m.logCmd = nil
+		m.logDone = nil
+		return
+	}
+	_ = m.logCmd.Process.Signal(syscall.SIGTERM)
+	done := m.logDone
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = m.logCmd.Process.Kill()
+		<-done
+	}
+	m.logCmd = nil
+	m.logDone = nil
+}
+
 func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
 	image := strings.TrimSpace(m.values["RUNNER_IMAGE"])
 	if image == "" {
@@ -232,6 +285,12 @@ func (m *LifecycleManager) Configure(values Values) {
 	defer m.mu.Unlock()
 	m.values = cloneValues(values)
 	m.status.Configured = strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != ""
+}
+
+func (m *LifecycleManager) SetPublicURL(publicURL string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.status.PublicURL = strings.TrimSpace(publicURL)
 }
 
 func (m *LifecycleManager) Status(context.Context) RuntimeStatus {

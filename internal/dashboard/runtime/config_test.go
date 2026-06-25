@@ -65,6 +65,27 @@ func TestStorePreservesUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestStoreLoadsRunnerNameAsKnownKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := "CREDIMI_RUNNER_ID=filippo-s-organization/test-runner-dashboard\nCREDIMI_RUNNER_NAME=Test-Runner-Dashboard\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Values["CREDIMI_RUNNER_NAME"]; got != "Test-Runner-Dashboard" {
+		t.Fatalf("CREDIMI_RUNNER_NAME = %q", got)
+	}
+	for _, line := range store.UnknownLines {
+		if strings.Contains(line, "CREDIMI_RUNNER_NAME") {
+			t.Fatalf("runner name should not be unknown: %q", line)
+		}
+	}
+}
+
 func TestStoreIgnoresInvalidKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")

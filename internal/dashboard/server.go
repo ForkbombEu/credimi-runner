@@ -75,6 +75,9 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("normalize config: %w", err)
 	}
+	cfg.mu.Lock()
+	cfg.values = map[string]string(normalized)
+	cfg.mu.Unlock()
 	if manager == nil {
 		manager = dashboardruntime.NewLifecycleManager(executable, composeDir, normalized, nil)
 	} else {
@@ -113,9 +116,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", s.page("overview"))
 	mux.HandleFunc("GET /setup", s.page("setup"))
 	mux.HandleFunc("GET /devices", s.page("devices"))
-	mux.HandleFunc("GET /workers", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
+	mux.HandleFunc("GET /workers", s.page("workers"))
 	mux.HandleFunc("GET /network", s.page("network"))
 	mux.HandleFunc("GET /config", s.page("config"))
 
@@ -272,17 +273,57 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	flash := flashForDiff(diff)
+	appliedCleanly := true
+	if s.manager != nil {
+		applyCtx, applyCancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer applyCancel()
+		if applied, err := s.applySavedConfig(applyCtx, diff, newSnapshot); err != nil {
+			flash = flash + " Apply failed: " + err.Error()
+			appliedCleanly = false
+		} else if applied != "" {
+			flash = flash + " " + applied
+		}
+	}
 	s.mu.Lock()
-	s.pendingDiff = diff
+	if appliedCleanly {
+		s.pendingDiff = dashboardruntime.ConfigDiff{}
+	} else {
+		s.pendingDiff = diff
+	}
 	s.lastRegistrationStatus = ""
 	s.mu.Unlock()
 
-	flash := flashForDiff(diff)
 	d := s.pageData("config", map[string]any{"Saved": true, "Flash": flash})
 	html, _ := s.render.FragmentPage("config", d)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, flash))
 	w.Write([]byte(html))
+}
+
+func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) (string, error) {
+	if len(diff.ChangedKeys) == 0 || hasApplyClass(diff, dashboardruntime.ApplySavedOnly) {
+		return "", nil
+	}
+	status := s.manager.Status(ctx)
+	runtimeRunning := status.RunnerRunning || status.ComposeRunning
+	var actions []string
+	if runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)) {
+		if err := s.manager.Restart(ctx); err != nil {
+			return "", err
+		}
+		actions = append(actions, "Runtime restarted.")
+	}
+	if hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired) || runtimeRunning {
+		if err := s.registerCurrent(ctx, values); err != nil {
+			return "", err
+		}
+		actions = append(actions, "Credimi registration updated.")
+	}
+	if len(actions) == 0 && !runtimeRunning {
+		return "Runtime is stopped; changes apply on next dashboard start.", nil
+	}
+	return strings.Join(actions, " "), nil
 }
 
 func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
@@ -335,20 +376,49 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.runnerReady(r.Context(), values); err != nil {
-		s.renderSetupError(w, values, "runner readiness check failed: "+err.Error())
+	setupCheckCtx, setupCheckCancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer setupCheckCancel()
+	if err := s.runnerReady(setupCheckCtx, values); err != nil {
+		s.mu.Lock()
+		s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}}
+		s.lastRegistrationStatus = "Setup complete. Runtime start was requested, but runner readiness was not confirmed: " + s.runtimeStartupError(r.Context(), err).Error()
+		s.mu.Unlock()
+		s.renderSetupComplete(w, r)
 		return
 	}
-	if err := s.registerCurrent(r.Context(), values); err != nil {
-		s.renderSetupError(w, values, "Credimi registration failed: "+err.Error())
+	registerCtx, registerCancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer registerCancel()
+	if err := s.registerCurrent(registerCtx, values); err != nil {
+		s.mu.Lock()
+		s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
+		s.lastRegistrationStatus = "Setup complete. Runner started, but Credimi registration failed: " + err.Error()
+		s.mu.Unlock()
+		s.renderSetupComplete(w, r)
 		return
 	}
 	s.mu.Lock()
 	s.pendingDiff = dashboardruntime.ConfigDiff{}
 	s.lastRegistrationStatus = "Setup complete. Runner started and registered with Credimi."
 	s.mu.Unlock()
-	w.Header().Set("HX-Redirect", "/")
+	s.renderSetupComplete(w, r)
+}
+
+func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("HX-Request") != "true" {
+		w.Header().Set("Location", "/")
+		w.WriteHeader(http.StatusSeeOther)
+		return
+	}
+	d := s.pageData("overview", nil)
+	html, err := s.render.FragmentPage("overview", d)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("HX-Push-Url", "/")
 	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(html))
 }
 
 func validateSetupInput(values map[string]string) map[string]string {
@@ -501,7 +571,7 @@ func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if err := s.runnerReady(ctx, values); err != nil {
-			return err
+			return s.runtimeStartupError(ctx, err)
 		}
 		return s.registerCurrent(ctx, values)
 	}, "Runtime started.")
@@ -693,6 +763,9 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 	if err != nil {
 		return err
 	}
+	if s.manager != nil {
+		s.manager.SetPublicURL(publicURL)
+	}
 	client := &dashboardruntime.CredimiClient{
 		BaseURL:    strings.TrimSpace(values["CREDIMI_URL"]),
 		APIKey:     apiKey,
@@ -708,7 +781,7 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 		Serial:       strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]),
 		Organization: strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]),
 	}
-	if err := client.RegisterMobileRunner(ctx, req); err != nil {
+	if err := client.RegisterMobileRunnerResolvingName(ctx, req); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -718,6 +791,9 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 }
 
 func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]string) error {
+	if !dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+		return nil
+	}
 	host := strings.TrimSpace(values["RUNNER_HOST"])
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
@@ -726,30 +802,50 @@ func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]strin
 	if port == "" {
 		port = dashboardruntime.DefaultRunnerPort
 	}
-	endpoint := "http://" + net.JoinHostPort(host, port) + "/healthz"
-	client := &http.Client{Timeout: 2 * time.Second}
+	address := net.JoinHostPort(host, port)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	for {
-		req, err := http.NewRequestWithContext(deadline, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return err
-		}
-		resp, err := client.Do(req)
+		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				return nil
-			}
+			_ = conn.Close()
+			return nil
 		}
 		select {
 		case <-deadline.Done():
-			return fmt.Errorf("runner did not become ready at %s: %w", endpoint, deadline.Err())
+			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func (s *Server) runtimeStartupError(ctx context.Context, cause error) error {
+	if s.manager == nil {
+		return cause
+	}
+	status := s.manager.Status(ctx)
+	var details []string
+	if status.LastError != "" {
+		details = append(details, "last runtime error: "+status.LastError)
+	}
+	logs, err := s.manager.Logs(ctx, 40)
+	if err == nil && len(logs) > 0 {
+		start := 0
+		if len(logs) > 8 {
+			start = len(logs) - 8
+		}
+		var tail []string
+		for _, line := range logs[start:] {
+			tail = append(tail, strings.TrimSpace(line.Message))
+		}
+		details = append(details, "recent runtime logs: "+strings.Join(tail, " | "))
+	}
+	if len(details) == 0 {
+		return cause
+	}
+	return fmt.Errorf("%w (%s)", cause, strings.Join(details, " ; "))
 }
 
 func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[string]string) (string, string, error) {

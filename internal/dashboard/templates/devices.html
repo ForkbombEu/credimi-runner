@@ -24,39 +24,7 @@
     <div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
   </section>
 
-  <div class="grid-2" style="margin-top:16px;align-items:start">
-    <section class="card">
-      <header class="card-h">{{icon "wifi"}}<div><h3>Connection actions</h3><div class="sub">temporary attach and reconnect operations</div></div></header>
-      <form hx-post="/devices/connect" hx-target="#device-list" hx-swap="innerHTML" id="runner-connection-form">
-        <div class="card-b">
-          <div class="field"><label><span class="lbtx">Target type</span></label>
-            <select class="sel" name="type">
-              <option value="android_phone">android_phone</option>
-              <option value="android_emulator">android_emulator</option>
-              <option value="ios_simulator">ios_simulator</option>
-              <option value="redroid">redroid</option>
-            </select>
-          </div>
-          <div class="field"><label><span class="lbtx">Connection mode</span></label>
-            <select class="sel" name="mode">
-              <option value="wifi">wifi</option>
-              <option value="usb">usb</option>
-            </select>
-          </div>
-          <div class="field"><label><span class="lbtx">Address</span><span class="envkey">ip:port or simulator id</span></label>
-            <input class="inp mono" name="address" placeholder="192.168.1.42:38349">
-          </div>
-          <div class="field"><label><span class="lbtx">Pairing code</span></label>
-            <input class="inp mono" name="pair_code" placeholder="optional">
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button type="submit" class="btn btn-pri">{{icon "check"}} Connect target</button>
-          </div>
-        </div>
-      </form>
-    </section>
-    <div class="callout info"><div>{{icon "info"}}<b>Target config lives in the runner config</b><br>Use the config page to change the persistent runner target. Use this page for connection actions and live monitoring.</div></div>
-  </div>
+  <div class="callout info" style="margin-top:16px">{{icon "info"}}<div><b>Single target mode</b><br>This runner currently supports one configured target. Multi-device management belongs to a future dashboard iteration.</div></div>
 
 </main>
 {{- end}}
