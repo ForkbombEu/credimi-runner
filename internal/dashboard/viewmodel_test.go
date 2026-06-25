@@ -50,6 +50,18 @@ func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
 	if got := d.PublicURL(); got != "https://<name>.trycloudflare.com" {
 		t.Fatalf("auto PublicURL = %q", got)
 	}
+	if got := d.RunnerAPIURL(); got != "http://127.0.0.1:8050" {
+		t.Fatalf("RunnerAPIURL = %q", got)
+	}
+	cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	cfg.values["CREDIMI_RUNNER_DEVICE_MODE"] = "wifi"
+	cfg.values["CREDIMI_RUNNER_SERIAL"] = "10.0.0.8:5555"
+	if got := d.ConfiguredTargetTitle(); got != "Android phone over Wi-Fi" {
+		t.Fatalf("ConfiguredTargetTitle = %q", got)
+	}
+	if got := d.ConfiguredTargetDetail(); got != "10.0.0.8:5555" {
+		t.Fatalf("ConfiguredTargetDetail = %q", got)
+	}
 }
 
 func TestPageDataFormViewModels(t *testing.T) {

@@ -14,8 +14,8 @@
   <div class="grid-4" style="margin-bottom:16px">
     <div class="stat"><div class="k">{{icon "shield"}} Service</div><div class="v">{{if .ServicesAllUp}}Healthy{{else}}Degraded{{end}}</div><div class="meta">{{len .Snapshot.Services}} containers</div></div>
     <div class="stat"><div class="k">{{icon "phone"}} Devices</div><div class="v">{{.DevicesOnline}}<small>/ {{.DevicesTotal}} online</small></div><div class="meta">{{.DevicesDegraded}} degraded · {{.DevicesOffline}} offline</div></div>
-    <div class="stat"><div class="k">{{icon "workers"}} Runner worker</div><div class="v">{{.WorkersOnline}}<small>/ {{.WorkersTotal}} polling</small></div><div class="meta">single runner instance</div></div>
-    <div class="stat"><div class="k">{{icon "activity"}} Endpoint</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">exposure mode</div></div>
+    <div class="stat"><div class="k">{{icon "activity"}} Dashboard</div><div class="v">{{.RuntimeHeadline}}</div><div class="meta">{{.Runner.Get "DASHBOARD_HOST"}}:{{.Runner.Get "DASHBOARD_PORT"}}</div></div>
+    <div class="stat"><div class="k">{{icon "cloud"}} Exposure</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">public runner route</div></div>
   </div>
 
   <section class="card">
@@ -30,23 +30,18 @@
         <form hx-post="/runtime/update-image" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-out">Update image</button></form>
         <form hx-post="/runtime/register" hx-target="main" hx-select="main" hx-swap="outerHTML"><button type="submit" class="btn btn-out">Re-register</button></form>
       </div>
+      <div id="runtime-status" hx-ext="sse" sse-connect="/events/runtime" sse-swap="runtime">{{template "runtime_status" .}}</div>
+      <div class="divline"></div>
       <div class="grid-2">{{range .Snapshot.Services}}{{template "service_row" .}}{{end}}</div>
       <div class="divline"></div>
       <div class="callout {{if .ServicesAllUp}}ok{{else}}warn{{end}}">{{icon "globe"}}<div>Public endpoint: <b style="font-family:var(--font-mono)">{{.PublicURL}}</b>. OpenAPI docs at <b style="font-family:var(--font-mono)">/docs</b>.</div></div>
     </div>
   </section>
 
-  <div class="grid-2" style="margin-top:16px;align-items:start">
-    <section class="card">
-      <header class="card-h">{{icon "phone"}}<div><h3>Devices</h3><div class="sub">{{.DevicesOnline}} of {{.DevicesTotal}} online</div></div>
-        <div class="right"><a class="btn btn-out btn-sm" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">Manage</a></div></header>
-      <div class="card-b flush"><div class="list" id="device-snapshot" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
-    </section>
-    <section class="card">
-      <header class="card-h">{{icon "workers"}}<div><h3>Workers</h3><div class="sub">{{.WorkersOnline}} polling</div></div>
-      </header>
-      <div class="card-b flush"><div class="list">{{template "worker_rows" .Workers}}</div></div>
-    </section>
-  </div>
+  <section class="card" style="margin-top:16px">
+    <header class="card-h">{{icon "phone"}}<div><h3>Detected devices</h3><div class="sub">{{.DevicesOnline}} of {{.DevicesTotal}} online</div></div>
+      <div class="right"><a class="btn btn-out btn-sm" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">Open target page</a></div></header>
+    <div class="card-b flush"><div class="list" id="device-snapshot" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
+  </section>
 </main>
 {{- end}}

@@ -85,6 +85,13 @@ func TestNewHandlerAndRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "ok" {
 		t.Fatalf("healthz = %d %q", rec.Code, rec.Body.String())
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "/workers", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("workers route should redirect, got %d", rec.Code)
+	}
 }
 
 func TestServerAuth(t *testing.T) {
@@ -457,6 +464,23 @@ func TestServerSSE(t *testing.T) {
 	<-done
 	if !strings.Contains(rec.Body.String(), "event: pill") {
 		t.Fatalf("sse body = %q", rec.Body.String())
+	}
+}
+
+func TestServerRuntimeSSE(t *testing.T) {
+	s := newTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/events/runtime", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		s.sse("runtime").ServeHTTP(rec, req)
+		close(done)
+	}()
+	cancel()
+	<-done
+	if !strings.Contains(rec.Body.String(), "event: runtime") {
+		t.Fatalf("runtime sse body = %q", rec.Body.String())
 	}
 }
 

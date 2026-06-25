@@ -36,7 +36,7 @@
 {{- /* ── Live device rows (SSE: /events/devices) ── */ -}}
 {{define "device_rows" -}}
 {{- if not . -}}
-<div style="padding:40px;text-align:center" class="muted">No devices attached. Use “Add device” to connect one.</div>
+<div style="padding:40px;text-align:center" class="muted">No devices attached. Use the runner target connection actions to attach one.</div>
 {{- end -}}
 {{range .}}
 <div class="row" id="dev-{{.Serial}}">
@@ -60,6 +60,31 @@
   </div>
 </div>
 {{end}}
+{{- end}}
+
+{{define "runtime_status" -}}
+<div class="grid-2">
+  <div class="stat">
+    <div class="k">{{icon "activity"}} Runtime</div>
+    <div class="v">{{.RuntimeHeadline}}</div>
+    <div class="meta">{{if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
+  </div>
+  <div class="stat">
+    <div class="k">{{icon "server"}} Runner API</div>
+    <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.RunnerAPIURL}}</div>
+    <div class="meta">{{if .RuntimeStatus.RunnerRunning}}process running{{else}}process stopped{{end}}</div>
+  </div>
+  <div class="stat">
+    <div class="k">{{icon "cloud"}} Public URL</div>
+    <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.PublicURL}}</div>
+    <div class="meta">{{.Runner.Get "CREDIMI_SERVICE_MODE"}} exposure</div>
+  </div>
+  <div class="stat">
+    <div class="k">{{icon "phone"}} Target</div>
+    <div class="v">{{.ConfiguredTargetTitle}}</div>
+    <div class="meta">{{.ConfiguredTargetDetail}}</div>
+  </div>
+</div>
 {{- end}}
 
 {{- /* ── Live worker rows (SSE: /events/workers) — flat list for the Overview snapshot ── */ -}}

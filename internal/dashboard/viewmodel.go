@@ -50,6 +50,70 @@ func (d PageData) WorkersOnline() int {
 }
 func (d PageData) WorkersTotal() int { return len(d.Workers) }
 
+func (d PageData) RuntimeHealthy() bool {
+	status := d.RuntimeStatus()
+	if !status.Configured {
+		return false
+	}
+	if len(d.Snapshot.Services) > 0 {
+		return status.ComposeRunning && d.ServicesAllUp()
+	}
+	return status.RunnerRunning
+}
+
+func (d PageData) RuntimeHeadline() string {
+	if d.RuntimeHealthy() {
+		return "Running"
+	}
+	if d.RuntimeStatus().Configured {
+		return "Needs attention"
+	}
+	return "Not configured"
+}
+
+func (d PageData) RunnerAPIURL() string {
+	host := d.Runner.Get("RUNNER_HOST")
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	port := d.Runner.Get("RUNNER_PORT")
+	if port == "" {
+		port = dashboardruntime.DefaultRunnerPort
+	}
+	return "http://" + host + ":" + port
+}
+
+func (d PageData) ConfiguredTargetTitle() string {
+	switch d.Runner.Get("CREDIMI_RUNNER_TYPE") {
+	case "android_emulator":
+		return "Android emulator"
+	case "ios_simulator":
+		return "iOS simulator"
+	case "redroid":
+		return "Redroid"
+	default:
+		switch d.Runner.Get("CREDIMI_RUNNER_DEVICE_MODE") {
+		case "wifi":
+			return "Android phone over Wi-Fi"
+		default:
+			return "Android phone over USB"
+		}
+	}
+}
+
+func (d PageData) ConfiguredTargetDetail() string {
+	switch d.Runner.Get("CREDIMI_RUNNER_TYPE") {
+	case "android_emulator":
+		return orDash(d.Runner.Get("BASE_NAME"))
+	case "ios_simulator":
+		return orDash(d.Runner.Get("BASE_NAME"))
+	case "redroid":
+		return orDash(d.Runner.Get("CREDIMI_RUNNER_SERIAL"))
+	default:
+		return orDash(d.Runner.Get("CREDIMI_RUNNER_SERIAL"))
+	}
+}
+
 func (d PageData) ServicesAllUp() bool {
 	for _, s := range d.Snapshot.Services {
 		if s.Status != Online {

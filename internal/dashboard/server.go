@@ -133,6 +133,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// SSE streams
 	mux.HandleFunc("GET /events/health", s.sse("health"))
 	mux.HandleFunc("GET /events/devices", s.sse("devices"))
+	mux.HandleFunc("GET /events/runtime", s.sse("runtime"))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 }
@@ -871,13 +872,17 @@ func (s *Server) sse(stream string) http.HandlerFunc {
 			writeSSE(w, "pill", s.render.Fragment("pill", s.hub.pillData(s.hub.CurrentSnapshot())))
 		case "devices":
 			writeSSE(w, "rows", s.render.Fragment("device_rows", s.hub.CurrentSnapshot().Devices))
+		case "runtime":
+			writeSSE(w, "runtime", s.render.Fragment("runtime_status", s.pageData("overview", nil)))
 		case "workers":
 			writeSSE(w, "rows", s.render.Fragment("worker_rows", s.hub.CurrentWorkers()))
 		}
 		flusher.Flush()
 
 		ping := time.NewTicker(20 * time.Second)
+		runtimeTick := time.NewTicker(2 * time.Second)
 		defer ping.Stop()
+		defer runtimeTick.Stop()
 		for {
 			select {
 			case <-r.Context().Done():
@@ -885,6 +890,11 @@ func (s *Server) sse(stream string) http.HandlerFunc {
 			case ev := <-c.ch:
 				writeSSE(w, ev.name, ev.data)
 				flusher.Flush()
+			case <-runtimeTick.C:
+				if stream == "runtime" {
+					writeSSE(w, "runtime", s.render.Fragment("runtime_status", s.pageData("overview", nil)))
+					flusher.Flush()
+				}
 			case <-ping.C:
 				fmt.Fprint(w, ": ping\n\n")
 				flusher.Flush()

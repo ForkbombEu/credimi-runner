@@ -147,6 +147,28 @@ func TestRenderer_FragmentPage(t *testing.T) {
 	}
 }
 
+func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := PageData{
+		Active: "config",
+		Title:  "Config",
+		Runner: &Config{values: Defaults},
+		Pill:   PillData{OK: true, Label: "Ready"},
+	}
+
+	html, err := r.Page("config", d)
+	if err != nil {
+		t.Fatalf("config page failed: %v", err)
+	}
+	if strings.Contains(html, "Additional environments") {
+		t.Fatalf("config page should not render multi-environment section: %s", html)
+	}
+}
+
 func TestRenderer_SetupPage(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {
@@ -180,7 +202,7 @@ func TestRenderer_SetupPage(t *testing.T) {
 	}
 }
 
-func TestRenderer_DevicesAddModalContract(t *testing.T) {
+func TestRenderer_DevicesTargetPageContract(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)
@@ -200,15 +222,17 @@ func TestRenderer_DevicesAddModalContract(t *testing.T) {
 		t.Fatalf("devices page failed: %v", err)
 	}
 	for _, want := range []string{
-		`id="modal-add-device" hidden`,
-		`data-pick-type="android_emulator"`,
-		`data-phone-step`,
-		`data-wifi-step`,
-		`type="button" class="iconbtn x" data-close-modal`,
+		`Configured target`,
+		`Connection actions`,
+		`id="runner-connection-form"`,
+		`Change target config`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)
 		}
+	}
+	if strings.Contains(html, "Add device") {
+		t.Fatal("devices page should not present add-device flow")
 	}
 }
 
@@ -248,6 +272,9 @@ func TestRenderer_FullPage(t *testing.T) {
 	}
 	if !strings.Contains(html, "htmx") {
 		t.Errorf("full page missing htmx script: %s", html[:300])
+	}
+	if strings.Contains(html, "across environments") {
+		t.Fatalf("overview should not render multi-environment copy: %s", html)
 	}
 }
 

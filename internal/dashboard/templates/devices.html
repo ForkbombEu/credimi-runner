@@ -2,71 +2,61 @@
 <main class="page">
   <div class="page-head" style="display:flex;align-items:flex-end;justify-content:space-between">
     <div>
-      <span class="eyebrow">Device management</span>
+      <span class="eyebrow">Runner target</span>
       <h1>Devices</h1>
-      <p>Phones, emulators and simulators attached to this runner via ADB or simctl.</p>
+      <p>Configure and connect the single target this runner should control, then monitor the detected devices below.</p>
     </div>
-    <button class="btn btn-pri" data-open-modal="add-device">{{icon "plus"}} Add device</button>
+    <a class="btn btn-pri" href="/config" hx-get="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "key"}} Change target config</a>
   </div>
 
+  <section class="card" style="margin-bottom:16px">
+    <header class="card-h">{{icon "phone"}}<div><h3>Configured target</h3><div class="sub">one runner, one target</div></div></header>
+    <div class="card-b">
+      <div class="grid-2">
+        <div class="stat"><div class="k">{{icon "phone"}} Target type</div><div class="v">{{.ConfiguredTargetTitle}}</div><div class="meta">{{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
+        <div class="stat"><div class="k">{{icon "activity"}} Current address</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.ConfiguredTargetDetail}}</div><div class="meta">serial or base name</div></div>
+      </div>
+    </div>
+  </section>
+
   <section class="card">
+    <header class="card-h">{{icon "shield"}}<div><h3>Detected devices</h3><div class="sub">live device snapshot</div></div></header>
     <div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
   </section>
 
-  <div class="callout info" style="margin-top:16px">{{icon "info"}}<div><b>Wi-Fi pairing (Android 11+):</b> if the phone shows a pairing code, enter it in the wizard once before connect. The port comes from the phone’s Wireless debugging screen — never assume 5555.</div></div>
-
-  <!-- Add-device modal (hidden until opened by app.js) -->
-  <div class="modal-bk" id="modal-add-device" hidden>
-    <div class="modal">
-      <div class="modal-h"><div><h3>Add a device</h3><p>Attach a new target to this runner</p></div>
-        <button type="button" class="iconbtn x" data-close-modal>{{icon "x"}}</button></div>
-      <form hx-post="/devices/connect" hx-target="#device-list" hx-swap="innerHTML" id="add-device-form">
-        <div class="modal-b">
-          <div class="steps" data-steps>
-            <span class="st on"><span class="n">1</span><span class="lb">Type</span></span>
-            <span class="bar"></span>
-            <span class="st"><span class="n">2</span><span class="lb">Connection</span></span>
-            <span class="bar"></span>
-            <span class="st"><span class="n">3</span><span class="lb">Pair &amp; connect</span></span>
+  <div class="grid-2" style="margin-top:16px;align-items:start">
+    <section class="card">
+      <header class="card-h">{{icon "wifi"}}<div><h3>Connection actions</h3><div class="sub">temporary attach and reconnect operations</div></div></header>
+      <form hx-post="/devices/connect" hx-target="#device-list" hx-swap="innerHTML" id="runner-connection-form">
+        <div class="card-b">
+          <div class="field"><label><span class="lbtx">Target type</span></label>
+            <select class="sel" name="type">
+              <option value="android_phone">android_phone</option>
+              <option value="android_emulator">android_emulator</option>
+              <option value="ios_simulator">ios_simulator</option>
+              <option value="redroid">redroid</option>
+            </select>
           </div>
-
-          <div data-step="0">
-            <div class="picks">
-              <button type="button" class="pick on" data-pick-type="android_phone"><span class="pic">{{icon "android"}}</span><span><b>Android phone</b><span>Physical device over ADB</span></span></button>
-              <button type="button" class="pick" data-pick-type="android_emulator"><span class="pic">{{icon "android"}}</span><span><b>Android emulator</b><span>KVM-backed AVD</span></span></button>
-              <button type="button" class="pick" data-pick-type="ios_simulator"><span class="pic">{{icon "apple"}}</span><span><b>iOS simulator</b><span>macOS · xcrun simctl</span></span></button>
-              <button type="button" class="pick" data-pick-type="redroid"><span class="pic">{{icon "android"}}</span><span><b>Redroid</b><span>Containerised Android</span></span></button>
-            </div>
-            <input type="hidden" name="type" value="android_phone">
+          <div class="field"><label><span class="lbtx">Connection mode</span></label>
+            <select class="sel" name="mode">
+              <option value="wifi">wifi</option>
+              <option value="usb">usb</option>
+            </select>
           </div>
-
-          <div data-step="1" data-phone-step hidden>
-            <div class="field"><label><span class="lbtx">Connection method</span></label>
-              <div class="seg" data-seg="mode">
-                <button type="button" class="on" data-val="wifi">{{icon "wifi"}} Wi-Fi ADB</button>
-                <button type="button" data-val="usb">{{icon "usb"}} USB cable</button>
-              </div>
-              <input type="hidden" name="mode" value="wifi">
-            </div>
+          <div class="field"><label><span class="lbtx">Address</span><span class="envkey">ip:port or simulator id</span></label>
+            <input class="inp mono" name="address" placeholder="192.168.1.42:38349">
           </div>
-
-          <div data-step="2" data-wifi-step hidden>
-            <div class="field"><label><span class="lbtx">Device address</span><span class="req">*</span><span class="envkey">ip:port</span></label>
-              <input class="inp mono" name="address" placeholder="192.168.1.42:38349">
-              <p class="hint">From the phone’s Wireless debugging screen.</p></div>
-            <div class="field"><label><span class="lbtx">Pairing code</span></label>
-              <input class="inp mono" name="pair_code" placeholder="394 521 (optional)">
-              <p class="hint">Only required on first connect for Android 11+.</p></div>
+          <div class="field"><label><span class="lbtx">Pairing code</span></label>
+            <input class="inp mono" name="pair_code" placeholder="optional">
           </div>
-        </div>
-        <div class="modal-f">
-          <button type="button" class="btn btn-ghost" data-step-back hidden>Back</button>
-          <div style="flex:1"></div>
-          <button type="button" class="btn btn-pri" data-step-next>Continue</button>
-          <button type="submit" class="btn btn-pri" data-step-submit hidden>{{icon "check"}} Connect device</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="submit" class="btn btn-pri">{{icon "check"}} Connect target</button>
+          </div>
         </div>
       </form>
-    </div>
+    </section>
+    <div class="callout info"><div>{{icon "info"}}<b>Target config lives in the runner config</b><br>Use the config page to change the persistent runner target. Use this page for connection actions and live monitoring.</div></div>
   </div>
+
 </main>
 {{- end}}
