@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
@@ -29,6 +30,11 @@ import (
 //go:embed static/*
 var staticFS embed.FS
 
+var (
+	lookupPath = exec.LookPath
+	statPath   = os.Stat
+)
+
 type Server struct {
 	cfg                    *Config
 	hub                    *Hub
@@ -37,6 +43,8 @@ type Server struct {
 	authToken              string
 	manager                dashboardruntime.Manager
 	runnerReady            func(context.Context, map[string]string) error
+	lookupPath             func(string) (string, error)
+	statPath               func(string) (os.FileInfo, error)
 	lastRegistrationStatus string
 	pendingDiff            dashboardruntime.ConfigDiff
 	mu                     sync.RWMutex
@@ -80,6 +88,8 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 		composeDir: composeDir,
 		authToken:  strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
 		manager:    manager,
+		lookupPath: lookupPath,
+		statPath:   statPath,
 	}
 	srv.runnerReady = srv.waitForRunnerReady
 
@@ -299,6 +309,10 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalizeWizardValues(incoming)
+	if err := s.validateRuntimeRequirements(incoming); err != nil {
+		s.renderSetupError(w, incoming, "runtime requirement check failed: "+err.Error())
+		return
+	}
 	if errs, err := s.cfg.Apply(incoming); err != nil {
 		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Configuration validation failed."})
 		html, _ := s.render.FragmentPage("setup", d)
@@ -365,6 +379,42 @@ func (s *Server) renderSetupError(w http.ResponseWriter, incoming map[string]str
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusBadGateway)
 	w.Write([]byte(html))
+}
+
+func (s *Server) validateRuntimeRequirements(values map[string]string) error {
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(values), runtimeGOOS())
+	if err != nil {
+		return err
+	}
+	plan := dashboardruntime.BuildRuntimePlan(s.composeDir, normalized)
+	if plan.RequiresDocker {
+		if _, err := s.lookupPath("docker"); err != nil {
+			return errors.New("docker is required for this runner mode")
+		}
+	}
+	if normalized["CREDIMI_RUNNER_TYPE"] == "ios_simulator" {
+		if _, err := s.lookupPath("xcrun"); err != nil {
+			return errors.New("xcrun simctl is required for iOS simulator runners")
+		}
+	}
+	if normalized["CREDIMI_RUNNER_TYPE"] == "android_emulator" && plan.Backend == dashboardruntime.DefaultContainerBackend {
+		if _, err := s.statPath("/dev/kvm"); err != nil {
+			return errors.New("/dev/kvm is required for Android emulator containers")
+		}
+		for _, path := range []string{
+			strings.TrimSpace(normalized["ANDROID_KEYS_DIR"]),
+			strings.TrimSpace(normalized["HOST_AVD_HOME_PATH"]),
+			strings.TrimSpace(normalized["HOST_AVD_GOLDEN_PATH"]),
+		} {
+			if path == "" {
+				return errors.New("android emulator assets are not configured")
+			}
+			if _, err := s.statPath(path); err != nil {
+				return fmt.Errorf("required emulator asset path is missing: %s", path)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Server) lookupSetupOrganization(w http.ResponseWriter, r *http.Request) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
@@ -69,8 +70,19 @@ func newTestServer(t *testing.T) *Server {
 			{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
 		}},
 		runnerReady: func(context.Context, map[string]string) error { return nil },
+		lookupPath:  func(string) (string, error) { return "/tmp/fake-bin", nil },
+		statPath:    func(string) (os.FileInfo, error) { return fakeFileInfo("ok"), nil },
 	}
 }
+
+type fakeFileInfo string
+
+func (f fakeFileInfo) Name() string       { return string(f) }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode  { return 0o644 }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 func TestNewHandlerAndRoutes(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
@@ -325,6 +337,62 @@ func TestServerRuntimeApply(t *testing.T) {
 	}
 	if len(s.pendingDiff.Classes) != 0 {
 		t.Fatalf("pendingDiff not cleared: %#v", s.pendingDiff)
+	}
+}
+
+func TestValidateRuntimeRequirements(t *testing.T) {
+	s := newTestServer(t)
+	values := map[string]string{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "auto",
+		"CREDIMI_RUNNER_TYPE":    "android_phone",
+	}
+	if err := s.validateRuntimeRequirements(values); err != nil {
+		t.Fatalf("validateRuntimeRequirements = %v", err)
+	}
+
+	s.lookupPath = func(name string) (string, error) {
+		if name == "docker" {
+			return "", os.ErrNotExist
+		}
+		return "/tmp/fake", nil
+	}
+	if err := s.validateRuntimeRequirements(values); err == nil || !strings.Contains(err.Error(), "docker is required") {
+		t.Fatalf("expected docker requirement error, got %v", err)
+	}
+
+	s = newTestServer(t)
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	s.lookupPath = func(name string) (string, error) {
+		if name == "xcrun" {
+			return "", os.ErrNotExist
+		}
+		return "/tmp/fake", nil
+	}
+	if err := s.validateRuntimeRequirements(map[string]string{
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
+	}); err == nil || !strings.Contains(err.Error(), "xcrun simctl") {
+		t.Fatalf("expected xcrun requirement error, got %v", err)
+	}
+
+	s = newTestServer(t)
+	s.statPath = func(path string) (os.FileInfo, error) {
+		if path == "/dev/kvm" {
+			return nil, os.ErrNotExist
+		}
+		return fakeFileInfo("ok"), nil
+	}
+	if err := s.validateRuntimeRequirements(map[string]string{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"CREDIMI_RUNNER_TYPE":    "android_emulator",
+		"ANDROID_KEYS_DIR":       "/tmp/keys",
+		"HOST_AVD_HOME_PATH":     "/tmp/avd-home",
+		"HOST_AVD_GOLDEN_PATH":   "/tmp/avd-golden",
+	}); err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
+		t.Fatalf("expected /dev/kvm requirement error, got %v", err)
 	}
 }
 
