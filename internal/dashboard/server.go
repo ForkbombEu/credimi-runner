@@ -78,7 +78,7 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 		hub:        hub,
 		render:     render,
 		composeDir: composeDir,
-		authToken:  "", // auth handled by the parent server / Caddy
+		authToken:  strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
 		manager:    manager,
 	}
 	srv.runnerReady = srv.waitForRunnerReady
@@ -88,7 +88,7 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
-	return mux, cancel, nil
+	return srv.auth(mux), cancel, nil
 }
 
 func (s *Server) routes(mux *http.ServeMux) {

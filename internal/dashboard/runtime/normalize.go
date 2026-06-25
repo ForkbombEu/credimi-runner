@@ -58,6 +58,7 @@ var KnownKeys = map[string]struct{}{
 	"CREDIMI_USER_API_KEY":        {},
 	"DASHBOARD_HOST":              {},
 	"DASHBOARD_PORT":              {},
+	"DASHBOARD_TOKEN":             {},
 	"GOLDEN_PATH":                 {},
 	"HOST_AVD_GOLDEN_PATH":        {},
 	"HOST_AVD_HOME_PATH":          {},

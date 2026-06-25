@@ -111,3 +111,15 @@ func TestResolveDashboardListenAddressPrefersFlags(t *testing.T) {
 		t.Fatalf("resolveDashboardListenAddress flags = %s:%d", host, port)
 	}
 }
+
+func TestValidateDashboardSecurity(t *testing.T) {
+	if err := validateDashboardSecurity("127.0.0.1", dashboardruntime.Values{}); err != nil {
+		t.Fatalf("localhost should be allowed: %v", err)
+	}
+	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{}); err == nil {
+		t.Fatal("remote bind without token should fail")
+	}
+	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{"DASHBOARD_TOKEN": "secret"}); err != nil {
+		t.Fatalf("remote bind with token should pass: %v", err)
+	}
+}

@@ -53,6 +53,9 @@ var dashboardCmd = &cobra.Command{
 			return err
 		}
 		listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
+		if err := validateDashboardSecurity(listenHost, values); err != nil {
+			return err
+		}
 		manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 
 		handler, cancel, err := dashboard.NewHandlerWithManager(configDir, manager)
@@ -143,6 +146,25 @@ func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.V
 		return host, dashboardPort
 	}
 	return host, parsedPort
+}
+
+func validateDashboardSecurity(host string, values dashboardruntime.Values) error {
+	if isLocalDashboardHost(host) {
+		return nil
+	}
+	if strings.TrimSpace(values["DASHBOARD_TOKEN"]) != "" {
+		return nil
+	}
+	return fmt.Errorf("DASHBOARD_TOKEN is required when dashboard host %q is not localhost", host)
+}
+
+func isLocalDashboardHost(host string) bool {
+	switch strings.TrimSpace(strings.ToLower(host)) {
+	case "", "127.0.0.1", "localhost", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {

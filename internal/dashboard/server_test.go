@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -91,6 +93,32 @@ func TestNewHandlerAndRoutes(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("workers route should redirect, got %d", rec.Code)
+	}
+}
+
+func TestNewHandlerAppliesDashboardTokenAuth(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DASHBOARD_TOKEN=secret-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, cancel, err := NewHandler(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config/raw", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("config/raw without token = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/config/raw?token=secret-token", nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config/raw with token = %d", rec.Code)
 	}
 }
 
