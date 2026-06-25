@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 
 	credimi "github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
@@ -102,6 +104,7 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 	if dbg {
 		handler = debug.HTTP()(handler)
 	}
+	handler = rejectLegacyInstanceURL(handler)
 	handler = cluelog.HTTP(ctx)(withCORS(handler))
 
 	// Log mounts (super useful)
@@ -138,15 +141,12 @@ func (s *runnerService) ProcessStart(ctx context.Context, payload *worker.Proces
 	return &worker.Processstartresult{Status: result.Status, Namespace: result.Namespace}, nil
 }
 
-func (s *runnerService) ProcessList(ctx context.Context) ([]string, error) {
+func (s *runnerService) ProcessList(ctx context.Context, payload *worker.ProcessListPayload) ([]string, error) {
 	return s.processList(), nil
 }
 
 func (s *runnerService) FetchInstallerAndAction(ctx context.Context, payload *credimi.FetchInstallerAndActionPayload) (*credimi.Fetchinstallerandactionresult, error) {
 	var body fetchInstallerAndActionPayload
-	if payload.InstanceURL != "" {
-		body.InstanceURL = payload.InstanceURL
-	}
 	if payload.VersionIdentifier != "" {
 		body.VersionIdentifier = payload.VersionIdentifier
 	}
@@ -174,9 +174,6 @@ func (s *runnerService) FetchInstallerAndAction(ctx context.Context, payload *cr
 
 func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credimi.StorePipelineResultPayload) (map[string]any, error) {
 	var body storePipelineResultPayload
-	if payload.InstanceURL != "" {
-		body.InstanceURL = payload.InstanceURL
-	}
 	if payload.VideoPath != nil {
 		body.VideoPath = *payload.VideoPath
 	}
@@ -220,7 +217,64 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 	return decoded, nil
 }
 
-func (s *runnerService) TouchFingerprint(ctx context.Context) (*mobile.Touchfingerprintresult, error) {
+func rejectLegacyInstanceURL(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isCredimiRequestBodyGuarded(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeCredimiBadRequest(w, "invalid request body", "failed to read request body")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		if len(bytes.TrimSpace(body)) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		var decoded map[string]json.RawMessage
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if _, exists := decoded["instance_url"]; exists {
+			writeCredimiBadRequest(w, "instance_url_not_supported", "instance_url is not supported; configure CREDIMI_URL instead")
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isCredimiRequestBodyGuarded(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	switch r.URL.Path {
+	case "/credimi/installer-action", "/credimi/pipeline-result":
+		return true
+	default:
+		return false
+	}
+}
+
+func writeCredimiBadRequest(w http.ResponseWriter, reason, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(credimi.APIError{
+		Name:    "bad_request",
+		Code:    http.StatusBadRequest,
+		Domain:  "server",
+		Reason:  reason,
+		Message: message,
+	})
+}
+
+func (s *runnerService) TouchFingerprint(ctx context.Context, payload *mobile.TouchFingerprintPayload) (*mobile.Touchfingerprintresult, error) {
 	result, apiErr := s.touchFingerprintLogic()
 	if apiErr != nil {
 		return nil, wrapMobileAPIError(apiErr)

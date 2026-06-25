@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,7 +49,7 @@ func TestOpenAPIPublicNoOverrideWhenDomainDefault(t *testing.T) {
 func TestOpenapi3Public_Method(t *testing.T) {
 	t.Setenv("RUNNER_DOMAIN", "api.example.com")
 
-	srv := NewRunnerService(NewProcessStore(), nil)
+	srv := NewRunnerService(NewProcessStore(), utils.Instance{})
 	result, body, err := srv.Openapi3Public(context.Background())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = body.Close() })

@@ -136,6 +136,7 @@ temp/
 *.swp
 *.swo
 *.lock.local
+*.tmp
 
 # Editor, IDE, and OS files
 .DS_Store
@@ -155,3 +156,9 @@ Desktop.ini
 .task/
 .codex/
 .agents/
+
+# Generated code and build artifacts
+coverage.out
+maestro-worker
+credimi_base_image.tar.gz
+credimi_golden.tar.gz

@@ -107,8 +107,8 @@ var serverCmd = &cobra.Command{
 		var apiHandler http.Handler = http.NotFoundHandler()
 		if !firstRun {
 			store := server.NewProcessStore()
-			instances := utils.LoadInstances()
-			srv := server.NewRunnerService(store, instances)
+			instance := utils.LoadInstance()
+			srv := server.NewRunnerService(store, instance)
 
 			if err := srv.StartExistingWorkers(serveCtx); err != nil {
 				serveSpan.RecordError(err)
