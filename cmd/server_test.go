@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -28,41 +27,6 @@ func TestServerCmdRunE_ListenError(t *testing.T) {
 
 	err := serverCmd.RunE(serverCmd, nil)
 	require.Error(t, err)
-}
-
-func TestIsFirstRun_IgnoresInheritedRunnerID(t *testing.T) {
-	t.Setenv("CREDIMI_RUNNER_ID", "org/runner-from-parent-env")
-
-	require.True(t, isFirstRun(""))
-	require.False(t, isFirstRun(filepath.Join(t.TempDir(), ".env")))
-}
-
-func TestConfigDir(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", dir)
-
-	require.Equal(t, dir, configDir(""))
-	require.Equal(t, filepath.Join(dir, "nested"), configDir(filepath.Join(dir, "nested", ".env")))
-}
-
-func TestIsDashboardRoute(t *testing.T) {
-	tests := map[string]bool{
-		"/":                 true,
-		"/healthz":          true,
-		"/devices":          true,
-		"/workers/active":   true,
-		"/network":          true,
-		"/config/raw":       true,
-		"/setup":            true,
-		"/events/health":    true,
-		"/static/app.css":   true,
-		"/api/health":       false,
-		"/openapi.json":     false,
-		"/runner/processes": false,
-	}
-	for path, want := range tests {
-		require.Equal(t, want, isDashboardRoute(path), path)
-	}
 }
 
 func TestServerCmdRunE_ShutdownOnSignal(t *testing.T) {

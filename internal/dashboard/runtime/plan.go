@@ -1,0 +1,144 @@
+package runtime
+
+import "strings"
+
+type RuntimePlan struct {
+	ConfigDir       string
+	EnvPath         string
+	ComposePath     string
+	Backend         string
+	RunnerType      string
+	ContainerMode   string
+	ServiceMode     string
+	ComposeServices []string
+	PublicMode      string
+	RequiresDocker  bool
+	RequiresHostRun bool
+}
+
+type ApplyClass string
+
+const (
+	ApplySavedOnly             ApplyClass = "saved_only"
+	ApplyRestartRequired       ApplyClass = "restart_required"
+	ApplyComposeRecreate       ApplyClass = "compose_recreate_required"
+	ApplyCredimiUpdateRequired ApplyClass = "credimi_update_required"
+)
+
+type ConfigDiff struct {
+	ChangedKeys []string
+	Classes     []ApplyClass
+}
+
+type FieldImpact struct {
+	Restart       bool
+	Recreate      bool
+	CredimiUpdate bool
+	Secret        bool
+}
+
+var FieldImpacts = map[string]FieldImpact{
+	"CLOUDFLARE_TUNNEL_TOKEN":     {Restart: true, Recreate: true, Secret: true},
+	"CREDIMI_INTERNAL_ADMIN_KEY":  {Restart: true, Secret: true},
+	"CREDIMI_RUNNER_BACKEND":      {Restart: true, Recreate: true},
+	"CREDIMI_RUNNER_DESCRIPTION":  {CredimiUpdate: true},
+	"CREDIMI_RUNNER_DEVICE_MODE":  {Restart: true},
+	"CREDIMI_RUNNER_ID":           {CredimiUpdate: true},
+	"CREDIMI_RUNNER_ORGANIZATION": {CredimiUpdate: true},
+	"CREDIMI_RUNNER_SERIAL":       {Restart: true, CredimiUpdate: true},
+	"CREDIMI_RUNNER_TYPE":         {Restart: true, CredimiUpdate: true},
+	"CREDIMI_RUNNER_WIFI_IP":      {Restart: true},
+	"CREDIMI_RUNNER_WIFI_PORT":    {Restart: true},
+	"CREDIMI_SERVICE_MODE":        {Recreate: true, CredimiUpdate: true},
+	"CREDIMI_USER_API_KEY":        {Restart: true, Secret: true},
+	"OTEL_EXPORTER_OTLP_ENDPOINT": {Restart: true},
+	"OTEL_SERVICE_NAME":           {Restart: true},
+	"RUNNER_CADDY_SITE":           {Recreate: true},
+	"RUNNER_DOMAIN":               {CredimiUpdate: true},
+	"RUNNER_HOST":                 {Recreate: true},
+	"RUNNER_IMAGE":                {Restart: true, Recreate: true},
+	"RUNNER_PORT":                 {Recreate: true, CredimiUpdate: true},
+	"RUNNER_PUBLIC_PORT":          {CredimiUpdate: true},
+	"RUNNER_PUBLIC_URL":           {CredimiUpdate: true},
+	"TEMPORAL_ADDRESS":            {Restart: true},
+	"ANDROID_KEYS_DIR":            {Restart: true},
+	"BASE_NAME":                   {Restart: true},
+	"GOLDEN_PATH":                 {Restart: true},
+	"HOST_AVD_GOLDEN_PATH":        {Restart: true, Recreate: true},
+	"HOST_AVD_HOME_PATH":          {Restart: true, Recreate: true},
+	"REDROID_DATA_DIR":            {Restart: true, Recreate: true},
+	"REDROID_DATA_TAR":            {Restart: true, Recreate: true},
+}
+
+func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
+	serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
+	backend := defaultIfEmpty(values["CREDIMI_RUNNER_BACKEND"], DefaultContainerBackend)
+	runnerType := defaultIfEmpty(values["CREDIMI_RUNNER_TYPE"], "android_phone")
+	containerMode := strings.TrimSpace(values["CREDIMI_CONTAINER_MODE"])
+
+	plan := RuntimePlan{
+		ConfigDir:       configDir,
+		EnvPath:         filepathJoin(configDir, ".env"),
+		ComposePath:     filepathJoin(configDir, "docker-compose.yaml"),
+		Backend:         backend,
+		RunnerType:      runnerType,
+		ContainerMode:   containerMode,
+		ServiceMode:     serviceMode,
+		PublicMode:      serviceMode,
+		RequiresDocker:  backend == DefaultContainerBackend || serviceMode != "manual",
+		RequiresHostRun: backend == DefaultHostBackend,
+	}
+
+	switch {
+	case backend == DefaultHostBackend && serviceMode == "manual":
+		plan.ComposeServices = nil
+	case backend == DefaultHostBackend && serviceMode == "cloudflare-managed":
+		plan.ComposeServices = []string{"runner_host", "caddy", "tunnel_named"}
+	case backend == DefaultHostBackend:
+		plan.ComposeServices = []string{"runner_host", "caddy", "tunnel"}
+	case serviceMode == "manual":
+		plan.ComposeServices = []string{"runner"}
+	case serviceMode == "cloudflare-managed":
+		plan.ComposeServices = []string{"runner", "caddy", "tunnel_named"}
+	default:
+		plan.ComposeServices = []string{"runner", "caddy", "tunnel"}
+	}
+
+	return plan
+}
+
+func DiffValues(oldValues, newValues Values) ConfigDiff {
+	var diff ConfigDiff
+	classSet := map[ApplyClass]struct{}{}
+	for _, key := range SortedKnownKeys() {
+		if oldValues[key] == newValues[key] {
+			continue
+		}
+		diff.ChangedKeys = append(diff.ChangedKeys, key)
+		impact := FieldImpacts[key]
+		switch {
+		case impact.Recreate:
+			classSet[ApplyComposeRecreate] = struct{}{}
+		case impact.Restart:
+			classSet[ApplyRestartRequired] = struct{}{}
+		}
+		if impact.CredimiUpdate {
+			classSet[ApplyCredimiUpdateRequired] = struct{}{}
+		}
+	}
+
+	if len(diff.ChangedKeys) == 0 {
+		diff.Classes = []ApplyClass{ApplySavedOnly}
+		return diff
+	}
+	if len(classSet) == 0 {
+		diff.Classes = []ApplyClass{ApplySavedOnly}
+		return diff
+	}
+	for _, class := range []ApplyClass{ApplyRestartRequired, ApplyComposeRecreate, ApplyCredimiUpdateRequired} {
+		if _, ok := classSet[class]; ok {
+			diff.Classes = append(diff.Classes, class)
+		}
+	}
+	return diff
+}

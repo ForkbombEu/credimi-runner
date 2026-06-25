@@ -55,10 +55,10 @@ tasks:
         .
 
   dashboard:
-    desc: Build and serve the runner with integrated dashboard (http://localhost:8050)
+    desc: Build and start the dashboard supervisor (http://localhost:8051)
     deps: ["build"]
     cmds:
-      - ./bin/credimi-runner serve
+      - ./bin/credimi-runner dashboard
 
   format:
     desc: Format Go code

@@ -42,11 +42,6 @@ func TestValidate(t *testing.T) {
 			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_PORT": "8050"},
 			hasErr: false,
 		},
-		{
-			name:   "optional staging URL ok empty",
-			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_STAGING_URL": ""},
-			hasErr: false,
-		},
 	}
 
 	for _, tt := range tests {

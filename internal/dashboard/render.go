@@ -38,7 +38,6 @@ func NewRenderer() (*Renderer, error) {
 	pageFiles := map[string]string{
 		"overview": "templates/overview.html",
 		"devices":  "templates/devices.html",
-		"workers":  "templates/workers.html",
 		"network":  "templates/network.html",
 		"config":   "templates/config.html",
 		"setup":    "templates/setup.html",
@@ -123,7 +122,7 @@ func deviceKind(t string) string {
 	switch t {
 	case "android_emulator":
 		return "Emulator"
-	case "ios_simulator", "ios_phone":
+	case "ios_simulator":
 		return "iOS"
 	case "redroid":
 		return "Redroid"

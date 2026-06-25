@@ -7,12 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/forkbombeu/credimi-runner/internal/dashboard"
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
@@ -41,19 +38,9 @@ var serverCmd = &cobra.Command{
 		} else if envPath == "" {
 			stdlog.Println("No .env file found in current directory or config directory, using environment variables")
 		}
-		firstRun := isFirstRun(envPath)
-		if !firstRun {
-			if err := validateRequiredRuntimeEnv(); err != nil {
-				return err
-			}
-		}
-
-		dashboardConfigDir := configDir(envPath)
-		dashHandler, dashCancel, err := dashboard.NewHandler(dashboardConfigDir)
-		if err != nil {
+		if err := validateRequiredRuntimeEnv(); err != nil {
 			return err
 		}
-		defer dashCancel()
 
 		format := cluelog.FormatJSON
 		if cluelog.IsTerminal() {
@@ -104,30 +91,18 @@ var serverCmd = &cobra.Command{
 
 		http.DefaultClient = observability.NewHTTPClient(http.DefaultClient)
 
-		var apiHandler http.Handler = http.NotFoundHandler()
-		if !firstRun {
-			store := server.NewProcessStore()
-			instance := utils.LoadInstance()
-			srv := server.NewRunnerService(store, instance)
+		store := server.NewProcessStore()
+		instance := utils.LoadInstance()
+		srv := server.NewRunnerService(store, instance)
 
-			if err := srv.StartExistingWorkers(serveCtx); err != nil {
-				serveSpan.RecordError(err)
-				serveSpan.SetStatus(codes.Error, "start existing workers failed")
-				cluelog.Printf(serveCtx, "Warning: failed to start some existing workers: %v", err)
-				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
-			}
-
-			apiHandler = observability.WrapHandler(server.NewHTTPHandler(serveCtx, srv, debug), "credimi-runner.http")
+		if err := srv.StartExistingWorkers(serveCtx); err != nil {
+			serveSpan.RecordError(err)
+			serveSpan.SetStatus(codes.Error, "start existing workers failed")
+			cluelog.Printf(serveCtx, "Warning: failed to start some existing workers: %v", err)
+			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
 		}
 
-		// Compose: dashboard routes take priority, API is the fallback.
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isDashboardRoute(r.URL.Path) {
-				dashHandler.ServeHTTP(w, r)
-				return
-			}
-			apiHandler.ServeHTTP(w, r)
-		})
+		handler := observability.WrapHandler(server.NewHTTPHandler(serveCtx, srv, debug), "credimi-runner.http")
 
 		addr := fmt.Sprintf("%s:%d", host, port)
 		httpSrv := &http.Server{
@@ -197,35 +172,4 @@ func init() {
 	serverCmd.Flags().IntVar(&port, "port", 8050, "Listen port")
 	serverCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging and /debug endpoints")
 	rootCmd.AddCommand(serverCmd)
-}
-
-// configDir returns the directory containing docker-compose.yaml and .env,
-// derived from the loaded .env path.
-func configDir(envPath string) string {
-	if envPath == "" {
-		return dashboard.ConfigDir()
-	}
-	return filepath.Dir(envPath)
-}
-
-func isFirstRun(envPath string) bool {
-	return envPath == ""
-}
-
-// isDashboardRoute reports whether the path belongs to the dashboard UI.
-func isDashboardRoute(path string) bool {
-	switch {
-	case path == "/" || path == "/healthz":
-		return true
-	case strings.HasPrefix(path, "/devices"),
-		strings.HasPrefix(path, "/workers"),
-		strings.HasPrefix(path, "/network"),
-		strings.HasPrefix(path, "/config"),
-		strings.HasPrefix(path, "/setup"),
-		strings.HasPrefix(path, "/events/"),
-		strings.HasPrefix(path, "/static/"):
-		return true
-	default:
-		return false
-	}
 }

@@ -3,6 +3,8 @@ package dashboard
 import (
 	"html/template"
 	"strings"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 // View-model helpers callable from templates. Keeps the templates declarative.
@@ -57,39 +59,6 @@ func (d PageData) ServicesAllUp() bool {
 	return true
 }
 
-// WorkersByEnv groups derived workers for the Workers page.
-func (d PageData) WorkersByEnv() []EnvGroup {
-	order := []string{"production", "staging", "dev"}
-	host := map[string]string{
-		"production": d.Runner.Get("CREDIMI_URL"),
-		"staging":    orDash(d.Runner.Get("CREDIMI_STAGING_URL")),
-		"dev":        orDash(d.Runner.Get("CREDIMI_DEV_URL")),
-	}
-	configured := map[string]bool{
-		"production": d.Runner.Get("CREDIMI_USER_API_KEY") != "" || d.Runner.Get("CREDIMI_INTERNAL_ADMIN_KEY") != "",
-		"staging":    d.Runner.Get("CREDIMI_STAGING_URL") != "",
-		"dev":        d.Runner.Get("CREDIMI_DEV_URL") != "",
-	}
-	var groups []EnvGroup
-	for _, env := range order {
-		g := EnvGroup{Env: env, Host: host[env], Configured: configured[env]}
-		for _, w := range d.Workers {
-			if w.Env == env {
-				g.Workers = append(g.Workers, w)
-			}
-		}
-		groups = append(groups, g)
-	}
-	return groups
-}
-
-type EnvGroup struct {
-	Env        string
-	Host       string
-	Configured bool
-	Workers    []Worker
-}
-
 // PublicURL computes the externally reachable endpoint from the network config.
 func (d PageData) PublicURL() string {
 	mode := d.Runner.Get("CREDIMI_SERVICE_MODE")
@@ -118,18 +87,44 @@ type FieldVM struct {
 }
 
 func (d PageData) errorsMap() map[string]string {
-	if m, ok := d.Data.(map[string]any); ok {
-		if e, ok := m["Errors"].(map[string]string); ok {
-			return e
-		}
+	if e, ok := d.payload()["Errors"].(map[string]string); ok {
+		return e
 	}
 	return nil
+}
+
+func (d PageData) payload() map[string]any {
+	if m, ok := d.Data.(map[string]any); ok {
+		return m
+	}
+	return map[string]any{}
 }
 
 // HasErrors reports whether the last save produced validation errors.
 func (d PageData) HasErrors() bool { return len(d.errorsMap()) > 0 }
 
 func (d PageData) IsSetup() bool { return d.Active == "setup" }
+
+func (d PageData) Flash() string {
+	if s, ok := d.payload()["Flash"].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func (d PageData) SetupError() string {
+	if s, ok := d.payload()["SetupError"].(string); ok {
+		return s
+	}
+	return ""
+}
+
+func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
+	if status, ok := d.payload()["RuntimeStatus"].(dashboardruntime.RuntimeStatus); ok {
+		return status
+	}
+	return dashboardruntime.RuntimeStatus{}
+}
 
 // Field returns the render model for one config key.
 func (d PageData) Field(key string) FieldVM {

@@ -8,7 +8,40 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
+
+type fakeManager struct {
+	startCalls       int
+	stopCalls        int
+	restartCalls     int
+	downCalls        int
+	updateImageCalls int
+	logLines         []dashboardruntime.LogLine
+	status           dashboardruntime.RuntimeStatus
+}
+
+func (f *fakeManager) Start(context.Context) error {
+	f.startCalls++
+	f.status.RunnerRunning = true
+	return nil
+}
+func (f *fakeManager) Stop(context.Context) error {
+	f.stopCalls++
+	f.status.RunnerRunning = false
+	return nil
+}
+func (f *fakeManager) Restart(context.Context) error     { f.restartCalls++; return nil }
+func (f *fakeManager) Down(context.Context) error        { f.downCalls++; return nil }
+func (f *fakeManager) UpdateImage(context.Context) error { f.updateImageCalls++; return nil }
+func (f *fakeManager) Configure(values dashboardruntime.Values) {
+	f.status.Configured = strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != ""
+}
+func (f *fakeManager) Status(context.Context) dashboardruntime.RuntimeStatus { return f.status }
+func (f *fakeManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
+	return f.logLines, nil
+}
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -23,8 +56,18 @@ func newTestServer(t *testing.T) *Server {
 	}
 	hub := NewHub(cfg, t.TempDir(), render)
 	hub.snap = Snapshot{Services: []Service{{ID: "runner", Name: "runner", Status: Online}}}
-	hub.workers = []Worker{{ID: "production-mr", Env: "production", Status: Online}}
-	return &Server{cfg: cfg, hub: hub, render: render, composeDir: t.TempDir(), authToken: "token"}
+	hub.workers = []Worker{{ID: "runner-mr", Env: "runner", Status: Online}}
+	return &Server{
+		cfg:        cfg,
+		hub:        hub,
+		render:     render,
+		composeDir: t.TempDir(),
+		authToken:  "token",
+		manager: &fakeManager{logLines: []dashboardruntime.LogLine{
+			{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
+		}},
+		runnerReady: func(context.Context, map[string]string) error { return nil },
+	}
 }
 
 func TestNewHandlerAndRoutes(t *testing.T) {
@@ -139,11 +182,27 @@ func TestServerConfigHandlers(t *testing.T) {
 
 func TestServerSaveAndFinishSetup(t *testing.T) {
 	s := newTestServer(t)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/mobile-runner":
+			w.WriteHeader(http.StatusOK)
+		case "/api/organizations/my":
+			w.Write([]byte(`{"canonified_name":"acme"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
 	form := url.Values{
-		"CREDIMI_URL":         {"https://credimi.io"},
-		"CREDIMI_RUNNER_ID":   {"acme/runner"},
-		"CREDIMI_RUNNER_TYPE": {"android_phone"},
-		"RUNNER_PORT":         {"8050"},
+		"CREDIMI_URL":                 {api.URL},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_NAME":         {"runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_SERVICE_MODE":        {"manual"},
+		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+		"RUNNER_PORT":                 {"8050"},
 	}
 
 	rec := httptest.NewRecorder()
@@ -156,6 +215,9 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "data-config-form") {
 		t.Fatalf("saveConfig body missing config form: %s", rec.Body.String())
 	}
+	if fm, ok := s.manager.(*fakeManager); !ok || fm.restartCalls != 0 {
+		t.Fatalf("saveConfig should not restart automatically: %#v", s.manager)
+	}
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
@@ -163,6 +225,9 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	s.finishSetup(rec, req)
 	if rec.Code != http.StatusOK || rec.Header().Get("HX-Redirect") != "/" {
 		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
+		t.Fatal("finishSetup should start runtime")
 	}
 }
 
@@ -185,6 +250,115 @@ func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention") {
 		t.Fatalf("finishSetup validation = %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestServerRuntimeApply(t *testing.T) {
+	s := newTestServer(t)
+	s.pendingDiff = dashboardruntime.ConfigDiff{
+		Classes: []dashboardruntime.ApplyClass{
+			dashboardruntime.ApplyRestartRequired,
+			dashboardruntime.ApplyCredimiUpdateRequired,
+		},
+	}
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+	s.cfg.values["CREDIMI_URL"] = api.URL
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runtime/apply", nil)
+	s.runtimeApply(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("runtimeApply = %d body=%s", rec.Code, rec.Body.String())
+	}
+	fm := s.manager.(*fakeManager)
+	if fm.restartCalls == 0 {
+		t.Fatal("runtimeApply should restart when restart is pending")
+	}
+	if len(s.pendingDiff.Classes) != 0 {
+		t.Fatalf("pendingDiff not cleared: %#v", s.pendingDiff)
+	}
+}
+
+func TestServerRuntimeStartRegistersRunner(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+	s.cfg.values["CREDIMI_URL"] = api.URL
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runtime/start", nil)
+	s.runtimeStart(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("runtimeStart = %d body=%s", rec.Code, rec.Body.String())
+	}
+	fm := s.manager.(*fakeManager)
+	if fm.startCalls == 0 {
+		t.Fatal("runtimeStart should start runtime")
+	}
+}
+
+func TestResolveRegistrationEndpointWaitsForTunnelURL(t *testing.T) {
+	s := newTestServer(t)
+	attempts := 0
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+	s.manager = dashboardruntime.Manager(fakeLogManager(func(context.Context, int) ([]dashboardruntime.LogLine, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, nil
+		}
+		return []dashboardruntime.LogLine{{Message: "tunnel ready https://runner.example.trycloudflare.com"}}, nil
+	}))
+
+	got, _, err := s.resolveRegistrationEndpoint(context.Background(), s.cfg.Snapshot())
+	if err != nil {
+		t.Fatalf("resolveRegistrationEndpoint error = %v", err)
+	}
+	if got != "https://runner.example.trycloudflare.com" {
+		t.Fatalf("resolveRegistrationEndpoint = %q", got)
+	}
+}
+
+type fakeLogManager func(context.Context, int) ([]dashboardruntime.LogLine, error)
+
+func (f fakeLogManager) Start(context.Context) error       { return nil }
+func (f fakeLogManager) Stop(context.Context) error        { return nil }
+func (f fakeLogManager) Restart(context.Context) error     { return nil }
+func (f fakeLogManager) Down(context.Context) error        { return nil }
+func (f fakeLogManager) UpdateImage(context.Context) error { return nil }
+func (f fakeLogManager) Configure(dashboardruntime.Values) {}
+func (f fakeLogManager) Status(context.Context) dashboardruntime.RuntimeStatus {
+	return dashboardruntime.RuntimeStatus{}
+}
+func (f fakeLogManager) Logs(ctx context.Context, tail int) ([]dashboardruntime.LogLine, error) {
+	return f(ctx, tail)
 }
 
 func TestServerSetupValidationHandlers(t *testing.T) {

@@ -303,19 +303,26 @@
   let step = 0;
   function resetWizard(m) { step = 0; renderWizard(m); }
   function renderWizard(m) {
+    const type = typeOf(m);
+    const mode = modeOf(m);
+    const last = lastStep(type, mode);
+    if (step > last) step = last;
     $$('[data-step]', m).forEach((el) => (el.hidden = +el.dataset.step !== step));
     $$('[data-steps] .st', m).forEach((el, i) => { el.classList.toggle('on', i === step); el.classList.toggle('done', i < step); });
-    const type = ($('input[name=type]', m) || {}).value || 'android_phone';
-    const wifi = type === 'android_phone';
-    // step 1 (connection) only meaningful for phones; step 2 pairing only for wifi phones
+    const phoneFlow = type === 'android_phone';
+    $$('[data-phone-step]', m).forEach((el) => (el.hidden = !phoneFlow || +el.dataset.step !== step));
+    $$('[data-wifi-step]', m).forEach((el) => (el.hidden = !phoneFlow || mode !== 'wifi' || +el.dataset.step !== step));
     $('[data-step-back]', m).hidden = step === 0;
-    $('[data-step-next]', m).hidden = step >= lastStep(type);
-    $('[data-step-submit]', m).hidden = step < lastStep(type);
+    $('[data-step-next]', m).hidden = step >= last;
+    $('[data-step-submit]', m).hidden = step < last;
   }
-  function lastStep(type) { return type === 'android_phone' ? 2 : 1; }
+  function lastStep(type, mode) {
+    if (type !== 'android_phone') return 0;
+    return mode === 'wifi' ? 2 : 1;
+  }
   document.addEventListener('click', (e) => {
     const m = e.target.closest('.modal-bk'); if (!m) return;
-    if (e.target.closest('[data-step-next]')) { step = Math.min(step + 1, lastStep(typeOf(m))); renderWizard(m); }
+    if (e.target.closest('[data-step-next]')) { step = Math.min(step + 1, lastStep(typeOf(m), modeOf(m))); renderWizard(m); }
     if (e.target.closest('[data-step-back]')) { step = Math.max(step - 1, 0); renderWizard(m); }
     const pick = e.target.closest('[data-pick-type]');
     if (pick) { $$('[data-pick-type]', m).forEach((p) => p.classList.remove('on')); pick.classList.add('on'); $('input[name=type]', m).value = pick.dataset.pickType; renderWizard(m); }
@@ -324,9 +331,11 @@
       const seg = segBtn.closest('[data-seg]');
       $$('[data-val]', seg).forEach((b) => b.classList.remove('on')); segBtn.classList.add('on');
       $('input[name=mode]', m).value = segBtn.dataset.val;
+      renderWizard(m);
     }
   });
   function typeOf(m) { return ($('input[name=type]', m) || {}).value || 'android_phone'; }
+  function modeOf(m) { return ($('input[name=mode]', m) || {}).value || 'wifi'; }
 
   // ── Pick-card segmented control (network: service mode) ───────────────────
   document.addEventListener('click', (e) => {

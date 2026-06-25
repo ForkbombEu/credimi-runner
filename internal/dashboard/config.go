@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,7 +50,7 @@ var Registry = []Field{
 	{Key: "CREDIMI_RUNNER_DESCRIPTION", Label: "Runner description", Group: "Identity", Type: TypeText, Hint: "Optional note shown to operators, for example the physical device or simulator version."},
 	{Key: "CREDIMI_RUNNER_ORGANIZATION", Label: "Organization", Group: "Identity", Type: TypeText},
 	{Key: "CREDIMI_RUNNER_TYPE", Label: "Runner type", Group: "Identity", Type: TypeSelect,
-		Options: []string{"android_phone", "android_emulator", "ios_simulator", "ios_phone", "redroid"}},
+		Options: []string{"android_phone", "android_emulator", "ios_simulator", "redroid"}},
 	{Key: "CREDIMI_RUNNER_SERIAL", Label: "Device serial", Group: "Identity", Type: TypeText, Hint: "Physical device serial or host:port for Wi-Fi ADB."},
 	{Key: "CREDIMI_RUNNER_DEVICE_MODE", Label: "Device connection", Group: "Identity", Type: TypeSelect,
 		Options: []string{"usb", "wifi", "no_device"}, Hint: "USB uses host ADB; Wi-Fi uses an IP and ADB port; no-device is used by managed runtimes."},
@@ -58,11 +61,6 @@ var Registry = []Field{
 	{Key: "CREDIMI_INTERNAL_ADMIN_KEY", Label: "Internal admin key", Group: "Authentication", Type: TypeText, Secret: true, Hint: "Forwarded as the Credimi-Api-Key header. Grants admin-scoped workers."},
 	// Temporal
 	{Key: "TEMPORAL_ADDRESS", Label: "Temporal address", Group: "Temporal", Type: TypeText, Hint: "gRPC endpoint workers poll for tasks."},
-	// Environments
-	{Key: "CREDIMI_STAGING_URL", Label: "Staging URL", Group: "Environments", Type: TypeText, Hint: "Leave empty to disable staging workers."},
-	{Key: "CREDIMI_STAGING_USER_API_KEY", Label: "Staging user API key", Group: "Environments", Type: TypeText, Secret: true},
-	{Key: "CREDIMI_DEV_URL", Label: "Dev URL", Group: "Environments", Type: TypeText, Hint: "Leave empty to disable dev workers."},
-	{Key: "CREDIMI_DEV_USER_API_KEY", Label: "Dev user API key", Group: "Environments", Type: TypeText, Secret: true},
 	// Network
 	{Key: "CREDIMI_SERVICE_MODE", Label: "Service mode", Group: "Network", Type: TypeSelect,
 		Options: []string{"auto", "cloudflare-managed", "manual"}, Hint: "auto = quick tunnel · cloudflare-managed = named tunnel · manual = direct."},
@@ -107,28 +105,7 @@ var fieldByKey = func() map[string]Field {
 }()
 
 // Defaults applied when the .env is missing a key.
-var Defaults = map[string]string{
-	"CREDIMI_URL":                 "https://credimi.io",
-	"CREDIMI_RUNNER_TYPE":         "android_phone",
-	"CREDIMI_RUNNER_BACKEND":      "container",
-	"CREDIMI_RUNNER_DEVICE_MODE":  "usb",
-	"CREDIMI_RUNNER_WIFI_PORT":    "5555",
-	"TEMPORAL_ADDRESS":            "temporal.credimi.io:7233",
-	"CREDIMI_SERVICE_MODE":        "auto",
-	"CREDIMI_CONTAINER_MODE":      "usb",
-	"RUNNER_HOST":                 "0.0.0.0",
-	"RUNNER_PORT":                 "8050",
-	"RUNNER_CADDY_SITE":           ":80",
-	"OTEL_ENABLED":                "true",
-	"OTEL_EXPORTER_OTLP_ENDPOINT": "https://otel-collector.credimi.io",
-	"OTEL_SERVICE_NAME":           "credimi-runner",
-	"CREDIMI_TEMP_DIR":            "/tmp/credimi-runner-tmp",
-	"RUNNER_IMAGE":                "ghcr.io/forkbombeu/credimi-runner-phone:latest",
-	"BASE_NAME":                   "credimi",
-	"GOLDEN_PATH":                 "/avd-golden/credimi-golden",
-	"REDROID_DATA_DIR":            "/home/credimi/redroid-data",
-	"REDROID_DATA_TAR":            "/home/credimi/redroid-data.tar",
-}
+var Defaults = map[string]string(dashboardruntime.DefaultValues())
 
 // Config is a concurrency-safe key/value store backed by the .env file.
 type Config struct {
@@ -140,15 +117,7 @@ type Config struct {
 
 // ConfigDir resolves the runner config directory, honoring an override.
 func ConfigDir() string {
-	if d := os.Getenv("CREDIMI_RUNNER_CONFIG_DIR"); d != "" {
-		return d
-	}
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, ".config", "credimi", "runner")
-	}
-	return filepath.Join(configDir, "credimi", "runner")
+	return dashboardruntime.DefaultConfigDir()
 }
 
 func LoadConfig(dir string) (*Config, error) {
@@ -243,7 +212,7 @@ func Validate(vals map[string]string) map[string]string {
 			if !regexp.MustCompile(`^[\w.-]+/[\w.-]+$`).MatchString(v) {
 				errs[f.Key] = "Must be org-slug/runner-name."
 			}
-		case "CREDIMI_URL", "CREDIMI_STAGING_URL", "CREDIMI_DEV_URL", "RUNNER_DOMAIN", "OTEL_EXPORTER_OTLP_ENDPOINT":
+		case "CREDIMI_URL", "RUNNER_DOMAIN", "OTEL_EXPORTER_OTLP_ENDPOINT":
 			if strings.Contains(v, "://") {
 				if u, err := url.Parse(v); err != nil || u.Host == "" {
 					errs[f.Key] = "Not a valid URL."
@@ -260,21 +229,27 @@ func Validate(vals map[string]string) map[string]string {
 
 // Apply validates and persists incoming form values, then writes .env atomically.
 func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
-	if errs := Validate(incoming); len(errs) > 0 {
-		return errs, fmt.Errorf("validation failed")
-	}
-	c.mu.Lock()
+	next := c.Snapshot()
 	for _, f := range Registry {
 		if f.Type == TypeBool {
-			// checkboxes only POST when checked
 			_, present := incoming[f.Key]
-			c.values[f.Key] = boolStr(present)
+			next[f.Key] = boolStr(present)
 			continue
 		}
 		if v, ok := incoming[f.Key]; ok {
-			c.values[f.Key] = strings.TrimSpace(v)
+			next[f.Key] = strings.TrimSpace(v)
 		}
 	}
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(next), runtime.GOOS)
+	if err != nil {
+		return map[string]string{"CREDIMI_RUNNER_TYPE": err.Error()}, fmt.Errorf("validation failed")
+	}
+	next = map[string]string(normalized)
+	if errs := Validate(next); len(errs) > 0 {
+		return errs, fmt.Errorf("validation failed")
+	}
+	c.mu.Lock()
+	c.values = next
 	c.mu.Unlock()
 	return nil, c.write()
 }

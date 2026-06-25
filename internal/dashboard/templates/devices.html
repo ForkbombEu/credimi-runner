@@ -19,7 +19,7 @@
   <div class="modal-bk" id="modal-add-device" hidden>
     <div class="modal">
       <div class="modal-h"><div><h3>Add a device</h3><p>Attach a new target to this runner</p></div>
-        <button class="iconbtn x" data-close-modal>{{icon "x"}}</button></div>
+        <button type="button" class="iconbtn x" data-close-modal>{{icon "x"}}</button></div>
       <form hx-post="/devices/connect" hx-target="#device-list" hx-swap="innerHTML" id="add-device-form">
         <div class="modal-b">
           <div class="steps" data-steps>
@@ -40,7 +40,7 @@
             <input type="hidden" name="type" value="android_phone">
           </div>
 
-          <div data-step="1" hidden>
+          <div data-step="1" data-phone-step hidden>
             <div class="field"><label><span class="lbtx">Connection method</span></label>
               <div class="seg" data-seg="mode">
                 <button type="button" class="on" data-val="wifi">{{icon "wifi"}} Wi-Fi ADB</button>
@@ -50,7 +50,7 @@
             </div>
           </div>
 
-          <div data-step="2" hidden>
+          <div data-step="2" data-wifi-step hidden>
             <div class="field"><label><span class="lbtx">Device address</span><span class="req">*</span><span class="envkey">ip:port</span></label>
               <input class="inp mono" name="address" placeholder="192.168.1.42:38349">
               <p class="hint">From the phone’s Wireless debugging screen.</p></div>

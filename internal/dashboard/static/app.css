@@ -404,7 +404,8 @@ button { font-family: inherit; }
 .divline { height: 1px; background: var(--border); margin: 18px 0; }
 
 /* Modal */
-.modal-bk { position: fixed; inset: 0; background: rgba(34,14,126,0.28); backdrop-filter: blur(2px); z-index: 60; display: grid; place-items: center; padding: 24px; animation: fade 140ms ease-out; }
+.modal-bk[hidden], [hidden] { display: none !important; }
+.modal-bk { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 60; display: grid; place-items: center; padding: 24px; animation: fade 140ms ease-out; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 .modal { background: #fff; border-radius: var(--radius-lg); width: 100%; max-width: 540px; box-shadow: var(--shadow-lg); overflow: hidden; animation: rise 160ms cubic-bezier(.2,.7,.3,1); }
 @keyframes rise { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }

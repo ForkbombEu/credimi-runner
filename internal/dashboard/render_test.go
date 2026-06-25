@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -93,7 +94,7 @@ func TestNewRenderer(t *testing.T) {
 	}
 
 	// Verify all expected pages exist.
-	expected := []string{"overview", "devices", "workers", "network", "config", "setup"}
+	expected := []string{"overview", "devices", "network", "config", "setup"}
 	for _, name := range expected {
 		if _, ok := r.pages[name]; !ok {
 			t.Errorf("missing page template: %s", name)
@@ -176,6 +177,48 @@ func TestRenderer_SetupPage(t *testing.T) {
 	}
 	if strings.Contains(html, `class="sb"`) {
 		t.Errorf("setup page should not render sidebar")
+	}
+}
+
+func TestRenderer_DevicesAddModalContract(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := PageData{
+		Active:   "devices",
+		Title:    "Devices",
+		Runner:   &Config{values: Defaults},
+		Snapshot: Snapshot{},
+		Workers:  []Worker{},
+		Pill:     PillData{OK: true, Label: "Ready"},
+	}
+
+	html, err := r.Page("devices", d)
+	if err != nil {
+		t.Fatalf("devices page failed: %v", err)
+	}
+	for _, want := range []string{
+		`id="modal-add-device" hidden`,
+		`data-pick-type="android_emulator"`,
+		`data-phone-step`,
+		`data-wifi-step`,
+		`type="button" class="iconbtn x" data-close-modal`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("devices page missing %q", want)
+		}
+	}
+}
+
+func TestStaticCSS_HiddenBeatsModalDisplay(t *testing.T) {
+	css, err := os.ReadFile("static/app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), `.modal-bk[hidden], [hidden] { display: none !important; }`) {
+		t.Fatal("modal hidden CSS contract is missing")
 	}
 }
 

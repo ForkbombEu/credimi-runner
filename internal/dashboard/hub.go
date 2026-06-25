@@ -156,12 +156,9 @@ func (h *Hub) deriveWorkers(services []Service) []Worker {
 		}
 		return w
 	}
-	out := []Worker{
-		mk("production", h.cfg.Get("CREDIMI_URL"), "mr", h.cfg.Get("CREDIMI_USER_API_KEY") != "" || h.cfg.Get("CREDIMI_INTERNAL_ADMIN_KEY") != ""),
-		mk("staging", h.cfg.Get("CREDIMI_STAGING_URL"), "mr", h.cfg.Get("CREDIMI_STAGING_URL") != ""),
-		mk("dev", h.cfg.Get("CREDIMI_DEV_URL"), "mr", h.cfg.Get("CREDIMI_DEV_URL") != ""),
+	return []Worker{
+		mk("runner", h.cfg.Get("CREDIMI_URL"), "mr", h.cfg.Get("CREDIMI_USER_API_KEY") != "" || h.cfg.Get("CREDIMI_INTERNAL_ADMIN_KEY") != ""),
 	}
-	return out
 }
 
 type PillData struct {

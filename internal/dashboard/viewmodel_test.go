@@ -9,7 +9,6 @@ func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
 	cfg := &Config{values: map[string]string{
 		"CREDIMI_URL":                 "https://credimi.example",
 		"CREDIMI_USER_API_KEY":        "user-key",
-		"CREDIMI_STAGING_URL":         "https://staging.example",
 		"CREDIMI_SERVICE_MODE":        "cloudflare-managed",
 		"RUNNER_DOMAIN":               "runner.example",
 		"RUNNER_HOST":                 "0.0.0.0",
@@ -17,28 +16,17 @@ func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
 		"CREDIMI_RUNNER_ORGANIZATION": "xy",
 	}}
 	d := PageData{
-		Active: "workers",
+		Active: "overview",
 		Runner: cfg,
 		Snapshot: Snapshot{Services: []Service{
 			{ID: "runner", Status: Online},
 			{ID: "temporal", Status: Online},
 		}},
 		Workers: []Worker{
-			{ID: "production-mr", Env: "production", Status: Online},
-			{ID: "staging-mr", Env: "staging", Status: Degraded},
+			{ID: "runner-mr", Env: "runner", Status: Online},
 		},
 	}
 
-	groups := d.WorkersByEnv()
-	if len(groups) != 3 {
-		t.Fatalf("groups len = %d", len(groups))
-	}
-	if groups[0].Env != "production" || !groups[0].Configured || len(groups[0].Workers) != 1 {
-		t.Fatalf("production group = %#v", groups[0])
-	}
-	if groups[2].Host != "not configured" || groups[2].Configured {
-		t.Fatalf("dev group = %#v", groups[2])
-	}
 	if !d.ServicesAllUp() {
 		t.Fatal("expected all services up")
 	}

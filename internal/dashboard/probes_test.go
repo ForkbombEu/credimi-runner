@@ -50,7 +50,6 @@ func TestDeviceTypes(t *testing.T) {
 	}{
 		{"android_emulator", "Emulator"},
 		{"ios_simulator", "iOS"},
-		{"ios_phone", "iOS"},
 		{"redroid", "Redroid"},
 		{"android_phone", "Android"},
 		{"unknown", "Android"},

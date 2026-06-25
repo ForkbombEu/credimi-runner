@@ -7,6 +7,7 @@
   </div>
 
   {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some fields need attention. Jump to the highlighted section and fix the marked inputs.</div></div>{{end}}
+  {{if .SetupError}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>{{.SetupError}}</div></div>{{end}}
 
   <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" data-setup-form data-config-form>
     <nav class="wizard-steps" aria-label="Setup steps">
@@ -106,9 +107,6 @@
                 <label class="pick" data-dev-pick="ios_simulator">
                   <input type="radio" name="CREDIMI_RUNNER_TYPE" value="ios_simulator" style="display:none">{{icon "apple"}}<span><b>iOS Sim</b><span>macOS only</span></span>
                 </label>
-                <label class="pick" data-dev-pick="ios_phone">
-                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="ios_phone" style="display:none">{{icon "apple"}}<span><b>iOS Phone</b><span>Physical device</span></span>
-                </label>
                 <label class="pick" data-dev-pick="redroid">
                   <input type="radio" name="CREDIMI_RUNNER_TYPE" value="redroid" style="display:none">{{icon "grid"}}<span><b>Redroid</b><span>Container-based</span></span>
                 </label>
@@ -121,10 +119,6 @@
                 {{template "field" $.Field "CREDIMI_RUNNER_WIFI_IP"}}
                 {{template "field" $.Field "CREDIMI_RUNNER_WIFI_PORT"}}
               </div>
-              {{template "field" $.Field "CREDIMI_RUNNER_SERIAL"}}
-            </div>
-            <div data-dev-type="ios_phone" style="grid-column:1/-1">
-              <div class="divline"></div>
               {{template "field" $.Field "CREDIMI_RUNNER_SERIAL"}}
             </div>
             <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
@@ -197,9 +191,9 @@
                 <dl class="kv">
                   <dt>Type</dt><dd data-review="CREDIMI_RUNNER_TYPE">—</dd>
                   <dt>Connection</dt><dd data-review="CREDIMI_RUNNER_DEVICE_MODE">—</dd>
-                  <dt data-review-dev="android_phone ios_phone">Serial</dt><dd class="mono" data-review="CREDIMI_RUNNER_SERIAL" data-review-dev="android_phone ios_phone">—</dd>
+                  <dt data-review-dev="android_phone">Serial</dt><dd class="mono" data-review="CREDIMI_RUNNER_SERIAL" data-review-dev="android_phone">—</dd>
                   <dt data-review-dev="android_emulator redroid">Wi-Fi IP</dt><dd class="mono" data-review="CREDIMI_RUNNER_WIFI_IP" data-review-dev="android_emulator redroid">—</dd>
-                  <dt data-review-not="ios_simulator ios_phone">Image</dt><dd class="mono" data-review="RUNNER_IMAGE" data-review-not="ios_simulator ios_phone" style="font-size:11px">—</dd>
+                  <dt data-review-not="ios_simulator">Image</dt><dd class="mono" data-review="RUNNER_IMAGE" data-review-not="ios_simulator" style="font-size:11px">—</dd>
                 </dl>
               </div>
             </div>

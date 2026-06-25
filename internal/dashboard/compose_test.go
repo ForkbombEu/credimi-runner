@@ -29,7 +29,7 @@ func TestNormalizeWizardValues(t *testing.T) {
 				"CREDIMI_RUNNER_WIFI_PORT": "5555",
 				"RUNNER_IMAGE":             defaultPhoneImage,
 				"RUNNER_PORT":              "8050",
-				"RUNNER_HOST":              "0.0.0.0",
+				"RUNNER_HOST":              "127.0.0.1",
 			},
 		},
 		{
@@ -115,7 +115,7 @@ func TestWriteComposeFile(t *testing.T) {
 		},
 		{
 			name:     "no device runner uses no device flag",
-			vals:     map[string]string{"CREDIMI_RUNNER_TYPE": "ios_simulator"},
+			vals:     map[string]string{"CREDIMI_RUNNER_TYPE": "redroid"},
 			contains: []string{"--no-device", "runner_host:", "tunnel_named:"},
 		},
 		{
@@ -156,7 +156,7 @@ func TestComposeServices(t *testing.T) {
 		{"container manual", map[string]string{"CREDIMI_SERVICE_MODE": "manual"}, []string{"runner"}},
 		{"host auto", map[string]string{"CREDIMI_RUNNER_BACKEND": "host"}, []string{"runner_host", "caddy", "tunnel"}},
 		{"host manual", map[string]string{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual"}, nil},
-		{"unknown service mode", map[string]string{"CREDIMI_SERVICE_MODE": "custom"}, []string{"runner", "caddy"}},
+		{"unknown service mode", map[string]string{"CREDIMI_SERVICE_MODE": "custom"}, []string{"runner", "caddy", "tunnel"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

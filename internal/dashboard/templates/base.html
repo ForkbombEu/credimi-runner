@@ -24,7 +24,6 @@
         <div class="sb-sec">Monitor</div>
         <a class="nav-item {{.NavOn "overview"}}" href="/" hx-get="/" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "grid"}}Overview</a>
         <a class="nav-item {{.NavOn "devices"}}" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "phone"}}Devices<span class="count">{{.DevicesOnline}}/{{.DevicesTotal}}</span></a>
-        <a class="nav-item {{.NavOn "workers"}}" href="/workers" hx-get="/workers" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "workers"}}Workers<span class="count">{{.WorkersOnline}}</span></a>
         <div class="sb-sec">Configure</div>
         <a class="nav-item {{.NavOn "network"}}" href="/network" hx-get="/network" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "network"}}Network</a>
         <a class="nav-item {{.NavOn "config"}}" href="/config" hx-get="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "key"}}API &amp; Config</a>

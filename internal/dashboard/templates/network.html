@@ -6,6 +6,8 @@
     <p>How the runner API on port {{.Runner.Get "RUNNER_PORT"}} is reached — directly, via a quick Cloudflare Tunnel, or your own named tunnel and domain.</p>
   </div>
 
+  {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
+
   <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" data-config-form>
     <section class="card">
       <header class="card-h">{{icon "globe"}}<div><h3>Service mode</h3><div class="sub">How the API is exposed publicly</div></div></header>
@@ -42,7 +44,7 @@
     <div class="savebar" data-savebar hidden>
       <span class="msg">{{icon "warn"}} You have unsaved network changes</span>
       <div class="sp"></div>
-      <button type="submit" class="btn btn-pri">{{icon "check"}} Save &amp; apply</button>
+      <button type="submit" class="btn btn-pri">{{icon "check"}} Save</button>
     </div>
   </form>
 </main>

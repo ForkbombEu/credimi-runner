@@ -53,22 +53,15 @@ func TestHubDeriveWorkers(t *testing.T) {
 		"CREDIMI_INTERNAL_ADMIN_KEY":  "adm",
 		"CREDIMI_RUNNER_ORGANIZATION": "acme",
 		"CREDIMI_URL":                 "https://credimi.example",
-		"CREDIMI_STAGING_URL":         "https://staging.example",
 	}}
 	h := NewHub(cfg, t.TempDir(), nil)
 
 	workers := h.deriveWorkers([]Service{{ID: "temporal", Status: Online}})
-	if len(workers) != 3 {
+	if len(workers) != 1 {
 		t.Fatalf("workers len = %d", len(workers))
 	}
 	if workers[0].Scope != "admin" || workers[0].Queue != "mobile-runner.acme" || workers[0].Status != Online {
-		t.Fatalf("production worker = %#v", workers[0])
-	}
-	if !workers[1].Enabled || workers[1].Status != Online {
-		t.Fatalf("staging worker = %#v", workers[1])
-	}
-	if workers[2].Enabled || workers[2].Status != Idle {
-		t.Fatalf("dev worker = %#v", workers[2])
+		t.Fatalf("runner worker = %#v", workers[0])
 	}
 
 	workers = h.deriveWorkers([]Service{{ID: "temporal", Status: Offline}})
