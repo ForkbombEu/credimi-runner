@@ -31,7 +31,7 @@
       </nav>
       <div class="sb-foot">
         <span class="av">{{.AvatarInitials}}</span>
-        <span class="who"><b>{{or (.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "Acme Labs"}}</b><span>ops</span></span>
+        <span class="who"><b>{{or (.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "Acme Labs"}}</b><span>{{title .Runner.AuthMode}}</span></span>
       </div>
     </aside>
     {{end}}
@@ -49,6 +49,15 @@
     </div>
   </div>
   <div id="toast-host"></div>
+  <div id="busy-overlay" class="busy-overlay" hidden aria-live="polite" aria-busy="true">
+    <div class="busy-card">
+      <div class="busy-spinner" aria-hidden="true"></div>
+      <div class="busy-copy">
+        <b>Applying runtime change</b>
+        <span data-busy-message>Keep this page open while Credimi Runner updates services.</span>
+      </div>
+    </div>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

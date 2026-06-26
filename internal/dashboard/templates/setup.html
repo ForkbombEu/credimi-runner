@@ -9,7 +9,7 @@
   {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some fields need attention. Jump to the highlighted section and fix the marked inputs.</div></div>{{end}}
   {{if .SetupError}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>{{.SetupError}}</div></div>{{end}}
 
-  <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" data-setup-form data-config-form>
+  <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" data-setup-form data-config-form data-busy-message="Writing runner config and starting services. Keep this page open.">
     <nav class="wizard-steps" aria-label="Setup steps">
       {{range $i, $s := .SetupSteps}}
       <button type="button" class="wizard-step {{if eq $i 0}}on{{end}}" data-step-target="{{$s.ID}}">

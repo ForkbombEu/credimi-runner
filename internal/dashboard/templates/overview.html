@@ -21,7 +21,18 @@
 
   <section class="card">
     <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">docker compose · {{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
-      <div class="right"><span class="health-pill" hx-ext="sse" sse-connect="/events/health" sse-swap="pill">{{template "pill" .Pill}}</span></div></header>
+      <div class="right" style="display:flex;align-items:center;gap:10px">
+        <button class="btn {{if .RuntimeRunning}}btn-danger{{else}}btn-pri{{end}} runtime-cta"
+                hx-post="{{.RuntimeTogglePath}}"
+                hx-target="main"
+                hx-select="main"
+                hx-swap="outerHTML"
+                hx-push-url="false"
+                data-runtime-action
+                data-busy-message="{{.RuntimeToggleBusyMessage}}">
+          {{if .RuntimeRunning}}{{icon "x"}}{{else}}{{icon "check"}}{{end}} {{.RuntimeToggleLabel}}
+        </button>
+      </div></header>
     <div class="card-b">
       <div id="runtime-status" hx-ext="sse" sse-connect="/events/runtime" sse-swap="runtime">{{template "runtime_status" .}}</div>
       <div class="divline"></div>

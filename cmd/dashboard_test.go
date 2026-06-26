@@ -145,6 +145,18 @@ func TestResolveDashboardListenAddressPrefersFlags(t *testing.T) {
 	}
 }
 
+func TestDashboardBrowserHelpers(t *testing.T) {
+	if got := dashboardBrowserURL("0.0.0.0", 8051); got != "http://127.0.0.1:8051" {
+		t.Fatalf("dashboardBrowserURL(0.0.0.0) = %q", got)
+	}
+	if got := dashboardBrowserURL("localhost", 8051); got != "http://localhost:8051" {
+		t.Fatalf("dashboardBrowserURL(localhost) = %q", got)
+	}
+	if err := openDashboardBrowser(""); err == nil {
+		t.Fatal("expected empty dashboard URL to fail")
+	}
+}
+
 func TestValidateDashboardSecurity(t *testing.T) {
 	if err := validateDashboardSecurity("127.0.0.1", dashboardruntime.Values{}); err != nil {
 		t.Fatalf("localhost should be allowed: %v", err)

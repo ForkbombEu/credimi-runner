@@ -205,6 +205,7 @@ code, .code, pre {
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg-tint); font-family: var(--font-sans); color: var(--fg); -webkit-font-smoothing: antialiased; }
+body.busy-lock { overflow: hidden; }
 a { cursor: pointer; text-decoration: none; }
 button { font-family: inherit; }
 :root {
@@ -390,6 +391,7 @@ button { font-family: inherit; }
 .btn-danger:hover { background: var(--down-bg); }
 .btn-sm { height: 32px; padding: 0 12px; font-size: 12.5px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.runtime-cta { height: 36px; padding: 0 16px; font-size: 13px; font-weight: 700; box-shadow: var(--shadow-sm); }
 
 /* Callout / banners */
 .callout { display: flex; gap: 12px; padding: 13px 15px; border-radius: var(--radius); border: 1px solid; font: 400 12.5px/1.5 var(--font-sans); }
@@ -412,7 +414,15 @@ button { font-family: inherit; }
 /* Modal */
 .modal-bk[hidden], [hidden] { display: none !important; }
 .modal-bk { position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 60; display: grid; place-items: center; padding: 24px; animation: fade 140ms ease-out; }
+.busy-overlay[hidden] { display: none !important; }
+.busy-overlay { position: fixed; inset: 0; z-index: 120; background: rgba(18,12,46,0.34); backdrop-filter: blur(6px); display: grid; place-items: center; padding: 24px; }
+.busy-card { min-width: min(420px, 92vw); max-width: 92vw; background: #fff; border-radius: var(--radius-lg); border: 1px solid var(--border); box-shadow: var(--shadow-lg); padding: 22px 24px; display: flex; align-items: center; gap: 16px; }
+.busy-copy { display: flex; flex-direction: column; gap: 4px; }
+.busy-copy b { font: 700 16px/1.2 var(--font-sans); color: var(--fg); }
+.busy-copy span { font: 500 13px/1.45 var(--font-sans); color: var(--fg-subtle); }
+.busy-spinner { width: 28px; height: 28px; border-radius: 50%; border: 3px solid var(--brand-secondary-strong); border-top-color: var(--brand-primary); animation: spin 900ms linear infinite; flex: none; }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes spin { to { transform: rotate(360deg); } }
 .modal { background: #fff; border-radius: var(--radius-lg); width: 100%; max-width: 540px; box-shadow: var(--shadow-lg); overflow: hidden; animation: rise 160ms cubic-bezier(.2,.7,.3,1); }
 @keyframes rise { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
 .modal-h { padding: 18px 20px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; gap: 12px; }

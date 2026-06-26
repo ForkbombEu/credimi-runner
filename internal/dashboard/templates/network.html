@@ -8,7 +8,7 @@
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
 
-  <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" data-config-form>
+  <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" data-config-form data-busy-message="Applying network changes and updating runner services. Keep this page open.">
     <section class="card">
       <header class="card-h">{{icon "globe"}}<div><h3>Service mode</h3><div class="sub">How the API is exposed publicly</div></div></header>
       <div class="card-b">

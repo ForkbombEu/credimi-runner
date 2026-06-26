@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 func TestValidate(t *testing.T) {
@@ -183,6 +185,41 @@ func TestConfig_ApplyAndWrite(t *testing.T) {
 	content := string(data)
 	if !contains(content, "CREDIMI_URL=https://custom.credimi.io") {
 		t.Errorf("expected CREDIMI_URL in .env, got:\n%s", content)
+	}
+}
+
+func TestConfigApplyResetsTypeDerivedFieldsOnRunnerTypeChange(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	cfg.values["RUNNER_IMAGE"] = defaultPhoneImage
+	cfg.values["BASE_NAME"] = ""
+	cfg.values["HOST_AVD_HOME_PATH"] = ""
+	cfg.values["HOST_AVD_GOLDEN_PATH"] = ""
+	cfg.values["GOLDEN_PATH"] = ""
+
+	errs, err := cfg.Apply(map[string]string{
+		"CREDIMI_URL":         "https://credimi.io",
+		"CREDIMI_RUNNER_ID":   "myorg/runner1",
+		"CREDIMI_RUNNER_TYPE": "android_emulator",
+	})
+	if err != nil {
+		t.Fatalf("Apply failed: %v (errors: %v)", err, errs)
+	}
+	if cfg.Get("RUNNER_IMAGE") != defaultEmulatorImage {
+		t.Fatalf("RUNNER_IMAGE = %q", cfg.Get("RUNNER_IMAGE"))
+	}
+	if cfg.Get("BASE_NAME") != dashboardruntime.DefaultBaseName {
+		t.Fatalf("BASE_NAME = %q", cfg.Get("BASE_NAME"))
+	}
+	if cfg.Get("GOLDEN_PATH") != dashboardruntime.DefaultGoldenPath {
+		t.Fatalf("GOLDEN_PATH = %q", cfg.Get("GOLDEN_PATH"))
+	}
+	if cfg.Get("HOST_AVD_HOME_PATH") == "" || cfg.Get("HOST_AVD_GOLDEN_PATH") == "" {
+		t.Fatalf("expected host AVD defaults, got home=%q golden=%q", cfg.Get("HOST_AVD_HOME_PATH"), cfg.Get("HOST_AVD_GOLDEN_PATH"))
 	}
 }
 

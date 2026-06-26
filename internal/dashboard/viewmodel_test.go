@@ -143,4 +143,26 @@ func TestPageDataAdditionalHelpers(t *testing.T) {
 	if profile := d.ActiveTargetProfile(); profile.Type != "ios_simulator" {
 		t.Fatalf("ActiveTargetProfile = %#v", profile)
 	}
+
+	d.Data = map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{RunnerRunning: true}}
+	if !d.RuntimeRunning() {
+		t.Fatal("expected runtime to be running")
+	}
+	if got := d.RuntimeTogglePath(); got != "/runtime/stop" {
+		t.Fatalf("RuntimeTogglePath = %q", got)
+	}
+	if got := d.RuntimeToggleLabel(); got != "Stop Runner" {
+		t.Fatalf("RuntimeToggleLabel = %q", got)
+	}
+	if got := d.RuntimeToggleBusyMessage(); !strings.Contains(got, "Stopping") {
+		t.Fatalf("RuntimeToggleBusyMessage = %q", got)
+	}
+
+	d.Data = map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{}}
+	if d.RuntimeRunning() {
+		t.Fatal("expected runtime to be stopped")
+	}
+	if got := d.RuntimeTogglePath(); got != "/runtime/start" {
+		t.Fatalf("RuntimeTogglePath stopped = %q", got)
+	}
 }

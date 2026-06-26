@@ -29,6 +29,7 @@ type RuntimeStatus struct {
 	RunnerRunning        bool
 	ComposeRunning       bool
 	PublicURL            string
+	LastStartedAt        time.Time
 	LastError            string
 	PendingRestart       bool
 	PendingRecreate      bool
@@ -128,6 +129,7 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 			m.cmd = cmd
 		}
 		m.status.RunnerRunning = true
+		m.status.LastStartedAt = time.Now()
 	}
 
 	if len(plan.ComposeServices) > 0 {
@@ -143,6 +145,7 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 		}
 		m.startComposeLogFollowerLocked(plan)
 		m.status.ComposeRunning = true
+		m.status.LastStartedAt = time.Now()
 	}
 
 	m.status.PublicURL = resolvedRunnerPublicURL(m.values, "")
@@ -195,6 +198,7 @@ func (m *LifecycleManager) Stop(ctx context.Context) error {
 
 	m.status.RunnerRunning = false
 	m.status.ComposeRunning = false
+	m.status.PublicURL = ""
 	return nil
 }
 
@@ -222,6 +226,7 @@ func (m *LifecycleManager) Down(ctx context.Context) error {
 		m.status.LastError = err.Error()
 		return err
 	}
+	m.status.PublicURL = ""
 	return nil
 }
 
@@ -315,7 +320,7 @@ func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	output, err := m.runner.Run(ctx, CommandSpec{
 		Name: "docker",
-		Args: []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs", "--tail", fmt.Sprintf("%d", tail)},
+		Args: composeLogArgs(plan, tail, m.status.LastStartedAt),
 	})
 	if err != nil {
 		return nil, err
@@ -329,4 +334,13 @@ func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error
 		lines = append(lines, LogLine{Message: string(line)})
 	}
 	return lines, nil
+}
+
+func composeLogArgs(plan RuntimePlan, tail int, since time.Time) []string {
+	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs"}
+	if !since.IsZero() {
+		args = append(args, "--since", since.UTC().Format(time.RFC3339))
+	}
+	args = append(args, "--tail", fmt.Sprintf("%d", tail))
+	return args
 }

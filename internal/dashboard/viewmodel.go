@@ -61,6 +61,11 @@ func (d PageData) RuntimeHealthy() bool {
 	return status.RunnerRunning
 }
 
+func (d PageData) RuntimeRunning() bool {
+	status := d.RuntimeStatus()
+	return status.RunnerRunning || status.ComposeRunning
+}
+
 func (d PageData) RuntimeHeadline() string {
 	if d.RuntimeHealthy() {
 		return "Running"
@@ -69,6 +74,27 @@ func (d PageData) RuntimeHeadline() string {
 		return "Needs attention"
 	}
 	return "Not configured"
+}
+
+func (d PageData) RuntimeTogglePath() string {
+	if d.RuntimeRunning() {
+		return "/runtime/stop"
+	}
+	return "/runtime/start"
+}
+
+func (d PageData) RuntimeToggleLabel() string {
+	if d.RuntimeRunning() {
+		return "Stop Runner"
+	}
+	return "Start Runner"
+}
+
+func (d PageData) RuntimeToggleBusyMessage() string {
+	if d.RuntimeRunning() {
+		return "Stopping runner services. Keep this page open."
+	}
+	return "Starting runner services. Keep this page open."
 }
 
 func (d PageData) RunnerAPIURL() string {

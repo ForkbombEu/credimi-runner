@@ -157,6 +157,12 @@ func TestRenderer_FragmentPage(t *testing.T) {
 	if !strings.Contains(html, "Overview") && !strings.Contains(html, "overview") {
 		t.Errorf("fragment page missing content: %s", html[:200])
 	}
+	if !strings.Contains(html, "Start Runner") {
+		t.Fatalf("overview fragment missing runtime start control: %s", html)
+	}
+	if strings.Contains(html, "health-pill") {
+		t.Fatalf("overview fragment should not render duplicate health pill: %s", html)
+	}
 }
 
 func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
@@ -211,6 +217,32 @@ func TestRenderer_SetupPage(t *testing.T) {
 	}
 	if strings.Contains(html, `class="sb"`) {
 		t.Errorf("setup page should not render sidebar")
+	}
+}
+
+func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := PageData{
+		Active: "overview",
+		Title:  "Overview",
+		Runner: &Config{values: map[string]string{
+			"CREDIMI_RUNNER_ORGANIZATION": "acme",
+			"CREDIMI_INTERNAL_ADMIN_KEY":  "secret",
+		}},
+		Pill: PillData{OK: true, Label: "Ready"},
+	}
+	html, err := r.Page("overview", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, ">Admin<") {
+		t.Fatalf("sidebar should show auth mode, got: %s", html)
+	}
+	if strings.Contains(html, ">ops<") {
+		t.Fatalf("sidebar should not show ops, got: %s", html)
 	}
 }
 

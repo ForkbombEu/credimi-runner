@@ -5,6 +5,36 @@
 (() => {
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const TYPE_DEFAULTS = {
+    phoneImage: 'ghcr.io/forkbombeu/credimi-runner-phone:latest',
+    emulatorImage: 'ghcr.io/forkbombeu/credimi-runner-emulator:latest',
+    baseName: 'credimi',
+    goldenPath: '/avd-golden/credimi-golden',
+    wifiPort: '5555',
+    redroidDataDir: '/home/credimi/redroid-data',
+    redroidDataTar: '/home/credimi/redroid-data.tar',
+  };
+  const TYPE_PREVIEW_KEYS = [
+    'ANDROID_KEYS_DIR',
+    'AVDCTL_SSH_KNOWN_HOSTS_PATH',
+    'AVDCTL_SSH_PASSWORD',
+    'AVDCTL_SSH_TARGET',
+    'AVDCTL_SUDO',
+    'AVDCTL_SUDO_PASSWORD',
+    'BASE_NAME',
+    'CREDIMI_CONTAINER_MODE',
+    'CREDIMI_RUNNER_DEVICE_MODE',
+    'CREDIMI_RUNNER_SERIAL',
+    'CREDIMI_RUNNER_TYPE',
+    'CREDIMI_RUNNER_WIFI_IP',
+    'CREDIMI_RUNNER_WIFI_PORT',
+    'GOLDEN_PATH',
+    'HOST_AVD_GOLDEN_PATH',
+    'HOST_AVD_HOME_PATH',
+    'REDROID_DATA_DIR',
+    'REDROID_DATA_TAR',
+    'RUNNER_IMAGE',
+  ];
 
   // ── Toast (driven by HX-Trigger {"toast":"…"}) ───────────────────────────
   function toast(msg) {
@@ -15,6 +45,38 @@
   }
   document.body.addEventListener('toast', (e) => toast(typeof e.detail === 'string' ? e.detail : e.detail && e.detail.value));
   document.body.addEventListener('closeModal', () => closeModals());
+
+  // ── Global busy overlay for runtime-changing requests ───────────────────
+  function busyOverlay() { return $('#busy-overlay'); }
+  function showBusy(message) {
+    const overlay = busyOverlay();
+    if (!overlay) return;
+    const messageNode = $('[data-busy-message]', overlay);
+    if (messageNode && message) messageNode.textContent = message;
+    overlay.hidden = false;
+    document.body.classList.add('busy-lock');
+  }
+  function hideBusy() {
+    const overlay = busyOverlay();
+    if (!overlay) return;
+    overlay.hidden = true;
+    document.body.classList.remove('busy-lock');
+  }
+  function busyTriggerForElement(el) {
+    if (!el) return null;
+    return el.closest('[data-runtime-action],[data-config-form],[data-setup-form]');
+  }
+  document.body.addEventListener('htmx:beforeRequest', (e) => {
+    const trigger = busyTriggerForElement(e.detail.elt);
+    if (!trigger) return;
+    const message = trigger.dataset.busyMessage || 'Applying runtime change. Keep this page open.';
+    showBusy(message);
+  });
+  document.body.addEventListener('htmx:afterRequest', (e) => {
+    if (busyTriggerForElement(e.detail.elt)) hideBusy();
+  });
+  document.body.addEventListener('htmx:responseError', hideBusy);
+  document.body.addEventListener('htmx:sendError', hideBusy);
 
   // ── Modal open / close ───────────────────────────────────────────────────
   function closeModals() { $$('.modal-bk').forEach((m) => (m.hidden = true)); }
@@ -444,35 +506,172 @@
       control.disabled = !visible;
     });
   };
-  const updateDeviceFields = () => {
-    const type = (document.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked') || {}).value || '';
-    const mode = (document.querySelector('[name="CREDIMI_RUNNER_DEVICE_MODE"]') || {}).value || '';
-    document.querySelectorAll('[data-dev-type]').forEach(el => {
+  const fieldValue = (root, name) => {
+    const radio = root.querySelector(`[name="${name}"]:checked`);
+    if (radio) return radio.value || '';
+    const input = root.querySelector(`[name="${name}"]`);
+    return input ? (input.value || '') : '';
+  };
+  const setFieldValue = (root, name, value) => {
+    const input = root.querySelector(`[name="${name}"]`);
+    if (!input || input.value === value) return;
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  };
+  const formParams = (root) => {
+    const params = new URLSearchParams();
+    root.querySelectorAll('[name]').forEach((input) => {
+      if (input.disabled) return;
+      if (input.type === 'radio') {
+        if (input.checked) params.set(input.name, input.value || '');
+        return;
+      }
+      if (input.type === 'checkbox') {
+        if (input.checked) params.set(input.name, input.value || 'on');
+        return;
+      }
+      params.set(input.name, input.value || '');
+    });
+    return params;
+  };
+  const deriveHomeDefaults = (root) => {
+    const androidKeysDir = fieldValue(root, 'ANDROID_KEYS_DIR');
+    if (!androidKeysDir.endsWith('/.android')) return {};
+    const homeDir = androidKeysDir.slice(0, -'/.android'.length);
+    if (!homeDir) return {};
+    return {
+      androidKeysDir,
+      hostAVDHomePath: androidKeysDir + '/avd',
+      hostAVDGoldenPath: homeDir + '/avd-golden',
+    };
+  };
+  const applyRunnerTypeDefaults = (root, type) => {
+    const derived = deriveHomeDefaults(root);
+    switch (type) {
+      case 'android_emulator':
+        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.emulatorImage);
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
+        setFieldValue(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
+        if (derived.androidKeysDir) setFieldValue(root, 'ANDROID_KEYS_DIR', derived.androidKeysDir);
+        if (derived.hostAVDHomePath) setFieldValue(root, 'HOST_AVD_HOME_PATH', derived.hostAVDHomePath);
+        if (derived.hostAVDGoldenPath) setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', derived.hostAVDGoldenPath);
+        setFieldValue(root, 'GOLDEN_PATH', TYPE_DEFAULTS.goldenPath);
+        setFieldValue(root, 'REDROID_DATA_DIR', '');
+        setFieldValue(root, 'REDROID_DATA_TAR', '');
+        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
+        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
+        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
+        setFieldValue(root, 'AVDCTL_SUDO', '');
+        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
+        break;
+      case 'ios_simulator':
+        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
+        setFieldValue(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
+        setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
+        setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
+        setFieldValue(root, 'GOLDEN_PATH', '');
+        setFieldValue(root, 'REDROID_DATA_DIR', '');
+        setFieldValue(root, 'REDROID_DATA_TAR', '');
+        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
+        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
+        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
+        setFieldValue(root, 'AVDCTL_SUDO', '');
+        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
+        break;
+      case 'redroid':
+        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'no_device');
+        setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
+        setFieldValue(root, 'BASE_NAME', '');
+        setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
+        setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
+        setFieldValue(root, 'GOLDEN_PATH', '');
+        setFieldValue(root, 'REDROID_DATA_DIR', TYPE_DEFAULTS.redroidDataDir);
+        setFieldValue(root, 'REDROID_DATA_TAR', TYPE_DEFAULTS.redroidDataTar);
+        break;
+      default:
+        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'usb');
+        setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', TYPE_DEFAULTS.wifiPort);
+        setFieldValue(root, 'BASE_NAME', '');
+        setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
+        setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
+        setFieldValue(root, 'GOLDEN_PATH', '');
+        setFieldValue(root, 'REDROID_DATA_DIR', '');
+        setFieldValue(root, 'REDROID_DATA_TAR', '');
+        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
+        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
+        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
+        setFieldValue(root, 'AVDCTL_SUDO', '');
+        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
+        break;
+    }
+  };
+  const applyNormalizedPreview = async (root) => {
+    const res = await fetch('/config/normalize', {
+      method: 'POST',
+      body: formParams(root),
+    });
+    if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+    const data = await res.json();
+    const values = data && data.values ? data.values : {};
+    TYPE_PREVIEW_KEYS.forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(values, key)) setFieldValue(root, key, values[key] || '');
+    });
+  };
+  const updateDeviceFields = (root = document) => {
+    const type = fieldValue(root, 'CREDIMI_RUNNER_TYPE');
+    const mode = fieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE');
+    root.querySelectorAll('[data-dev-type]').forEach(el => {
       const types = (el.dataset.devType || '').split(/\s+/);
       setSectionVisible(el, types.includes(type));
     });
-    document.querySelectorAll('[data-dev-mode]').forEach(el => {
+    root.querySelectorAll('[data-dev-mode]').forEach(el => {
       const modes = (el.dataset.devMode || '').split(/\s+/);
       const parent = el.closest('[data-dev-type]');
       const parentHidden = parent && parent.style.display === 'none';
       setSectionVisible(el, !parentHidden && modes.includes(mode));
     });
-    document.querySelectorAll('[data-dev-pick]').forEach(p => {
+    root.querySelectorAll('[data-dev-pick]').forEach(p => {
       p.classList.toggle('on', p.dataset.devPick === type);
     });
   };
   document.addEventListener('click', (e) => {
     const pick = e.target.closest('[data-dev-pick]');
     if (!pick) return;
+    const root = pick.closest('form') || document;
     const radio = pick.querySelector('input[type="radio"]');
-    if (radio) { radio.checked = true; updateDeviceFields(); }
+    if (radio) {
+      radio.checked = true;
+      const finish = () => {
+        updateDeviceFields(root);
+        markDirty();
+      };
+      applyNormalizedPreview(root).then(finish).catch(() => {
+        applyRunnerTypeDefaults(root, radio.value);
+        finish();
+      });
+    }
   });
   document.addEventListener('change', (e) => {
-    if (e.target.name === 'CREDIMI_RUNNER_DEVICE_MODE') updateDeviceFields();
+    if (e.target.name === 'CREDIMI_RUNNER_DEVICE_MODE') updateDeviceFields(e.target.closest('form') || document);
   });
   const initDeviceFields = () => {
-    const checked = document.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked');
-    if (checked) updateDeviceFields();
+    $$('form').forEach((form) => {
+      if (form.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked')) updateDeviceFields(form);
+    });
   };
   initDeviceFields();
 
@@ -649,6 +848,7 @@
   }
   document.body.addEventListener('htmx:afterSwap', (e) => {
     if (e.detail.target && e.detail.target.tagName === 'MAIN') {
+      hideBusy();
       syncNav();
       initSetupWizard(e.detail.target);
       initNetMode();

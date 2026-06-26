@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -26,7 +27,10 @@ var (
 	dashboardHost      string
 	dashboardPort      int
 	dashboardConfigDir string
+	dashboardOpen      bool
 )
+
+var openDashboardBrowserFunc = openDashboardBrowser
 
 var dashboardCmd = &cobra.Command{
 	Use:   "dashboard",
@@ -83,6 +87,14 @@ var dashboardCmd = &cobra.Command{
 			stdlog.Printf("Credimi Runner dashboard available at http://%s:%d", listenHost, listenPort)
 			errc <- server.ListenAndServe()
 		}()
+		if dashboardOpen {
+			go func() {
+				time.Sleep(250 * time.Millisecond)
+				if err := openDashboardBrowserFunc(dashboardBrowserURL(listenHost, listenPort)); err != nil {
+					stdlog.Printf("dashboard browser open skipped: %v", err)
+				}
+			}()
+		}
 
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
@@ -122,8 +134,33 @@ func init() {
 	dashboardCmd.Flags().StringVar(&dashboardHost, "host", "127.0.0.1", "Dashboard listen host")
 	dashboardCmd.Flags().IntVar(&dashboardPort, "port", 8051, "Dashboard listen port")
 	dashboardCmd.Flags().StringVar(&dashboardConfigDir, "config-dir", "", "Dashboard config directory")
+	dashboardCmd.Flags().BoolVar(&dashboardOpen, "open-browser", true, "Open the dashboard in a browser after startup")
 	dashboardCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging")
 	rootCmd.AddCommand(dashboardCmd)
+}
+
+func dashboardBrowserURL(host string, port int) string {
+	switch strings.TrimSpace(host) {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("http://%s:%d", host, port)
+}
+
+func openDashboardBrowser(url string) error {
+	if strings.TrimSpace(url) == "" {
+		return errors.New("dashboard URL is empty")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
 }
 
 func dashboardEnvPath(configDir string) string {

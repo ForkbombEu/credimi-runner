@@ -230,7 +230,22 @@ func Validate(vals map[string]string) map[string]string {
 
 // Apply validates and persists incoming form values, then writes .env atomically.
 func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
-	next := c.Snapshot()
+	normalized, err := normalizedConfigValues(c.Snapshot(), incoming, runtime.GOOS)
+	if err != nil {
+		return map[string]string{"CREDIMI_RUNNER_TYPE": err.Error()}, fmt.Errorf("validation failed")
+	}
+	next := map[string]string(normalized)
+	if errs := Validate(next); len(errs) > 0 {
+		return errs, fmt.Errorf("validation failed")
+	}
+	c.mu.Lock()
+	c.values = next
+	c.mu.Unlock()
+	return nil, c.write()
+}
+
+func normalizedConfigValues(current, incoming map[string]string, goos string) (dashboardruntime.Values, error) {
+	next := cloneStringMap(current)
 	for _, f := range Registry {
 		if f.Type == TypeBool {
 			_, present := incoming[f.Key]
@@ -241,18 +256,36 @@ func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
 			next[f.Key] = strings.TrimSpace(v)
 		}
 	}
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(next), runtime.GOOS)
-	if err != nil {
-		return map[string]string{"CREDIMI_RUNNER_TYPE": err.Error()}, fmt.Errorf("validation failed")
+	if strings.TrimSpace(current["CREDIMI_RUNNER_TYPE"]) != strings.TrimSpace(next["CREDIMI_RUNNER_TYPE"]) {
+		resetTypeDerivedFields(next)
+		next["CREDIMI_RUNNER_TYPE"] = strings.TrimSpace(incoming["CREDIMI_RUNNER_TYPE"])
 	}
-	next = map[string]string(normalized)
-	if errs := Validate(next); len(errs) > 0 {
-		return errs, fmt.Errorf("validation failed")
+	return dashboardruntime.NormalizeValues(dashboardruntime.Values(next), goos)
+}
+
+func resetTypeDerivedFields(values map[string]string) {
+	for _, key := range []string{
+		"ANDROID_KEYS_DIR",
+		"AVDCTL_SSH_KNOWN_HOSTS_PATH",
+		"AVDCTL_SSH_PASSWORD",
+		"AVDCTL_SSH_TARGET",
+		"AVDCTL_SUDO",
+		"AVDCTL_SUDO_PASSWORD",
+		"BASE_NAME",
+		"CREDIMI_CONTAINER_MODE",
+		"CREDIMI_RUNNER_DEVICE_MODE",
+		"CREDIMI_RUNNER_SERIAL",
+		"CREDIMI_RUNNER_WIFI_IP",
+		"CREDIMI_RUNNER_WIFI_PORT",
+		"GOLDEN_PATH",
+		"HOST_AVD_GOLDEN_PATH",
+		"HOST_AVD_HOME_PATH",
+		"REDROID_DATA_DIR",
+		"REDROID_DATA_TAR",
+		"RUNNER_IMAGE",
+	} {
+		values[key] = ""
 	}
-	c.mu.Lock()
-	c.values = next
-	c.mu.Unlock()
-	return nil, c.write()
 }
 
 // write serializes the config to .env atomically with 0600 perms.

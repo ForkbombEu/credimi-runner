@@ -11,7 +11,7 @@
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
   {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some target fields need attention.</div></div>{{end}}
 
-  <form hx-post="/devices/config" hx-target="main" hx-select="main" hx-swap="outerHTML" data-config-form data-target-config-form>
+  <form hx-post="/devices/config" hx-target="main" hx-select="main" hx-swap="outerHTML" data-config-form data-target-config-form data-busy-message="Applying target changes and restarting runner services. Keep this page open.">
     <section class="card" style="margin-bottom:16px">
       <header class="card-h">{{icon "phone"}}<div><h3>Configured target</h3><div class="sub">one runner, one target</div></div></header>
       <div class="card-b">

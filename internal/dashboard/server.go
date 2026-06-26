@@ -157,6 +157,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	// Config actions
 	mux.HandleFunc("POST /config", s.saveConfig)
 	mux.HandleFunc("POST /config/diff", s.configDiff)
+	mux.HandleFunc("POST /config/normalize", s.normalizeConfigPreview)
 	mux.HandleFunc("POST /setup", s.finishSetup)
 	mux.HandleFunc("POST /setup/organization", s.lookupSetupOrganization)
 	mux.HandleFunc("POST /setup/runner-id", s.previewSetupRunnerID)
@@ -318,17 +319,19 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 			return
 		}
 	}
-	flash := flashForDiff(diff)
+	flash := "Configuration saved."
 	appliedCleanly := true
 	if s.manager != nil {
 		applyCtx, applyCancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer applyCancel()
 		if applied, err := s.applySavedConfig(applyCtx, diff, newSnapshot); err != nil {
-			flash = flash + " Apply failed: " + err.Error()
+			flash = flashForDiff(diff) + " Apply failed: " + err.Error()
 			appliedCleanly = false
 		} else if applied != "" {
 			flash = flash + " " + applied
 		}
+	} else {
+		flash = flashForDiff(diff)
 	}
 	s.mu.Lock()
 	if appliedCleanly {
@@ -357,18 +360,7 @@ func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
 			incoming[key] = values[0]
 		}
 	}
-	next := s.cfg.Snapshot()
-	for _, field := range Registry {
-		if field.Type == TypeBool {
-			_, present := incoming[field.Key]
-			next[field.Key] = boolStr(present)
-			continue
-		}
-		if value, ok := incoming[field.Key]; ok {
-			next[field.Key] = strings.TrimSpace(value)
-		}
-	}
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(next), runtimeGOOS())
+	normalized, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
@@ -380,6 +372,25 @@ func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) normalizeConfigPreview(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	incoming := map[string]string{}
+	for key, values := range r.PostForm {
+		if len(values) > 0 {
+			incoming[key] = values[0]
+		}
+	}
+	normalized, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	writeJSON(w, map[string]any{"values": normalized})
+}
+
 func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) (string, error) {
 	if len(diff.ChangedKeys) == 0 || hasApplyClass(diff, dashboardruntime.ApplySavedOnly) {
 		return "", nil
@@ -387,13 +398,15 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 	status := s.manager.Status(ctx)
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
 	var actions []string
+	restarted := false
 	if runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)) {
 		if err := s.manager.Restart(ctx); err != nil {
 			return "", err
 		}
+		restarted = true
 		actions = append(actions, "Runtime restarted.")
 	}
-	if hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired) || runtimeRunning {
+	if shouldRegisterAfterApply(diff, values, restarted) {
 		if err := s.registerCurrent(ctx, values); err != nil {
 			return "", err
 		}
@@ -403,6 +416,28 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 		return "Runtime is stopped; changes apply on next dashboard start.", nil
 	}
 	return strings.Join(actions, " "), nil
+}
+
+func shouldRegisterAfterApply(diff dashboardruntime.ConfigDiff, values map[string]string, restarted bool) bool {
+	if hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired) {
+		return true
+	}
+	return restarted && normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto"
+}
+
+func normalizedApplyServiceMode(value string) string {
+	switch strings.TrimSpace(value) {
+	case "quick":
+		return "auto"
+	case "direct":
+		return "manual"
+	case "named":
+		return "cloudflare-managed"
+	case "auto", "cloudflare-managed", "manual":
+		return strings.TrimSpace(value)
+	default:
+		return "auto"
+	}
 }
 
 func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
@@ -1022,6 +1057,10 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 	default:
 		if s.manager == nil {
 			return "", "", errors.New("runtime manager unavailable")
+		}
+		status := s.manager.Status(ctx)
+		if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
+			return publicURL, "", nil
 		}
 		re := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
 		ticker := time.NewTicker(500 * time.Millisecond)

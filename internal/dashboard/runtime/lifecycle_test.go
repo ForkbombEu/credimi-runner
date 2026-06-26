@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRunner struct {
@@ -119,6 +120,14 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if len(runner.runs) == 0 || runner.runs[len(runner.runs)-1].Args[0] != "pull" {
 		t.Fatalf("runs = %#v", runner.runs)
 	}
+
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status = manager.Status(context.Background())
+	if status.PublicURL != "" {
+		t.Fatalf("public URL should be cleared on stop, got %q", status.PublicURL)
+	}
 }
 
 func TestLifecycleManagerRestartAndDownWithoutCompose(t *testing.T) {
@@ -149,5 +158,13 @@ func TestLifecycleManagerStopComposeFollowerNilDone(t *testing.T) {
 	manager.stopComposeLogFollowerLocked()
 	if manager.logCmd != nil || manager.logDone != nil {
 		t.Fatalf("log follower not cleared: cmd=%v done=%v", manager.logCmd, manager.logDone)
+	}
+}
+
+func TestComposeLogArgsIncludesSince(t *testing.T) {
+	plan := RuntimePlan{EnvPath: "/tmp/.env", ComposePath: "/tmp/docker-compose.yaml"}
+	args := composeLogArgs(plan, 50, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	if !strings.Contains(strings.Join(args, " "), "--since 2026-01-02T03:04:05Z") {
+		t.Fatalf("composeLogArgs missing --since: %#v", args)
 	}
 }
