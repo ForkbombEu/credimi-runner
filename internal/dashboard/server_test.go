@@ -107,6 +107,21 @@ func newTestServer(t *testing.T) *Server {
 	}
 }
 
+func formValuesFromConfig(cfg *Config) url.Values {
+	form := url.Values{}
+	for _, field := range Registry {
+		value := cfg.values[field.Key]
+		if field.Type == TypeBool {
+			if value == "true" {
+				form.Set(field.Key, "on")
+			}
+			continue
+		}
+		form.Set(field.Key, value)
+	}
+	return form
+}
+
 type fakeFileInfo string
 
 func (f fakeFileInfo) Name() string       { return string(f) }
@@ -273,20 +288,24 @@ func TestServerConfigDiffAndHelpers(t *testing.T) {
 	s := newTestServer(t)
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.values = map[string]string(normalized)
+	form := formValuesFromConfig(s.cfg)
+	form.Set("CREDIMI_RUNNER_DESCRIPTION", "updated description")
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(url.Values{
-		"CREDIMI_RUNNER_ID":   {"acme/runner"},
-		"CREDIMI_RUNNER_NAME": {"runner-2"},
-	}.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "runner record in Credimi") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "credimi_update_required") || !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
 		t.Fatalf("configDiff = %d %s", rec.Code, rec.Body.String())
 	}
-	if got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplySavedOnly}}); !strings.Contains(got, "No restart") {
+	if got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplySavedOnly}}); got != "" {
 		t.Fatalf("describeDiffImpact = %q", got)
 	}
-	if got := describeDiffImpact(dashboardruntime.ConfigDiff{}); got != "Save these changes?" {
+	if got := describeDiffImpact(dashboardruntime.ConfigDiff{}); got != "" {
 		t.Fatalf("default describeDiffImpact = %q", got)
 	}
 	for _, diff := range []dashboardruntime.ConfigDiff{
@@ -294,11 +313,13 @@ func TestServerConfigDiffAndHelpers(t *testing.T) {
 		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired, dashboardruntime.ApplyCredimiUpdateRequired}},
 		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate}},
 		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}},
 	} {
 		if got := describeDiffImpact(diff); got == "" {
 			t.Fatalf("describeDiffImpact(%#v) returned empty string", diff)
 		}
+	}
+	if got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}); got != "" {
+		t.Fatalf("Credimi-only diff should not ask for confirmation: %q", got)
 	}
 }
 
@@ -325,8 +346,45 @@ func TestServerConfigDiffRunnerTypeChangeRequiresApply(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "No restart") {
 		t.Fatalf("runner type change should not be saved-only: %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"confirm_required":true`) {
+		t.Fatalf("runner type change should require confirmation: %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), "runner record in Credimi") {
 		t.Fatalf("runner type change should require Credimi update: %s", rec.Body.String())
+	}
+}
+
+func TestServerConfigDiffManualPublicURLOnlyUpdatesCredimi(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://old.example"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.values = map[string]string(normalized)
+
+	form := formValuesFromConfig(s.cfg)
+	form.Set("RUNNER_PUBLIC_URL", "https://manual.example")
+	form.Set("RUNNER_PUBLIC_PORT", "8443")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configDiff manual URL change = %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "credimi_update_required") {
+		t.Fatalf("manual URL change should update Credimi: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
+		t.Fatalf("manual URL change should not require restart confirmation: %s", rec.Body.String())
 	}
 }
 
@@ -346,22 +404,6 @@ func TestServerNormalizeConfigPreviewRunnerTypeChange(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), defaultEmulatorImage) || !strings.Contains(rec.Body.String(), dashboardruntime.DefaultGoldenPath) {
 		t.Fatalf("normalizeConfigPreview missing emulator defaults: %s", rec.Body.String())
-	}
-}
-
-func TestFlashForDiffVariants(t *testing.T) {
-	tests := []dashboardruntime.ConfigDiff{
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplySavedOnly}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate, dashboardruntime.ApplyCredimiUpdateRequired}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired, dashboardruntime.ApplyCredimiUpdateRequired}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}},
-	}
-	for _, diff := range tests {
-		if got := flashForDiff(diff); got == "" {
-			t.Fatalf("flashForDiff(%#v) returned empty string", diff)
-		}
 	}
 }
 
@@ -799,7 +841,7 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	}
 }
 
-func TestServerSaveConfigDescriptionUpdateUsesAppliedFlash(t *testing.T) {
+func TestServerSaveConfigDescriptionUpdateUsesCompactToast(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = &fakeManager{
 		status: dashboardruntime.RuntimeStatus{
@@ -833,17 +875,7 @@ func TestServerSaveConfigDescriptionUpdateUsesAppliedFlash(t *testing.T) {
 	})
 	defer func() { http.DefaultTransport = transport }()
 
-	form := url.Values{}
-	for _, field := range Registry {
-		value := s.cfg.values[field.Key]
-		if field.Type == TypeBool {
-			if value == "true" {
-				form.Set(field.Key, "on")
-			}
-			continue
-		}
-		form.Set(field.Key, value)
-	}
+	form := formValuesFromConfig(s.cfg)
 	form.Set("CREDIMI_RUNNER_DESCRIPTION", "updated description")
 
 	rec := httptest.NewRecorder()
@@ -856,8 +888,52 @@ func TestServerSaveConfigDescriptionUpdateUsesAppliedFlash(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "must be updated") {
 		t.Fatalf("saveConfig flash should describe the completed update, got %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Configuration saved. Credimi registration updated.") {
-		t.Fatalf("saveConfig flash missing applied result: %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "Configuration updated.") {
+		t.Fatalf("saveConfig should not render inline success messages: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Configuration updated.") {
+		t.Fatalf("saveConfig toast missing compact result: %s", rec.Header().Get("HX-Trigger"))
+	}
+}
+
+func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
+	s := newTestServer(t)
+	fm := &fakeManager{
+		status: dashboardruntime.RuntimeStatus{RunnerRunning: true},
+	}
+	s.manager = fm
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.values = map[string]string(normalized)
+
+	form := formValuesFromConfig(s.cfg)
+	form.Set("CREDIMI_USER_API_KEY", "new-user-key")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("saveConfig restart update = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if fm.restartCalls != 1 {
+		t.Fatalf("saveConfig restart calls = %d", fm.restartCalls)
+	}
+	if strings.Contains(rec.Body.String(), "Runner restarted with the new configuration.") {
+		t.Fatalf("saveConfig should not render inline restart success: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Runner restarted with the new configuration.") {
+		t.Fatalf("saveConfig restart toast missing compact result: %s", rec.Header().Get("HX-Trigger"))
 	}
 }
 

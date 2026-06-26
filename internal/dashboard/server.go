@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -278,6 +279,24 @@ func (s *Server) page(name string) http.HandlerFunc {
 	}
 }
 
+func formValuesMap(values url.Values) map[string]string {
+	out := make(map[string]string, len(values))
+	for key, candidates := range values {
+		if len(candidates) == 0 {
+			continue
+		}
+		chosen := candidates[len(candidates)-1]
+		for i := len(candidates) - 1; i >= 0; i-- {
+			if strings.TrimSpace(candidates[i]) != "" {
+				chosen = candidates[i]
+				break
+			}
+		}
+		out[key] = chosen
+	}
+	return out
+}
+
 // ── config handlers ──────────────────────────────────────────────────────────
 
 func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
@@ -293,12 +312,7 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	incoming := map[string]string{}
-	for k, v := range r.PostForm {
-		if len(v) > 0 {
-			incoming[k] = v[0]
-		}
-	}
+	incoming := formValuesMap(r.PostForm)
 	oldSnapshot := s.cfg.Snapshot()
 	if errs, err := s.cfg.Apply(incoming); err != nil {
 		d := s.pageData(page, map[string]any{"Errors": errs})
@@ -319,19 +333,19 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 			return
 		}
 	}
-	flash := "Configuration saved."
+	message := "Configuration updated."
 	appliedCleanly := true
 	if s.manager != nil {
 		applyCtx, applyCancel := context.WithTimeout(r.Context(), 90*time.Second)
 		defer applyCancel()
-		if applied, err := s.applySavedConfig(applyCtx, diff, newSnapshot); err != nil {
-			flash = flashForDiff(diff) + " Apply failed: " + err.Error()
+		if outcome, err := s.applySavedConfig(applyCtx, diff, newSnapshot); err != nil {
+			message = "Configuration update failed: " + err.Error()
 			appliedCleanly = false
-		} else if applied != "" {
-			flash = flash + " " + applied
+		} else if outcome.Restarted {
+			message = "Runner restarted with the new configuration."
 		}
 	} else {
-		flash = flashForDiff(diff)
+		message = saveSuccessMessage(applyOutcome{})
 	}
 	s.mu.Lock()
 	if appliedCleanly {
@@ -342,10 +356,10 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 	s.lastRegistrationStatus = ""
 	s.mu.Unlock()
 
-	d := s.pageData(page, map[string]any{"Saved": true, "Flash": flash})
+	d := s.pageData(page, map[string]any{"Saved": true})
 	html, _ := s.render.FragmentPage(page, d)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, flash))
+	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, message))
 	w.Write([]byte(html))
 }
 
@@ -354,21 +368,18 @@ func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	incoming := map[string]string{}
-	for key, values := range r.PostForm {
-		if len(values) > 0 {
-			incoming[key] = values[0]
-		}
-	}
+	incoming := formValuesMap(r.PostForm)
 	normalized, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	diff := dashboardruntime.DiffValues(dashboardruntime.Values(s.cfg.Snapshot()), normalized)
+	confirmRequired := diffRequiresRuntimeRestart(diff)
 	writeJSON(w, map[string]any{
-		"classes": diff.Classes,
-		"message": describeDiffImpact(diff),
+		"classes":          diff.Classes,
+		"confirm_required": confirmRequired,
+		"message":          describeDiffImpact(diff),
 	})
 }
 
@@ -377,12 +388,7 @@ func (s *Server) normalizeConfigPreview(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	incoming := map[string]string{}
-	for key, values := range r.PostForm {
-		if len(values) > 0 {
-			incoming[key] = values[0]
-		}
-	}
+	incoming := formValuesMap(r.PostForm)
 	normalized, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -391,31 +397,31 @@ func (s *Server) normalizeConfigPreview(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]any{"values": normalized})
 }
 
-func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) (string, error) {
+type applyOutcome struct {
+	Restarted      bool
+	CredimiUpdated bool
+}
+
+func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) (applyOutcome, error) {
+	var outcome applyOutcome
 	if len(diff.ChangedKeys) == 0 || hasApplyClass(diff, dashboardruntime.ApplySavedOnly) {
-		return "", nil
+		return outcome, nil
 	}
 	status := s.manager.Status(ctx)
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
-	var actions []string
-	restarted := false
 	if runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)) {
 		if err := s.manager.Restart(ctx); err != nil {
-			return "", err
+			return outcome, err
 		}
-		restarted = true
-		actions = append(actions, "Runtime restarted.")
+		outcome.Restarted = true
 	}
-	if shouldRegisterAfterApply(diff, values, restarted) {
+	if shouldRegisterAfterApply(diff, values, outcome.Restarted) {
 		if err := s.registerCurrent(ctx, values); err != nil {
-			return "", err
+			return outcome, err
 		}
-		actions = append(actions, "Credimi registration updated.")
+		outcome.CredimiUpdated = true
 	}
-	if len(actions) == 0 && !runtimeRunning {
-		return "Runtime is stopped; changes apply on next dashboard start.", nil
-	}
-	return strings.Join(actions, " "), nil
+	return outcome, nil
 }
 
 func shouldRegisterAfterApply(diff dashboardruntime.ConfigDiff, values map[string]string, restarted bool) bool {
@@ -445,12 +451,7 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	incoming := map[string]string{}
-	for k, v := range r.PostForm {
-		if len(v) > 0 {
-			incoming[k] = v[0]
-		}
-	}
+	incoming := formValuesMap(r.PostForm)
 	if errs := validateSetupInput(incoming); len(errs) > 0 {
 		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Some fields need attention."})
 		html, _ := s.render.FragmentPage("setup", d)
@@ -1089,42 +1090,31 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 	}
 }
 
-func flashForDiff(diff dashboardruntime.ConfigDiff) string {
-	switch {
-	case len(diff.Classes) == 1 && diff.Classes[0] == dashboardruntime.ApplySavedOnly:
-		return "Configuration saved."
-	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
-		return "Configuration saved. Runtime must be recreated and Credimi registration must be updated."
-	case hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
-		return "Configuration saved. Runner restart required and Credimi registration must be updated."
-	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate):
-		return "Configuration saved. Runtime must be recreated before this takes effect."
-	case hasApplyClass(diff, dashboardruntime.ApplyRestartRequired):
-		return "Configuration saved. Runner restart required before this takes effect."
-	case hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
-		return "Configuration saved. Credimi runner registration must be updated."
-	default:
-		return "Configuration saved."
-	}
-}
-
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {
 	switch {
-	case len(diff.Classes) == 1 && diff.Classes[0] == dashboardruntime.ApplySavedOnly:
-		return "Save these changes? No restart or Credimi registration update is required."
 	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
-		return "Save these changes? Docker Compose services must be recreated and the runner record in Credimi must be updated."
+		return "Save these changes? Runner services must restart and the runner record in Credimi will be updated."
 	case hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
 		return "Save these changes? The runner must restart and the runner record in Credimi must be updated."
 	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate):
-		return "Save these changes? Docker Compose services must be recreated for them to take effect."
+		return "Save these changes? Runner services must restart for them to take effect."
 	case hasApplyClass(diff, dashboardruntime.ApplyRestartRequired):
 		return "Save these changes? The runner must restart for them to take effect."
-	case hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
-		return "Save these changes? The runner record in Credimi must be updated."
 	default:
-		return "Save these changes?"
+		return ""
 	}
+}
+
+func diffRequiresRuntimeRestart(diff dashboardruntime.ConfigDiff) bool {
+	return hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) ||
+		hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)
+}
+
+func saveSuccessMessage(outcome applyOutcome) string {
+	if outcome.Restarted {
+		return "Runner restarted with the new configuration."
+	}
+	return "Configuration updated."
 }
 
 func hasApplyClass(diff dashboardruntime.ConfigDiff, class dashboardruntime.ApplyClass) bool {

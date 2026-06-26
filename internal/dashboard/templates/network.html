@@ -8,7 +8,7 @@
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
 
-  <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" data-config-form data-busy-message="Applying network changes and updating runner services. Keep this page open.">
+  <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Applying network changes and updating runner services. Keep this page open.">
     <section class="card">
       <header class="card-h">{{icon "globe"}}<div><h3>Service mode</h3><div class="sub">How the API is exposed publicly</div></div></header>
       <div class="card-b">
@@ -25,7 +25,12 @@
         <div class="divline"></div>
         <div class="field"><label><span class="lbtx">Public endpoint</span></label>
           <div class="inp-wrap"><input class="inp mono" readonly value="{{.PublicURL}}"><div class="acts"><button type="button" class="minibtn" data-copy-value="{{.PublicURL}}">{{icon "copy"}} Copy</button></div></div></div>
-        <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_DOMAIN"}}{{template "field" .Field "CLOUDFLARE_TUNNEL_TOKEN"}}</div>
+        <div data-net-mode="cloudflare-managed" style="display:none">
+          <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_DOMAIN"}}{{template "field" .Field "CLOUDFLARE_TUNNEL_TOKEN"}}</div>
+        </div>
+        <div data-net-mode="manual" style="display:none">
+          <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_PUBLIC_URL"}}{{template "field" .Field "RUNNER_PUBLIC_PORT"}}</div>
+        </div>
       </div>
     </section>
 

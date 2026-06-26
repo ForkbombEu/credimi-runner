@@ -48,6 +48,11 @@ func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
 	if got := d.PublicURL(); got != "https://manual.example" {
 		t.Fatalf("manual host PublicURL = %q", got)
 	}
+	cfg.values["RUNNER_PUBLIC_PORT"] = "8443"
+	if got := d.PublicURL(); got != "https://manual.example:8443" {
+		t.Fatalf("manual host and port PublicURL = %q", got)
+	}
+	cfg.values["RUNNER_PUBLIC_PORT"] = ""
 	cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
 	if got := d.PublicURL(); got != "Waiting for quick tunnel URL" {
 		t.Fatalf("auto PublicURL = %q", got)

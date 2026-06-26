@@ -48,7 +48,7 @@
             <div class="field" data-auth-field="user" {{if eq $.Runner.AuthMode "admin"}}hidden{{end}}>
               <label><span class="lbtx">User API key</span><span class="req">*</span><span class="envkey">CREDIMI_USER_API_KEY</span></label>
               <div class="inp-wrap">
-                <input class="inp mono" type="password" name="CREDIMI_USER_API_KEY" value="{{$.Runner.Get "CREDIMI_USER_API_KEY"}}" data-secret="CREDIMI_USER_API_KEY" placeholder="credimi_..." autocomplete="off" spellcheck="false">
+                <input class="inp mono" type="password" name="CREDIMI_USER_API_KEY" value="{{$.Runner.Get "CREDIMI_USER_API_KEY"}}" data-secret="CREDIMI_USER_API_KEY" placeholder="credimi_..." autocomplete="new-password" spellcheck="false">
                 <div class="acts">
                   <span data-api-key-status style="display:none;width:26px;height:26px;display:none;align-items:center;justify-content:center;font-size:13px"></span>
                   <button type="button" class="minibtn" data-reveal-secret="CREDIMI_USER_API_KEY" title="Reveal">{{icon "eye"}}</button>
@@ -60,7 +60,7 @@
             <div class="field" data-auth-field="admin" {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}>
               <label><span class="lbtx">Internal admin key</span><span class="req">*</span><span class="envkey">CREDIMI_INTERNAL_ADMIN_KEY</span></label>
               <div class="inp-wrap">
-                <input class="inp mono" type="password" name="CREDIMI_INTERNAL_ADMIN_KEY" value="{{$.Runner.Get "CREDIMI_INTERNAL_ADMIN_KEY"}}" data-secret="CREDIMI_INTERNAL_ADMIN_KEY" placeholder="internal key" autocomplete="off" spellcheck="false">
+                <input class="inp mono" type="password" name="CREDIMI_INTERNAL_ADMIN_KEY" value="{{$.Runner.Get "CREDIMI_INTERNAL_ADMIN_KEY"}}" data-secret="CREDIMI_INTERNAL_ADMIN_KEY" placeholder="internal key" autocomplete="new-password" spellcheck="false">
                 <div class="acts"><button type="button" class="minibtn" data-reveal-secret="CREDIMI_INTERNAL_ADMIN_KEY" title="Reveal">{{icon "eye"}}</button></div>
               </div>
             </div>
@@ -90,7 +90,7 @@
               </div>
               <div class="field">
                 <label><span class="lbtx">Runner description</span><span class="envkey">CREDIMI_RUNNER_DESCRIPTION</span></label>
-                <textarea class="ta mono" name="CREDIMI_RUNNER_DESCRIPTION" rows="3" placeholder="Optional note about this runner...">{{$.Runner.Get "CREDIMI_RUNNER_DESCRIPTION"}}</textarea>
+                <textarea class="ta mono" name="CREDIMI_RUNNER_DESCRIPTION" rows="3" placeholder="Optional note about this runner..." autocomplete="off">{{$.Runner.Get "CREDIMI_RUNNER_DESCRIPTION"}}</textarea>
                 {{if ($.Field "CREDIMI_RUNNER_DESCRIPTION").Hint}}<p class="hint">{{($.Field "CREDIMI_RUNNER_DESCRIPTION").Hint}}</p>{{end}}
               </div>
             </div>

@@ -248,8 +248,9 @@ func normalizedConfigValues(current, incoming map[string]string, goos string) (d
 	next := cloneStringMap(current)
 	for _, f := range Registry {
 		if f.Type == TypeBool {
-			_, present := incoming[f.Key]
-			next[f.Key] = boolStr(present)
+			if v, present := incoming[f.Key]; present {
+				next[f.Key] = boolStr(isTruthyFormValue(v))
+			}
 			continue
 		}
 		if v, ok := incoming[f.Key]; ok {
@@ -398,6 +399,15 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func isTruthyFormValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func sortedKeys(m map[string]string) []string {

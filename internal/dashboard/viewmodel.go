@@ -2,6 +2,8 @@ package dashboard
 
 import (
 	"html/template"
+	"net"
+	"net/url"
 	"strings"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -163,9 +165,6 @@ func (d PageData) HasCriticalServices() bool {
 
 // PublicURL computes the externally reachable endpoint from the network config.
 func (d PageData) PublicURL() string {
-	if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
-		return publicURL
-	}
 	mode := d.Runner.Get("CREDIMI_SERVICE_MODE")
 	switch mode {
 	case "cloudflare-managed":
@@ -175,12 +174,33 @@ func (d PageData) PublicURL() string {
 		return "https://<runner-domain>"
 	case "manual":
 		if publicURL := strings.TrimSpace(d.Runner.Get("RUNNER_PUBLIC_URL")); publicURL != "" {
-			return publicURL
+			return publicURLWithPort(publicURL, d.Runner.Get("RUNNER_PUBLIC_PORT"))
 		}
 		return "Waiting for manual public URL"
 	default:
+		if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
+			return publicURL
+		}
 		return "Waiting for quick tunnel URL"
 	}
+}
+
+func publicURLWithPort(rawURL, port string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	port = strings.TrimSpace(port)
+	if rawURL == "" || port == "" {
+		return rawURL
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Host == "" {
+		return strings.TrimRight(rawURL, "/") + ":" + port
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return rawURL
+	}
+	parsed.Host = net.JoinHostPort(host, port)
+	return parsed.String()
 }
 
 // FieldVM bundles a field with its current value + any validation error.

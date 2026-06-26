@@ -223,6 +223,38 @@ func TestConfigApplyResetsTypeDerivedFieldsOnRunnerTypeChange(t *testing.T) {
 	}
 }
 
+func TestConfigApplyPreservesAbsentBooleanFields(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.values["OTEL_ENABLED"] = "true"
+
+	errs, err := cfg.Apply(map[string]string{
+		"CREDIMI_URL":       "https://credimi.io",
+		"CREDIMI_RUNNER_ID": "myorg/runner1",
+	})
+	if err != nil {
+		t.Fatalf("Apply failed: %v (errors: %v)", err, errs)
+	}
+	if cfg.Get("OTEL_ENABLED") != "true" {
+		t.Fatalf("absent OTEL_ENABLED should be preserved, got %q", cfg.Get("OTEL_ENABLED"))
+	}
+
+	errs, err = cfg.Apply(map[string]string{
+		"CREDIMI_URL":       "https://credimi.io",
+		"CREDIMI_RUNNER_ID": "myorg/runner1",
+		"OTEL_ENABLED":      "false",
+	})
+	if err != nil {
+		t.Fatalf("Apply failed: %v (errors: %v)", err, errs)
+	}
+	if cfg.Get("OTEL_ENABLED") != "false" {
+		t.Fatalf("explicit false OTEL_ENABLED should be saved, got %q", cfg.Get("OTEL_ENABLED"))
+	}
+}
+
 func TestConfig_AuthMode(t *testing.T) {
 	cfg := &Config{values: map[string]string{}}
 	if cfg.AuthMode() != "user" {

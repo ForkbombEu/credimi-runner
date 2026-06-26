@@ -64,7 +64,12 @@
   }
   function busyTriggerForElement(el) {
     if (!el) return null;
-    return el.closest('[data-runtime-action],[data-config-form],[data-setup-form]');
+    const trigger = el.closest('[data-runtime-action],[data-config-form],[data-setup-form]');
+    if (!trigger) return null;
+    if (trigger.matches('[data-config-form]') && !trigger.matches('[data-setup-form]') && trigger.dataset.busyActive !== '1') {
+      return null;
+    }
+    return trigger;
   }
   document.body.addEventListener('htmx:beforeRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
@@ -73,7 +78,10 @@
     showBusy(message);
   });
   document.body.addEventListener('htmx:afterRequest', (e) => {
-    if (busyTriggerForElement(e.detail.elt)) hideBusy();
+    const trigger = busyTriggerForElement(e.detail.elt);
+    const wasBusy = !!trigger;
+    if (trigger && trigger.matches('[data-config-form]')) delete trigger.dataset.busyActive;
+    if (wasBusy) hideBusy();
   });
   document.body.addEventListener('htmx:responseError', hideBusy);
   document.body.addEventListener('htmx:sendError', hideBusy);
@@ -495,7 +503,8 @@
   });
   const initNetMode = () => {
     const checked = document.querySelector('[name="CREDIMI_SERVICE_MODE"]:checked');
-    if (checked) syncNetMode(checked.value);
+    const input = checked || document.querySelector('[name="CREDIMI_SERVICE_MODE"]');
+    if (input) syncNetMode(input.value);
   };
   initNetMode();
 
@@ -742,7 +751,12 @@
     $$('[data-val]', seg).forEach((b) => b.classList.remove('on'));
     btn.classList.add('on');
     const hidden = seg.parentElement.querySelector(`input[name="${key}"]`) || document.querySelector(`input[name="${key}"]`);
-    if (hidden) { hidden.value = btn.dataset.val; hidden.dispatchEvent(new Event('input', { bubbles: true })); }
+    if (hidden) {
+      hidden.value = btn.dataset.val;
+      hidden.dispatchEvent(new Event('input', { bubbles: true }));
+      hidden.dispatchEvent(new Event('change', { bubbles: true }));
+      if (key === 'CREDIMI_SERVICE_MODE') syncNetMode(hidden.value);
+    }
   });
 
   // ── Auth mode segmented control (config) ─────────────────────────────────
@@ -814,19 +828,25 @@
     e.preventDefault();
     const body = new URLSearchParams(new FormData(form));
     let message = 'Save these changes?';
+    let confirmRequired = false;
     try {
       const res = await fetch('/config/diff', { method: 'POST', body });
       if (res.ok) {
         const data = await res.json();
+        confirmRequired = data.confirm_required === true;
         message = data.message || message;
       }
     } catch (_) {}
-    const ok = window.confirm(message);
-    if (ok) {
-      form.dataset.confirmedSubmit = '1';
-      form.requestSubmit();
+    if (confirmRequired) {
+      const ok = window.confirm(message);
+      if (!ok) return;
+      form.dataset.busyActive = '1';
+    } else {
+      delete form.dataset.busyActive;
     }
-  });
+    form.dataset.confirmedSubmit = '1';
+    form.requestSubmit();
+  }, true);
   document.addEventListener('click', (e) => {
     if (e.target.closest('[data-discard]')) {
       const form = e.target.closest('[data-config-form]');

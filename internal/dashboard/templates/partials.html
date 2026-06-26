@@ -8,6 +8,7 @@
 <div class="tog-row">
   <div class="tx"><b>{{.Label}}</b>{{if .Hint}}<span>{{.Hint}}</span>{{end}}</div>
   <button type="button" class="tog {{if .Checked}}on{{end}}" role="switch" aria-checked="{{.Checked}}" data-toggle="{{.Key}}"></button>
+  <input type="hidden" name="{{.Key}}" value="false">
   <input type="checkbox" name="{{.Key}}" hidden {{if .Checked}}checked{{end}}>
 </div>
 {{- else -}}
@@ -19,14 +20,14 @@
   </select>
   {{- else if .Secret }}
   <div class="inp-wrap">
-    <input class="inp mono" type="password" name="{{.Key}}" value="{{.Value}}" data-secret="{{.Key}}" autocomplete="off" spellcheck="false">
+    <input class="inp mono" type="password" name="{{.Key}}" value="{{.Value}}" data-secret="{{.Key}}" autocomplete="new-password" spellcheck="false">
     <div class="acts">
       <button type="button" class="minibtn" data-reveal-secret="{{.Key}}" title="Reveal">{{icon "eye"}}</button>
       <button type="button" class="minibtn" data-copy="{{.Key}}" title="Copy">{{icon "copy"}}</button>
     </div>
   </div>
   {{- else }}
-  <input class="inp mono" name="{{.Key}}" value="{{.Value}}" spellcheck="false">
+  <input class="inp mono" name="{{.Key}}" value="{{.Value}}" autocomplete="off" spellcheck="false">
   {{- end }}
   {{if .Err}}<p class="hint" style="color:var(--down)">{{.Err}}</p>{{else if .Hint}}<p class="hint">{{.Hint}}</p>{{end}}
 </div>
