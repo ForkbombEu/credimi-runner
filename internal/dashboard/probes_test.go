@@ -36,7 +36,7 @@ func TestStatusString(t *testing.T) {
 }
 
 func TestServiceTypes(t *testing.T) {
-	svc := Service{ID: "runner", Name: "runner", Role: "credimi-runner serve", Status: Online, Uptime: "Up 3h"}
+	svc := Service{ID: "runner",  Status: Online}
 	if svc.ID != "runner" {
 		t.Error("service ID mismatch")
 	}

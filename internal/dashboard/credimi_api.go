@@ -109,16 +109,6 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	}, nil
 }
 
-type setupCanonifyRequest struct {
-	InstanceURL string `json:"instance_url"`
-	APIKey      string `json:"api_key"`
-	Name        string `json:"name"`
-}
-
-type setupCanonifyResponse struct {
-	Canonified string `json:"canonified"`
-}
-
 func fetchCredimiCanonify(ctx context.Context, instanceURL, apiKey, name string) (string, error) {
 	body, err := json.Marshal(map[string]string{"canonified_name": name})
 	if err != nil {
