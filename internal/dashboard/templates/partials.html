@@ -67,7 +67,7 @@
   <div class="stat">
     <div class="k">{{icon "activity"}} Runtime</div>
     <div class="v">{{.RuntimeHeadline}}</div>
-    <div class="meta">{{if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
+    <div class="meta">{{if .StartupMessage}}{{.StartupMessage}}{{else if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
   </div>
   <div class="stat">
     <div class="k">{{icon "server"}} Runner API</div>
@@ -111,7 +111,7 @@
   <div class="tx"><b style="display:flex;align-items:center;gap:8px">{{.Name}} {{if .Image}}<span class="tag mono" style="font-size:10px">{{.Image}}</span>{{end}}</b><span>{{.Role}}</span></div>
   <div style="text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
     <span class="{{chipClass .Status}} pulse"><span class="d"></span>{{statusLabel .Status}}</span>
-    {{if .Uptime}}<span class="muted" style="font:500 11px var(--font-mono)">{{.Uptime}}</span>{{end}}
+    {{if .Reason}}<span class="muted" style="font:500 11px var(--font-mono)">{{.Reason}}</span>{{else if .Uptime}}<span class="muted" style="font:500 11px var(--font-mono)">{{.Uptime}}</span>{{end}}
   </div>
 </div>
 {{- end}}

@@ -40,6 +40,7 @@ type Server struct {
 	hub                    *Hub
 	render                 *Renderer
 	composeDir             string
+	ctx                    context.Context
 	authToken              string
 	manager                dashboardruntime.Manager
 	runnerReady            func(context.Context, map[string]string) error
@@ -47,17 +48,41 @@ type Server struct {
 	statPath               func(string) (os.FileInfo, error)
 	lastRegistrationStatus string
 	pendingDiff            dashboardruntime.ConfigDiff
+	startup                startupState
 	mu                     sync.RWMutex
+}
+
+type StartupPhase string
+
+const (
+	StartupIdle           StartupPhase = "idle"
+	StartupStarting       StartupPhase = "starting"
+	StartupWaitingRunner  StartupPhase = "waiting_for_runner"
+	StartupRegistering    StartupPhase = "registering"
+	StartupReady          StartupPhase = "ready"
+	StartupNeedsAttention StartupPhase = "needs_attention"
+)
+
+type startupState struct {
+	Phase   StartupPhase
+	Message string
+	running bool
+	cancel  context.CancelFunc
+	done    chan struct{}
 }
 
 // NewHandler creates the dashboard HTTP handler for mounting into an existing
 // server (e.g. the credimi-runner serve command). Callers should cancel the
 // returned context on shutdown to stop the background poller.
 func NewHandler(composeDir string) (http.Handler, context.CancelFunc, error) {
-	return NewHandlerWithManager(composeDir, nil)
+	return NewHandlerWithManagerContext(context.Background(), composeDir, nil)
 }
 
 func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) (http.Handler, context.CancelFunc, error) {
+	return NewHandlerWithManagerContext(context.Background(), composeDir, manager)
+}
+
+func NewHandlerWithManagerContext(parent context.Context, composeDir string, manager dashboardruntime.Manager) (http.Handler, context.CancelFunc, error) {
 	cfg, err := LoadConfig(composeDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -66,7 +91,12 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("templates: %w", err)
 	}
-	hub := NewHub(cfg, composeDir, render)
+	hub := NewHub(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
+		if manager == nil {
+			return dashboardruntime.RuntimeStatus{}
+		}
+		return manager.Status(context.Background())
+	})
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve executable: %w", err)
@@ -89,14 +119,18 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 		hub:        hub,
 		render:     render,
 		composeDir: composeDir,
+		ctx:        parent,
 		authToken:  strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
 		manager:    manager,
 		lookupPath: lookupPath,
 		statPath:   statPath,
+		startup: startupState{
+			Phase: StartupIdle,
+		},
 	}
 	srv.runnerReady = srv.waitForRunnerReady
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	go hub.Run(ctx, 2*time.Second)
 
 	mux := http.NewServeMux()
@@ -122,6 +156,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Config actions
 	mux.HandleFunc("POST /config", s.saveConfig)
+	mux.HandleFunc("POST /config/diff", s.configDiff)
 	mux.HandleFunc("POST /setup", s.finishSetup)
 	mux.HandleFunc("POST /setup/organization", s.lookupSetupOrganization)
 	mux.HandleFunc("POST /setup/runner-id", s.previewSetupRunnerID)
@@ -137,6 +172,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
 
 	// Device actions
+	mux.HandleFunc("POST /devices/config", s.saveDevicesConfig)
 	mux.HandleFunc("POST /devices/connect", s.deviceConnect)
 	mux.HandleFunc("POST /devices/{serial}/reconnect", s.deviceReconnect)
 	mux.HandleFunc("POST /devices/{serial}/disconnect", s.deviceDisconnect)
@@ -195,6 +231,7 @@ func (s *Server) pageData(active string, payload any) PageData {
 	s.mu.RUnlock()
 	payloadMap := map[string]any{
 		"RuntimeStatus": runtimeStatus,
+		"Startup":       s.startupSnapshot(),
 	}
 	if flash != "" {
 		payloadMap["Flash"] = flash
@@ -217,18 +254,19 @@ func (s *Server) pageData(active string, payload any) PageData {
 
 func (s *Server) page(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if name == "overview" && !s.cfg.Exists() {
-			name = "setup"
+		pageName := name
+		if pageName == "overview" && !s.cfg.Exists() {
+			pageName = "setup"
 		}
-		d := s.pageData(name, nil)
+		d := s.pageData(pageName, nil)
 		var (
 			html string
 			err  error
 		)
 		if r.Header.Get("HX-Request") == "true" {
-			html, err = s.render.FragmentPage(name, d)
+			html, err = s.render.FragmentPage(pageName, d)
 		} else {
-			html, err = s.render.Page(name, d)
+			html, err = s.render.Page(pageName, d)
 		}
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -242,6 +280,14 @@ func (s *Server) page(name string) http.HandlerFunc {
 // ── config handlers ──────────────────────────────────────────────────────────
 
 func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
+	s.saveConfigPage(w, r, "config")
+}
+
+func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
+	s.saveConfigPage(w, r, "devices")
+}
+
+func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page string) {
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
@@ -254,9 +300,8 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	oldSnapshot := s.cfg.Snapshot()
 	if errs, err := s.cfg.Apply(incoming); err != nil {
-		// Re-render the form with inline errors.
-		d := s.pageData("config", map[string]any{"Errors": errs})
-		html, _ := s.render.FragmentPage("config", d)
+		d := s.pageData(page, map[string]any{"Errors": errs})
+		html, _ := s.render.FragmentPage(page, d)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		w.Write([]byte(html))
@@ -294,11 +339,45 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	s.lastRegistrationStatus = ""
 	s.mu.Unlock()
 
-	d := s.pageData("config", map[string]any{"Saved": true, "Flash": flash})
-	html, _ := s.render.FragmentPage("config", d)
+	d := s.pageData(page, map[string]any{"Saved": true, "Flash": flash})
+	html, _ := s.render.FragmentPage(page, d)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, flash))
 	w.Write([]byte(html))
+}
+
+func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	incoming := map[string]string{}
+	for key, values := range r.PostForm {
+		if len(values) > 0 {
+			incoming[key] = values[0]
+		}
+	}
+	next := s.cfg.Snapshot()
+	for _, field := range Registry {
+		if field.Type == TypeBool {
+			_, present := incoming[field.Key]
+			next[field.Key] = boolStr(present)
+			continue
+		}
+		if value, ok := incoming[field.Key]; ok {
+			next[field.Key] = strings.TrimSpace(value)
+		}
+	}
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(next), runtimeGOOS())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	diff := dashboardruntime.DiffValues(dashboardruntime.Values(s.cfg.Snapshot()), normalized)
+	writeJSON(w, map[string]any{
+		"classes": diff.Classes,
+		"message": describeDiffImpact(diff),
+	})
 }
 
 func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) (string, error) {
@@ -366,59 +445,113 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 	if s.manager != nil {
 		s.manager.Configure(dashboardruntime.Values(values))
 	}
-	if err := WriteComposeFile(s.composeDir, values); err != nil {
-		s.renderSetupError(w, values, "compose generation failed: "+err.Error())
-		return
-	}
-	if s.manager != nil {
-		if err := s.manager.Start(r.Context()); err != nil {
-			s.renderSetupError(w, values, "runtime start failed: "+err.Error())
+	plan := dashboardruntime.BuildRuntimePlan(s.composeDir, dashboardruntime.Values(values))
+	if len(plan.ComposeServices) > 0 {
+		if err := WriteComposeFile(s.composeDir, values); err != nil {
+			s.renderSetupError(w, values, "compose generation failed: "+err.Error())
 			return
 		}
 	}
-	setupCheckCtx, setupCheckCancel := context.WithTimeout(r.Context(), 8*time.Second)
-	defer setupCheckCancel()
-	if err := s.runnerReady(setupCheckCtx, values); err != nil {
-		s.mu.Lock()
-		s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}}
-		s.lastRegistrationStatus = "Setup complete. Runtime start was requested, but runner readiness was not confirmed: " + s.runtimeStartupError(r.Context(), err).Error()
-		s.mu.Unlock()
-		s.renderSetupComplete(w, r)
-		return
-	}
-	registerCtx, registerCancel := context.WithTimeout(r.Context(), 8*time.Second)
-	defer registerCancel()
-	if err := s.registerCurrent(registerCtx, values); err != nil {
-		s.mu.Lock()
-		s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
-		s.lastRegistrationStatus = "Setup complete. Runner started, but Credimi registration failed: " + err.Error()
-		s.mu.Unlock()
-		s.renderSetupComplete(w, r)
-		return
-	}
-	s.mu.Lock()
-	s.pendingDiff = dashboardruntime.ConfigDiff{}
-	s.lastRegistrationStatus = "Setup complete. Runner started and registered with Credimi."
-	s.mu.Unlock()
+	s.startStartupJob(values)
 	s.renderSetupComplete(w, r)
 }
 
 func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("HX-Request") != "true" {
-		w.Header().Set("Location", "/")
-		w.WriteHeader(http.StatusSeeOther)
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", "/")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	d := s.pageData("overview", nil)
-	html, err := s.render.FragmentPage("overview", d)
+	w.Header().Set("Location", "/")
+	w.WriteHeader(http.StatusSeeOther)
+}
+
+func (s *Server) startStartupJob(values map[string]string) {
+	s.mu.Lock()
+	waitFor := s.startup.done
+	if s.startup.running && s.startup.cancel != nil {
+		s.startup.cancel()
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	done := make(chan struct{})
+	s.startup.running = true
+	s.startup.cancel = cancel
+	s.startup.done = done
+	s.startup.Phase = StartupStarting
+	s.startup.Message = "Setup saved. Starting runtime."
+	s.lastRegistrationStatus = s.startup.Message
+	s.mu.Unlock()
+
+	s.hub.poll(context.Background())
+	go func(wait <-chan struct{}, values map[string]string, ctx context.Context, done chan struct{}) {
+		if wait != nil {
+			<-wait
+		}
+		defer close(done)
+		s.runStartupJob(ctx, values)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.startup.done == done {
+			s.startup.running = false
+			s.startup.cancel = nil
+		}
+	}(waitFor, cloneStringMap(values), ctx, done)
+}
+
+func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
+	if s.manager == nil {
+		s.setStartupState(StartupReady, "Setup saved.")
+		return
+	}
+	if err := s.manager.Start(ctx); err != nil {
+		s.setStartupState(StartupNeedsAttention, "Setup saved, but runtime start failed: "+err.Error())
+		return
+	}
+	s.hub.poll(context.Background())
+	if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+		s.setStartupState(StartupWaitingRunner, "Runtime started. Waiting for runner readiness.")
+		readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err := s.runnerReady(readyCtx, values)
+		cancel()
+		if err != nil {
+			s.setStartupState(StartupNeedsAttention, "Setup saved, but runner readiness was not confirmed: "+s.runtimeStartupError(context.Background(), err).Error())
+			return
+		}
+	}
+	s.setStartupState(StartupRegistering, "Runtime started. Updating Credimi registration.")
+	registerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err := s.registerCurrent(registerCtx, values)
+	cancel()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		s.mu.Lock()
+		s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
+		s.mu.Unlock()
+		s.setStartupState(StartupNeedsAttention, "Setup saved, but Credimi registration failed: "+err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("HX-Push-Url", "/")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(html))
+	s.mu.Lock()
+	s.pendingDiff = dashboardruntime.ConfigDiff{}
+	s.mu.Unlock()
+	s.setStartupState(StartupReady, "Setup complete. Runner started and registered with Credimi.")
+}
+
+func (s *Server) setStartupState(phase StartupPhase, message string) {
+	s.mu.Lock()
+	s.startup.Phase = phase
+	s.startup.Message = message
+	s.lastRegistrationStatus = message
+	s.mu.Unlock()
+	s.hub.poll(context.Background())
+}
+
+func (s *Server) startupSnapshot() startupState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return startupState{
+		Phase:   s.startup.Phase,
+		Message: s.startup.Message,
+		running: s.startup.running,
+	}
 }
 
 func validateSetupInput(values map[string]string) map[string]string {
@@ -554,8 +687,11 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 	preview, err := fetchCredimiRunnerPreview(ctx, req)
 	if err != nil {
 		preview = setupRunnerPreview{
-			Organization: req.Organization,
-			RunnerID:     req.Organization + "/" + canonifyPlain(req.Name),
+			Organization:    req.Organization,
+			BaseRunnerID:    req.Organization + "/" + canonifyPlain(req.Name),
+			PreviewRunnerID: req.Organization + "/" + canonifyPlain(req.Name),
+			RunnerID:        req.Organization + "/" + canonifyPlain(req.Name),
+			DefaultAction:   "update",
 		}
 	}
 	writeJSON(w, preview)
@@ -741,7 +877,25 @@ func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]str
 		if err != nil {
 			return err
 		}
-		values["CREDIMI_RUNNER_ID"] = preview.RunnerID
+		baseRunnerID := organization + "/" + canonifyPlain(name)
+		previewRunnerID := strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
+		if previewRunnerID == "" {
+			previewRunnerID = baseRunnerID
+		}
+		action := strings.TrimSpace(values["CREDIMI_RUNNER_NAME_CONFLICT_ACTION"])
+		if action == "" {
+			action = "update"
+		}
+		switch {
+		case previewRunnerID == baseRunnerID:
+			values["CREDIMI_RUNNER_ID"] = baseRunnerID
+		case action == "update":
+			values["CREDIMI_RUNNER_ID"] = baseRunnerID
+		case action == "create":
+			values["CREDIMI_RUNNER_ID"] = previewRunnerID
+		default:
+			return fmt.Errorf("unsupported runner conflict action %q", action)
+		}
 	}
 
 	if strings.TrimSpace(values["OTEL_SERVICE_NAME"]) == "" {
@@ -915,6 +1069,25 @@ func flashForDiff(diff dashboardruntime.ConfigDiff) string {
 	}
 }
 
+func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {
+	switch {
+	case len(diff.Classes) == 1 && diff.Classes[0] == dashboardruntime.ApplySavedOnly:
+		return "Save these changes? No restart or Credimi registration update is required."
+	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
+		return "Save these changes? Docker Compose services must be recreated and the runner record in Credimi must be updated."
+	case hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
+		return "Save these changes? The runner must restart and the runner record in Credimi must be updated."
+	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate):
+		return "Save these changes? Docker Compose services must be recreated for them to take effect."
+	case hasApplyClass(diff, dashboardruntime.ApplyRestartRequired):
+		return "Save these changes? The runner must restart for them to take effect."
+	case hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
+		return "Save these changes? The runner record in Credimi must be updated."
+	default:
+		return "Save these changes?"
+	}
+}
+
 func hasApplyClass(diff dashboardruntime.ConfigDiff, class dashboardruntime.ApplyClass) bool {
 	for _, candidate := range diff.Classes {
 		if candidate == class {
@@ -1033,7 +1206,12 @@ func (s *Server) sse(stream string) http.HandlerFunc {
 			select {
 			case <-r.Context().Done():
 				return
-			case ev := <-c.ch:
+			case <-s.ctx.Done():
+				return
+			case ev, ok := <-c.ch:
+				if !ok {
+					return
+				}
 				writeSSE(w, ev.name, ev.data)
 				flusher.Flush()
 			case <-runtimeTick.C:
@@ -1061,6 +1239,14 @@ func writeSSE(w http.ResponseWriter, name, data string) {
 func htmlAttr(s string) string {
 	r := strings.NewReplacer(`&`, "&amp;", `<`, "&lt;", `>`, "&gt;", `"`, "&quot;")
 	return r.Replace(s)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func runtimeGOOS() string {

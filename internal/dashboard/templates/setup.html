@@ -30,6 +30,7 @@
         {{if eq $s.ID "identity"}}
           <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" data-org-value>
           <input type="hidden" name="CREDIMI_RUNNER_ID" value="{{$.Runner.Get "CREDIMI_RUNNER_ID"}}" data-runner-id-value>
+          <input type="hidden" name="CREDIMI_RUNNER_NAME_CONFLICT_ACTION" value="update" data-runner-conflict-action>
           <div class="wizard-fields">
             <div class="field" style="grid-column:1/-1">
               <label><span class="lbtx">Authentication mode</span></label>
@@ -76,6 +77,16 @@
                   <input class="inp mono" name="CREDIMI_RUNNER_NAME" value="{{$.Runner.Get "CREDIMI_RUNNER_NAME"}}" placeholder="runner-name" style="border:none;border-radius:0;flex:1" required>
                 </div>
                 <p class="hint" style="margin-top:6px">Runner ID: <span class="tag mono" data-runner-id-preview>{{or ($.Runner.Get "CREDIMI_RUNNER_ID") "org/runner-name"}}</span><span data-canonified style="display:none"></span></p>
+              </div>
+              <div class="callout warn" data-runner-conflict style="grid-column:1/-1;display:none">
+                {{icon "warn"}}
+                <div>
+                  <b data-runner-conflict-message>Runner conflict</b>
+                  <div class="seg" style="margin-top:10px" data-runner-conflict-options>
+                    <button type="button" class="on" data-runner-conflict-choice="update">Update existing runner</button>
+                    <button type="button" data-runner-conflict-choice="create">Create new runner</button>
+                  </div>
+                </div>
               </div>
               <div class="field">
                 <label><span class="lbtx">Runner description</span><span class="envkey">CREDIMI_RUNNER_DESCRIPTION</span></label>

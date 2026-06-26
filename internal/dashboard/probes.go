@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -39,12 +41,15 @@ type Device struct {
 }
 
 type Service struct {
-	ID     string
-	Name   string
-	Role   string
-	Image  string
-	Status Status
-	Uptime string
+	ID       string
+	Name     string
+	Role     string
+	Image    string
+	Status   Status
+	Uptime   string
+	Expected bool
+	Critical bool
+	Reason   string
 }
 
 type Snapshot struct {
@@ -192,14 +197,33 @@ func probeIOS(ctx context.Context) []Device {
 
 // ── Docker compose services ──────────────────────────────────────────────────
 
-func probeServices(ctx context.Context, composeDir string) []Service {
-	want := []Service{
-		{ID: "runner", Name: "runner", Role: "credimi-runner serve"},
-		{ID: "caddy", Name: "caddy", Role: "reverse proxy"},
-		{ID: "cloudflared", Name: "cloudflared", Role: "tunnel"},
+func probeServices(ctx context.Context, composeDir string, plan dashboardruntime.RuntimePlan, runtimeRunning bool) []Service {
+	want := make([]Service, 0, len(plan.ExpectedServices))
+	for _, planned := range plan.ExpectedServices {
+		want = append(want, Service{
+			ID:       planned.ID,
+			Name:     planned.Name,
+			Role:     planned.Role,
+			Expected: true,
+			Critical: planned.Critical,
+		})
 	}
 	if !has("docker") {
 		for i := range want {
+			if want[i].ID == "runner_host_process" {
+				if runtimeRunning {
+					want[i].Status = Online
+					want[i].Uptime = "running"
+				} else {
+					want[i].Status = Offline
+				}
+				continue
+			}
+			if want[i].ID == "temporal" {
+				want[i].Status = Idle
+				want[i].Reason = "external check pending"
+				continue
+			}
 			want[i].Status = Offline
 		}
 		return want
@@ -230,19 +254,32 @@ func probeServices(ctx context.Context, composeDir string) []Service {
 		}
 	}
 	for i := range want {
-		if r, ok := byName[want[i].Name]; ok {
-			want[i].Image = r.image
-			want[i].Uptime = r.status
-			switch r.state {
-			case "running":
+		switch want[i].ID {
+		case "runner_host_process":
+			if runtimeRunning {
 				want[i].Status = Online
-			case "restarting", "paused":
-				want[i].Status = Degraded
-			default:
+				want[i].Uptime = "running"
+			} else {
 				want[i].Status = Offline
 			}
-		} else {
-			want[i].Status = Offline
+		case "temporal":
+			want[i].Status = Idle
+			want[i].Reason = "external workflow backend"
+		default:
+			if r, ok := byName[want[i].Name]; ok {
+				want[i].Image = r.image
+				want[i].Uptime = r.status
+				switch r.state {
+				case "running":
+					want[i].Status = Online
+				case "restarting", "paused":
+					want[i].Status = Degraded
+				default:
+					want[i].Status = Offline
+				}
+			} else {
+				want[i].Status = Offline
+			}
 		}
 	}
 	return want

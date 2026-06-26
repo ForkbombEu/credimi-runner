@@ -58,7 +58,7 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub := NewHub(cfg, t.TempDir(), render)
+	hub := NewHub(cfg, t.TempDir(), render, func() dashboardruntime.RuntimeStatus { return dashboardruntime.RuntimeStatus{} })
 	hub.snap = Snapshot{Services: []Service{{ID: "runner", Name: "runner", Status: Online}}}
 	hub.workers = []Worker{{ID: "runner-mr", Env: "runner", Status: Online}}
 	return &Server{
@@ -66,6 +66,7 @@ func newTestServer(t *testing.T) *Server {
 		hub:        hub,
 		render:     render,
 		composeDir: t.TempDir(),
+		ctx:        context.Background(),
 		authToken:  "token",
 		manager: &fakeManager{logLines: []dashboardruntime.LogLine{
 			{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
@@ -192,6 +193,16 @@ func TestServerPageAndPageData(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "API &amp; Config") || !strings.Contains(rec.Body.String(), "data-config-form") {
 		t.Fatalf("fragment code/body = %d %s", rec.Code, rec.Body.String())
 	}
+
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	if err := s.cfg.write(); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	s.page("overview").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "Set up Credimi Runner") {
+		t.Fatalf("configured GET / should render dashboard, got %d %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestServerConfigHandlers(t *testing.T) {
@@ -272,9 +283,10 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Push-Url") != "/" || !strings.Contains(rec.Body.String(), "Runtime") {
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
 		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
+	waitForCondition(t, func() bool { return s.manager.(*fakeManager).startCalls > 0 })
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should start runtime")
 	}
@@ -309,16 +321,14 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Push-Url") != "/" || !strings.Contains(rec.Body.String(), "Runtime") {
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
 		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
+	waitForCondition(t, func() bool { return hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired) })
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when registration fails")
 	}
-	if !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired) {
-		t.Fatalf("pendingDiff = %#v, want Credimi update required", s.pendingDiff)
-	}
-	if !strings.Contains(s.lastRegistrationStatus, "Runner started") {
+	if !strings.Contains(s.lastRegistrationStatus, "Credimi registration failed") {
 		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
 	}
 }
@@ -331,6 +341,7 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 	form := url.Values{
 		"CREDIMI_URL":                 {"https://credimi.example"},
 		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_BACKEND":      {"host"},
 		"CREDIMI_RUNNER_NAME":         {"runner"},
 		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
 		"CREDIMI_USER_API_KEY":        {"user-key"},
@@ -344,18 +355,28 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Push-Url") != "/" || !strings.Contains(rec.Body.String(), "Runtime") {
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
 		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
+	waitForCondition(t, func() bool { return strings.Contains(s.lastRegistrationStatus, "readiness was not confirmed") })
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when readiness is not confirmed")
-	}
-	if !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRestartRequired) {
-		t.Fatalf("pendingDiff = %#v, want restart required", s.pendingDiff)
 	}
 	if !strings.Contains(s.lastRegistrationStatus, "readiness was not confirmed") {
 		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
 	}
+}
+
+func waitForCondition(t *testing.T, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition not satisfied before timeout")
 }
 
 func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {

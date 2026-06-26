@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 func TestProbeAndroid_ParseOutput(t *testing.T) {
@@ -86,7 +88,7 @@ func TestPillData(t *testing.T) {
 	h := &Hub{}
 	// All healthy
 	snap := Snapshot{
-		Services: []Service{{ID: "runner", Status: Online}},
+		Services: []Service{{ID: "runner", Status: Online, Expected: true, Critical: true}},
 		Devices:  []Device{{Serial: "a", Status: Online}},
 	}
 	p := h.pillData(snap)
@@ -98,7 +100,7 @@ func TestPillData(t *testing.T) {
 	}
 
 	// One offline
-	snap.Services = append(snap.Services, Service{ID: "caddy", Status: Offline})
+	snap.Services = append(snap.Services, Service{ID: "caddy", Status: Offline, Expected: true, Critical: true})
 	p = h.pillData(snap)
 	if p.OK {
 		t.Error("expected not OK when one service offline")
@@ -166,8 +168,12 @@ printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","I
 `)
 	t.Setenv("PATH", bin)
 
-	services := probeServices(context.Background(), t.TempDir())
-	if len(services) != 3 {
+	plan := dashboardruntime.BuildRuntimePlan(t.TempDir(), dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "auto",
+	})
+	services := probeServices(context.Background(), t.TempDir(), plan, true)
+	if len(services) != 4 {
 		t.Fatalf("services len = %d", len(services))
 	}
 	if services[0].Status != Online || services[0].Image != "runner:local" || services[0].Uptime != "Up 10 seconds" {
@@ -176,15 +182,25 @@ printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","I
 	if services[1].Status != Degraded {
 		t.Fatalf("caddy service = %#v", services[1])
 	}
-	if services[2].Status != Offline {
-		t.Fatalf("cloudflared service = %#v", services[2])
+	if services[2].Status != Offline || services[2].ID != "tunnel" {
+		t.Fatalf("tunnel service = %#v", services[2])
+	}
+	if services[3].ID != "temporal" || services[3].Critical {
+		t.Fatalf("temporal service = %#v", services[3])
 	}
 }
 
 func TestProbeServicesWithoutDocker(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	services := probeServices(context.Background(), "")
+	plan := dashboardruntime.BuildRuntimePlan("", dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	})
+	services := probeServices(context.Background(), "", plan, false)
 	for _, svc := range services {
+		if svc.ID == "temporal" {
+			continue
+		}
 		if svc.Status != Offline {
 			t.Fatalf("service should be offline without docker: %#v", svc)
 		}

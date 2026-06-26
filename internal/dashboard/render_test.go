@@ -223,8 +223,8 @@ func TestRenderer_DevicesTargetPageContract(t *testing.T) {
 	}
 	for _, want := range []string{
 		`Configured target`,
-		`Change target config`,
-		`Single target mode`,
+		`Save target`,
+		`Detected devices`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)

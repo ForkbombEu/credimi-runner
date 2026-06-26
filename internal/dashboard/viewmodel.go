@@ -55,8 +55,8 @@ func (d PageData) RuntimeHealthy() bool {
 	if !status.Configured {
 		return false
 	}
-	if len(d.Snapshot.Services) > 0 {
-		return status.ComposeRunning && d.ServicesAllUp()
+	if d.HasCriticalServices() {
+		return d.ServicesAllUp()
 	}
 	return status.RunnerRunning
 }
@@ -116,11 +116,23 @@ func (d PageData) ConfiguredTargetDetail() string {
 
 func (d PageData) ServicesAllUp() bool {
 	for _, s := range d.Snapshot.Services {
+		if !s.Expected || !s.Critical {
+			continue
+		}
 		if s.Status != Online {
 			return false
 		}
 	}
 	return true
+}
+
+func (d PageData) HasCriticalServices() bool {
+	for _, s := range d.Snapshot.Services {
+		if s.Expected && s.Critical {
+			return true
+		}
+	}
+	return false
 }
 
 // PublicURL computes the externally reachable endpoint from the network config.
@@ -136,13 +148,12 @@ func (d PageData) PublicURL() string {
 		}
 		return "https://<runner-domain>"
 	case "manual":
-		host := d.Runner.Get("RUNNER_HOST")
-		if host == "0.0.0.0" || host == "" {
-			host = "<host-ip>"
+		if publicURL := strings.TrimSpace(d.Runner.Get("RUNNER_PUBLIC_URL")); publicURL != "" {
+			return publicURL
 		}
-		return "http://" + host + ":" + d.Runner.Get("RUNNER_PORT")
+		return "Waiting for manual public URL"
 	default:
-		return "https://<name>.trycloudflare.com"
+		return "Waiting for quick tunnel URL"
 	}
 }
 
@@ -191,6 +202,20 @@ func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
 		return status
 	}
 	return dashboardruntime.RuntimeStatus{}
+}
+
+func (d PageData) StartupPhase() StartupPhase {
+	if startup, ok := d.payload()["Startup"].(startupState); ok {
+		return startup.Phase
+	}
+	return StartupIdle
+}
+
+func (d PageData) StartupMessage() string {
+	if startup, ok := d.payload()["Startup"].(startupState); ok {
+		return startup.Message
+	}
+	return ""
 }
 
 // Field returns the render model for one config key.

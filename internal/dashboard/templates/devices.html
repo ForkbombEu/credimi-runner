@@ -4,27 +4,84 @@
     <div>
       <span class="eyebrow">Runner target</span>
       <h1>Devices</h1>
-      <p>Configure and connect the single target this runner should control, then monitor the detected devices below.</p>
+      <p>Configure the single target this runner should control, then monitor the detected devices below.</p>
     </div>
-    <a class="btn btn-pri" href="/config" hx-get="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "key"}} Change target config</a>
   </div>
 
-  <section class="card" style="margin-bottom:16px">
-    <header class="card-h">{{icon "phone"}}<div><h3>Configured target</h3><div class="sub">one runner, one target</div></div></header>
-    <div class="card-b">
-      <div class="grid-2">
-        <div class="stat"><div class="k">{{icon "phone"}} Target type</div><div class="v">{{.ConfiguredTargetTitle}}</div><div class="meta">{{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
-        <div class="stat"><div class="k">{{icon "activity"}} Current address</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.ConfiguredTargetDetail}}</div><div class="meta">serial or base name</div></div>
+  {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
+  {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some target fields need attention.</div></div>{{end}}
+
+  <form hx-post="/devices/config" hx-target="main" hx-select="main" hx-swap="outerHTML" data-config-form data-target-config-form>
+    <section class="card" style="margin-bottom:16px">
+      <header class="card-h">{{icon "phone"}}<div><h3>Configured target</h3><div class="sub">one runner, one target</div></div></header>
+      <div class="card-b">
+        <div class="grid-2" style="margin-bottom:16px">
+          <div class="stat"><div class="k">{{icon "phone"}} Target type</div><div class="v">{{.ConfiguredTargetTitle}}</div><div class="meta">{{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
+          <div class="stat"><div class="k">{{icon "activity"}} Current address</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.ConfiguredTargetDetail}}</div><div class="meta">serial or base name</div></div>
+        </div>
+
+        <div class="field" style="grid-column:1/-1">
+          <label><span class="lbtx">Runner type</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_TYPE</span></label>
+          <div class="picks" style="grid-template-columns:repeat(4,1fr)">
+            {{range .TargetProfiles}}
+            <label class="pick {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") .Type}}on{{end}}" data-dev-pick="{{.Type}}">
+              <input type="radio" name="CREDIMI_RUNNER_TYPE" value="{{.Type}}" {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") .Type}}checked{{end}} style="display:none">
+              {{if eq .Type "ios_simulator"}}{{icon "apple"}}{{else if eq .Type "redroid"}}{{icon "grid"}}{{else if eq .Type "android_emulator"}}{{icon "server"}}{{else}}{{icon "android"}}{{end}}
+              <span><b>{{.Title}}</b><span>{{.Type}}</span></span>
+            </label>
+            {{end}}
+          </div>
+        </div>
+
+        <div data-dev-type="android_phone" style="grid-column:1/-1">
+          {{template "field" .Field "CREDIMI_RUNNER_DEVICE_MODE"}}
+          <div data-dev-mode="wifi" style="grid-column:1/-1">
+            <div class="field-row">{{template "field" .Field "CREDIMI_RUNNER_WIFI_IP"}}{{template "field" .Field "CREDIMI_RUNNER_WIFI_PORT"}}</div>
+          </div>
+          {{template "field" .Field "CREDIMI_RUNNER_SERIAL"}}
+        </div>
+
+        <div data-dev-type="android_emulator" style="grid-column:1/-1">
+          {{template "field" .Field "BASE_NAME"}}
+        </div>
+
+        <div data-dev-type="ios_simulator" style="grid-column:1/-1">
+          {{template "field" .Field "BASE_NAME"}}
+        </div>
+
+        <div data-dev-type="redroid" style="grid-column:1/-1">
+          <div class="field-row">{{template "field" .Field "REDROID_DATA_DIR"}}{{template "field" .Field "REDROID_DATA_TAR"}}</div>
+        </div>
+
+        <details class="gear-panel" style="grid-column:1/-1">
+          <summary>{{icon "gear"}} Target defaults</summary>
+          <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
+            {{template "field" .Field "RUNNER_IMAGE"}}
+          </div>
+          <div data-dev-type="android_emulator" style="grid-column:1/-1">
+            <div class="field-row">{{template "field" .Field "ANDROID_KEYS_DIR"}}{{template "field" .Field "GOLDEN_PATH"}}</div>
+            <div class="field-row">{{template "field" .Field "HOST_AVD_HOME_PATH"}}{{template "field" .Field "HOST_AVD_GOLDEN_PATH"}}</div>
+          </div>
+          <div data-dev-type="redroid" style="grid-column:1/-1">
+            <div class="field-row">{{template "field" .Field "AVDCTL_SSH_TARGET"}}{{template "field" .Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}</div>
+            <div class="field-row">{{template "field" .Field "AVDCTL_SSH_PASSWORD"}}{{template "field" .Field "AVDCTL_SUDO_PASSWORD"}}</div>
+            {{template "field" .Field "AVDCTL_SUDO"}}
+          </div>
+        </details>
       </div>
+    </section>
+
+    <div class="savebar" data-savebar hidden>
+      <span class="msg">{{icon "warn"}} Save writes <b>.env</b> and applies the required runtime changes automatically.</span>
+      <div class="sp"></div>
+      <button type="button" class="btn btn-out btn-sm" data-discard>Discard</button>
+      <button type="submit" class="btn btn-pri">{{icon "check"}} Save target</button>
     </div>
-  </section>
+  </form>
 
   <section class="card">
     <header class="card-h">{{icon "shield"}}<div><h3>Detected devices</h3><div class="sub">live device snapshot</div></div></header>
     <div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
   </section>
-
-  <div class="callout info" style="margin-top:16px">{{icon "info"}}<div><b>Single target mode</b><br>This runner currently supports one configured target. Multi-device management belongs to a future dashboard iteration.</div></div>
-
 </main>
 {{- end}}

@@ -10,7 +10,7 @@ import (
 )
 
 func TestHubClientLifecycleAndBroadcast(t *testing.T) {
-	h := NewHub(&Config{values: map[string]string{}}, t.TempDir(), nil)
+	h := NewHub(&Config{values: map[string]string{}}, t.TempDir(), nil, nil)
 	health := &client{ch: make(chan event, 1), stream: "health"}
 	workers := &client{ch: make(chan event, 1), stream: "workers"}
 
@@ -39,7 +39,7 @@ func TestHubClientLifecycleAndBroadcast(t *testing.T) {
 }
 
 func TestHubSnapshotAccessors(t *testing.T) {
-	h := NewHub(&Config{values: map[string]string{}}, t.TempDir(), nil)
+	h := NewHub(&Config{values: map[string]string{}}, t.TempDir(), nil, nil)
 	h.snap = Snapshot{Services: []Service{{ID: "runner", Status: Online}}}
 	h.workers = []Worker{{ID: "production-mr", Status: Online}}
 
@@ -57,9 +57,9 @@ func TestHubDeriveWorkers(t *testing.T) {
 		"CREDIMI_RUNNER_ORGANIZATION": "acme",
 		"CREDIMI_URL":                 "https://credimi.example",
 	}}
-	h := NewHub(cfg, t.TempDir(), nil)
+	h := NewHub(cfg, t.TempDir(), nil, nil)
 
-	workers := h.deriveWorkers([]Service{{ID: "temporal", Status: Online}})
+	workers := h.deriveWorkers([]Service{{ID: "runner", Status: Online}, {ID: "temporal", Status: Online}})
 	if len(workers) != 1 {
 		t.Fatalf("workers len = %d", len(workers))
 	}
@@ -68,8 +68,8 @@ func TestHubDeriveWorkers(t *testing.T) {
 	}
 
 	workers = h.deriveWorkers([]Service{{ID: "temporal", Status: Offline}})
-	if workers[0].Status != Degraded {
-		t.Fatalf("offline temporal should degrade configured worker: %#v", workers[0])
+	if workers[0].Status != Idle {
+		t.Fatalf("offline temporal should leave configured worker idle: %#v", workers[0])
 	}
 }
 
@@ -87,7 +87,7 @@ func TestHubFetchRunningWorkers(t *testing.T) {
 		"RUNNER_PORT":          strings.Split(host, ":")[1],
 		"CREDIMI_USER_API_KEY": "key",
 	}}
-	h := NewHub(cfg, t.TempDir(), nil)
+	h := NewHub(cfg, t.TempDir(), nil, nil)
 	workers, ok := h.fetchRunningWorkers(context.Background())
 	if !ok || len(workers) != 2 {
 		t.Fatalf("workers=%#v ok=%v", workers, ok)
@@ -103,7 +103,7 @@ func TestHubRunStopsOnContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewHub(&Config{values: map[string]string{"TEMPORAL_ADDRESS": ""}}, t.TempDir(), r)
+	h := NewHub(&Config{values: map[string]string{"TEMPORAL_ADDRESS": ""}}, t.TempDir(), r, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

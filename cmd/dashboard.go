@@ -58,11 +58,13 @@ var dashboardCmd = &cobra.Command{
 		}
 		manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 
-		handler, cancelDashboard, err := dashboard.NewHandlerWithManager(configDir, manager)
+		dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
+		defer cancelDashboard()
+		handler, cancelHandler, err := dashboard.NewHandlerWithManagerContext(dashboardCtx, configDir, manager)
 		if err != nil {
 			return err
 		}
-		defer cancelDashboard()
+		defer cancelHandler()
 
 		if configFileExists(configDir) {
 			if err := startDashboardRuntime(cmd.Context(), manager, values); err != nil {
@@ -95,17 +97,21 @@ var dashboardCmd = &cobra.Command{
 		}
 
 		cancelDashboard()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
+		runtimeShutdownCtx, runtimeShutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer runtimeShutdownCancel()
+		runtimeErrc := make(chan error, 1)
+		go func() {
+			runtimeErrc <- shutdownDashboardRuntime(runtimeShutdownCtx, manager, configFileExists(configDir))
+		}()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			stdlog.Printf("dashboard HTTP shutdown did not complete cleanly: %v", err)
 			if closeErr := server.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
 				stdlog.Printf("dashboard HTTP close failed: %v", closeErr)
 			}
 		}
-		runtimeShutdownCtx, runtimeShutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer runtimeShutdownCancel()
-		if err := shutdownDashboardRuntime(runtimeShutdownCtx, manager, configFileExists(configDir)); err != nil {
+		if err := <-runtimeErrc; err != nil {
 			stdlog.Printf("dashboard runtime shutdown failed: %v", err)
 		}
 		return nil

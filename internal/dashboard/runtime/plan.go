@@ -6,17 +6,26 @@ import (
 )
 
 type RuntimePlan struct {
-	ConfigDir       string
-	EnvPath         string
-	ComposePath     string
-	Backend         string
-	RunnerType      string
-	ContainerMode   string
-	ServiceMode     string
-	ComposeServices []string
-	PublicMode      string
-	RequiresDocker  bool
-	RequiresHostRun bool
+	ConfigDir        string
+	EnvPath          string
+	ComposePath      string
+	Backend          string
+	RunnerType       string
+	ContainerMode    string
+	ServiceMode      string
+	ComposeServices  []string
+	PublicMode       string
+	RequiresDocker   bool
+	RequiresHostRun  bool
+	ExpectedServices []PlannedService
+}
+
+type PlannedService struct {
+	ID       string
+	Name     string
+	Role     string
+	Critical bool
+	Kind     string
 }
 
 type ApplyClass string
@@ -107,7 +116,34 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 		plan.ComposeServices = []string{"runner", "caddy", "tunnel"}
 	}
 
+	plan.ExpectedServices = expectedServices(plan)
+
 	return plan
+}
+
+func expectedServices(plan RuntimePlan) []PlannedService {
+	services := make([]PlannedService, 0, len(plan.ComposeServices)+2)
+	for _, service := range plan.ComposeServices {
+		switch service {
+		case "runner":
+			services = append(services, PlannedService{ID: "runner", Name: "runner", Role: "credimi-runner serve", Critical: true, Kind: "compose"})
+		case "runner_host":
+			services = append(services, PlannedService{ID: "runner_host", Name: "runner_host", Role: "host runner adapter", Critical: true, Kind: "compose"})
+		case "caddy":
+			services = append(services, PlannedService{ID: "caddy", Name: "caddy", Role: "reverse proxy", Critical: plan.ServiceMode != "manual", Kind: "compose"})
+		case "tunnel":
+			services = append(services, PlannedService{ID: "tunnel", Name: "tunnel", Role: "quick tunnel", Critical: true, Kind: "compose"})
+		case "tunnel_named":
+			services = append(services, PlannedService{ID: "tunnel_named", Name: "tunnel_named", Role: "managed tunnel", Critical: true, Kind: "compose"})
+		}
+	}
+	if plan.RequiresHostRun {
+		services = append(services, PlannedService{ID: "runner_host_process", Name: "runner host", Role: "local runner process", Critical: true, Kind: "process"})
+	}
+	if strings.TrimSpace(plan.ServiceMode) != "" {
+		services = append(services, PlannedService{ID: "temporal", Name: "temporal", Role: "workflow backend", Critical: false, Kind: "external"})
+	}
+	return services
 }
 
 func RunnerAPIReachableFromHost(values Values, goos string) bool {

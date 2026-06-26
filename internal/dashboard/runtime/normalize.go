@@ -352,6 +352,9 @@ func normalizeAndroidEmulator(values Values) {
 
 func normalizeIOSSimulator(values Values) {
 	values["CREDIMI_RUNNER_SERIAL"] = ""
+	values["CREDIMI_RUNNER_DEVICE_MODE"] = ""
+	values["CREDIMI_RUNNER_WIFI_IP"] = ""
+	values["CREDIMI_RUNNER_WIFI_PORT"] = ""
 	values["RUNNER_IMAGE"] = defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
 	values["BASE_NAME"] = defaultIfEmpty(values["BASE_NAME"], DefaultBaseName)
 	values["ANDROID_KEYS_DIR"] = ""
@@ -374,12 +377,8 @@ func normalizeRedroid(values Values) {
 	values["REDROID_DATA_DIR"] = defaultIfEmpty(values["REDROID_DATA_DIR"], DefaultRedroidDataDir)
 	values["REDROID_DATA_TAR"] = defaultIfEmpty(values["REDROID_DATA_TAR"], DefaultRedroidDataTar)
 	values["CREDIMI_CONTAINER_MODE"] = "no_device"
-	if strings.TrimSpace(values["CREDIMI_RUNNER_WIFI_PORT"]) == "" {
-		values["CREDIMI_RUNNER_WIFI_PORT"] = DefaultWiFiPort
-	}
-	if ip := strings.TrimSpace(values["CREDIMI_RUNNER_WIFI_IP"]); ip != "" {
-		values["CREDIMI_RUNNER_SERIAL"] = ip + ":" + values["CREDIMI_RUNNER_WIFI_PORT"]
-	}
+	values["CREDIMI_RUNNER_WIFI_IP"] = ""
+	values["CREDIMI_RUNNER_WIFI_PORT"] = ""
 }
 
 func normalizeAndroidPhone(values Values) error {

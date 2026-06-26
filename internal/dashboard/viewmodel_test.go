@@ -41,15 +41,15 @@ func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
 		t.Fatalf("managed placeholder PublicURL = %q", got)
 	}
 	cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	if got := d.PublicURL(); got != "http://<host-ip>:8050" {
+	if got := d.PublicURL(); got != "Waiting for manual public URL" {
 		t.Fatalf("manual PublicURL = %q", got)
 	}
-	cfg.values["RUNNER_HOST"] = "127.0.0.1"
-	if got := d.PublicURL(); got != "http://127.0.0.1:8050" {
+	cfg.values["RUNNER_PUBLIC_URL"] = "https://manual.example"
+	if got := d.PublicURL(); got != "https://manual.example" {
 		t.Fatalf("manual host PublicURL = %q", got)
 	}
 	cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
-	if got := d.PublicURL(); got != "https://<name>.trycloudflare.com" {
+	if got := d.PublicURL(); got != "Waiting for quick tunnel URL" {
 		t.Fatalf("auto PublicURL = %q", got)
 	}
 	d.Data = map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{PublicURL: "https://runner.example.trycloudflare.com"}}

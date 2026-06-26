@@ -104,7 +104,7 @@ func TestNormalizeRedroid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values["CREDIMI_RUNNER_DEVICE_MODE"] != "no_device" || values["CREDIMI_RUNNER_SERIAL"] != "10.0.0.1:5555" || values["AVDCTL_SSH_TARGET"] != "host" {
+	if values["CREDIMI_RUNNER_DEVICE_MODE"] != "no_device" || values["CREDIMI_RUNNER_SERIAL"] != "" || values["CREDIMI_RUNNER_WIFI_IP"] != "" || values["CREDIMI_RUNNER_WIFI_PORT"] != "" || values["AVDCTL_SSH_TARGET"] != "host" {
 		t.Fatalf("normalized = %#v", values)
 	}
 }

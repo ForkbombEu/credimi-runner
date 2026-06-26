@@ -10,9 +10,10 @@
   {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runner restart.</div></div>{{end}}
   {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runtime recreate.</div></div>{{end}}
   {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a Credimi registration update.</div></div>{{end}}
+  {{if .StartupMessage}}<div class="callout {{if eq .StartupPhase "needs_attention"}}danger{{else}}info{{end}}" style="margin-bottom:16px">{{icon "info"}}<div>{{.StartupMessage}}</div></div>{{end}}
 
   <div class="grid-4" style="margin-bottom:16px">
-    <div class="stat"><div class="k">{{icon "shield"}} Service</div><div class="v">{{if .ServicesAllUp}}Healthy{{else}}Degraded{{end}}</div><div class="meta">{{len .Snapshot.Services}} containers</div></div>
+    <div class="stat"><div class="k">{{icon "shield"}} Service</div><div class="v">{{if .ServicesAllUp}}Healthy{{else}}Degraded{{end}}</div><div class="meta">{{len .Snapshot.Services}} expected services</div></div>
     <div class="stat"><div class="k">{{icon "phone"}} Devices</div><div class="v">{{.DevicesOnline}}<small>/ {{.DevicesTotal}} online</small></div><div class="meta">{{.DevicesDegraded}} degraded · {{.DevicesOffline}} offline</div></div>
     <div class="stat"><div class="k">{{icon "activity"}} Dashboard</div><div class="v">{{.RuntimeHeadline}}</div><div class="meta">{{.Runner.Get "DASHBOARD_HOST"}}:{{.Runner.Get "DASHBOARD_PORT"}}</div></div>
     <div class="stat"><div class="k">{{icon "cloud"}} Exposure</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">public runner route</div></div>
@@ -24,7 +25,7 @@
     <div class="card-b">
       <div id="runtime-status" hx-ext="sse" sse-connect="/events/runtime" sse-swap="runtime">{{template "runtime_status" .}}</div>
       <div class="divline"></div>
-      <div class="grid-2">{{range .Snapshot.Services}}{{template "service_row" .}}{{end}}</div>
+      <div class="grid-2">{{range .Snapshot.Services}}{{if .Expected}}{{template "service_row" .}}{{end}}{{end}}</div>
       <div class="divline"></div>
       <div class="callout {{if .ServicesAllUp}}ok{{else}}warn{{end}}">{{icon "globe"}}<div>Public endpoint: <b style="font-family:var(--font-mono)">{{.PublicURL}}</b>. OpenAPI docs at <b style="font-family:var(--font-mono)">/docs</b>.</div></div>
     </div>

@@ -205,6 +205,24 @@
         const otelName = field('OTEL_SERVICE_NAME');
         if (otelName && runnerID) otelName.value = runnerID;
       };
+      const setConflictState = (preview) => {
+        const conflict = $('[data-runner-conflict]', form);
+        const actionInput = $('[data-runner-conflict-action]', form);
+        const message = $('[data-runner-conflict-message]', form);
+        if (!conflict || !actionInput) return;
+        const action = actionInput.value || 'update';
+        conflict.style.display = preview && preview.conflict ? '' : 'none';
+        if (!preview || !preview.conflict) {
+          delete form.dataset.runnerConflictPending;
+          delete form.dataset.runnerConflictTouched;
+          return;
+        }
+        form.dataset.runnerConflictPending = '1';
+        if (message) message.textContent = `Runner ${preview.base_runner_id} already exists.`;
+        $$('[data-runner-conflict-choice]', conflict).forEach((btn) => {
+          btn.classList.toggle('on', btn.dataset.runnerConflictChoice === action);
+        });
+      };
       const previewRunnerID = async () => {
         const instanceURL = value('CREDIMI_URL');
         const apiKey = selectedAPIKey();
@@ -217,9 +235,11 @@
           const runnerPreview = $('[data-runner-id-preview]', form);
           if (runnerPreview) runnerPreview.textContent = fallback;
           syncOTELServiceName(fallback);
+          setConflictState(null);
           return;
         }
         let rid = '';
+        let previewData = null;
         try {
           const data = await jsonPost('/setup/runner-id', {
             instance_url: instanceURL,
@@ -227,30 +247,60 @@
             organization: organization,
             name: name,
           });
-          rid = data.runner_id || '';
+          const actionInput = $('[data-runner-conflict-action]', form);
+          if (actionInput && form.dataset.runnerConflictTouched !== '1') {
+            actionInput.value = data.default_action || 'update';
+          }
+          rid = (actionInput && actionInput.value === 'create' ? data.preview_runner_id : data.base_runner_id) || data.runner_id || '';
+          setConflictState(data);
+          previewData = data;
         } catch (e) {
           rid = [organization, name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')].join('/');
+          setConflictState(null);
         }
         const runnerID = field('CREDIMI_RUNNER_ID');
         if (runnerID) runnerID.value = rid;
         const runnerPreview = $('[data-runner-id-preview]', form);
         if (runnerPreview) runnerPreview.textContent = rid;
         syncOTELServiceName(rid);
+        return previewData;
       };
       // Live-canonify as the user types the runner name.
       const nameField = field('CREDIMI_RUNNER_NAME');
-      if (nameField) nameField.addEventListener('input', canonifyName);
+      if (nameField) nameField.addEventListener('input', () => {
+        delete form.dataset.runnerConflictTouched;
+        canonifyName();
+      });
+      form.addEventListener('click', (e) => {
+        const choice = e.target.closest('[data-runner-conflict-choice]');
+        if (!choice) return;
+        const actionInput = $('[data-runner-conflict-action]', form);
+        if (actionInput) actionInput.value = choice.dataset.runnerConflictChoice;
+        form.dataset.runnerConflictTouched = '1';
+        $$('[data-runner-conflict-choice]', form).forEach((btn) => btn.classList.toggle('on', btn === choice));
+        previewRunnerID();
+      });
       const beforeNext = async () => {
         const panel = panels[current];
         if (!panel) return;
-        if (panel.dataset.step === 'identity') { await resolveOrganization(); await canonifyName(); await previewRunnerID(); }
+        if (panel.dataset.step === 'identity') {
+          await resolveOrganization();
+          await canonifyName();
+          const preview = await previewRunnerID();
+          if (preview && preview.conflict && form.dataset.runnerConflictTouched !== '1') {
+            setError('Choose whether to update the existing runner or create a new one.');
+            return false;
+          }
+        }
+        return true;
       };
       buttons.forEach((b, i) => b.addEventListener('click', () => show(i)));
       if (prev) prev.addEventListener('click', () => show(current - 1));
       if (next) next.addEventListener('click', async () => {
         next.disabled = true;
         try {
-          await beforeNext();
+          const okToProceed = await beforeNext();
+          if (okToProceed === false) return;
           show(current + 1);
         } catch (err) {
           setError(err && err.message ? err.message : 'Setup step failed');
@@ -452,13 +502,31 @@
   // ── Dirty save bar ───────────────────────────────────────────────────────
   function markDirty() { $$('[data-savebar]').forEach((b) => (b.hidden = false)); }
   document.addEventListener('input', (e) => { if (e.target.closest('[data-config-form]')) markDirty(); });
-  document.addEventListener('submit', (e) => {
+  document.addEventListener('change', (e) => { if (e.target.closest('[data-config-form]')) markDirty(); });
+  document.addEventListener('submit', async (e) => {
     const form = e.target.closest('[data-config-form]');
     if (!form || form.matches('[data-setup-form]')) return;
+    if (form.dataset.confirmedSubmit === '1') {
+      delete form.dataset.confirmedSubmit;
+      return;
+    }
     const savebar = $('[data-savebar]', form);
     if (savebar && savebar.hidden) return;
-    const ok = window.confirm('Save changes to .env? The dashboard will apply the required restart, recreate, or Credimi registration update automatically.');
-    if (!ok) e.preventDefault();
+    e.preventDefault();
+    const body = new URLSearchParams(new FormData(form));
+    let message = 'Save these changes?';
+    try {
+      const res = await fetch('/config/diff', { method: 'POST', body });
+      if (res.ok) {
+        const data = await res.json();
+        message = data.message || message;
+      }
+    } catch (_) {}
+    const ok = window.confirm(message);
+    if (ok) {
+      form.dataset.confirmedSubmit = '1';
+      form.requestSubmit();
+    }
   });
   document.addEventListener('click', (e) => {
     if (e.target.closest('[data-discard]')) {

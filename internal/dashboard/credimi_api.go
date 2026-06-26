@@ -29,8 +29,12 @@ type setupRunnerPreviewRequest struct {
 }
 
 type setupRunnerPreview struct {
-	Organization string `json:"organization"`
-	RunnerID     string `json:"runner_id"`
+	Organization    string `json:"organization"`
+	BaseRunnerID    string `json:"base_runner_id"`
+	PreviewRunnerID string `json:"preview_runner_id"`
+	RunnerID        string `json:"runner_id"`
+	Conflict        bool   `json:"conflict"`
+	DefaultAction   string `json:"default_action"`
 }
 
 func fetchCredimiOrganization(ctx context.Context, instanceURL, apiKey string) (setupOrganization, error) {
@@ -79,17 +83,30 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return setupRunnerPreview{}, fmt.Errorf("runner ID preview failed: %s", resp.Status)
 	}
-	var preview setupRunnerPreview
+	var preview struct {
+		Organization string `json:"organization"`
+		RunnerID     string `json:"runner_id"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
 		return setupRunnerPreview{}, fmt.Errorf("runner ID preview returned invalid JSON: %w", err)
 	}
-	if preview.RunnerID == "" {
-		preview.RunnerID = reqData.Organization + "/" + canonifyPlain(reqData.Name)
+	baseRunnerID := reqData.Organization + "/" + canonifyPlain(reqData.Name)
+	previewRunnerID := strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
+	if previewRunnerID == "" {
+		previewRunnerID = baseRunnerID
 	}
-	if preview.Organization == "" {
-		preview.Organization = reqData.Organization
+	organization := preview.Organization
+	if organization == "" {
+		organization = reqData.Organization
 	}
-	return preview, nil
+	return setupRunnerPreview{
+		Organization:    organization,
+		BaseRunnerID:    baseRunnerID,
+		PreviewRunnerID: previewRunnerID,
+		RunnerID:        baseRunnerID,
+		Conflict:        previewRunnerID != baseRunnerID,
+		DefaultAction:   "update",
+	}, nil
 }
 
 type setupCanonifyRequest struct {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -35,6 +37,7 @@ type Hub struct {
 	cfg        *Config
 	composeDir string
 	render     *Renderer
+	statusFn   func() dashboardruntime.RuntimeStatus
 
 	snapMu  sync.RWMutex
 	snap    Snapshot
@@ -51,8 +54,8 @@ type Worker struct {
 	Enabled bool
 }
 
-func NewHub(cfg *Config, composeDir string, r *Renderer) *Hub {
-	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, composeDir: composeDir, render: r}
+func NewHub(cfg *Config, composeDir string, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus) *Hub {
+	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, composeDir: composeDir, render: r, statusFn: statusFn}
 }
 
 func (h *Hub) add(c *client) {
@@ -109,13 +112,23 @@ func (h *Hub) Run(ctx context.Context, interval time.Duration) {
 
 func (h *Hub) poll(ctx context.Context) {
 	devices := append(probeAndroid(ctx), probeIOS(ctx)...)
-	services := probeServices(ctx, h.composeDir)
-	// Temporal reachability becomes a synthetic service row.
+	values := dashboardruntime.Values(h.cfg.Snapshot())
+	plan := dashboardruntime.BuildRuntimePlan(h.composeDir, values)
+	runtimeRunning := false
+	if h.statusFn != nil {
+		status := h.statusFn()
+		runtimeRunning = status.RunnerRunning || status.ComposeRunning
+	}
+	services := probeServices(ctx, h.composeDir, plan, runtimeRunning)
 	temporalAddr := h.cfg.Get("TEMPORAL_ADDRESS")
-	services = append(services, Service{
-		ID: "temporal", Name: "temporal", Role: temporalAddr, Image: "gRPC",
-		Status: dialTemporal(temporalAddr), Uptime: "—",
-	})
+	for i := range services {
+		if services[i].ID == "temporal" {
+			services[i].Role = temporalAddr
+			services[i].Image = "gRPC"
+			services[i].Status = dialTemporal(temporalAddr)
+			services[i].Uptime = "—"
+		}
+	}
 
 	snap := Snapshot{Services: services, Devices: devices, Time: time.Now()}
 	workers := h.runningWorkers(ctx, services)
@@ -216,10 +229,14 @@ func canonifyWorkerID(value string) string {
 
 // deriveWorkers keeps the page useful before the runner API is reachable.
 func (h *Hub) deriveWorkers(services []Service) []Worker {
-	temporalUp := Offline
+	runtimeUp := false
+	temporalUp := false
 	for _, s := range services {
-		if s.ID == "temporal" {
-			temporalUp = s.Status
+		switch s.ID {
+		case "runner", "runner_host", "runner_host_process":
+			runtimeUp = runtimeUp || s.Status == Online
+		case "temporal":
+			temporalUp = s.Status == Online
 		}
 	}
 	scope := h.cfg.AuthMode()
@@ -235,10 +252,10 @@ func (h *Hub) deriveWorkers(services []Service) []Worker {
 		switch {
 		case !configured:
 			w.Status = Idle
-		case temporalUp == Online:
+		case runtimeUp && temporalUp:
 			w.Status = Online
 		default:
-			w.Status = Degraded
+			w.Status = Idle
 		}
 		return w
 	}
@@ -256,6 +273,9 @@ type PillData struct {
 func (h *Hub) pillData(s Snapshot) PillData {
 	issues := 0
 	for _, sv := range s.Services {
+		if !sv.Expected || !sv.Critical {
+			continue
+		}
 		if sv.Status == Offline || sv.Status == Degraded {
 			issues++
 		}

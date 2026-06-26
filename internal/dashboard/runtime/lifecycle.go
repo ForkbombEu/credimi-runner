@@ -206,12 +206,15 @@ func (m *LifecycleManager) Restart(ctx context.Context) error {
 }
 
 func (m *LifecycleManager) Down(ctx context.Context) error {
+	plan := BuildRuntimePlan(m.configDir, m.values)
 	if err := m.Stop(ctx); err != nil {
 		return err
 	}
+	if len(plan.ComposeServices) == 0 {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	plan := BuildRuntimePlan(m.configDir, m.values)
 	if _, err := m.runner.Run(ctx, CommandSpec{
 		Name: "docker",
 		Args: []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "down"},
@@ -256,11 +259,18 @@ func (m *LifecycleManager) stopComposeLogFollowerLocked() {
 	}
 	_ = m.logCmd.Process.Signal(syscall.SIGTERM)
 	done := m.logDone
+	if done == nil {
+		m.logCmd = nil
+		return
+	}
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		_ = m.logCmd.Process.Kill()
-		<-done
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
 	}
 	m.logCmd = nil
 	m.logDone = nil
