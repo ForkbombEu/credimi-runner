@@ -20,6 +20,13 @@ func TestLoadStoreMissingFile(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigDirHonorsOverride(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "/tmp/credimi-runner-config")
+	if got := DefaultConfigDir(); got != "/tmp/credimi-runner-config" {
+		t.Fatalf("DefaultConfigDir = %q", got)
+	}
+}
+
 func TestStoreSaveCreates0600File(t *testing.T) {
 	dir := t.TempDir()
 	store, err := LoadStore(dir)
@@ -111,5 +118,14 @@ func TestSecretMaskingAndDiffClassification(t *testing.T) {
 	diff := DiffValues(Values{"RUNNER_IMAGE": "a"}, Values{"RUNNER_IMAGE": "b"})
 	if len(diff.Classes) == 0 || diff.Classes[0] != ApplyComposeRecreate {
 		t.Fatalf("diff classes = %#v", diff.Classes)
+	}
+}
+
+func TestConfigHelpers(t *testing.T) {
+	if got := quote(`hello world`); got != `"hello world"` {
+		t.Fatalf("quote = %q", got)
+	}
+	if got := unquote(`"hello world"`); got != "hello world" {
+		t.Fatalf("unquote = %q", got)
 	}
 }

@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,11 +21,12 @@ type dashboardFakeManager struct {
 	downCalls  int
 	logs       []dashboardruntime.LogLine
 	status     dashboardruntime.RuntimeStatus
+	startErr   error
 }
 
 func (f *dashboardFakeManager) Start(context.Context) error {
 	f.startCalls++
-	return nil
+	return f.startErr
 }
 func (f *dashboardFakeManager) Stop(context.Context) error        { return nil }
 func (f *dashboardFakeManager) Restart(context.Context) error     { return nil }
@@ -80,6 +83,9 @@ func TestDashboardConfigDirEnvPath(t *testing.T) {
 	dir := t.TempDir()
 	if got := dashboardEnvPath(dir); got != filepath.Join(dir, ".env") {
 		t.Fatalf("dashboardEnvPath = %q", got)
+	}
+	if configFileExists(dir) {
+		t.Fatal("configFileExists should be false before file creation")
 	}
 }
 
@@ -188,6 +194,21 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 	}
 }
 
+func TestStartDashboardRuntimeBranches(t *testing.T) {
+	manager := &dashboardFakeManager{startErr: errors.New("boom")}
+	if err := startDashboardRuntime(context.Background(), manager, dashboardruntime.Values{}); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("startDashboardRuntime start error = %v", err)
+	}
+
+	manager = &dashboardFakeManager{}
+	if err := startDashboardRuntime(context.Background(), manager, dashboardruntime.Values{}); err != nil {
+		t.Fatalf("startDashboardRuntime without runner id = %v", err)
+	}
+	if manager.startCalls != 1 {
+		t.Fatalf("startCalls = %d", manager.startCalls)
+	}
+}
+
 func TestShutdownDashboardRuntimeRunsDownWhenConfigured(t *testing.T) {
 	manager := &dashboardFakeManager{}
 	if err := shutdownDashboardRuntime(context.Background(), manager, true); err != nil {
@@ -215,5 +236,111 @@ func TestShutdownDashboardRuntimeSkipsUnconfiguredStoppedRuntime(t *testing.T) {
 	}
 	if manager.downCalls != 0 {
 		t.Fatalf("downCalls = %d, want 0", manager.downCalls)
+	}
+}
+
+func TestDashboardRuntimeHelpers(t *testing.T) {
+	manager := &dashboardFakeManager{logs: []dashboardruntime.LogLine{
+		{Message: "line-1"},
+		{Message: "line-2"},
+	}, status: dashboardruntime.RuntimeStatus{LastError: "boom"}}
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
+	values := dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}
+	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "last runtime error: boom") || !strings.Contains(got, "recent runtime logs") {
+		t.Fatalf("runtimeStartupDiagnostics = %q", got)
+	}
+	values = dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual"}
+	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "diagnostics:") {
+		t.Fatalf("host runtimeStartupDiagnostics = %q", got)
+	}
+	if err := waitForDashboardRunnerReady(context.Background(), dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}); err != nil {
+		t.Fatalf("waitForDashboardRunnerReady should skip when readiness not required: %v", err)
+	}
+}
+
+func TestWaitForDashboardRunnerReady(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	addr := listener.Addr().String()
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"RUNNER_HOST":            host,
+		"RUNNER_PORT":            port,
+	}
+	if err := waitForDashboardRunnerReady(context.Background(), values); err != nil {
+		t.Fatalf("waitForDashboardRunnerReady = %v", err)
+	}
+	<-done
+}
+
+func TestResolveDashboardRegistrationEndpointBranches(t *testing.T) {
+	manager := &dashboardFakeManager{logs: []dashboardruntime.LogLine{{Message: "https://runner.example.trycloudflare.com"}}}
+	if url, port, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "manual",
+		"RUNNER_PUBLIC_URL":    "https://manual.example",
+		"RUNNER_PUBLIC_PORT":   "443",
+	}); err != nil || url != "https://manual.example" || port != "443" {
+		t.Fatalf("manual endpoint = %q %q %v", url, port, err)
+	}
+	if url, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "cloudflare-managed",
+		"RUNNER_DOMAIN":        "runner.example",
+	}); err != nil || url != "https://runner.example" {
+		t.Fatalf("managed endpoint = %q %v", url, err)
+	}
+	if url, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "auto",
+	}); err != nil || url != "https://runner.example.trycloudflare.com" {
+		t.Fatalf("auto endpoint = %q %v", url, err)
+	}
+}
+
+func TestRegisterDashboardRunnerRequiresAPIKey(t *testing.T) {
+	err := registerDashboardRunner(context.Background(), &dashboardFakeManager{}, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "manual",
+		"RUNNER_PUBLIC_URL":    "https://manual.example",
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing Credimi API key") {
+		t.Fatalf("registerDashboardRunner error = %v", err)
+	}
+}
+
+func TestResolveDashboardRegistrationEndpointErrors(t *testing.T) {
+	manager := &dashboardFakeManager{}
+	if _, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "manual",
+	}); err == nil {
+		t.Fatal("expected manual mode without public URL to fail")
+	}
+	if _, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "cloudflare-managed",
+	}); err == nil {
+		t.Fatal("expected managed mode without domain to fail")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := resolveDashboardRegistrationEndpoint(ctx, manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "auto",
+	}); err == nil {
+		t.Fatal("expected auto mode without tunnel URL to fail")
 	}
 }

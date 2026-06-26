@@ -82,6 +82,85 @@
         box.hidden = !msg;
         box.textContent = msg || '';
       };
+      const valueMissing = (name) => !String(value(name) || '').trim();
+      const currentStepValid = () => {
+        const panel = panels[current];
+        if (!panel) return false;
+        switch (panel.dataset.step) {
+          case 'identity':
+            if (authMode() === 'admin') {
+              if (valueMissing('CREDIMI_INTERNAL_ADMIN_KEY') || valueMissing('CREDIMI_RUNNER_NAME') || valueMissing('CREDIMI_RUNNER_ORGANIZATION')) return false;
+            } else {
+              if (valueMissing('CREDIMI_USER_API_KEY') || valueMissing('CREDIMI_RUNNER_NAME')) return false;
+            }
+            if (form.dataset.runnerConflictPending === '1' && form.dataset.runnerConflictTouched !== '1') return false;
+            return true;
+          case 'network': {
+            const mode = value('CREDIMI_SERVICE_MODE');
+            if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');
+            if (mode === 'cloudflare-managed') return !valueMissing('RUNNER_DOMAIN') && !valueMissing('CLOUDFLARE_TUNNEL_TOKEN');
+            return true;
+          }
+          case 'device': {
+            const runnerType = value('CREDIMI_RUNNER_TYPE');
+            if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi') {
+              return !valueMissing('CREDIMI_RUNNER_WIFI_IP');
+            }
+            if (runnerType === 'redroid') {
+              return !valueMissing('REDROID_DATA_DIR') && !valueMissing('REDROID_DATA_TAR');
+            }
+            if (runnerType === 'android_emulator' || runnerType === 'ios_simulator') {
+              return !valueMissing('BASE_NAME');
+            }
+            return !!runnerType;
+          }
+          default:
+            return true;
+        }
+      };
+      const currentStepError = () => {
+        const panel = panels[current];
+        if (!panel) return 'Complete the required fields before continuing.';
+        switch (panel.dataset.step) {
+          case 'identity':
+            if (authMode() === 'admin') {
+              if (valueMissing('CREDIMI_INTERNAL_ADMIN_KEY')) return 'Internal admin key is required.';
+              if (valueMissing('CREDIMI_RUNNER_ORGANIZATION')) return 'Organization is required.';
+            } else {
+              if (valueMissing('CREDIMI_USER_API_KEY')) return 'User API key is required.';
+            }
+            if (valueMissing('CREDIMI_RUNNER_NAME')) return 'Runner name is required.';
+            if (form.dataset.runnerConflictPending === '1' && form.dataset.runnerConflictTouched !== '1') {
+              return 'Choose whether to update the existing runner or create a new one.';
+            }
+            return '';
+          case 'network': {
+            const mode = value('CREDIMI_SERVICE_MODE');
+            if (mode === 'manual' && valueMissing('RUNNER_PUBLIC_URL')) return 'Manual mode requires a public URL.';
+            if (mode === 'cloudflare-managed' && valueMissing('RUNNER_DOMAIN')) return 'Managed mode requires a runner domain.';
+            if (mode === 'cloudflare-managed' && valueMissing('CLOUDFLARE_TUNNEL_TOKEN')) return 'Managed mode requires a tunnel token.';
+            return '';
+          }
+          case 'device': {
+            const runnerType = value('CREDIMI_RUNNER_TYPE');
+            if (!runnerType) return 'Runner type is required.';
+            if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
+              return 'Wi-Fi mode requires an Android Wi-Fi IP.';
+            }
+            if (runnerType === 'redroid' && valueMissing('REDROID_DATA_DIR')) return 'Redroid data directory is required.';
+            if (runnerType === 'redroid' && valueMissing('REDROID_DATA_TAR')) return 'Redroid data archive is required.';
+            if ((runnerType === 'android_emulator' || runnerType === 'ios_simulator') && valueMissing('BASE_NAME')) {
+              return 'Base name is required.';
+            }
+            return '';
+          }
+          default:
+            return '';
+        }
+      };
+      const syncStepActions = () => {
+        if (next && !next.hidden) next.disabled = !currentStepValid();
+      };
       const show = (idx) => {
         setError('');
         current = Math.max(0, Math.min(idx, panels.length - 1));
@@ -94,6 +173,7 @@
         if (next) next.hidden = current === panels.length - 1;
         if (submit) submit.style.display = current === panels.length - 1 ? '' : 'none';
         if (current === panels.length - 1) syncReview();
+        syncStepActions();
       };
       const jsonPost = async (url, body) => {
         const res = await fetch(url, {
@@ -158,6 +238,7 @@
             if (st) st.style.display = 'none';
             if (err) err.style.display = 'none';
             if (idf) idf.style.display = 'none';
+            syncStepActions();
             return;
           }
           apiKeyTimer = setTimeout(async () => {
@@ -170,6 +251,8 @@
               if (st) { st.style.display = 'flex'; st.innerHTML = xmark(); st.style.color = 'var(--down)'; }
               if (err) { err.style.display = 'block'; err.textContent = (e && e.message) || 'Invalid API key'; }
               if (idf) idf.style.display = 'none';
+            } finally {
+              syncStepActions();
             }
           }, 600);
         });
@@ -215,6 +298,7 @@
         if (!preview || !preview.conflict) {
           delete form.dataset.runnerConflictPending;
           delete form.dataset.runnerConflictTouched;
+          syncStepActions();
           return;
         }
         form.dataset.runnerConflictPending = '1';
@@ -222,6 +306,7 @@
         $$('[data-runner-conflict-choice]', conflict).forEach((btn) => {
           btn.classList.toggle('on', btn.dataset.runnerConflictChoice === action);
         });
+        syncStepActions();
       };
       const previewRunnerID = async () => {
         const instanceURL = value('CREDIMI_URL');
@@ -263,6 +348,7 @@
         const runnerPreview = $('[data-runner-id-preview]', form);
         if (runnerPreview) runnerPreview.textContent = rid;
         syncOTELServiceName(rid);
+        syncStepActions();
         return previewData;
       };
       // Live-canonify as the user types the runner name.
@@ -270,6 +356,7 @@
       if (nameField) nameField.addEventListener('input', () => {
         delete form.dataset.runnerConflictTouched;
         canonifyName();
+        syncStepActions();
       });
       form.addEventListener('click', (e) => {
         const choice = e.target.closest('[data-runner-conflict-choice]');
@@ -294,11 +381,22 @@
         }
         return true;
       };
-      buttons.forEach((b, i) => b.addEventListener('click', () => show(i)));
+      buttons.forEach((b, i) => b.addEventListener('click', () => {
+        if (i > current && !currentStepValid()) {
+          setError(currentStepError());
+          syncStepActions();
+          return;
+        }
+        show(i);
+      }));
       if (prev) prev.addEventListener('click', () => show(current - 1));
       if (next) next.addEventListener('click', async () => {
         next.disabled = true;
         try {
+          if (!currentStepValid()) {
+            setError(currentStepError());
+            return;
+          }
           const okToProceed = await beforeNext();
           if (okToProceed === false) return;
           show(current + 1);
@@ -308,6 +406,8 @@
           next.disabled = false;
         }
       });
+      form.addEventListener('input', syncStepActions);
+      form.addEventListener('change', syncStepActions);
       show(0);
     });
   }

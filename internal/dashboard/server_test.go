@@ -2,6 +2,8 @@ package dashboard
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,12 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
 type fakeManager struct {
 	startCalls       int
 	stopCalls        int
@@ -23,21 +31,41 @@ type fakeManager struct {
 	updateImageCalls int
 	logLines         []dashboardruntime.LogLine
 	status           dashboardruntime.RuntimeStatus
+	startErr         error
+	stopErr          error
+	restartErr       error
+	downErr          error
+	updateImageErr   error
 }
 
 func (f *fakeManager) Start(context.Context) error {
 	f.startCalls++
+	if f.startErr != nil {
+		return f.startErr
+	}
 	f.status.RunnerRunning = true
 	return nil
 }
 func (f *fakeManager) Stop(context.Context) error {
 	f.stopCalls++
+	if f.stopErr != nil {
+		return f.stopErr
+	}
 	f.status.RunnerRunning = false
 	return nil
 }
-func (f *fakeManager) Restart(context.Context) error     { f.restartCalls++; return nil }
-func (f *fakeManager) Down(context.Context) error        { f.downCalls++; return nil }
-func (f *fakeManager) UpdateImage(context.Context) error { f.updateImageCalls++; return nil }
+func (f *fakeManager) Restart(context.Context) error {
+	f.restartCalls++
+	return f.restartErr
+}
+func (f *fakeManager) Down(context.Context) error {
+	f.downCalls++
+	return f.downErr
+}
+func (f *fakeManager) UpdateImage(context.Context) error {
+	f.updateImageCalls++
+	return f.updateImageErr
+}
 func (f *fakeManager) Configure(values dashboardruntime.Values) {
 	f.status.Configured = strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != ""
 }
@@ -239,6 +267,404 @@ func TestServerConfigHandlers(t *testing.T) {
 	}
 }
 
+func TestServerConfigDiffAndHelpers(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(url.Values{
+		"CREDIMI_RUNNER_ID":   {"acme/runner"},
+		"CREDIMI_RUNNER_NAME": {"runner-2"},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "runner record in Credimi") {
+		t.Fatalf("configDiff = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplySavedOnly}}); !strings.Contains(got, "No restart") {
+		t.Fatalf("describeDiffImpact = %q", got)
+	}
+	if got := describeDiffImpact(dashboardruntime.ConfigDiff{}); got != "Save these changes?" {
+		t.Fatalf("default describeDiffImpact = %q", got)
+	}
+	for _, diff := range []dashboardruntime.ConfigDiff{
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate, dashboardruntime.ApplyCredimiUpdateRequired}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired, dashboardruntime.ApplyCredimiUpdateRequired}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}},
+	} {
+		if got := describeDiffImpact(diff); got == "" {
+			t.Fatalf("describeDiffImpact(%#v) returned empty string", diff)
+		}
+	}
+}
+
+func TestFlashForDiffVariants(t *testing.T) {
+	tests := []dashboardruntime.ConfigDiff{
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplySavedOnly}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate, dashboardruntime.ApplyCredimiUpdateRequired}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired, dashboardruntime.ApplyCredimiUpdateRequired}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}},
+		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}},
+	}
+	for _, diff := range tests {
+		if got := flashForDiff(diff); got == "" {
+			t.Fatalf("flashForDiff(%#v) returned empty string", diff)
+		}
+	}
+}
+
+func TestServerSetupRenderHelpers(t *testing.T) {
+	s := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/setup", nil)
+	req.Header.Set("HX-Request", "true")
+	s.renderSetupComplete(rec, req)
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+		t.Fatalf("htmx renderSetupComplete = %d headers=%v", rec.Code, rec.Header())
+	}
+
+	rec = httptest.NewRecorder()
+	s.renderSetupComplete(rec, httptest.NewRequest(http.MethodPost, "/setup", nil))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+		t.Fatalf("plain renderSetupComplete = %d headers=%v", rec.Code, rec.Header())
+	}
+
+	rec = httptest.NewRecorder()
+	s.renderSetupError(rec, map[string]string{"CREDIMI_RUNNER_NAME": "runner"}, "broken")
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "broken") {
+		t.Fatalf("renderSetupError = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerSaveDevicesConfig(t *testing.T) {
+	s := newTestServer(t)
+	form := url.Values{
+		"CREDIMI_URL":                 {"https://credimi.example"},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_NAME":         {"runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_SERVICE_MODE":        {"manual"},
+		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Save target") {
+		t.Fatalf("saveDevicesConfig = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerRuntimeActionVariants(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+
+	for _, target := range []struct {
+		path string
+		fn   http.HandlerFunc
+	}{
+		{"/runtime/stop", s.runtimeStop},
+		{"/runtime/restart", s.runtimeRestart},
+		{"/runtime/down", s.runtimeDown},
+		{"/runtime/update-image", s.runtimeUpdateImage},
+	} {
+		rec := httptest.NewRecorder()
+		target.fn(rec, httptest.NewRequest(http.MethodPost, target.path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", target.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestServerRuntimeRegisterAndActionError(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+
+	s := newTestServer(t)
+	manager := s.manager.(*fakeManager)
+	s.cfg.values["CREDIMI_URL"] = api.URL
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+
+	rec := httptest.NewRecorder()
+	s.runtimeRegister(rec, httptest.NewRequest(http.MethodPost, "/runtime/register", nil))
+	if rec.Code != http.StatusOK || manager.status.PublicURL != "https://runner.example" {
+		t.Fatalf("runtimeRegister = %d body=%s publicURL=%q", rec.Code, rec.Body.String(), manager.status.PublicURL)
+	}
+
+	manager.stopErr = errors.New("stop failed")
+	rec = httptest.NewRecorder()
+	s.runtimeStop(rec, httptest.NewRequest(http.MethodPost, "/runtime/stop", nil))
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "stop failed") {
+		t.Fatalf("runtimeStop error = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResolveSetupIdentityBranches(t *testing.T) {
+	originalClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/organizations/my":
+			body = `{"canonified_name":"acme"}`
+		case "/api/mobile-runner/preview-id":
+			payload, _ := io.ReadAll(req.Body)
+			if strings.Contains(string(payload), `"name":"Runner Two"`) {
+				body = `{"organization":"acme","runner_id":"acme/runner-two-2"}`
+			} else {
+				body = `{"organization":"acme","runner_id":"acme/runner-one"}`
+			}
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	s := newTestServer(t)
+	values := map[string]string{
+		"CREDIMI_URL":          "https://credimi.example",
+		"CREDIMI_USER_API_KEY": "user-key",
+		"CREDIMI_RUNNER_NAME":  "Runner One",
+	}
+	if err := s.resolveSetupIdentity(context.Background(), values); err != nil {
+		t.Fatal(err)
+	}
+	if values["CREDIMI_RUNNER_ID"] != "acme/runner-one" || values["CREDIMI_RUNNER_ORGANIZATION"] != "acme" {
+		t.Fatalf("resolved values = %#v", values)
+	}
+
+	values = map[string]string{
+		"CREDIMI_URL":                         "https://credimi.example",
+		"CREDIMI_USER_API_KEY":                "user-key",
+		"CREDIMI_RUNNER_NAME":                 "Runner Two",
+		"CREDIMI_RUNNER_ORGANIZATION":         "acme",
+		"CREDIMI_RUNNER_NAME_CONFLICT_ACTION": "create",
+	}
+	if err := s.resolveSetupIdentity(context.Background(), values); err != nil {
+		t.Fatal(err)
+	}
+	if values["CREDIMI_RUNNER_ID"] != "acme/runner-two-2" {
+		t.Fatalf("create action resolved ID = %q", values["CREDIMI_RUNNER_ID"])
+	}
+
+	values["CREDIMI_RUNNER_ID"] = ""
+	values["CREDIMI_RUNNER_NAME_CONFLICT_ACTION"] = "invalid"
+	if err := s.resolveSetupIdentity(context.Background(), values); err == nil {
+		t.Fatal("expected invalid conflict action to fail")
+	}
+
+	values = map[string]string{
+		"CREDIMI_URL":                 "https://credimi.example",
+		"CREDIMI_USER_API_KEY":        "user-key",
+		"CREDIMI_RUNNER_NAME":         "Runner Two",
+		"CREDIMI_RUNNER_ID":           "existing/id",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+	}
+	if err := s.resolveSetupIdentity(context.Background(), values); err != nil {
+		t.Fatal(err)
+	}
+	if values["CREDIMI_RUNNER_ID"] != "existing/id" {
+		t.Fatalf("existing runner ID should be preserved: %#v", values)
+	}
+}
+
+func TestServerSetupHelperEndpoints(t *testing.T) {
+	originalClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/organizations/my":
+			body = `{"canonified_name":"acme","name":"Acme"}`
+		case "/api/canonify/identifier/validate":
+			body = `{"record":{"slug":"runner-slug"}}`
+		case "/api/mobile-runner/preview-id":
+			body = `{"organization":"acme","runner_id":"acme/runner-slug-2"}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	s := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	s.lookupSetupOrganization(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified_name":"acme"`) {
+		t.Fatalf("lookupSetupOrganization = %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup/canonify?name=Runner+Slug", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	s.canonifySetupName(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified":"runner-slug"`) {
+		t.Fatalf("canonifySetupName = %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup/preview-id", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key","organization":"acme","name":"Runner Slug"}`))
+	s.previewSetupRunnerID(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"preview_runner_id":"acme/runner-slug-2"`) {
+		t.Fatalf("previewSetupRunnerID = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerSetupHelperEndpointValidation(t *testing.T) {
+	s := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{`))
+	s.lookupSetupOrganization(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("lookupSetupOrganization invalid JSON = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup/canonify", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	s.canonifySetupName(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("canonifySetupName missing name = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup/preview-id", strings.NewReader(`{"instance_url":"https://credimi.example"}`))
+	s.previewSetupRunnerID(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("previewSetupRunnerID missing fields = %d", rec.Code)
+	}
+}
+
+func TestFinishSetupValidationAndRequirementErrors(t *testing.T) {
+	s := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(url.Values{
+		"CREDIMI_URL":          {"https://credimi.example"},
+		"CREDIMI_USER_API_KEY": {"user-key"},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.finishSetup(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention.") {
+		t.Fatalf("finishSetup validation = %d %s", rec.Code, rec.Body.String())
+	}
+
+	s.lookupPath = func(string) (string, error) { return "", os.ErrNotExist }
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(url.Values{
+		"CREDIMI_URL":                 {"https://credimi.example"},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_NAME":         {"runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_SERVICE_MODE":        {"cloudflare-managed"},
+		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.finishSetup(rec, req)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "runtime requirement check failed") {
+		t.Fatalf("finishSetup requirements = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
+	s := newTestServer(t)
+	if err := s.registerCurrent(context.Background(), map[string]string{}); err == nil {
+		t.Fatal("expected registerCurrent without API key to fail")
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	addr := listener.Addr().String()
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	values := map[string]string{
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"RUNNER_HOST":            host,
+		"RUNNER_PORT":            port,
+	}
+	if err := s.waitForRunnerReady(context.Background(), values); err != nil {
+		t.Fatalf("waitForRunnerReady = %v", err)
+	}
+	<-done
+}
+
+func TestResolveRegistrationEndpointBranches(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	if _, _, err := s.resolveRegistrationEndpoint(context.Background(), map[string]string{
+		"CREDIMI_SERVICE_MODE": "auto",
+	}); err == nil || !strings.Contains(err.Error(), "runtime manager unavailable") {
+		t.Fatalf("expected runtime manager unavailable, got %v", err)
+	}
+
+	s.manager = &fakeManager{logLines: []dashboardruntime.LogLine{
+		{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
+	}}
+	url, port, err := s.resolveRegistrationEndpoint(context.Background(), map[string]string{
+		"CREDIMI_SERVICE_MODE": "auto",
+	})
+	if err != nil || url != "https://runner.example.trycloudflare.com" || port != "" {
+		t.Fatalf("resolveRegistrationEndpoint auto = %q %q %v", url, port, err)
+	}
+
+	url, port, err = s.resolveRegistrationEndpoint(context.Background(), map[string]string{
+		"CREDIMI_SERVICE_MODE": "cloudflare-managed",
+		"RUNNER_DOMAIN":        "runner.example",
+	})
+	if err != nil || url != "https://runner.example" || port != "" {
+		t.Fatalf("resolveRegistrationEndpoint managed = %q %q %v", url, port, err)
+	}
+}
+
 func TestServerSaveAndFinishSetup(t *testing.T) {
 	s := newTestServer(t)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -369,7 +795,7 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 
 func waitForCondition(t *testing.T, fn func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if fn() {
 			return

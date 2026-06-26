@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -168,5 +169,35 @@ func TestDefaultValuesIncludeHomePaths(t *testing.T) {
 	values := DefaultValues()
 	if values["ANDROID_KEYS_DIR"] != "" && filepath.Base(values["HOST_AVD_HOME_PATH"]) != "avd" {
 		t.Fatalf("defaults = %#v", values)
+	}
+}
+
+func TestNormalizeHelperFunctions(t *testing.T) {
+	if got := defaultServiceBackend("darwin"); got != DefaultHostBackend {
+		t.Fatalf("defaultServiceBackend(darwin) = %q", got)
+	}
+	if got := defaultRunnerType(Values{"CREDIMI_CONTAINER_MODE": "emulator"}, "linux"); got != "android_emulator" {
+		t.Fatalf("defaultRunnerType(emulator) = %q", got)
+	}
+	if got := strings.Join(runnerTypeChoices("linux"), ","); got != "android_emulator,redroid,android_phone" {
+		t.Fatalf("runnerTypeChoices = %q", got)
+	}
+	if got := defaultAndroidDeviceMode(Values{"CREDIMI_CONTAINER_MODE": "wifi"}, "android_phone"); got != "wifi" {
+		t.Fatalf("defaultAndroidDeviceMode = %q", got)
+	}
+	if !defaultYesNoChoice("yes", false) || defaultYesNoChoice("no", true) {
+		t.Fatal("defaultYesNoChoice returned unexpected result")
+	}
+	if got := normalizeServiceMode("named"); got != "cloudflare-managed" {
+		t.Fatalf("normalizeServiceMode = %q", got)
+	}
+	if got := resolvedRunnerPublicURL(Values{"CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://manual.example"}, ""); got != "https://manual.example" {
+		t.Fatalf("resolvedRunnerPublicURL manual = %q", got)
+	}
+	if got := resolvedRunnerPublicURL(Values{"CREDIMI_SERVICE_MODE": "cloudflare-managed", "RUNNER_DOMAIN": "runner.example"}, ""); got != "https://runner.example" {
+		t.Fatalf("resolvedRunnerPublicURL managed = %q", got)
+	}
+	if got := canonifyPlain(" Test Runner "); got != "test-runner" {
+		t.Fatalf("canonifyPlain = %q", got)
 	}
 }

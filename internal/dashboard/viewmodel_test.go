@@ -114,3 +114,33 @@ func TestPageDataFormViewModels(t *testing.T) {
 		t.Fatalf("orDash empty = %q", got)
 	}
 }
+
+func TestPageDataAdditionalHelpers(t *testing.T) {
+	cfg := &Config{values: map[string]string{
+		"CREDIMI_RUNNER_TYPE": "redroid",
+	}}
+	d := PageData{
+		Active: "overview",
+		Runner: cfg,
+		Data: map[string]any{
+			"Startup": startupState{Phase: StartupRegistering, Message: "registering"},
+		},
+	}
+	if got := d.StartupPhase(); got != StartupRegistering {
+		t.Fatalf("StartupPhase = %q", got)
+	}
+	if got := d.StartupMessage(); got != "registering" {
+		t.Fatalf("StartupMessage = %q", got)
+	}
+	if got := d.ConfiguredTargetTitle(); got != "Redroid" {
+		t.Fatalf("ConfiguredTargetTitle = %q", got)
+	}
+	cfg.values["CREDIMI_RUNNER_TYPE"] = "ios_simulator"
+	cfg.values["BASE_NAME"] = "sim-base"
+	if got := d.ConfiguredTargetDetail(); got != "sim-base" {
+		t.Fatalf("ConfiguredTargetDetail = %q", got)
+	}
+	if profile := d.ActiveTargetProfile(); profile.Type != "ios_simulator" {
+		t.Fatalf("ActiveTargetProfile = %#v", profile)
+	}
+}

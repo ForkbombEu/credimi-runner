@@ -121,6 +121,18 @@ func TestRenderer_Fragment(t *testing.T) {
 	}
 }
 
+func TestRenderHelpers(t *testing.T) {
+	if !hasURL("https://credimi.example") {
+		t.Fatal("expected URL detection")
+	}
+	if hasURL("runner.example") {
+		t.Fatal("unexpected URL detection")
+	}
+	if !isSecret(Field{Secret: true}) || isSecret(Field{}) {
+		t.Fatal("isSecret returned unexpected result")
+	}
+}
+
 func TestRenderer_FragmentPage(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {

@@ -273,7 +273,8 @@ func (c *Config) write() error {
 	if len(c.rawTail) > 0 {
 		b.WriteString("\n# ── Preserved ──\n")
 		for _, l := range c.rawTail {
-			b.WriteString(l + "\n")
+			b.WriteString(l)
+			b.WriteByte('\n')
 		}
 	}
 

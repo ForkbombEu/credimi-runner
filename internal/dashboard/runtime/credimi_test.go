@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -155,5 +157,25 @@ func TestCredimiClientRetriesRegistrationEvenWhenStoredNameLooksEqual(t *testing
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts=%d", attempts)
+	}
+}
+
+func TestCredimiHelpers(t *testing.T) {
+	err := &CredimiStatusError{Prefix: "preview failed", Status: "409 Conflict", StatusCode: http.StatusConflict, Body: "runner_name_conflict"}
+	if !IsRunnerNameConflict(err) {
+		t.Fatal("expected runner name conflict detection")
+	}
+	if IsRunnerNameConflict(errors.New("other")) {
+		t.Fatal("unexpected conflict detection")
+	}
+
+	client := &CredimiClient{}
+	if client.httpClient() != http.DefaultClient {
+		t.Fatal("expected default client fallback")
+	}
+
+	resp := &http.Response{Status: "502 Bad Gateway", StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("upstream bad"))}
+	if got := credimiResponseError("lookup failed", resp).Error(); !strings.Contains(got, "upstream bad") {
+		t.Fatalf("credimiResponseError = %q", got)
 	}
 }
