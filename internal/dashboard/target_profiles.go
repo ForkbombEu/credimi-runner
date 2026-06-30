@@ -1,6 +1,10 @@
 package dashboard
 
-import "strings"
+import (
+	"strings"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+)
 
 type TargetProfile struct {
 	Type           string
@@ -9,9 +13,9 @@ type TargetProfile struct {
 	AdvancedFields []string
 }
 
-func TargetProfiles() []TargetProfile {
-	return []TargetProfile{
-		{
+func TargetProfilesForGOOS(goos string) []TargetProfile {
+	all := map[string]TargetProfile{
+		"android_phone": {
 			Type:          "android_phone",
 			Title:         "Android phone",
 			PrimaryFields: []string{"CREDIMI_RUNNER_DEVICE_MODE", "CREDIMI_RUNNER_SERIAL", "CREDIMI_RUNNER_WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT"},
@@ -19,7 +23,7 @@ func TargetProfiles() []TargetProfile {
 				"RUNNER_IMAGE",
 			},
 		},
-		{
+		"android_emulator": {
 			Type:          "android_emulator",
 			Title:         "Android emulator",
 			PrimaryFields: []string{"BASE_NAME"},
@@ -27,7 +31,7 @@ func TargetProfiles() []TargetProfile {
 				"RUNNER_IMAGE", "ANDROID_KEYS_DIR", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "GOLDEN_PATH",
 			},
 		},
-		{
+		"ios_simulator": {
 			Type:          "ios_simulator",
 			Title:         "iOS simulator",
 			PrimaryFields: []string{"BASE_NAME"},
@@ -35,7 +39,7 @@ func TargetProfiles() []TargetProfile {
 				"RUNNER_IMAGE",
 			},
 		},
-		{
+		"redroid": {
 			Type:          "redroid",
 			Title:         "Redroid",
 			PrimaryFields: []string{"REDROID_DATA_DIR", "REDROID_DATA_TAR"},
@@ -44,18 +48,36 @@ func TargetProfiles() []TargetProfile {
 			},
 		},
 	}
+
+	choices := dashboardruntime.RunnerTypeChoices(goos)
+	profiles := make([]TargetProfile, 0, len(choices))
+	for _, choice := range choices {
+		profile, ok := all[choice]
+		if ok {
+			profiles = append(profiles, profile)
+		}
+	}
+	return profiles
+}
+
+func TargetProfiles() []TargetProfile {
+	return TargetProfilesForGOOS(currentGOOS())
 }
 
 func (d PageData) TargetProfiles() []TargetProfile {
-	return TargetProfiles()
+	return TargetProfilesForGOOS(currentGOOS())
 }
 
 func (d PageData) ActiveTargetProfile() TargetProfile {
 	runnerType := strings.TrimSpace(d.Runner.Get("CREDIMI_RUNNER_TYPE"))
-	for _, profile := range TargetProfiles() {
+	profiles := d.TargetProfiles()
+	for _, profile := range profiles {
 		if profile.Type == runnerType {
 			return profile
 		}
 	}
-	return TargetProfiles()[0]
+	if len(profiles) == 0 {
+		return TargetProfile{}
+	}
+	return profiles[0]
 }

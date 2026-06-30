@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -231,7 +230,7 @@ func Validate(vals map[string]string) map[string]string {
 
 // Apply validates and persists incoming form values, then writes .env atomically.
 func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
-	normalized, err := normalizedConfigValues(c.Snapshot(), incoming, runtime.GOOS)
+	normalized, err := normalizedConfigValues(c.Snapshot(), incoming, currentGOOS())
 	if err != nil {
 		return map[string]string{"CREDIMI_RUNNER_TYPE": err.Error()}, fmt.Errorf("validation failed")
 	}

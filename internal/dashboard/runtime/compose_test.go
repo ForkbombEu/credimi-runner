@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -10,16 +9,17 @@ func TestComposeServicesByPlan(t *testing.T) {
 	tests := []struct {
 		name string
 		vals Values
+		goos string
 		want []string
 	}{
-		{"container auto", Values{}, []string{"runner", "caddy", "tunnel"}},
-		{"container manual", Values{"CREDIMI_SERVICE_MODE": "manual"}, []string{"runner"}},
-		{"host manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual"}, nil},
-		{"host auto", Values{"CREDIMI_RUNNER_BACKEND": "host"}, []string{"runner_host", "caddy", "tunnel"}},
+		{"container auto", Values{}, "linux", []string{"runner", "caddy", "tunnel"}},
+		{"container manual", Values{"CREDIMI_SERVICE_MODE": "manual"}, "linux", []string{"runner"}},
+		{"host manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, "darwin", nil},
+		{"host auto", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", []string{"runner_host", "caddy", "tunnel"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			values, err := NormalizeValues(tt.vals, runtime.GOOS)
+			values, err := NormalizeValues(tt.vals, tt.goos)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,7 +88,7 @@ func TestRunnerAPIReachableFromHost(t *testing.T) {
 		goos string
 		want bool
 	}{
-		{"host backend", Values{"CREDIMI_RUNNER_BACKEND": "host"}, "linux", true},
+		{"host backend", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
 		{"linux phone auto host network", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
 		{"linux emulator bridge", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", false},
 		{"linux manual container host network", Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "CREDIMI_SERVICE_MODE": "manual"}, "linux", true},
@@ -110,7 +110,7 @@ func TestRunnerReadinessRequiredBeforeRegistration(t *testing.T) {
 		goos string
 		want bool
 	}{
-		{"host backend", Values{"CREDIMI_RUNNER_BACKEND": "host"}, "linux", true},
+		{"host backend", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
 		{"linux phone container auto", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", false},
 		{"linux phone container manual", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"}, "linux", false},
 		{"linux emulator container auto", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", false},

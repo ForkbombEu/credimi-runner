@@ -89,8 +89,36 @@ func TestNormalizeHostAndroidEmulator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values["HOST_AVD_HOME_PATH"] != "" || values["HOST_AVD_GOLDEN_PATH"] != "" {
+	if values["CREDIMI_RUNNER_BACKEND"] != DefaultContainerBackend {
+		t.Fatalf("normalized backend = %q", values["CREDIMI_RUNNER_BACKEND"])
+	}
+	if values["HOST_AVD_HOME_PATH"] == "" || values["HOST_AVD_GOLDEN_PATH"] == "" {
 		t.Fatalf("normalized = %#v", values)
+	}
+}
+
+func TestNormalizeBackendForRunnerType(t *testing.T) {
+	tests := []struct {
+		name        string
+		values      Values
+		goos        string
+		wantBackend string
+	}{
+		{"darwin emulator forces container", Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "CREDIMI_RUNNER_BACKEND": DefaultHostBackend}, "darwin", DefaultContainerBackend},
+		{"darwin phone forces container", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_BACKEND": DefaultHostBackend}, "darwin", DefaultContainerBackend},
+		{"darwin redroid forces container", Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_RUNNER_BACKEND": DefaultHostBackend}, "darwin", DefaultContainerBackend},
+		{"darwin simulator forces host", Values{"CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_RUNNER_BACKEND": DefaultContainerBackend}, "darwin", DefaultHostBackend},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			values, err := NormalizeValues(tt.values, tt.goos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if values["CREDIMI_RUNNER_BACKEND"] != tt.wantBackend {
+				t.Fatalf("backend = %q, want %q", values["CREDIMI_RUNNER_BACKEND"], tt.wantBackend)
+			}
+		})
 	}
 }
 
@@ -181,6 +209,9 @@ func TestNormalizeHelperFunctions(t *testing.T) {
 	}
 	if got := strings.Join(runnerTypeChoices("linux"), ","); got != "android_emulator,redroid,android_phone" {
 		t.Fatalf("runnerTypeChoices = %q", got)
+	}
+	if got := strings.Join(RunnerTypeChoices("darwin"), ","); got != "android_emulator,ios_simulator,redroid,android_phone" {
+		t.Fatalf("RunnerTypeChoices = %q", got)
 	}
 	if got := defaultAndroidDeviceMode(Values{"CREDIMI_CONTAINER_MODE": "wifi"}, "android_phone"); got != "wifi" {
 		t.Fatalf("defaultAndroidDeviceMode = %q", got)

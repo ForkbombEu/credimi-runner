@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"os"
-	"runtime"
 	"strings"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -15,7 +14,7 @@ const (
 )
 
 func normalizeWizardValues(vals map[string]string) {
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(vals), runtime.GOOS)
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(vals), currentGOOS())
 	if err != nil {
 		return
 	}
@@ -29,7 +28,7 @@ func WriteComposeFile(dir string, vals map[string]string) error {
 }
 
 func ComposeServices(vals map[string]string) []string {
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(vals), runtime.GOOS)
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(vals), currentGOOS())
 	if err != nil {
 		return nil
 	}
@@ -37,7 +36,7 @@ func ComposeServices(vals map[string]string) []string {
 }
 
 func runnerConnectivityBlock(vals map[string]string) string {
-	if valDefault(vals, "CREDIMI_SERVICE_MODE", "auto") == "manual" && runtime.GOOS == "linux" {
+	if valDefault(vals, "CREDIMI_SERVICE_MODE", "auto") == "manual" && currentGOOS() == "linux" {
 		return "    network_mode: host"
 	}
 	return `    expose:
@@ -66,7 +65,7 @@ func tunnelURL(vals map[string]string) string {
 }
 
 func hostNetworkForTunnel(vals map[string]string) bool {
-	return runtime.GOOS == "linux" &&
+	return currentGOOS() == "linux" &&
 		valDefault(vals, "CREDIMI_RUNNER_BACKEND", dashboardruntime.DefaultContainerBackend) == dashboardruntime.DefaultContainerBackend &&
 		valDefault(vals, "CREDIMI_SERVICE_MODE", "auto") == "auto"
 }

@@ -215,8 +215,83 @@ func TestRenderer_SetupPage(t *testing.T) {
 	if !strings.Contains(html, "credimi.io/my/profile/api-keys") {
 		t.Errorf("setup page missing API key link")
 	}
+	if strings.Contains(html, "data-runner-conflict-choice") {
+		t.Errorf("setup page should not render inline runner conflict controls")
+	}
+	if !strings.Contains(html, "runner-conflict-modal") {
+		t.Errorf("setup page missing runner conflict modal")
+	}
 	if strings.Contains(html, `class="sb"`) {
 		t.Errorf("setup page should not render sidebar")
+	}
+}
+
+func TestRenderer_HidesIOSSimulatorOnLinux(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "linux")
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := PageData{
+		Active:   "setup",
+		Title:    "Setup",
+		Runner:   &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
+		Snapshot: Snapshot{},
+		Pill:     PillData{OK: true, Label: "Setup"},
+	}
+	html, err := r.Page("setup", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(html, `value="ios_simulator"`) {
+		t.Fatalf("linux setup page should not render ios_simulator: %s", html)
+	}
+}
+
+func TestRenderer_ShowsIOSSimulatorOnDarwin(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := PageData{
+		Active:   "devices",
+		Title:    "Devices",
+		Runner:   &Config{values: Defaults},
+		Snapshot: Snapshot{},
+		Pill:     PillData{OK: true, Label: "Ready"},
+	}
+	html, err := r.Page("devices", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, `value="ios_simulator"`) {
+		t.Fatalf("darwin devices page should render ios_simulator: %s", html)
+	}
+}
+
+func TestRenderer_UsesSimulatorNameLabel(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := PageData{
+		Active:   "devices",
+		Title:    "Devices",
+		Runner:   &Config{values: map[string]string{"CREDIMI_RUNNER_TYPE": "ios_simulator", "BASE_NAME": "credimi"}},
+		Snapshot: Snapshot{},
+		Pill:     PillData{OK: true, Label: "Ready"},
+	}
+	html, err := r.Page("devices", d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, "Simulator name") {
+		t.Fatalf("devices page missing simulator label: %s", html)
+	}
+	if !strings.Contains(html, "Emulator base name") {
+		t.Fatalf("devices page missing emulator label: %s", html)
 	}
 }
 

@@ -176,6 +176,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Device actions
 	mux.HandleFunc("POST /devices/config", s.saveDevicesConfig)
+	mux.HandleFunc("GET /devices/ios-simulator/status", s.iosSimulatorStatus)
+	mux.HandleFunc("POST /devices/ios-simulator/create", s.iosSimulatorCreate)
+	mux.HandleFunc("GET /devices/android-emulator/assets/status", s.androidEmulatorAssetsStatus)
+	mux.HandleFunc("POST /devices/android-emulator/assets/select", s.androidEmulatorAssetsSelect)
+	mux.HandleFunc("POST /devices/android-emulator/assets/download", s.androidEmulatorAssetsDownload)
 	mux.HandleFunc("POST /devices/connect", s.deviceConnect)
 	mux.HandleFunc("POST /devices/{serial}/reconnect", s.deviceReconnect)
 	mux.HandleFunc("POST /devices/{serial}/disconnect", s.deviceDisconnect)
@@ -1213,6 +1218,172 @@ func hasApplyClass(diff dashboardruntime.ConfigDiff, class dashboardruntime.Appl
 		}
 	}
 	return false
+}
+
+type iosSimulatorCreateRequest struct {
+	Name                 string `json:"name"`
+	DeviceTypeIdentifier string `json:"device_type_identifier"`
+	RuntimeIdentifier    string `json:"runtime_identifier"`
+}
+
+type androidEmulatorAssetsRequest struct {
+	BaseName   string `json:"base_name"`
+	AVDHome    string `json:"avd_home"`
+	GoldenRoot string `json:"golden_root"`
+	GoldenPath string `json:"golden_path"`
+}
+
+func (s *Server) iosSimulatorStatus(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	status := IOSSimulatorStatus{Supported: false, Exists: false, Name: name}
+	if name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.lookupPath("xcrun"); err != nil {
+		writeJSON(w, status)
+		return
+	}
+	status.Supported = true
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	exists, err := iosSimulatorExists(ctx, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	status.Exists = exists
+	if !exists {
+		status.DeviceTypes, err = listIOSSimulatorDeviceTypes(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		status.Runtimes, err = listIOSSimulatorRuntimes(ctx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
+	writeJSON(w, status)
+}
+
+func (s *Server) iosSimulatorCreate(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.lookupPath("xcrun"); err != nil {
+		http.Error(w, "xcrun simctl is required for iOS simulator runners", http.StatusUnprocessableEntity)
+		return
+	}
+	var req iosSimulatorCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := createIOSSimulator(ctx, strings.TrimSpace(req.Name), strings.TrimSpace(req.DeviceTypeIdentifier), strings.TrimSpace(req.RuntimeIdentifier)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "created"})
+}
+
+func (s *Server) androidEmulatorAssetsStatus(w http.ResponseWriter, r *http.Request) {
+	baseName := strings.TrimSpace(r.URL.Query().Get("base_name"))
+	avdHome := strings.TrimSpace(r.URL.Query().Get("avd_home"))
+	goldenRoot := strings.TrimSpace(r.URL.Query().Get("golden_root"))
+	goldenPath := strings.TrimSpace(r.URL.Query().Get("golden_path"))
+	if baseName == "" {
+		baseName = dashboardruntime.DefaultBaseName
+	}
+	goldenLeaf := goldenLeafFromPath(goldenPath, baseName)
+	status := AndroidEmulatorAssetsStatus{
+		BaseName:      baseName,
+		AVDHome:       avdHome,
+		GoldenRoot:    goldenRoot,
+		GoldenLeaf:    goldenLeaf,
+		AVDPresent:    avdAssetsExistForName(avdHome, baseName),
+		GoldenPresent: goldenAssetsPresentForLeaf(goldenRoot, goldenLeaf),
+		AVDOptions:    listAVDOptions(avdHome),
+		GoldenOptions: listGoldenOptions(goldenRoot),
+	}
+	writeJSON(w, status)
+}
+
+func (s *Server) androidEmulatorAssetsSelect(w http.ResponseWriter, r *http.Request) {
+	var req androidEmulatorAssetsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.BaseName) == "" {
+		req.BaseName = dashboardruntime.DefaultBaseName
+	}
+	goldenLeaf := goldenLeafFromPath(req.GoldenPath, req.BaseName)
+	writeJSON(w, AndroidEmulatorAssetsStatus{
+		BaseName:      strings.TrimSpace(req.BaseName),
+		AVDHome:       strings.TrimSpace(req.AVDHome),
+		GoldenRoot:    strings.TrimSpace(req.GoldenRoot),
+		GoldenLeaf:    goldenLeaf,
+		AVDPresent:    avdAssetsExistForName(strings.TrimSpace(req.AVDHome), strings.TrimSpace(req.BaseName)),
+		GoldenPresent: goldenAssetsPresentForLeaf(strings.TrimSpace(req.GoldenRoot), goldenLeaf),
+		AVDOptions:    listAVDOptions(strings.TrimSpace(req.AVDHome)),
+		GoldenOptions: listGoldenOptions(strings.TrimSpace(req.GoldenRoot)),
+	})
+}
+
+func (s *Server) androidEmulatorAssetsDownload(w http.ResponseWriter, r *http.Request) {
+	var req androidEmulatorAssetsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	baseName := strings.TrimSpace(req.BaseName)
+	if baseName == "" {
+		baseName = dashboardruntime.DefaultBaseName
+	}
+	avdHome := strings.TrimSpace(req.AVDHome)
+	goldenRoot := strings.TrimSpace(req.GoldenRoot)
+	if avdHome == "" || goldenRoot == "" {
+		http.Error(w, "avd_home and golden_root are required", http.StatusBadRequest)
+		return
+	}
+	goldenLeaf := goldenLeafFromPath(req.GoldenPath, baseName)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	flusher, _ := w.(http.Flusher)
+	writeProgress := func(progress DownloadProgress) {
+		line, _ := json.Marshal(progress)
+		w.Write(line)
+		w.Write([]byte("\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	writeProgress(DownloadProgress{Phase: "starting"})
+	stageProgress := func(stage string) func(DownloadProgress) {
+		return func(progress DownloadProgress) {
+			if progress.Phase != "" {
+				progress.Phase = stage + "_" + progress.Phase
+			} else {
+				progress.Phase = stage
+			}
+			writeProgress(progress)
+		}
+	}
+	if !avdAssetsExistForName(avdHome, baseName) {
+		if err := downloadAndExtractTarball(ctx, defaultBaseAVDArchiveURL, avdHome, "credimi_base_image.tar.gz", stageProgress("base_avd")); err != nil {
+			writeProgress(DownloadProgress{Phase: "error", Error: err.Error()})
+			return
+		}
+	}
+	if !goldenAssetsPresentForLeaf(goldenRoot, goldenLeaf) {
+		if err := downloadAndExtractTarball(ctx, defaultGoldenArchiveURL, goldenRoot, "credimi_golden.tar.gz", stageProgress("golden")); err != nil {
+			writeProgress(DownloadProgress{Phase: "error", Error: err.Error()})
+			return
+		}
+	}
+	writeProgress(DownloadProgress{Phase: "complete"})
 }
 
 // ── device handlers ──────────────────────────────────────────────────────────

@@ -145,6 +145,7 @@
       const prev = $('[data-step-prev]', form);
       const next = $('[data-step-next]', form);
       const submit = $('[data-step-submit]', form);
+      let runnerPreview = null;
       const errBox = () => $('[data-setup-error]', panels[current]);
       const setError = (msg) => {
         const box = errBox();
@@ -163,7 +164,6 @@
             } else {
               if (valueMissing('CREDIMI_USER_API_KEY') || valueMissing('CREDIMI_RUNNER_NAME')) return false;
             }
-            if (form.dataset.runnerConflictPending === '1' && form.dataset.runnerConflictTouched !== '1') return false;
             return true;
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
@@ -176,11 +176,16 @@
             if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi') {
               return !valueMissing('CREDIMI_RUNNER_WIFI_IP');
             }
+            if (runnerType === 'android_emulator') {
+              const panel = $('[data-android-emulator-assets-panel]', form);
+              return !valueMissing('BASE_NAME') && (!panel || panel.dataset.ready === '1');
+            }
+            if (runnerType === 'ios_simulator') {
+              const panel = $('[data-ios-simulator-panel]', form);
+              return !valueMissing('BASE_NAME') && (!panel || panel.dataset.exists === '1');
+            }
             if (runnerType === 'redroid') {
               return !valueMissing('REDROID_DATA_DIR') && !valueMissing('REDROID_DATA_TAR');
-            }
-            if (runnerType === 'android_emulator' || runnerType === 'ios_simulator') {
-              return !valueMissing('BASE_NAME');
             }
             return !!runnerType;
           }
@@ -200,9 +205,6 @@
               if (valueMissing('CREDIMI_USER_API_KEY')) return 'User API key is required.';
             }
             if (valueMissing('CREDIMI_RUNNER_NAME')) return 'Runner name is required.';
-            if (form.dataset.runnerConflictPending === '1' && form.dataset.runnerConflictTouched !== '1') {
-              return 'Choose whether to update the existing runner or create a new one.';
-            }
             return '';
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
@@ -217,11 +219,16 @@
             if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
               return 'Wi-Fi mode requires an Android Wi-Fi IP.';
             }
+            if (runnerType === 'android_emulator' && valueMissing('BASE_NAME')) return 'Base name is required.';
+            if (runnerType === 'android_emulator') {
+              const panel = $('[data-android-emulator-assets-panel]', form);
+              if (panel && panel.dataset.checking === '1') return 'Checking emulator assets.';
+              return 'Emulator assets must be present before continuing.';
+            }
+            if (runnerType === 'ios_simulator' && valueMissing('BASE_NAME')) return 'Simulator name is required.';
+            if (runnerType === 'ios_simulator') return 'Create or select the named simulator before continuing.';
             if (runnerType === 'redroid' && valueMissing('REDROID_DATA_DIR')) return 'Redroid data directory is required.';
             if (runnerType === 'redroid' && valueMissing('REDROID_DATA_TAR')) return 'Redroid data archive is required.';
-            if ((runnerType === 'android_emulator' || runnerType === 'ios_simulator') && valueMissing('BASE_NAME')) {
-              return 'Base name is required.';
-            }
             return '';
           }
           default:
@@ -243,6 +250,7 @@
         if (next) next.hidden = current === panels.length - 1;
         if (submit) submit.style.display = current === panels.length - 1 ? '' : 'none';
         if (current === panels.length - 1) syncReview();
+        form.dispatchEvent(new CustomEvent('dashboard:step-shown', { bubbles: true, detail: { step: panels[current] && panels[current].dataset.step } }));
         syncStepActions();
       };
       const jsonPost = async (url, body) => {
@@ -359,25 +367,60 @@
         if (otelName && runnerID) otelName.value = runnerID;
       };
       const setConflictState = (preview) => {
-        const conflict = $('[data-runner-conflict]', form);
         const actionInput = $('[data-runner-conflict-action]', form);
-        const message = $('[data-runner-conflict-message]', form);
-        if (!conflict || !actionInput) return;
-        const action = actionInput.value || 'update';
-        conflict.style.display = preview && preview.conflict ? '' : 'none';
+        if (!actionInput) return;
+        runnerPreview = preview;
         if (!preview || !preview.conflict) {
-          delete form.dataset.runnerConflictPending;
-          delete form.dataset.runnerConflictTouched;
-          syncStepActions();
           return;
         }
-        form.dataset.runnerConflictPending = '1';
-        if (message) message.textContent = `Runner ${preview.base_runner_id} already exists.`;
-        $$('[data-runner-conflict-choice]', conflict).forEach((btn) => {
-          btn.classList.toggle('on', btn.dataset.runnerConflictChoice === action);
-        });
-        syncStepActions();
+        actionInput.value = actionInput.value || preview.default_action || 'update';
       };
+      const applyConflictDecision = (preview, action) => {
+        const actionInput = $('[data-runner-conflict-action]', form);
+        const runnerID = field('CREDIMI_RUNNER_ID');
+        const nextRunnerID = action === 'create' ? preview.preview_runner_id : preview.base_runner_id;
+        if (actionInput) actionInput.value = action;
+        if (runnerID) runnerID.value = nextRunnerID || '';
+        const runnerPreviewEl = $('[data-runner-id-preview]', form);
+        if (runnerPreviewEl) runnerPreviewEl.textContent = nextRunnerID || '';
+        syncOTELServiceName(nextRunnerID || '');
+      };
+      const openRunnerConflictModal = (preview) => new Promise((resolve) => {
+        const modal = $('#runner-conflict-modal');
+        if (!modal) {
+          resolve('cancel');
+          return;
+        }
+        const summary = $('[data-runner-conflict-modal-summary]', modal);
+        const existing = $('[data-runner-conflict-modal-existing]', modal);
+        const suggested = $('[data-runner-conflict-modal-preview]', modal);
+        if (summary) summary.textContent = 'The requested runner name already exists. Choose whether to update it or create a new runner ID.';
+        if (existing) existing.innerHTML = `Existing runner: <span class="tag mono">${escapeHtml(preview.base_runner_id || '')}</span>`;
+        if (suggested) suggested.innerHTML = `New available runner ID: <span class="tag mono">${escapeHtml(preview.preview_runner_id || preview.base_runner_id || '')}</span>`;
+        modal.hidden = false;
+        const primary = $('[data-runner-conflict-decision]', modal);
+        if (primary) primary.focus();
+
+        const finish = (decision) => {
+          modal.hidden = true;
+          modal.removeEventListener('click', onClick);
+          document.removeEventListener('keydown', onKeydown);
+          resolve(decision);
+        };
+        const onClick = (event) => {
+          const decision = event.target.closest('[data-runner-conflict-decision]');
+          if (decision) {
+            finish(decision.dataset.runnerConflictDecision || 'cancel');
+            return;
+          }
+          if (event.target.closest('[data-runner-conflict-cancel]')) finish('cancel');
+        };
+        const onKeydown = (event) => {
+          if (event.key === 'Escape') finish('cancel');
+        };
+        modal.addEventListener('click', onClick);
+        document.addEventListener('keydown', onKeydown);
+      });
       const previewRunnerID = async () => {
         const instanceURL = value('CREDIMI_URL');
         const apiKey = selectedAPIKey();
@@ -403,7 +446,7 @@
             name: name,
           });
           const actionInput = $('[data-runner-conflict-action]', form);
-          if (actionInput && form.dataset.runnerConflictTouched !== '1') {
+          if (actionInput && !actionInput.value) {
             actionInput.value = data.default_action || 'update';
           }
           rid = (actionInput && actionInput.value === 'create' ? data.preview_runner_id : data.base_runner_id) || data.runner_id || '';
@@ -424,18 +467,8 @@
       // Live-canonify as the user types the runner name.
       const nameField = field('CREDIMI_RUNNER_NAME');
       if (nameField) nameField.addEventListener('input', () => {
-        delete form.dataset.runnerConflictTouched;
         canonifyName();
         syncStepActions();
-      });
-      form.addEventListener('click', (e) => {
-        const choice = e.target.closest('[data-runner-conflict-choice]');
-        if (!choice) return;
-        const actionInput = $('[data-runner-conflict-action]', form);
-        if (actionInput) actionInput.value = choice.dataset.runnerConflictChoice;
-        form.dataset.runnerConflictTouched = '1';
-        $$('[data-runner-conflict-choice]', form).forEach((btn) => btn.classList.toggle('on', btn === choice));
-        previewRunnerID();
       });
       const beforeNext = async () => {
         const panel = panels[current];
@@ -444,9 +477,10 @@
           await resolveOrganization();
           await canonifyName();
           const preview = await previewRunnerID();
-          if (preview && preview.conflict && form.dataset.runnerConflictTouched !== '1') {
-            setError('Choose whether to update the existing runner or create a new one.');
-            return false;
+          if (preview && preview.conflict) {
+            const decision = await openRunnerConflictModal(preview);
+            if (decision === 'cancel') return false;
+            applyConflictDecision(preview, decision);
           }
         }
         return true;
@@ -478,6 +512,7 @@
       });
       form.addEventListener('input', syncStepActions);
       form.addEventListener('change', syncStepActions);
+      form.addEventListener('dashboard:device-ready-change', syncStepActions);
       show(0);
     });
   }
@@ -509,11 +544,8 @@
   initNetMode();
 
   // ── Device step: radio cards + show/hide fields based on runner type and mode ──
-  const setSectionVisible = (el, visible) => {
+  const setPanelVisible = (el, visible) => {
     el.style.display = visible ? '' : 'none';
-    el.querySelectorAll('input, select, textarea').forEach(control => {
-      control.disabled = !visible;
-    });
   };
   const fieldValue = (root, name) => {
     const radio = root.querySelector(`[name="${name}"]:checked`);
@@ -522,6 +554,22 @@
     return input ? (input.value || '') : '';
   };
   const setFieldValue = (root, name, value) => {
+    const radios = root.querySelectorAll(`input[type="radio"][name="${name}"]`);
+    if (radios.length > 0) {
+      let changed = false;
+      radios.forEach((radio) => {
+        const shouldCheck = (radio.value || '') === value;
+        if (radio.checked !== shouldCheck) {
+          radio.checked = shouldCheck;
+          changed = true;
+        }
+      });
+      if (!changed) return;
+      const checked = root.querySelector(`input[type="radio"][name="${name}"]:checked`) || radios[0];
+      checked.dispatchEvent(new Event('input', { bubbles: true }));
+      checked.dispatchEvent(new Event('change', { bubbles: true }));
+      return;
+    }
     const input = root.querySelector(`[name="${name}"]`);
     if (!input || input.value === value) return;
     input.value = value;
@@ -542,7 +590,230 @@
       }
       params.set(input.name, input.value || '');
     });
+    const runnerType = root.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked');
+    if (runnerType) params.set('CREDIMI_RUNNER_TYPE', runnerType.value || '');
     return params;
+  };
+  const setCallout = (el, tone, message) => {
+    if (!el) return;
+    const icon = tone === 'danger' ? xmark() : tone === 'warn' ? warn() : check();
+    el.className = `callout ${tone}`;
+    el.innerHTML = `${icon}<div>${escapeHtml(message)}</div>`;
+  };
+  const androidEmulatorProgressLabel = (phase) => {
+    switch (phase) {
+      case 'starting':
+        return 'Preparing download';
+      case 'base_avd_downloading':
+        return 'Downloading base AVD';
+      case 'base_avd_extracting':
+        return 'Extracting base AVD';
+      case 'golden_downloading':
+        return 'Downloading golden image';
+      case 'golden_extracting':
+        return 'Extracting golden image';
+      case 'complete':
+        return 'Download complete';
+      default:
+        return 'Downloading emulator assets';
+    }
+  };
+  const setAndroidEmulatorProgress = (panel, progress) => {
+    if (!panel) return;
+    const box = panel.querySelector('[data-android-emulator-progress]');
+    const bar = panel.querySelector('[data-android-emulator-progress-bar]');
+    const label = panel.querySelector('[data-android-emulator-progress-label]');
+    if (!box || !bar || !label) return;
+    box.hidden = false;
+    const phase = progress && progress.phase ? progress.phase : 'starting';
+    let pct = 0;
+    if (progress && Number(progress.total) > 0) {
+      pct = Math.max(0, Math.min(100, Math.round((Number(progress.bytes) / Number(progress.total)) * 100)));
+    } else if (phase === 'base_avd_extracting') {
+      pct = 45;
+    } else if (phase === 'golden_extracting') {
+      pct = 90;
+    } else if (phase === 'complete') {
+      pct = 100;
+    }
+    bar.style.width = `${pct}%`;
+    label.textContent = pct > 0 && phase !== 'complete' ? `${androidEmulatorProgressLabel(phase)} ${pct}%` : androidEmulatorProgressLabel(phase);
+  };
+  const resetAndroidEmulatorProgress = (panel) => {
+    if (!panel) return;
+    const box = panel.querySelector('[data-android-emulator-progress]');
+    const bar = panel.querySelector('[data-android-emulator-progress-bar]');
+    const label = panel.querySelector('[data-android-emulator-progress-label]');
+    if (box) box.hidden = true;
+    if (bar) bar.style.width = '0%';
+    if (label) label.textContent = '0%';
+  };
+  const readAndroidEmulatorProgress = async (res, panel) => {
+    if (!res.body || !window.TextDecoder) {
+      const text = (await res.text()).trim();
+      if (text) {
+        text.split(/\n+/).forEach((line) => {
+          if (!line.trim()) return;
+          const progress = JSON.parse(line);
+          if (progress.phase === 'error') throw new Error(progress.error || 'Failed to download emulator assets.');
+          setAndroidEmulatorProgress(panel, progress);
+        });
+      }
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const progress = JSON.parse(line);
+        if (progress.phase === 'error') throw new Error(progress.error || 'Failed to download emulator assets.');
+        setAndroidEmulatorProgress(panel, progress);
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) {
+      const progress = JSON.parse(buffer);
+      if (progress.phase === 'error') throw new Error(progress.error || 'Failed to download emulator assets.');
+      setAndroidEmulatorProgress(panel, progress);
+    }
+  };
+  const populateSelect = (select, options, placeholder) => {
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = '';
+    if (placeholder) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = placeholder;
+      select.appendChild(empty);
+    }
+    options.forEach((option) => {
+      const node = document.createElement('option');
+      node.value = option.identifier || option.path || option.name || '';
+      node.textContent = option.label || option.name || option.path || '';
+      if (option.path) node.dataset.path = option.path;
+      if (option.name) node.dataset.name = option.name;
+      select.appendChild(node);
+    });
+    if (previous) select.value = previous;
+    if (!select.value && select.options.length > 0) select.selectedIndex = placeholder && options.length > 0 ? 1 : 0;
+  };
+  const refreshIOSSimulatorPanel = async (root) => {
+    const panel = root.querySelector('[data-ios-simulator-panel]');
+    if (!panel) return;
+    const selectedType = fieldValue(root, 'CREDIMI_RUNNER_TYPE');
+    const visible = selectedType === 'ios_simulator';
+    setPanelVisible(panel, visible);
+    if (!visible) return;
+
+    const name = fieldValue(root, 'BASE_NAME').trim();
+    const message = panel.querySelector('[data-ios-simulator-message]');
+    const selects = panel.querySelector('[data-ios-simulator-selects]');
+    const create = panel.querySelector('[data-ios-simulator-create]');
+    panel.dataset.exists = '0';
+    if (selects) selects.hidden = true;
+    if (create) create.hidden = true;
+
+    if (!name) {
+      setCallout(message, 'warn', 'Simulator name is required before provisioning can be checked.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/devices/ios-simulator/status?name=${encodeURIComponent(name)}`);
+      if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+      const data = await res.json();
+      if (!data.supported) {
+        setCallout(message, 'warn', 'xcrun simctl is not available on this machine.');
+        return;
+      }
+      if (data.exists) {
+        panel.dataset.exists = '1';
+        setCallout(message, 'info', `Simulator ${name} already exists and can be used.`);
+        root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+        return;
+      }
+      populateSelect(panel.querySelector('[data-ios-simulator-device-type]'), data.device_types || [], 'Select a device type');
+      populateSelect(panel.querySelector('[data-ios-simulator-runtime]'), data.runtimes || [], 'Select a runtime');
+      if (selects) selects.hidden = false;
+      if (create) create.hidden = false;
+      setCallout(message, 'warn', `No simulator named ${name} exists yet. Choose a device type and runtime to create it.`);
+    } catch (error) {
+      setCallout(message, 'danger', error && error.message ? error.message : 'Failed to load simulator status.');
+    } finally {
+      root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+    }
+  };
+  const refreshAndroidEmulatorAssetsPanel = async (root) => {
+    const panel = root.querySelector('[data-android-emulator-assets-panel]');
+    if (!panel) return;
+    const selectedType = fieldValue(root, 'CREDIMI_RUNNER_TYPE');
+    const visible = selectedType === 'android_emulator';
+    setPanelVisible(panel, visible);
+    if (!visible) return;
+
+    const message = panel.querySelector('[data-android-emulator-assets-message]');
+    const avdControls = panel.querySelector('[data-android-emulator-avd-controls]');
+    const avdField = panel.querySelector('[data-android-emulator-avd-field]');
+    const goldenField = panel.querySelector('[data-android-emulator-golden-field]');
+    const applyAVD = panel.querySelector('[data-android-emulator-apply-avd]');
+    const applyGolden = panel.querySelector('[data-android-emulator-apply-golden]');
+    const download = panel.querySelector('[data-android-emulator-download]');
+    panel.dataset.ready = '0';
+    panel.dataset.checking = '1';
+    if (avdControls) avdControls.hidden = true;
+    if (avdField) avdField.hidden = true;
+    if (goldenField) goldenField.hidden = true;
+    if (applyAVD) applyAVD.hidden = true;
+    if (applyGolden) applyGolden.hidden = true;
+    if (download) download.hidden = true;
+
+    try {
+      const query = new URLSearchParams({
+        base_name: fieldValue(root, 'BASE_NAME'),
+        avd_home: fieldValue(root, 'HOST_AVD_HOME_PATH'),
+        golden_root: fieldValue(root, 'HOST_AVD_GOLDEN_PATH'),
+        golden_path: fieldValue(root, 'GOLDEN_PATH'),
+      });
+      const res = await fetch(`/devices/android-emulator/assets/status?${query.toString()}`);
+      if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+      const data = await res.json();
+      const avdReady = data.avd_present === true;
+      const goldenReady = data.golden_present === true;
+      const avdOptions = data.avd_options || [];
+      const goldenOptions = data.golden_options || [];
+      panel.dataset.ready = avdReady && goldenReady ? '1' : '0';
+      if (avdReady && goldenReady) {
+        setCallout(message, 'info', `Emulator assets are present for ${data.base_name || fieldValue(root, 'BASE_NAME')}.`);
+        root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+        return;
+      }
+      populateSelect(panel.querySelector('[data-android-emulator-avd-select]'), avdOptions, 'Select an existing AVD');
+      populateSelect(panel.querySelector('[data-android-emulator-golden-select]'), goldenOptions, 'Select a golden image folder');
+      const showAVDChoice = !avdReady && avdOptions.length > 0;
+      const showGoldenChoice = !goldenReady && goldenOptions.length > 0;
+      if (avdControls) avdControls.hidden = !(showAVDChoice || showGoldenChoice);
+      if (avdField) avdField.hidden = !showAVDChoice;
+      if (goldenField) goldenField.hidden = !showGoldenChoice;
+      if (applyAVD) applyAVD.hidden = !showAVDChoice;
+      if (applyGolden) applyGolden.hidden = !showGoldenChoice;
+      if (download) download.hidden = false;
+      const missing = [];
+      if (!avdReady) missing.push('base AVD');
+      if (!goldenReady) missing.push(`golden image ${data.golden_leaf || ''}`.trim());
+      setCallout(message, 'warn', `${missing.join(' and ')} missing. Choose an existing asset or download Credimi assets.`);
+    } catch (error) {
+      setCallout(message, 'danger', error && error.message ? error.message : 'Failed to load emulator asset status.');
+    } finally {
+      delete panel.dataset.checking;
+      root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+    }
   };
   const deriveHomeDefaults = (root) => {
     const androidKeysDir = fieldValue(root, 'ANDROID_KEYS_DIR');
@@ -645,17 +916,19 @@
     const mode = fieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE');
     root.querySelectorAll('[data-dev-type]').forEach(el => {
       const types = (el.dataset.devType || '').split(/\s+/);
-      setSectionVisible(el, types.includes(type));
+      setPanelVisible(el, types.includes(type));
     });
     root.querySelectorAll('[data-dev-mode]').forEach(el => {
       const modes = (el.dataset.devMode || '').split(/\s+/);
       const parent = el.closest('[data-dev-type]');
       const parentHidden = parent && parent.style.display === 'none';
-      setSectionVisible(el, !parentHidden && modes.includes(mode));
+      setPanelVisible(el, !parentHidden && modes.includes(mode));
     });
     root.querySelectorAll('[data-dev-pick]').forEach(p => {
       p.classList.toggle('on', p.dataset.devPick === type);
     });
+    refreshIOSSimulatorPanel(root);
+    refreshAndroidEmulatorAssetsPanel(root);
   };
   document.addEventListener('click', (e) => {
     const pick = e.target.closest('[data-dev-pick]');
@@ -664,6 +937,8 @@
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
+      updateDeviceFields(root);
+      markDirty();
       const finish = () => {
         updateDeviceFields(root);
         markDirty();
@@ -675,7 +950,102 @@
     }
   });
   document.addEventListener('change', (e) => {
-    if (e.target.name === 'CREDIMI_RUNNER_DEVICE_MODE') updateDeviceFields(e.target.closest('form') || document);
+    if (e.target.name === 'CREDIMI_RUNNER_DEVICE_MODE' || e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
+      updateDeviceFields(e.target.closest('form') || document);
+    }
+  });
+  document.addEventListener('dashboard:step-shown', (e) => {
+    if (e.detail && e.detail.step === 'device') updateDeviceFields(e.target.closest('form') || document);
+  });
+  document.addEventListener('click', async (e) => {
+    const create = e.target.closest('[data-ios-simulator-create]');
+    if (create) {
+      const root = create.closest('form') || document;
+      const panel = create.closest('[data-ios-simulator-panel]');
+      const message = panel && panel.querySelector('[data-ios-simulator-message]');
+      const deviceType = panel && panel.querySelector('[data-ios-simulator-device-type]');
+      const runtime = panel && panel.querySelector('[data-ios-simulator-runtime]');
+      create.disabled = true;
+      try {
+        const res = await fetch('/devices/ios-simulator/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: fieldValue(root, 'BASE_NAME'),
+            device_type_identifier: deviceType ? deviceType.value : '',
+            runtime_identifier: runtime ? runtime.value : '',
+          }),
+        });
+        if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+        setCallout(message, 'info', 'Simulator created. Refreshing status.');
+        await refreshIOSSimulatorPanel(root);
+      } catch (error) {
+        setCallout(message, 'danger', error && error.message ? error.message : 'Failed to create simulator.');
+      } finally {
+        create.disabled = false;
+      }
+      return;
+    }
+
+    const applyAVD = e.target.closest('[data-android-emulator-apply-avd]');
+    if (applyAVD) {
+      const root = applyAVD.closest('form') || document;
+      const panel = applyAVD.closest('[data-android-emulator-assets-panel]');
+      const select = panel && panel.querySelector('[data-android-emulator-avd-select]');
+      const option = select && select.selectedOptions[0];
+      if (option && option.value) {
+        setFieldValue(root, 'BASE_NAME', option.dataset.name || option.textContent.trim());
+        await refreshAndroidEmulatorAssetsPanel(root);
+      }
+      return;
+    }
+
+    const applyGolden = e.target.closest('[data-android-emulator-apply-golden]');
+    if (applyGolden) {
+      const root = applyGolden.closest('form') || document;
+      const panel = applyGolden.closest('[data-android-emulator-assets-panel]');
+      const select = panel && panel.querySelector('[data-android-emulator-golden-select]');
+      const option = select && select.selectedOptions[0];
+      if (option && option.value) {
+        const leaf = option.dataset.name || option.textContent.trim();
+        setFieldValue(root, 'GOLDEN_PATH', '/avd-golden/' + leaf);
+        await refreshAndroidEmulatorAssetsPanel(root);
+      }
+      return;
+    }
+
+    const download = e.target.closest('[data-android-emulator-download]');
+    if (download) {
+      const root = download.closest('form') || document;
+      const panel = download.closest('[data-android-emulator-assets-panel]');
+      const message = panel && panel.querySelector('[data-android-emulator-assets-message]');
+      download.disabled = true;
+      setFieldValue(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
+      setFieldValue(root, 'GOLDEN_PATH', TYPE_DEFAULTS.goldenPath);
+      resetAndroidEmulatorProgress(panel);
+      setCallout(message, 'info', 'Downloading and extracting Credimi emulator assets. Keep this page open.');
+      try {
+        const res = await fetch('/devices/android-emulator/assets/download', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_name: fieldValue(root, 'BASE_NAME'),
+            avd_home: fieldValue(root, 'HOST_AVD_HOME_PATH'),
+            golden_root: fieldValue(root, 'HOST_AVD_GOLDEN_PATH'),
+            golden_path: fieldValue(root, 'GOLDEN_PATH'),
+          }),
+        });
+        if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+        await readAndroidEmulatorProgress(res, panel);
+        setAndroidEmulatorProgress(panel, { phase: 'complete' });
+        setCallout(message, 'info', 'Credimi emulator assets downloaded.');
+        await refreshAndroidEmulatorAssetsPanel(root);
+      } catch (error) {
+        setCallout(message, 'danger', error && error.message ? error.message : 'Failed to download emulator assets.');
+      } finally {
+        download.disabled = false;
+      }
+    }
   });
   const initDeviceFields = () => {
     $$('form').forEach((form) => {
@@ -967,4 +1337,5 @@
   function decodeHtml(s) { const d = document.createElement('textarea'); d.innerHTML = s; return d.value; }
   function check() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'; }
   function xmark() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'; }
+  function warn() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'; }
 })();

@@ -121,6 +121,7 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 	normalized["CREDIMI_SERVICE_MODE"] = normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"])
 	normalized["CREDIMI_RUNNER_TYPE"] = defaultRunnerType(normalized, goos)
 	normalizeRunnerIdentity(normalized)
+	normalizeBackendForType(normalized, goos)
 
 	if err := validateRunnerTypeSupported(goos, normalized["CREDIMI_RUNNER_TYPE"]); err != nil {
 		return nil, err
@@ -197,6 +198,27 @@ func runnerTypeChoices(goos string) []string {
 		return []string{"android_emulator", "redroid", "android_phone"}
 	default:
 		return nil
+	}
+}
+
+func RunnerTypeChoices(goos string) []string {
+	choices := runnerTypeChoices(goos)
+	if len(choices) == 0 {
+		return nil
+	}
+	out := make([]string, len(choices))
+	copy(out, choices)
+	return out
+}
+
+func normalizeBackendForType(values Values, goos string) {
+	switch strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) {
+	case "ios_simulator":
+		values["CREDIMI_RUNNER_BACKEND"] = DefaultHostBackend
+	case "android_phone", "android_emulator", "redroid":
+		values["CREDIMI_RUNNER_BACKEND"] = DefaultContainerBackend
+	case "":
+		values["CREDIMI_RUNNER_BACKEND"] = defaultIfEmpty(values["CREDIMI_RUNNER_BACKEND"], defaultServiceBackend(goos))
 	}
 }
 
@@ -346,7 +368,7 @@ func normalizeAndroidEmulator(values Values) {
 	values["ANDROID_KEYS_DIR"] = ""
 	values["HOST_AVD_HOME_PATH"] = ""
 	values["HOST_AVD_GOLDEN_PATH"] = ""
-	values["GOLDEN_PATH"] = defaultIfEmpty(values["GOLDEN_PATH"], DefaultValues()["HOST_AVD_GOLDEN_PATH"])
+	values["GOLDEN_PATH"] = defaultIfEmpty(values["GOLDEN_PATH"], filepath.Join(DefaultValues()["HOST_AVD_GOLDEN_PATH"], "credimi-golden"))
 	clearAVDCTLSSHConfig(values)
 	values["REDROID_DATA_DIR"] = ""
 	values["REDROID_DATA_TAR"] = ""

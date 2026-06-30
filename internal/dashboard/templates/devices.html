@@ -42,11 +42,56 @@
         </div>
 
         <div data-dev-type="android_emulator" style="grid-column:1/-1">
-          {{template "field" .Field "BASE_NAME"}}
+          {{template "field" .EmulatorBaseNameField}}
+          <div class="card" style="margin-top:16px" data-android-emulator-assets-panel>
+            <div class="card-h">{{icon "server"}}<div><h3>Emulator assets</h3><div class="sub">AVD and golden image discovery</div></div></div>
+            <div class="card-b">
+              <div class="callout info" data-android-emulator-assets-message>{{icon "info"}}<div>Checking emulator assets.</div></div>
+              <div data-android-emulator-progress hidden style="margin-top:12px;border:2px solid var(--fg);background:var(--bg);height:28px;position:relative">
+                <div data-android-emulator-progress-bar style="height:100%;width:0%;background:var(--brand-secondary-strong);border-right:2px solid var(--fg)"></div>
+                <span class="mono" data-android-emulator-progress-label style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">0%</span>
+              </div>
+              <div class="field-row" data-android-emulator-avd-controls hidden>
+                <div class="field" data-android-emulator-avd-field hidden>
+                  <label><span class="lbtx">Existing AVD</span></label>
+                  <select class="sel" data-android-emulator-avd-select></select>
+                </div>
+                <div class="field" data-android-emulator-golden-field hidden>
+                  <label><span class="lbtx">Golden image folder</span></label>
+                  <select class="sel" data-android-emulator-golden-select></select>
+                </div>
+              </div>
+              <div class="savebar" style="margin-top:16px" data-android-emulator-actions>
+                <button type="button" class="btn btn-out btn-sm" data-android-emulator-apply-avd hidden>Use existing AVD</button>
+                <button type="button" class="btn btn-out btn-sm" data-android-emulator-apply-golden hidden>Use existing golden</button>
+                <button type="button" class="btn btn-pri btn-sm" data-android-emulator-download>{{icon "check"}} Download Credimi assets</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div data-dev-type="ios_simulator" style="grid-column:1/-1">
-          {{template "field" .Field "BASE_NAME"}}
+          {{template "field" .SimulatorBaseNameField}}
+          <p class="hint" style="margin-top:-4px">Simulator name created or booted through xcrun simctl.</p>
+          <div class="card" style="margin-top:16px" data-ios-simulator-panel>
+            <div class="card-h">{{icon "apple"}}<div><h3>Simulator provisioning</h3><div class="sub">Discover or create the named simulator</div></div></div>
+            <div class="card-b">
+              <div class="callout info" data-ios-simulator-message>{{icon "info"}}<div>Checking simulator status.</div></div>
+              <div class="field-row" data-ios-simulator-selects hidden>
+                <div class="field">
+                  <label><span class="lbtx">Device type</span></label>
+                  <select class="sel" data-ios-simulator-device-type></select>
+                </div>
+                <div class="field">
+                  <label><span class="lbtx">Runtime</span></label>
+                  <select class="sel" data-ios-simulator-runtime></select>
+                </div>
+              </div>
+              <div class="savebar" style="margin-top:16px" data-ios-simulator-actions>
+                <button type="button" class="btn btn-pri btn-sm" data-ios-simulator-create hidden>{{icon "plus"}} Create simulator</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div data-dev-type="redroid" style="grid-column:1/-1">

@@ -844,6 +844,7 @@ func TestFinishSetupValidationAndRequirementErrors(t *testing.T) {
 }
 
 func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
 	s := newTestServer(t)
 	if err := s.registerCurrent(context.Background(), map[string]string{}); err == nil {
 		t.Fatal("expected registerCurrent without API key to fail")
@@ -872,7 +873,7 @@ func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
 	values := map[string]string{
 		"CREDIMI_RUNNER_BACKEND": "host",
 		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
 		"RUNNER_HOST":            host,
 		"RUNNER_PORT":            port,
 	}
@@ -1199,6 +1200,7 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T)
 }
 
 func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
 	s := newTestServer(t)
 	s.runnerReady = func(context.Context, map[string]string) error {
 		return context.DeadlineExceeded
@@ -1212,7 +1214,8 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 		"CREDIMI_USER_API_KEY":        {"user-key"},
 		"CREDIMI_SERVICE_MODE":        {"manual"},
 		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+		"CREDIMI_RUNNER_TYPE":         {"ios_simulator"},
+		"BASE_NAME":                   {"credimi"},
 	}
 
 	rec := httptest.NewRecorder()

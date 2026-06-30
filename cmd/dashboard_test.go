@@ -271,6 +271,7 @@ func TestDashboardRuntimeHelpers(t *testing.T) {
 }
 
 func TestWaitForDashboardRunnerReady(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -294,7 +295,7 @@ func TestWaitForDashboardRunnerReady(t *testing.T) {
 	values := dashboardruntime.Values{
 		"CREDIMI_RUNNER_BACKEND": "host",
 		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
 		"RUNNER_HOST":            host,
 		"RUNNER_PORT":            port,
 	}

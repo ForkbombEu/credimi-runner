@@ -247,7 +247,7 @@ func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager
 }
 
 func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Values) error {
-	if !dashboardruntime.RunnerReadinessRequiredBeforeRegistration(values, runtime.GOOS) {
+	if !dashboardruntime.RunnerReadinessRequiredBeforeRegistration(values, currentDashboardGOOS()) {
 		return nil
 	}
 	host := strings.TrimSpace(values["RUNNER_HOST"])
@@ -275,6 +275,13 @@ func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Va
 		case <-ticker.C:
 		}
 	}
+}
+
+func currentDashboardGOOS() string {
+	if override := strings.ToLower(strings.TrimSpace(os.Getenv("GOOS_OVERRIDE"))); override != "" {
+		return override
+	}
+	return runtime.GOOS
 }
 
 func runtimeStartupDiagnostics(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) string {

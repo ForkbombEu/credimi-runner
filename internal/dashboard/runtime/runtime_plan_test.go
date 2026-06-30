@@ -10,11 +10,15 @@ func TestBuildRuntimePlanExpectedServices(t *testing.T) {
 	}{
 		{"container-auto", Values{}, []string{"runner", "caddy", "tunnel", "temporal"}},
 		{"container-managed", Values{"CREDIMI_SERVICE_MODE": "cloudflare-managed"}, []string{"runner", "caddy", "tunnel_named", "temporal"}},
-		{"host-manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual"}, []string{"runner_host_process", "temporal"}},
+		{"host-manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, []string{"runner_host_process", "temporal"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			normalized, err := NormalizeValues(tt.vals, "linux")
+			goos := "linux"
+			if tt.name == "host-manual" {
+				goos = "darwin"
+			}
+			normalized, err := NormalizeValues(tt.vals, goos)
 			if err != nil {
 				t.Fatal(err)
 			}

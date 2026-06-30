@@ -121,6 +121,7 @@ func TestPageDataFormViewModels(t *testing.T) {
 }
 
 func TestPageDataAdditionalHelpers(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
 	cfg := &Config{values: map[string]string{
 		"CREDIMI_RUNNER_TYPE": "redroid",
 	}}
@@ -169,5 +170,45 @@ func TestPageDataAdditionalHelpers(t *testing.T) {
 	}
 	if got := d.RuntimeTogglePath(); got != "/runtime/start" {
 		t.Fatalf("RuntimeTogglePath stopped = %q", got)
+	}
+}
+
+func TestRunnerTypeChoiceHelpers(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	cfg := &Config{values: map[string]string{
+		"CREDIMI_RUNNER_TYPE": "ios_simulator",
+	}}
+	d := PageData{Runner: cfg}
+
+	if got := d.RunnerTypeChoices(); len(got) != 4 || got[1] != "ios_simulator" {
+		t.Fatalf("RunnerTypeChoices = %#v", got)
+	}
+	if !d.SupportsRunnerType("ios_simulator") || d.SupportsRunnerType("missing") {
+		t.Fatal("SupportsRunnerType returned unexpected result")
+	}
+	field := d.Field("CREDIMI_RUNNER_TYPE")
+	if len(field.Options) != 4 || field.Options[1] != "ios_simulator" {
+		t.Fatalf("Field options = %#v", field.Options)
+	}
+	if got := TargetProfiles(); len(got) != 4 || got[1].Type != "ios_simulator" {
+		t.Fatalf("TargetProfiles = %#v", got)
+	}
+	if got := d.TargetProfiles(); len(got) != 4 || got[1].Type != "ios_simulator" {
+		t.Fatalf("PageData TargetProfiles = %#v", got)
+	}
+	if got := d.FieldWithLabel("BASE_NAME", "Simulator name"); got.Label != "Simulator name" {
+		t.Fatalf("FieldWithLabel = %#v", got)
+	}
+	if got := d.BaseNameFieldLabel("ios_simulator"); got != "Simulator name" {
+		t.Fatalf("BaseNameFieldLabel simulator = %q", got)
+	}
+	if got := d.BaseNameFieldLabel("android_emulator"); got != "Emulator base name" {
+		t.Fatalf("BaseNameFieldLabel emulator = %q", got)
+	}
+	if got := d.EmulatorBaseNameField(); got.Label != "Emulator base name" {
+		t.Fatalf("EmulatorBaseNameField = %#v", got)
+	}
+	if got := d.SimulatorBaseNameField(); got.Label != "Simulator name" {
+		t.Fatalf("SimulatorBaseNameField = %#v", got)
 	}
 }

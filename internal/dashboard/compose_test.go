@@ -62,12 +62,15 @@ func TestNormalizeWizardValues(t *testing.T) {
 			},
 		},
 		{
-			name: "host backend clears container mode",
+			name: "android emulator forces container backend",
 			in: map[string]string{
 				"CREDIMI_RUNNER_TYPE":    "android_emulator",
 				"CREDIMI_RUNNER_BACKEND": "host",
 			},
-			want: map[string]string{"CREDIMI_CONTAINER_MODE": ""},
+			want: map[string]string{
+				"CREDIMI_RUNNER_BACKEND": "container",
+				"CREDIMI_CONTAINER_MODE": "emulator",
+			},
 		},
 		{
 			name: "redroid forces no device",
@@ -154,8 +157,6 @@ func TestComposeServices(t *testing.T) {
 		{"container auto", map[string]string{}, []string{"runner", "caddy", "tunnel"}},
 		{"container managed", map[string]string{"CREDIMI_SERVICE_MODE": "cloudflare-managed"}, []string{"runner", "caddy", "tunnel_named"}},
 		{"container manual", map[string]string{"CREDIMI_SERVICE_MODE": "manual"}, []string{"runner"}},
-		{"host auto", map[string]string{"CREDIMI_RUNNER_BACKEND": "host"}, []string{"runner_host", "caddy", "tunnel"}},
-		{"host manual", map[string]string{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual"}, nil},
 		{"unknown service mode", map[string]string{"CREDIMI_SERVICE_MODE": "custom"}, []string{"runner", "caddy", "tunnel"}},
 	}
 	for _, tt := range tests {
@@ -165,6 +166,25 @@ func TestComposeServices(t *testing.T) {
 				t.Fatalf("ComposeServices = %v, want %v", got, tt.want)
 			}
 		})
+	}
+
+	if runtime.GOOS == "darwin" {
+		tests := []struct {
+			name string
+			vals map[string]string
+			want []string
+		}{
+			{"host auto", map[string]string{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, []string{"runner_host", "caddy", "tunnel"}},
+			{"host manual", map[string]string{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, nil},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				got := ComposeServices(tt.vals)
+				if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+					t.Fatalf("ComposeServices = %v, want %v", got, tt.want)
+				}
+			})
+		}
 	}
 }
 

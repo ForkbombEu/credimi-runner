@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net"
 	"net/url"
+	goruntime "runtime"
 	"strings"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -266,7 +267,45 @@ func (d PageData) StartupMessage() string {
 
 // Field returns the render model for one config key.
 func (d PageData) Field(key string) FieldVM {
-	return FieldVM{Field: fieldByKey[key], Value: d.Runner.Get(key), Err: d.errorsMap()[key]}
+	field := fieldByKey[key]
+	if key == "CREDIMI_RUNNER_TYPE" {
+		field.Options = dashboardruntime.RunnerTypeChoices(currentGOOS())
+	}
+	return FieldVM{Field: field, Value: d.Runner.Get(key), Err: d.errorsMap()[key]}
+}
+
+func (d PageData) FieldWithLabel(key, label string) FieldVM {
+	field := d.Field(key)
+	field.Label = label
+	return field
+}
+
+func (d PageData) RunnerTypeChoices() []string {
+	return dashboardruntime.RunnerTypeChoices(currentGOOS())
+}
+
+func (d PageData) SupportsRunnerType(runnerType string) bool {
+	for _, candidate := range d.RunnerTypeChoices() {
+		if candidate == runnerType {
+			return true
+		}
+	}
+	return false
+}
+
+func (d PageData) BaseNameFieldLabel(runnerType string) string {
+	if runnerType == "ios_simulator" {
+		return "Simulator name"
+	}
+	return "Emulator base name"
+}
+
+func (d PageData) EmulatorBaseNameField() FieldVM {
+	return d.FieldWithLabel("BASE_NAME", d.BaseNameFieldLabel("android_emulator"))
+}
+
+func (d PageData) SimulatorBaseNameField() FieldVM {
+	return d.FieldWithLabel("BASE_NAME", d.BaseNameFieldLabel("ios_simulator"))
 }
 
 func (d PageData) SetupSteps() []SetupStep {
@@ -347,4 +386,12 @@ func orDash(s string) string {
 		return "not configured"
 	}
 	return s
+}
+
+func currentGOOS() string {
+	goos := runtimeGOOS()
+	if goos != "" {
+		return goos
+	}
+	return goruntime.GOOS
 }
