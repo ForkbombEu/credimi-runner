@@ -16,7 +16,5 @@
     <header class="card-h">{{icon "workers"}}<div><h3>Running workers</h3><div class="sub">reported by the runner process</div></div></header>
     <div class="card-b flush"><div class="list" id="worker-list" hx-ext="sse" sse-connect="/events/workers" sse-swap="rows">{{template "worker_rows" .Workers}}</div></div>
   </section>
-
-  <div class="callout info" style="margin-top:16px">{{icon "info"}}<div>Workers start automatically when <span class="tag mono">CREDIMI_RUNNER_ID</span> and credentials are set. User-scoped workers use <span class="tag mono">CREDIMI_USER_API_KEY</span>; admin workers use <span class="tag mono">CREDIMI_INTERNAL_ADMIN_KEY</span>.</div></div>
 </main>
 {{- end}}
