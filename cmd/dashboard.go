@@ -32,111 +32,106 @@ var (
 
 var openDashboardBrowserFunc = openDashboardBrowser
 
-var dashboardCmd = &cobra.Command{
-	Use:   "dashboard",
-	Short: "Start Credimi Runner dashboard supervisor",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		configDir := dashboardConfigDir
-		if configDir == "" {
-			configDir = dashboard.ConfigDir()
-		}
-		if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
-			return err
-		}
+func runDashboard(cmd *cobra.Command, args []string) error {
+	configDir := dashboardConfigDir
+	if configDir == "" {
+		configDir = dashboard.ConfigDir()
+	}
+	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
+		return err
+	}
 
-		store, err := dashboardruntime.LoadStore(configDir)
-		if err != nil {
-			return err
-		}
-		binaryPath, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		values, err := dashboardruntime.NormalizeValues(store.Snapshot(), runtime.GOOS)
-		if err != nil {
-			return err
-		}
-		listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
-		if err := validateDashboardSecurity(listenHost, values); err != nil {
-			return err
-		}
-		manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
+	store, err := dashboardruntime.LoadStore(configDir)
+	if err != nil {
+		return err
+	}
+	binaryPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	values, err := dashboardruntime.NormalizeValues(store.Snapshot(), runtime.GOOS)
+	if err != nil {
+		return err
+	}
+	listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
+	if err := validateDashboardSecurity(listenHost, values); err != nil {
+		return err
+	}
+	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 
-		dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
-		defer cancelDashboard()
-		handler, cancelHandler, err := dashboard.NewHandlerWithManagerContext(dashboardCtx, configDir, manager)
-		if err != nil {
-			return err
-		}
-		defer cancelHandler()
+	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
+	defer cancelDashboard()
+	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContext(dashboardCtx, configDir, manager)
+	if err != nil {
+		return err
+	}
+	defer cancelHandler()
 
-		if configFileExists(configDir) {
-			if err := startDashboardRuntime(cmd.Context(), manager, values); err != nil {
-				stdlog.Printf("dashboard runtime start failed: %v", err)
-			}
+	if configFileExists(configDir) {
+		if err := startDashboardRuntime(cmd.Context(), manager, values); err != nil {
+			stdlog.Printf("dashboard runtime start failed: %v", err)
 		}
+	}
 
-		server := &http.Server{
-			Addr:              fmt.Sprintf("%s:%d", listenHost, listenPort),
-			Handler:           handler,
-			ReadHeaderTimeout: 60 * time.Second,
-		}
+	server := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", listenHost, listenPort),
+		Handler:           handler,
+		ReadHeaderTimeout: 60 * time.Second,
+	}
 
-		errc := make(chan error, 1)
+	errc := make(chan error, 1)
+	go func() {
+		stdlog.Printf("Credimi Runner dashboard available at http://%s:%d", listenHost, listenPort)
+		errc <- server.ListenAndServe()
+	}()
+	if dashboardOpen {
 		go func() {
-			stdlog.Printf("Credimi Runner dashboard available at http://%s:%d", listenHost, listenPort)
-			errc <- server.ListenAndServe()
-		}()
-		if dashboardOpen {
-			go func() {
-				time.Sleep(250 * time.Millisecond)
-				if err := openDashboardBrowserFunc(dashboardBrowserURL(listenHost, listenPort)); err != nil {
-					stdlog.Printf("dashboard browser open skipped: %v", err)
-				}
-			}()
-		}
-
-		sigc := make(chan os.Signal, 1)
-		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
-		defer signal.Stop(sigc)
-
-		select {
-		case err := <-errc:
-			if err != nil && err != http.ErrServerClosed {
-				return err
+			time.Sleep(250 * time.Millisecond)
+			if err := openDashboardBrowserFunc(dashboardBrowserURL(listenHost, listenPort)); err != nil {
+				stdlog.Printf("dashboard browser open skipped: %v", err)
 			}
-		case <-sigc:
-		}
-
-		cancelDashboard()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		runtimeShutdownCtx, runtimeShutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer runtimeShutdownCancel()
-		runtimeErrc := make(chan error, 1)
-		go func() {
-			runtimeErrc <- shutdownDashboardRuntime(runtimeShutdownCtx, manager, configFileExists(configDir))
 		}()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			stdlog.Printf("dashboard HTTP shutdown did not complete cleanly: %v", err)
-			if closeErr := server.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
-				stdlog.Printf("dashboard HTTP close failed: %v", closeErr)
-			}
+	}
+
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigc)
+
+	select {
+	case err := <-errc:
+		if err != nil && err != http.ErrServerClosed {
+			return err
 		}
-		if err := <-runtimeErrc; err != nil {
-			stdlog.Printf("dashboard runtime shutdown failed: %v", err)
+	case <-sigc:
+	}
+
+	cancelDashboard()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	runtimeShutdownCtx, runtimeShutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer runtimeShutdownCancel()
+	runtimeErrc := make(chan error, 1)
+	go func() {
+		runtimeErrc <- shutdownDashboardRuntime(runtimeShutdownCtx, manager, configFileExists(configDir))
+	}()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		stdlog.Printf("dashboard HTTP shutdown did not complete cleanly: %v", err)
+		if closeErr := server.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
+			stdlog.Printf("dashboard HTTP close failed: %v", closeErr)
 		}
-		return nil
-	},
+	}
+	if err := <-runtimeErrc; err != nil {
+		stdlog.Printf("dashboard runtime shutdown failed: %v", err)
+	}
+	return nil
 }
 
 func init() {
-	dashboardCmd.Flags().StringVar(&dashboardHost, "host", "127.0.0.1", "Dashboard listen host")
-	dashboardCmd.Flags().IntVar(&dashboardPort, "port", 8051, "Dashboard listen port")
-	dashboardCmd.Flags().StringVar(&dashboardConfigDir, "config-dir", "", "Dashboard config directory")
-	dashboardCmd.Flags().BoolVar(&dashboardOpen, "open-browser", true, "Open the dashboard in a browser after startup")
-	dashboardCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging")
-	rootCmd.AddCommand(dashboardCmd)
+	rootCmd.Flags().StringVar(&dashboardHost, "host", "127.0.0.1", "Dashboard listen host")
+	rootCmd.Flags().IntVar(&dashboardPort, "port", 8051, "Dashboard listen port")
+	rootCmd.Flags().StringVar(&dashboardConfigDir, "config-dir", "", "Dashboard config directory")
+	rootCmd.Flags().BoolVar(&dashboardOpen, "open-browser", true, "Open the dashboard in a browser after startup")
+	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug logging")
 }
 
 func dashboardBrowserURL(host string, port int) string {

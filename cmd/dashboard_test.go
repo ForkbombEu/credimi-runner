@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -100,6 +101,108 @@ func TestDashboardConfiguredStoreExists(t *testing.T) {
 	}
 	if !store.Exists() {
 		t.Fatal("expected existing store")
+	}
+}
+
+func TestRootCommandDefaultsToDashboard(t *testing.T) {
+	if rootCmd.RunE == nil {
+		t.Fatal("root command should run the dashboard by default")
+	}
+	for _, name := range []string{"client", "dashboard"} {
+		if cmd, _, err := rootCmd.Find([]string{name}); err == nil && cmd != rootCmd {
+			t.Fatalf("%s command should not be registered", name)
+		}
+	}
+	if cmd, _, err := rootCmd.Find([]string{"serve"}); err != nil || cmd == rootCmd || cmd.Name() != "serve" {
+		t.Fatalf("serve command should remain registered, cmd=%v err=%v", cmd, err)
+	} else if !cmd.Hidden {
+		t.Fatal("serve command should be hidden from CLI help")
+	}
+}
+
+func TestExecuteHelp(t *testing.T) {
+	origArgs := os.Args
+	origOut := rootCmd.OutOrStdout()
+	origErr := rootCmd.ErrOrStderr()
+	var output bytes.Buffer
+	t.Cleanup(func() {
+		os.Args = origArgs
+		rootCmd.SetOut(origOut)
+		rootCmd.SetErr(origErr)
+	})
+
+	os.Args = []string{"credimi-runner", "--help"}
+	rootCmd.SetOut(&output)
+	rootCmd.SetErr(&output)
+
+	Execute()
+	if !strings.Contains(output.String(), "Credimi mobile runner") {
+		t.Fatalf("help output = %q", output.String())
+	}
+}
+
+func TestRunDashboardReturnsStoreLoadError(t *testing.T) {
+	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
+	oldConfigDir, oldOpen := dashboardConfigDir, dashboardOpen
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+		dashboardOpen = oldOpen
+	})
+
+	configFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(configFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dashboardConfigDir = configFile
+	dashboardOpen = false
+
+	err := runDashboard(&cobra.Command{}, nil)
+	if err == nil {
+		t.Fatal("expected LoadStore error")
+	}
+}
+
+func TestRunDashboardRejectsRemoteBindWithoutToken(t *testing.T) {
+	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
+	oldConfigDir, oldOpen := dashboardConfigDir, dashboardOpen
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+		dashboardOpen = oldOpen
+	})
+
+	dashboardConfigDir = t.TempDir()
+	dashboardOpen = false
+	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("DASHBOARD_HOST=0.0.0.0\nDASHBOARD_TOKEN=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDashboard(&cobra.Command{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "DASHBOARD_TOKEN is required") {
+		t.Fatalf("runDashboard error = %v", err)
+	}
+}
+
+func TestRunDashboardReturnsListenError(t *testing.T) {
+	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
+	oldConfigDir, oldOpen, oldPort := dashboardConfigDir, dashboardOpen, dashboardPort
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+		dashboardOpen = oldOpen
+		dashboardPort = oldPort
+	})
+
+	dashboardConfigDir = t.TempDir()
+	dashboardOpen = false
+	dashboardPort = -1
+	cmd := &cobra.Command{}
+	cmd.Flags().Int("port", 8051, "")
+	if err := cmd.Flags().Set("port", "-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDashboard(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid port") {
+		t.Fatalf("runDashboard listen error = %v", err)
 	}
 }
 

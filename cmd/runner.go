@@ -11,6 +11,7 @@ var rootCmd = &cobra.Command{
 	Use:     "credimi-runner",
 	Short:   "Credimi mobile runner",
 	Version: buildinfo.String(),
+	RunE:    runDashboard,
 }
 
 func Execute() {
