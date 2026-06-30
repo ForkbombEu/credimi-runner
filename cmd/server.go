@@ -102,6 +102,18 @@ var serverCmd = &cobra.Command{
 			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
 		}
 
+		lifecycleCfg := server.LoadRunnerLifecycleConfig(instance)
+		lifecycleClient := server.NewRunnerLifecycleClient(lifecycleCfg, http.DefaultClient, store)
+		if err := lifecycleClient.Resume(serveCtx, "runner_startup"); err != nil {
+			cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
+			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
+		}
+
+		heartbeatCtx, stopHeartbeat := context.WithCancel(serveCtx)
+		defer stopHeartbeat()
+		stopHeartbeatLoop := lifecycleClient.StartHeartbeatLoop(heartbeatCtx)
+		defer stopHeartbeatLoop()
+
 		// Build HTTP handler (Goa mux + middleware + debug endpoints)
 		handler := observability.WrapHandler(server.NewHTTPHandler(serveCtx, srv, debug), "credimi-runner.http")
 
@@ -141,6 +153,16 @@ var serverCmd = &cobra.Command{
 				observability.String("address", addr),
 			)
 			return err
+		}
+
+		stopHeartbeat()
+		stopHeartbeatLoop()
+
+		pauseCtx, pauseCancel := context.WithTimeout(context.Background(), lifecycleCfg.RequestTimeout)
+		defer pauseCancel()
+		if err := lifecycleClient.Pause(pauseCtx, "runner_shutdown"); err != nil {
+			cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle pause: %v", err)
+			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle pause", err)
 		}
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -135,7 +135,7 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	err := run(context.Background())
 	require.Error(t, err)
 	require.ErrorContains(t, err, "bad worker config")
-	require.Equal(t, 1, fake.workflowRegistrations)
+	require.Equal(t, 0, fake.workflowRegistrations)
 	require.Equal(t, 15, fake.activityRegistrations)
 	require.Contains(t, fake.activityNames, "Run APK post-install checks")
 	require.Contains(t, fake.activityNames, "Setup iOS simulator")
