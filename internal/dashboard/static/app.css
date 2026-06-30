@@ -401,6 +401,10 @@ button { font-family: inherit; }
 .callout.warn { background: var(--warn-bg); border-color: #ecd79a; color: #7a5b1e; }
 .callout.danger { background: var(--down-bg); border-color: #f3c4c4; color: #a82424; }
 .callout.ok { background: var(--ok-bg); border-color: #b6e2cd; color: #066b45; }
+.download-progress { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-muted); height: 32px; position: relative; overflow: hidden; box-shadow: var(--shadow-sm); }
+.download-progress[hidden] { display: none; }
+.download-progress-bar { height: 100%; width: 0%; background: var(--brand-secondary-strong); border-right: 1px solid var(--border-strong); transition: width 140ms ease-out; }
+.download-progress-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 0 10px; color: var(--fg); font-size: 12px; font-weight: 700; text-align: center; white-space: nowrap; }
 
 /* Save bar */
 .savebar { position: sticky; bottom: 0; margin-top: 20px; background: rgba(255,255,255,0.92); backdrop-filter: blur(8px); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 12px 16px; display: flex; align-items: center; gap: 14px; box-shadow: var(--shadow-md); }

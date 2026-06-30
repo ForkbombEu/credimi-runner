@@ -105,7 +105,6 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				Interceptors: []interceptor.WorkerInterceptor{temporalInterceptor},
 			})
 
-
 			// Register activities
 			for _, act := range []workflowengine.ExecutableActivity{
 				activities.NewHTTPActivity(),

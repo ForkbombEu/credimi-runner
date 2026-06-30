@@ -263,7 +263,11 @@
         return res.json();
       };
       const field = (name) => $(`[name="${name}"]`, form);
-      const value = (name) => (field(name) || {}).value || '';
+      const value = (name) => {
+        const radio = $(`input[type="radio"][name="${name}"]:checked`, form);
+        if (radio) return radio.value || '';
+        return (field(name) || {}).value || '';
+      };
       const authMode = () => {
         const admin = $('[data-auth-field="admin"]', form);
         return admin && !admin.hidden ? 'admin' : 'user';
@@ -600,6 +604,14 @@
     el.className = `callout ${tone}`;
     el.innerHTML = `${icon}<div>${escapeHtml(message)}</div>`;
   };
+  const androidEmulatorProgressState = new WeakMap();
+  const formatBytes = (bytes) => {
+    const value = Number(bytes) || 0;
+    if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${Math.round(value)} B`;
+  };
   const androidEmulatorProgressLabel = (phase) => {
     switch (phase) {
       case 'starting':
@@ -637,10 +649,24 @@
       pct = 100;
     }
     bar.style.width = `${pct}%`;
-    label.textContent = pct > 0 && phase !== 'complete' ? `${androidEmulatorProgressLabel(phase)} ${pct}%` : androidEmulatorProgressLabel(phase);
+    let speedText = '';
+    if (progress && Number(progress.bytes) > 0 && phase.includes('downloading')) {
+      const now = (window.performance && window.performance.now) ? window.performance.now() : Date.now();
+      let state = androidEmulatorProgressState.get(panel);
+      if (!state || state.phase !== phase || Number(progress.bytes) < state.startBytes) {
+        state = { phase, startBytes: Number(progress.bytes), startTime: now };
+        androidEmulatorProgressState.set(panel, state);
+      }
+      const elapsedSeconds = Math.max((now - state.startTime) / 1000, 0.25);
+      const bytesPerSecond = Math.max(0, (Number(progress.bytes) - state.startBytes) / elapsedSeconds);
+      if (bytesPerSecond > 0) speedText = ` · ${formatBytes(bytesPerSecond)}/s`;
+    }
+    const pctText = pct > 0 && phase !== 'complete' ? ` ${pct}%` : '';
+    label.textContent = `${androidEmulatorProgressLabel(phase)}${pctText}${speedText}`;
   };
   const resetAndroidEmulatorProgress = (panel) => {
     if (!panel) return;
+    androidEmulatorProgressState.delete(panel);
     const box = panel.querySelector('[data-android-emulator-progress]');
     const bar = panel.querySelector('[data-android-emulator-progress-bar]');
     const label = panel.querySelector('[data-android-emulator-progress-label]');
@@ -1019,9 +1045,15 @@
       const root = download.closest('form') || document;
       const panel = download.closest('[data-android-emulator-assets-panel]');
       const message = panel && panel.querySelector('[data-android-emulator-assets-message]');
+      const avdControls = panel && panel.querySelector('[data-android-emulator-avd-controls]');
+      const applyAVD = panel && panel.querySelector('[data-android-emulator-apply-avd]');
+      const applyGolden = panel && panel.querySelector('[data-android-emulator-apply-golden]');
       download.disabled = true;
       setFieldValue(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
       setFieldValue(root, 'GOLDEN_PATH', TYPE_DEFAULTS.goldenPath);
+      if (avdControls) avdControls.hidden = true;
+      if (applyAVD) applyAVD.hidden = true;
+      if (applyGolden) applyGolden.hidden = true;
       resetAndroidEmulatorProgress(panel);
       setCallout(message, 'info', 'Downloading and extracting Credimi emulator assets. Keep this page open.');
       try {
