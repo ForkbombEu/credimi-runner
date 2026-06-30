@@ -1372,13 +1372,13 @@ func (s *Server) androidEmulatorAssetsDownload(w http.ResponseWriter, r *http.Re
 		}
 	}
 	if !avdAssetsExistForName(avdHome, baseName) {
-		if err := downloadAndExtractTarball(ctx, defaultBaseAVDArchiveURL, avdHome, "credimi_base_image.tar.gz", stageProgress("base_avd")); err != nil {
+		if err := downloadAndExtractTarball(ctx, defaultBaseAVDArchiveURL, avdHome, stageProgress("base_avd")); err != nil {
 			writeProgress(DownloadProgress{Phase: "error", Error: err.Error()})
 			return
 		}
 	}
 	if !goldenAssetsPresentForLeaf(goldenRoot, goldenLeaf) {
-		if err := downloadAndExtractTarball(ctx, defaultGoldenArchiveURL, goldenRoot, "credimi_golden.tar.gz", stageProgress("golden")); err != nil {
+		if err := downloadAndExtractTarball(ctx, defaultGoldenArchiveURL, goldenRoot, stageProgress("golden")); err != nil {
 			writeProgress(DownloadProgress{Phase: "error", Error: err.Error()})
 			return
 		}

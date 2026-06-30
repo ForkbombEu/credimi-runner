@@ -255,7 +255,7 @@ func listGoldenOptions(root string) []AndroidGoldenOption {
 	return options
 }
 
-func downloadAndExtractTarball(ctx context.Context, archiveURL, destDir, archiveName string, progress func(DownloadProgress)) error {
+func downloadAndExtractTarball(ctx context.Context, archiveURL, destDir string, progress func(DownloadProgress)) error {
 	if err := provisioningMkdirAll(destDir, 0o755); err != nil {
 		return err
 	}

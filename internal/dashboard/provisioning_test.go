@@ -134,7 +134,7 @@ func TestDownloadAndExtractTarball(t *testing.T) {
 	})}
 
 	dest := t.TempDir()
-	if err := downloadAndExtractTarball(context.Background(), "https://files.example/assets.tar.gz", dest, "assets.tar.gz", nil); err != nil {
+	if err := downloadAndExtractTarball(context.Background(), "https://files.example/assets.tar.gz", dest, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dest, "credimi", "file.txt"))
