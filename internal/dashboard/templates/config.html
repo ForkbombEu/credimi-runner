@@ -19,8 +19,28 @@
     <section class="card">
       <header class="card-h">{{icon "shield"}}<div><h3>Runner identity</h3><div class="sub">Who this runner is on the Credimi platform</div></div></header>
       <div class="card-b">
-        <div class="field-row">{{template "field" .Field "CREDIMI_RUNNER_ID"}}{{template "field" .Field "CREDIMI_RUNNER_NAME"}}</div>
-        <div class="field-row">{{template "field" .Field "CREDIMI_RUNNER_ORGANIZATION"}}{{template "field" .Field "TEMPORAL_ADDRESS"}}</div>
+        <input type="hidden" name="CREDIMI_RUNNER_ID" value="{{.Runner.Get "CREDIMI_RUNNER_ID"}}">
+        <div class="field-row">
+          <div class="field">
+            <label><span class="lbtx">Runner ID</span><span class="envkey">CREDIMI_RUNNER_ID</span></label>
+            <input class="inp mono" value="{{.Runner.Get "CREDIMI_RUNNER_ID"}}" readonly autocomplete="off" spellcheck="false">
+            <p class="hint">Derived from the runner name and organization through Credimi.</p>
+          </div>
+          {{template "field" .Field "CREDIMI_RUNNER_NAME"}}
+        </div>
+        <div class="field-row">
+          {{if eq .Runner.AuthMode "admin"}}
+            {{template "field" .Field "CREDIMI_RUNNER_ORGANIZATION"}}
+          {{else}}
+            <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}">
+            <div class="field">
+              <label><span class="lbtx">Organization</span><span class="envkey">CREDIMI_RUNNER_ORGANIZATION</span></label>
+              <input class="inp mono" value="{{.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" readonly autocomplete="off" spellcheck="false">
+              <p class="hint">User-scoped runners use the organization connected to the API key.</p>
+            </div>
+          {{end}}
+          {{template "field" .Field "TEMPORAL_ADDRESS"}}
+        </div>
         {{template "field" .Field "CREDIMI_RUNNER_DESCRIPTION"}}
         <details class="gear-panel">
           <summary>{{icon "gear"}} Credimi platform defaults</summary>

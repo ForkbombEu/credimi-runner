@@ -39,8 +39,8 @@ func TestDiffValuesCoverageBranches(t *testing.T) {
 	if got := DiffValues(Values{"RUNNER_IMAGE": "a"}, Values{"RUNNER_IMAGE": "a"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
 		t.Fatalf("saved only diff = %#v", got)
 	}
-	if got := DiffValues(Values{"CREDIMI_RUNNER_NAME": "a"}, Values{"CREDIMI_RUNNER_NAME": "b"}); len(got.ChangedKeys) == 0 || got.Classes[0] != ApplySavedOnly {
-		t.Fatalf("saved-only changed diff = %#v", got)
+	if got := DiffValues(Values{"CREDIMI_RUNNER_NAME": "a"}, Values{"CREDIMI_RUNNER_NAME": "b"}); len(got.ChangedKeys) == 0 || !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
+		t.Fatalf("runner name changed diff = %#v", got)
 	}
 	if got := DiffValues(Values{"RUNNER_PORT": "8050"}, Values{"RUNNER_PORT": "8051"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("recreate diff = %#v", got)

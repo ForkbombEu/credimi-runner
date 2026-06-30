@@ -40,6 +40,7 @@ type RegisterRunnerRequest struct {
 	Port         string `json:"port,omitempty"`
 	Serial       string `json:"serial,omitempty"`
 	Organization string `json:"organization,omitempty"`
+	Published    *bool  `json:"published,omitempty"`
 }
 
 type CredimiClient struct {

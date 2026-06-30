@@ -93,6 +93,9 @@
                 <textarea class="ta mono" name="CREDIMI_RUNNER_DESCRIPTION" rows="3" placeholder="Optional note about this runner..." autocomplete="off">{{$.Runner.Get "CREDIMI_RUNNER_DESCRIPTION"}}</textarea>
                 {{if ($.Field "CREDIMI_RUNNER_DESCRIPTION").Hint}}<p class="hint">{{($.Field "CREDIMI_RUNNER_DESCRIPTION").Hint}}</p>{{end}}
               </div>
+              <div data-publish-control data-initial="{{$.Runner.Get "CREDIMI_RUNNER_PUBLISHED"}}" data-publish-confirmed="0">
+                {{template "field" $.Field "CREDIMI_RUNNER_PUBLISHED"}}
+              </div>
             </div>
           </div>
         {{else if eq $s.ID "network"}}
@@ -197,6 +200,7 @@
                   <dt>Runner name</dt><dd data-review="CREDIMI_RUNNER_NAME">—</dd>
                   <dt>Runner ID</dt><dd class="mono" data-review="CREDIMI_RUNNER_ID">—</dd>
                   <dt>Description</dt><dd data-review="CREDIMI_RUNNER_DESCRIPTION">—</dd>
+                  <dt>Published</dt><dd data-review="CREDIMI_RUNNER_PUBLISHED">—</dd>
                 </dl>
               </div>
             </div>

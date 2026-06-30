@@ -19,6 +19,18 @@
     <div class="stat"><div class="k">{{icon "cloud"}} Exposure</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">public runner route</div></div>
   </div>
 
+  <form hx-post="/overview/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Updating runner publication state. Keep this page open.">
+    <section class="card" style="margin-bottom:16px">
+      <header class="card-h">{{icon "shield"}}<div><h3>Runner publication</h3><div class="sub">Control whether published organizations can schedule pipelines here</div></div>
+        <div class="right"><button type="submit" class="btn btn-pri btn-sm">{{icon "check"}} Save</button></div></header>
+      <div class="card-b">
+        <div data-publish-control data-initial="{{.Runner.Get "CREDIMI_RUNNER_PUBLISHED"}}" data-publish-confirmed="0">
+          {{template "field" .Field "CREDIMI_RUNNER_PUBLISHED"}}
+        </div>
+      </div>
+    </section>
+  </form>
+
   <section class="card">
     <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">docker compose · {{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
       <div class="right" style="display:flex;align-items:center;gap:10px">

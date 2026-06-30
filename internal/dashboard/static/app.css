@@ -431,7 +431,6 @@ button { font-family: inherit; }
 .modal-h .x { margin-left: auto; }
 .modal-b { padding: 20px; max-height: 60vh; overflow-y: auto; }
 .modal-f { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; background: var(--bg-off-white); }
-
 /* Stepper */
 .steps { display: flex; align-items: center; gap: 6px; margin-bottom: 18px; }
 .steps .st { display: flex; align-items: center; gap: 8px; }

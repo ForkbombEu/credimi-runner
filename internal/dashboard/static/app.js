@@ -776,6 +776,86 @@
     markDirty();
   });
 
+  // ── Publishing warning for user-scoped runners ──────────────────────────
+  let pendingPublishControl = null;
+  let pendingPublishSubmitForm = null;
+  const formAuthMode = (form) => {
+    const adminField = form && form.querySelector('[data-auth-field="admin"]');
+    if (adminField && !adminField.hidden) return 'admin';
+    const adminKey = form && form.querySelector('[name="CREDIMI_INTERNAL_ADMIN_KEY"]');
+    return adminKey && adminKey.value.trim() ? 'admin' : 'user';
+  };
+  const publishIsOn = (control) => {
+    const box = control && control.querySelector('input[type=checkbox]');
+    return !!(box && box.checked);
+  };
+  const setPublishControl = (control, on) => {
+    const tog = control.querySelector('.tog[data-toggle]');
+    const box = control.querySelector('input[type=checkbox]');
+    if (tog) {
+      tog.classList.toggle('on', on);
+      tog.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+    if (box) box.checked = on;
+    control.dataset.publishConfirmed = on ? '1' : '0';
+    markDirty();
+    syncReview();
+  };
+  const openPublishWarning = (control) => {
+    const modal = document.getElementById('publish-warning-modal');
+    if (!modal) return false;
+    pendingPublishControl = control;
+    modal.hidden = false;
+    return true;
+  };
+  document.addEventListener('click', (e) => {
+    const cancel = e.target.closest('[data-publish-warning-cancel]');
+    if (cancel) {
+      e.preventDefault();
+      const modal = document.getElementById('publish-warning-modal');
+      if (modal) modal.hidden = true;
+      pendingPublishControl = null;
+      pendingPublishSubmitForm = null;
+      return;
+    }
+    const confirm = e.target.closest('[data-publish-warning-confirm]');
+    if (confirm) {
+      e.preventDefault();
+      if (pendingPublishControl) setPublishControl(pendingPublishControl, true);
+      const submitForm = pendingPublishSubmitForm;
+      const modal = document.getElementById('publish-warning-modal');
+      if (modal) modal.hidden = true;
+      pendingPublishControl = null;
+      pendingPublishSubmitForm = null;
+      if (submitForm) submitForm.requestSubmit();
+    }
+  });
+  document.addEventListener('click', (e) => {
+    const tog = e.target.closest('[data-publish-control] .tog[data-toggle]');
+    if (!tog) return;
+    const control = tog.closest('[data-publish-control]');
+    const form = control.closest('form');
+    const initial = String(control.dataset.initial || '').toLowerCase() === 'true';
+    const willPublish = !publishIsOn(control);
+    const needsWarning = willPublish && !initial && control.dataset.publishConfirmed !== '1' && formAuthMode(form) === 'user';
+    if (!needsWarning) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    openPublishWarning(control);
+  }, true);
+  document.addEventListener('submit', (e) => {
+    const form = e.target.closest('[data-config-form]');
+    if (!form) return;
+    const control = form.querySelector('[data-publish-control]');
+    if (!control || !publishIsOn(control)) return;
+    const initial = String(control.dataset.initial || '').toLowerCase() === 'true';
+    if (initial || control.dataset.publishConfirmed === '1' || formAuthMode(form) !== 'user') return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    pendingPublishSubmitForm = form;
+    openPublishWarning(control);
+  }, true);
+
   // ── Toggles (.tog with data-toggle → sync hidden checkbox) ────────────────
   document.addEventListener('click', (e) => {
     const tog = e.target.closest('.tog[data-toggle]');
@@ -785,6 +865,11 @@
     tog.setAttribute('aria-checked', on);
     const box = tog.parentElement.querySelector('input[type=checkbox]');
     if (box) box.checked = on;
+    const publishControl = tog.closest('[data-publish-control]');
+    if (publishControl) {
+      publishControl.dataset.publishConfirmed = on ? publishControl.dataset.publishConfirmed : '0';
+      syncReview();
+    }
     markDirty();
   });
 

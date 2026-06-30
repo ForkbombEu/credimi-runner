@@ -49,6 +49,7 @@ var KnownKeys = map[string]struct{}{
 	"CREDIMI_RUNNER_ID":           {},
 	"CREDIMI_RUNNER_NAME":         {},
 	"CREDIMI_RUNNER_ORGANIZATION": {},
+	"CREDIMI_RUNNER_PUBLISHED":    {},
 	"CREDIMI_RUNNER_SERIAL":       {},
 	"CREDIMI_RUNNER_TYPE":         {},
 	"CREDIMI_RUNNER_WIFI_IP":      {},
@@ -81,6 +82,7 @@ func DefaultValues() Values {
 	homeDir, _ := homeDir()
 	values := Values{
 		"CREDIMI_RUNNER_WIFI_PORT":    DefaultWiFiPort,
+		"CREDIMI_RUNNER_PUBLISHED":    "false",
 		"CREDIMI_SERVICE_MODE":        "auto",
 		"CREDIMI_TEMP_DIR":            DefaultTempDir,
 		"CREDIMI_URL":                 DefaultCredimiURL,

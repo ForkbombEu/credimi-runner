@@ -58,6 +58,25 @@
       </div>
     </div>
   </div>
+  <div id="publish-warning-modal" class="modal-bk" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="publish-warning-title">
+      <div class="modal-h">
+        {{icon "warn"}}
+        <div>
+          <h3 id="publish-warning-title">Publish this runner?</h3>
+          <p>Published user runners can receive pipeline work from every visible published organization.</p>
+        </div>
+        <button type="button" class="iconbtn x" data-publish-warning-cancel title="Close">{{icon "x"}}</button>
+      </div>
+      <div class="modal-b">
+        <div class="callout warn">{{icon "warn"}}<div>Publishing this runner allows other published organizations to run pipelines on your runner.</div></div>
+      </div>
+      <div class="modal-f">
+        <button type="button" class="btn btn-out btn-sm" data-publish-warning-cancel>Keep private</button>
+        <button type="button" class="btn btn-pri btn-sm" data-publish-warning-confirm>{{icon "check"}} Publish runner</button>
+      </div>
+    </div>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

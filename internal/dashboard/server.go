@@ -157,6 +157,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Config actions
 	mux.HandleFunc("POST /config", s.saveConfig)
+	mux.HandleFunc("POST /overview/config", s.saveOverviewConfig)
 	mux.HandleFunc("POST /config/diff", s.configDiff)
 	mux.HandleFunc("POST /config/normalize", s.normalizeConfigPreview)
 	mux.HandleFunc("POST /setup", s.finishSetup)
@@ -303,6 +304,10 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	s.saveConfigPage(w, r, "config")
 }
 
+func (s *Server) saveOverviewConfig(w http.ResponseWriter, r *http.Request) {
+	s.saveConfigPage(w, r, "overview")
+}
+
 func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	s.saveConfigPage(w, r, "devices")
 }
@@ -314,6 +319,14 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 	}
 	incoming := formValuesMap(r.PostForm)
 	oldSnapshot := s.cfg.Snapshot()
+	if err := s.resolveConfigIdentity(r.Context(), oldSnapshot, incoming); err != nil {
+		d := s.pageData(page, map[string]any{"Errors": map[string]string{"CREDIMI_RUNNER_NAME": err.Error()}})
+		html, _ := s.render.FragmentPage(page, d)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(html))
+		return
+	}
 	if errs, err := s.cfg.Apply(incoming); err != nil {
 		d := s.pageData(page, map[string]any{"Errors": errs})
 		html, _ := s.render.FragmentPage(page, d)
@@ -369,12 +382,17 @@ func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	incoming := formValuesMap(r.PostForm)
-	normalized, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
+	current := s.cfg.Snapshot()
+	if err := s.resolveConfigIdentity(r.Context(), current, incoming); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	normalized, err := normalizedConfigValues(current, incoming, runtimeGOOS())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	diff := dashboardruntime.DiffValues(dashboardruntime.Values(s.cfg.Snapshot()), normalized)
+	diff := dashboardruntime.DiffValues(dashboardruntime.Values(current), normalized)
 	confirmRequired := diffRequiresRuntimeRestart(diff)
 	writeJSON(w, map[string]any{
 		"classes":          diff.Classes,
@@ -878,6 +896,76 @@ func (s *Server) revealSecret(w http.ResponseWriter, r *http.Request) {
 		key, htmlAttr(s.cfg.Get(key)))
 }
 
+func (s *Server) resolveConfigIdentity(ctx context.Context, current, incoming map[string]string) error {
+	currentID := strings.TrimSpace(current["CREDIMI_RUNNER_ID"])
+	if currentID == "" {
+		return nil
+	}
+	incoming["CREDIMI_RUNNER_ID"] = currentID
+
+	currentName := strings.TrimSpace(current["CREDIMI_RUNNER_NAME"])
+	currentOrg := strings.TrimSpace(current["CREDIMI_RUNNER_ORGANIZATION"])
+	nextName := strings.TrimSpace(currentName)
+	if value, ok := incoming["CREDIMI_RUNNER_NAME"]; ok {
+		nextName = strings.TrimSpace(value)
+	}
+	nextOrg := currentOrg
+	if value, ok := incoming["CREDIMI_RUNNER_ORGANIZATION"]; ok {
+		nextOrg = strings.TrimSpace(value)
+	}
+
+	if strings.TrimSpace(current["CREDIMI_INTERNAL_ADMIN_KEY"]) == "" {
+		if nextOrg != "" && currentOrg != "" && nextOrg != currentOrg {
+			return errors.New("organization cannot be changed for user-scoped runners")
+		}
+		if currentOrg != "" {
+			nextOrg = currentOrg
+			incoming["CREDIMI_RUNNER_ORGANIZATION"] = currentOrg
+		}
+	}
+
+	if nextName == currentName && nextOrg == currentOrg {
+		return nil
+	}
+	if nextName == "" {
+		return errors.New("runner name is required")
+	}
+	if nextOrg == "" {
+		return errors.New("organization is required")
+	}
+
+	apiKey := strings.TrimSpace(incoming["CREDIMI_USER_API_KEY"])
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(current["CREDIMI_USER_API_KEY"])
+	}
+	if adminKey := strings.TrimSpace(incoming["CREDIMI_INTERNAL_ADMIN_KEY"]); adminKey != "" {
+		apiKey = adminKey
+	} else if currentAdminKey := strings.TrimSpace(current["CREDIMI_INTERNAL_ADMIN_KEY"]); currentAdminKey != "" {
+		apiKey = currentAdminKey
+	}
+	if apiKey == "" {
+		return errors.New("a Credimi API key is required to update runner identity")
+	}
+
+	baseURL := strings.TrimSpace(incoming["CREDIMI_URL"])
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(current["CREDIMI_URL"])
+	}
+	client := &dashboardruntime.CredimiClient{BaseURL: baseURL, APIKey: apiKey, HTTPClient: http.DefaultClient}
+	preview, err := client.PreviewRunnerID(ctx, nextName, nextOrg)
+	if err != nil {
+		return err
+	}
+	runnerID := strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
+	if runnerID == "" {
+		runnerID = nextOrg + "/" + canonifyPlain(nextName)
+	}
+	incoming["CREDIMI_RUNNER_NAME"] = nextName
+	incoming["CREDIMI_RUNNER_ORGANIZATION"] = nextOrg
+	incoming["CREDIMI_RUNNER_ID"] = runnerID
+	return nil
+}
+
 func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]string) error {
 	apiKey := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
 	if apiKey == "" {
@@ -970,6 +1058,7 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 		Port:         publicPort,
 		Serial:       strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]),
 		Organization: strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]),
+		Published:    boolPtr(isTruthyFormValue(values["CREDIMI_RUNNER_PUBLISHED"])),
 	}
 	if err := client.RegisterMobileRunnerResolvingName(ctx, req); err != nil {
 		return err

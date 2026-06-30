@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -388,6 +389,108 @@ func TestServerConfigDiffManualPublicURLOnlyUpdatesCredimi(t *testing.T) {
 	}
 }
 
+func TestServerConfigDiffIgnoresDirectRunnerIDChange(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.values = map[string]string(normalized)
+
+	form := formValuesFromConfig(s.cfg)
+	form.Set("CREDIMI_RUNNER_ID", "evil/id")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configDiff direct ID change = %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "saved_only") || !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
+		t.Fatalf("direct runner ID edits should be ignored: %s", rec.Body.String())
+	}
+}
+
+func TestServerConfigDiffNameChangeDerivesRunnerID(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-runner/preview-id" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"organization":"acme","runner_id":"acme/renamed-runner"}`)),
+		}, nil
+	})
+	defer func() { http.DefaultTransport = transport }()
+
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.values = map[string]string(normalized)
+
+	form := formValuesFromConfig(s.cfg)
+	form.Set("CREDIMI_RUNNER_NAME", "Renamed Runner")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("configDiff name change = %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "restart_required") || !strings.Contains(rec.Body.String(), "credimi_update_required") || !strings.Contains(rec.Body.String(), `"confirm_required":true`) {
+		t.Fatalf("name change should require restart and Credimi update: %s", rec.Body.String())
+	}
+}
+
+func TestServerConfigDiffRejectsUserScopedOrganizationChange(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_INTERNAL_ADMIN_KEY"] = ""
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.values = map[string]string(normalized)
+
+	form := formValuesFromConfig(s.cfg)
+	form.Set("CREDIMI_RUNNER_ORGANIZATION", "other")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("configDiff user org change = %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "organization cannot be changed for user-scoped runners") {
+		t.Fatalf("configDiff user org change should explain rejection: %s", rec.Body.String())
+	}
+}
+
 func TestServerNormalizeConfigPreviewRunnerTypeChange(t *testing.T) {
 	s := newTestServer(t)
 	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
@@ -449,6 +552,57 @@ func TestServerSaveDevicesConfig(t *testing.T) {
 	s.saveDevicesConfig(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Save target") {
 		t.Fatalf("saveDevicesConfig = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerSaveOverviewPublishedConfig(t *testing.T) {
+	transport := http.DefaultTransport
+	var payload dashboardruntime.RegisterRunnerRequest
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-runner" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})
+	defer func() { http.DefaultTransport = transport }()
+
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	s.cfg.values["CREDIMI_RUNNER_PUBLISHED"] = "false"
+
+	form := url.Values{
+		"CREDIMI_RUNNER_PUBLISHED": {"on"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/overview/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveOverviewConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("saveOverviewConfig = %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Runner publication") || strings.Contains(rec.Body.String(), "API &amp; Config") {
+		t.Fatalf("saveOverviewConfig should render overview, got %s", rec.Body.String())
+	}
+	if payload.Published == nil || !*payload.Published {
+		t.Fatalf("published payload = %#v", payload.Published)
+	}
+	if got := s.cfg.Get("CREDIMI_RUNNER_PUBLISHED"); got != "true" {
+		t.Fatalf("stored CREDIMI_RUNNER_PUBLISHED = %q", got)
 	}
 }
 
@@ -937,6 +1091,72 @@ func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
 	}
 }
 
+func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/api/mobile-runner/preview-id":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"organization":"acme","runner_id":"acme/renamed-runner"}`)),
+			}, nil
+		case "/api/mobile-runner":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+			}, nil
+		default:
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+	})
+	defer func() { http.DefaultTransport = transport }()
+
+	s := newTestServer(t)
+	fm := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true}}
+	s.manager = fm
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.values = map[string]string(normalized)
+
+	form := formValuesFromConfig(s.cfg)
+	form.Set("CREDIMI_RUNNER_NAME", "Renamed Runner")
+	form.Set("CREDIMI_RUNNER_ID", "evil/id")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveConfig(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("saveConfig name change = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := s.cfg.Get("CREDIMI_RUNNER_ID"); got != "acme/renamed-runner" {
+		t.Fatalf("stored runner ID = %q", got)
+	}
+	if got := s.cfg.Get("CREDIMI_RUNNER_NAME"); got != "Renamed Runner" {
+		t.Fatalf("stored runner name = %q", got)
+	}
+	if fm.restartCalls != 1 {
+		t.Fatalf("saveConfig name change restart calls = %d", fm.restartCalls)
+	}
+	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Runner restarted with the new configuration.") {
+		t.Fatalf("saveConfig name change toast missing restart result: %s", rec.Header().Get("HX-Trigger"))
+	}
+}
+
 func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T) {
 	s := newTestServer(t)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1032,7 +1252,7 @@ func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveConfig(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Required.") {
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention") {
 		t.Fatalf("saveConfig validation = %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -1060,9 +1280,14 @@ func TestServerRuntimeApply(t *testing.T) {
 	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
 	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
 	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_RUNNER_PUBLISHED"] = "true"
 
+	var payload dashboardruntime.RegisterRunnerRequest
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/mobile-runner" {
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -1151,9 +1376,14 @@ func TestServerRuntimeStartRegistersRunner(t *testing.T) {
 	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
 	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
 	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_RUNNER_PUBLISHED"] = "true"
 
+	var payload dashboardruntime.RegisterRunnerRequest
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/mobile-runner" {
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -1171,6 +1401,9 @@ func TestServerRuntimeStartRegistersRunner(t *testing.T) {
 	fm := s.manager.(*fakeManager)
 	if fm.startCalls == 0 {
 		t.Fatal("runtimeStart should start runtime")
+	}
+	if payload.Published == nil || !*payload.Published {
+		t.Fatalf("runtimeStart registration published = %#v", payload.Published)
 	}
 }
 

@@ -49,6 +49,7 @@ var Registry = []Field{
 	{Key: "CREDIMI_RUNNER_NAME", Label: "Runner name", Group: "Identity", Type: TypeText},
 	{Key: "CREDIMI_RUNNER_DESCRIPTION", Label: "Runner description", Group: "Identity", Type: TypeText, Hint: "Optional note shown to operators, for example the physical device or simulator version."},
 	{Key: "CREDIMI_RUNNER_ORGANIZATION", Label: "Organization", Group: "Identity", Type: TypeText},
+	{Key: "CREDIMI_RUNNER_PUBLISHED", Label: "Publish runner", Group: "Identity", Type: TypeBool, Hint: "Allow published Credimi organizations to schedule pipelines on this runner."},
 	{Key: "CREDIMI_RUNNER_TYPE", Label: "Runner type", Group: "Identity", Type: TypeSelect,
 		Options: []string{"android_phone", "android_emulator", "ios_simulator", "redroid"}},
 	{Key: "CREDIMI_RUNNER_SERIAL", Label: "Device serial", Group: "Identity", Type: TypeText, Hint: "Physical device serial or host:port for Wi-Fi ADB."},
@@ -399,6 +400,10 @@ func boolStr(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 func isTruthyFormValue(value string) bool {

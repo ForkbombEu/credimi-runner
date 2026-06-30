@@ -37,13 +37,15 @@ func TestCredimiClient(t *testing.T) {
 	if err != nil || preview.RunnerID != "acme/runner" {
 		t.Fatalf("preview = %#v err=%v", preview, err)
 	}
+	published := true
 	err = client.RegisterMobileRunner(context.Background(), RegisterRunnerRequest{
 		RunnerID: "acme/runner", Type: "android_phone", Serial: "device-1", Port: "443",
+		Published: &published,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registerPayload.Type != "android_phone" || registerPayload.Serial != "device-1" || registerPayload.Port != "443" {
+	if registerPayload.Type != "android_phone" || registerPayload.Serial != "device-1" || registerPayload.Port != "443" || registerPayload.Published == nil || !*registerPayload.Published {
 		t.Fatalf("payload = %#v", registerPayload)
 	}
 }

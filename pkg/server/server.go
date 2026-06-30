@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -48,6 +49,7 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	startDelay := startupWorkerDelay()
 	startAttempts := 0
 	runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")
+	runnerPublished, _ := strconv.ParseBool(utils.GetEnvironmentVariable("CREDIMI_RUNNER_PUBLISHED"))
 
 	inst := s.Instance
 	if inst.URL == "" {
@@ -55,6 +57,16 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	}
 	if inst.UserAPIKey == "" {
 		namespaces, err := s.fetchAdminNamespaces(ctx, inst)
+		if err != nil {
+			return err
+		}
+		for _, namespace := range namespaces {
+			startAttempts = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+		}
+		return nil
+	}
+	if runnerPublished {
+		namespaces, err := s.fetchVisibleNamespaces(ctx, inst)
 		if err != nil {
 			return err
 		}
@@ -99,6 +111,38 @@ func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Ins
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, fmt.Errorf("failed to parse organization namespaces response: %w", err)
+	}
+
+	return data.Namespaces, nil
+}
+
+func (s *runnerService) fetchVisibleNamespaces(ctx context.Context, inst utils.Instance) ([]string, error) {
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		utils.JoinURL(inst.URL, "api", "organizations", "visible-namespaces"),
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create visible organizations namespace request: %w", err)
+	}
+	setAPIKeyHeader(req, inst.UserAPIKey)
+
+	resp, err := s.Deps.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch visible organization namespaces: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch visible organization namespaces: %s", resp.Status)
+	}
+
+	var data struct {
+		Namespaces []string `json:"namespaces"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("failed to parse visible organization namespaces response: %w", err)
 	}
 
 	return data.Namespaces, nil
