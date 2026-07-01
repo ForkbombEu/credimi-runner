@@ -176,6 +176,10 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 			m.status.LastError = err.Error()
 			return err
 		}
+		if err := m.stopStaleComposeServicesLocked(ctx, plan); err != nil {
+			m.status.LastError = err.Error()
+			return err
+		}
 		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d"}
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
@@ -189,6 +193,31 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 
 	m.status.PublicURL = resolvedRunnerPublicURL(m.values, "")
 	return nil
+}
+
+func (m *LifecycleManager) stopStaleComposeServicesLocked(ctx context.Context, plan RuntimePlan) error {
+	staleServices := staleComposeServices(plan.ComposeServices)
+	if len(staleServices) == 0 {
+		return nil
+	}
+	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "rm", "-f", "-s"}
+	args = append(args, staleServices...)
+	_, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args})
+	return err
+}
+
+func staleComposeServices(active []string) []string {
+	activeSet := make(map[string]struct{}, len(active))
+	for _, service := range active {
+		activeSet[service] = struct{}{}
+	}
+	var stale []string
+	for _, service := range []string{"runner", "runner_host", "caddy", "tunnel", "tunnel_named"} {
+		if _, ok := activeSet[service]; !ok {
+			stale = append(stale, service)
+		}
+	}
+	return stale
 }
 
 func (m *LifecycleManager) Stop(ctx context.Context) error {

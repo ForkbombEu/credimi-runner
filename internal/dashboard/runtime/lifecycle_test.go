@@ -63,7 +63,10 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if got := runner.starts[1]; got.Name != "docker" || !strings.Contains(strings.Join(got.Args, " "), "logs -f") {
 		t.Fatalf("log follower spec = %#v", got)
 	}
-	if len(runner.runs) != 1 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "compose") {
+	if len(runner.runs) != 2 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
+		t.Fatalf("stale cleanup runs = %v", runner.runs)
+	}
+	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "compose") {
 		t.Fatalf("runs = %v", runner.runs)
 	}
 	if _, err := os.Stat(filepath.Join(manager.configDir, "docker-compose.yaml")); err != nil {
@@ -121,6 +124,16 @@ func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
 	}
 	if status := manager.Status(context.Background()); !status.RunnerRunning {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestStaleComposeServices(t *testing.T) {
+	got := strings.Join(staleComposeServices([]string{"runner", "caddy", "tunnel"}), ",")
+	if got != "runner_host,tunnel_named" {
+		t.Fatalf("staleComposeServices = %q", got)
+	}
+	if got := staleComposeServices([]string{"runner", "runner_host", "caddy", "tunnel", "tunnel_named"}); len(got) != 0 {
+		t.Fatalf("staleComposeServices all active = %#v", got)
 	}
 }
 
