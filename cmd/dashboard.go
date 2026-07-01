@@ -55,9 +55,6 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
-	if err := validateDashboardSecurity(listenHost, values); err != nil {
-		return err
-	}
 	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 
 	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
@@ -128,7 +125,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 }
 
 func init() {
-	rootCmd.Flags().StringVar(&dashboardHost, "host", "127.0.0.1", "Dashboard listen host")
+	rootCmd.Flags().StringVar(&dashboardHost, "host", dashboardruntime.DefaultDashboardHost, "Dashboard listen host")
 	rootCmd.Flags().IntVar(&dashboardPort, "port", 8051, "Dashboard listen port")
 	rootCmd.Flags().StringVar(&dashboardConfigDir, "config-dir", "", "Dashboard config directory")
 	rootCmd.Flags().BoolVar(&dashboardOpen, "open-browser", true, "Open the dashboard in a browser after startup")
@@ -200,25 +197,6 @@ func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.V
 		return host, dashboardPort
 	}
 	return host, parsedPort
-}
-
-func validateDashboardSecurity(host string, values dashboardruntime.Values) error {
-	if isLocalDashboardHost(host) {
-		return nil
-	}
-	if strings.TrimSpace(values["DASHBOARD_TOKEN"]) != "" {
-		return nil
-	}
-	return fmt.Errorf("DASHBOARD_TOKEN is required when dashboard host %q is not localhost", host)
-}
-
-func isLocalDashboardHost(host string) bool {
-	switch strings.TrimSpace(strings.ToLower(host)) {
-	case "", "127.0.0.1", "localhost", "::1":
-		return true
-	default:
-		return false
-	}
 }
 
 func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {

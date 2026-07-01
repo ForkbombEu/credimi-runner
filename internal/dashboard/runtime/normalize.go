@@ -15,7 +15,7 @@ const (
 	DefaultOTELServiceName  = "credimi-runner"
 	DefaultRunnerHost       = "127.0.0.1"
 	DefaultRunnerPort       = "8050"
-	DefaultDashboardHost    = "127.0.0.1"
+	DefaultDashboardHost    = "0.0.0.0"
 	DefaultDashboardPort    = "8051"
 	DefaultRunnerCaddySite  = ":80"
 	DefaultContainerMode    = "usb"

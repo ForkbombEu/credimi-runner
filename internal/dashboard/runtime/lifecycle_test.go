@@ -54,6 +54,9 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if got := runner.starts[0]; got.Dir != manager.configDir || !strings.Contains(strings.Join(got.Env, " "), "CREDIMI_RUNNER_CONFIG_DIR="+manager.configDir) {
 		t.Fatalf("start spec = %#v", got)
 	}
+	if got := runner.starts[0]; !got.Detached || !strings.HasSuffix(got.LogPath, "runner.log") {
+		t.Fatalf("host runner should be detached with runner log path, got %#v", got)
+	}
 	if got := runner.starts[1]; got.Name != "docker" || !strings.Contains(strings.Join(got.Args, " "), "logs -f") {
 		t.Fatalf("log follower spec = %#v", got)
 	}

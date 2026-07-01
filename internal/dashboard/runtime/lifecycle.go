@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -41,10 +42,12 @@ type LogLine struct {
 }
 
 type CommandSpec struct {
-	Name string
-	Args []string
-	Dir  string
-	Env  []string
+	Name     string
+	Args     []string
+	Dir      string
+	Env      []string
+	Detached bool
+	LogPath  string
 }
 
 type Runner interface {
@@ -69,9 +72,26 @@ func (ExecRunner) Start(ctx context.Context, spec CommandSpec) (*exec.Cmd, error
 	if len(spec.Env) > 0 {
 		cmd.Env = spec.Env
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	if spec.Detached {
+		detachCommand(cmd)
+		cmd.Stdin = nil
+		if spec.LogPath != "" {
+			if err := os.MkdirAll(filepath.Dir(spec.LogPath), 0o700); err != nil {
+				return nil, err
+			}
+			logFile, err := os.OpenFile(spec.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+			if err != nil {
+				return nil, err
+			}
+			defer logFile.Close()
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+		}
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -119,8 +139,10 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 					"--host", defaultIfEmpty(m.values["RUNNER_HOST"], DefaultRunnerHost),
 					"--port", defaultIfEmpty(m.values["RUNNER_PORT"], DefaultRunnerPort),
 				},
-				Dir: m.configDir,
-				Env: append(os.Environ(), "CREDIMI_RUNNER_CONFIG_DIR="+m.configDir),
+				Dir:      m.configDir,
+				Env:      append(os.Environ(), "CREDIMI_RUNNER_CONFIG_DIR="+m.configDir),
+				Detached: true,
+				LogPath:  filepath.Join(m.configDir, "runner.log"),
 			})
 			if err != nil {
 				m.status.LastError = err.Error()

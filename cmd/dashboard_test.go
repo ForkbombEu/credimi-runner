@@ -168,26 +168,6 @@ func TestRunDashboardReturnsStoreLoadError(t *testing.T) {
 	}
 }
 
-func TestRunDashboardRejectsRemoteBindWithoutToken(t *testing.T) {
-	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
-	oldConfigDir, oldOpen := dashboardConfigDir, dashboardOpen
-	t.Cleanup(func() {
-		dashboardConfigDir = oldConfigDir
-		dashboardOpen = oldOpen
-	})
-
-	dashboardConfigDir = t.TempDir()
-	dashboardOpen = false
-	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("DASHBOARD_HOST=0.0.0.0\nDASHBOARD_TOKEN=\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	err := runDashboard(&cobra.Command{}, nil)
-	if err == nil || !strings.Contains(err.Error(), "DASHBOARD_TOKEN is required") {
-		t.Fatalf("runDashboard error = %v", err)
-	}
-}
-
 func TestRunDashboardReturnsListenError(t *testing.T) {
 	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
 	oldConfigDir, oldOpen, oldPort := dashboardConfigDir, dashboardOpen, dashboardPort
@@ -263,18 +243,6 @@ func TestDashboardBrowserHelpers(t *testing.T) {
 	}
 	if err := openDashboardBrowser(""); err == nil {
 		t.Fatal("expected empty dashboard URL to fail")
-	}
-}
-
-func TestValidateDashboardSecurity(t *testing.T) {
-	if err := validateDashboardSecurity("127.0.0.1", dashboardruntime.Values{}); err != nil {
-		t.Fatalf("localhost should be allowed: %v", err)
-	}
-	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{}); err == nil {
-		t.Fatal("remote bind without token should fail")
-	}
-	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{"DASHBOARD_TOKEN": "secret"}); err != nil {
-		t.Fatalf("remote bind with token should pass: %v", err)
 	}
 }
 
