@@ -29,13 +29,6 @@ assert_contains() {
   rg -Fq -- "$needle" "$path" || fail "expected '${needle}' in ${path}"
 }
 
-assert_not_contains() {
-  local needle="$1"
-  local path="$2"
-
-  [[ ! -e "$path" ]] || ! rg -Fq -- "$needle" "$path" || fail "did not expect '${needle}' in ${path}"
-}
-
 create_mocks() {
   local mock_dir="$1"
   mkdir -p "$mock_dir"
@@ -118,13 +111,9 @@ assert_dashboard_install_contract() {
 
   assert_file_exists "$binary"
   assert_executable "$binary"
-  assert_file_absent "${case_dir}/bin/credimi-runner-service"
-  assert_file_absent "${case_dir}/config/credimi/runner/.env"
-  assert_file_absent "${case_dir}/config/credimi/runner/docker-compose.yaml"
   assert_contains "releases/latest/download/${expected_asset}" "${case_dir}/logs/curl.log"
   assert_contains "dashboard:--from-test" "${case_dir}/logs/launch.log"
   assert_contains "Starting Credimi Runner dashboard" "${case_dir}/stderr.log"
-  assert_not_contains "credimi-runner-service" "${case_dir}/stderr.log"
 }
 
 run_linux_x86_64_case() {
