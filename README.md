@@ -55,16 +55,18 @@ curl -fsSL https://credimi.run | sh
 These steps vary slightly by manufacturer, but the flow is similar on most Android 11+ devices.
 
 1. Open **Settings** → **About phone**.
-2. Tap **Version** -> **Build number** 7 times until you see “You are now a developer.”
-3. Go back to **Settings** and open **System** → **Developer options**.
-4. Turn on **Developer options** (if there’s a master toggle).
-5. Turn on **USB debugging** (required for USB/cable workflows; separate from Wi‑Fi debugging).
-6. Find **Wireless debugging** and enable it.
-7. Tap **Wireless debugging** to open its screen:
+1. Tap **Version** -> **Build number** 7 times until you see “You are now a developer.”
+1. Go back to **Settings** and open **System** → **Developer options**.
+1. Turn on **Developer options** (if there’s a master toggle).
+1. Turn on **USB debugging** (required for USB/cable workflows; separate from Wi‑Fi debugging).
+1. Find **Wireless debugging** and enable it.
+1. Tap **Wireless debugging** to open its screen:
    - Your phone’s IP address is shown there (often under **IP address** or **Device IP**).
    - Some phones show **IP:PORT** (for example `192.168.1.42:38349`). You can pass that as-is.
    - Ensure **Wireless debugging** stays enabled while you connect.
-7. (Optional) If you see a **Pair device with pairing code** option, that is for `adb pair`
+1. Turn on **Developer Options > Stay awake**, if that doesn't work set it using adb:
+   - ```adb -s <serial> shell settings put global stay_on_while_plugged_in 3```
+1. (Optional) If you see a **Pair device with pairing code** option, that is for `adb pair`
    and is required on many Android 11+ devices before `adb connect` works.
 
 If your device doesn’t show **Wireless debugging**, you can enable **ADB debugging** and
