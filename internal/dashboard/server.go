@@ -765,8 +765,10 @@ func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
 		if err := s.manager.Start(ctx); err != nil {
 			return err
 		}
-		if err := s.runnerReady(ctx, values); err != nil {
-			return s.runtimeStartupError(ctx, err)
+		if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+			if err := s.runnerReady(ctx, values); err != nil {
+				return s.runtimeStartupError(ctx, err)
+			}
 		}
 		return s.registerCurrent(ctx, values)
 	}, "Runtime started.")
@@ -843,8 +845,10 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
-			if err := s.runnerReady(ctx, values); err != nil {
-				return err
+			if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+				if err := s.runnerReady(ctx, values); err != nil {
+					return err
+				}
 			}
 		}
 		if hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired) {

@@ -110,11 +110,13 @@ func TestRunnerReadinessRequiredBeforeRegistration(t *testing.T) {
 		goos string
 		want bool
 	}{
-		{"host backend", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
+		{"host backend auto", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "auto", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", false},
+		{"host backend managed", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "cloudflare-managed", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", false},
+		{"host backend manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
 		{"linux phone container auto", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", false},
 		{"linux phone container manual", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"}, "linux", false},
 		{"linux emulator container auto", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", false},
-		{"darwin default host", Values{}, "darwin", true},
+		{"darwin default host auto", Values{}, "darwin", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -394,6 +394,9 @@ func TestRenderer_FullPage(t *testing.T) {
 	if strings.Contains(html, "across environments") {
 		t.Fatalf("overview should not render multi-environment copy: %s", html)
 	}
+	if !strings.Contains(html, `data-copy-value=`) {
+		t.Fatalf("overview should render public URL copy action: %s", html)
+	}
 }
 
 func TestPageData_ViewModels(t *testing.T) {

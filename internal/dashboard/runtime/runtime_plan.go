@@ -176,7 +176,7 @@ func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool 
 		return false
 	}
 	plan := BuildRuntimePlan("", normalized)
-	return plan.Backend == DefaultHostBackend
+	return plan.Backend == DefaultHostBackend && plan.ServiceMode == "manual"
 }
 
 func DiffValues(oldValues, newValues Values) ConfigDiff {

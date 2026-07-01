@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -306,6 +307,42 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 	}
 	if !registered {
 		t.Fatal("startDashboardRuntime should register container runners without waiting for localhost readiness")
+	}
+}
+
+func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
+	var registeredBody string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			body, _ := io.ReadAll(r.Body)
+			registeredBody = string(body)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+
+	manager := &dashboardFakeManager{
+		logs: []dashboardruntime.LogLine{{Message: "tunnel ready https://fresh-runner.trycloudflare.com"}},
+	}
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND":      "host",
+		"CREDIMI_RUNNER_TYPE":         "ios_simulator",
+		"CREDIMI_SERVICE_MODE":        "auto",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_URL":                 api.URL,
+		"CREDIMI_USER_API_KEY":        "secret",
+		"RUNNER_HOST":                 "127.0.0.1",
+		"RUNNER_PORT":                 "1",
+	}
+	if err := startDashboardRuntime(context.Background(), manager, values); err != nil {
+		t.Fatalf("startDashboardRuntime = %v", err)
+	}
+	if !strings.Contains(registeredBody, "https://fresh-runner.trycloudflare.com") {
+		t.Fatalf("registration body did not include fresh tunnel URL: %s", registeredBody)
 	}
 }
 
