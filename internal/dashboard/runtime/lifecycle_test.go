@@ -2,9 +2,12 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +91,181 @@ func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) 
 	}
 	if len(runner.starts) != 1 {
 		t.Fatalf("starts = %v", runner.starts)
+	}
+}
+
+func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	host, port, ok := strings.Cut(listener.Addr().String(), ":")
+	if !ok {
+		t.Fatalf("listener address = %q", listener.Addr().String())
+	}
+
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_HOST":            host,
+		"RUNNER_PORT":            port,
+	}, runner)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.starts) != 0 {
+		t.Fatalf("existing reachable runner should be reused, starts = %#v", runner.starts)
+	}
+	if status := manager.Status(context.Background()); !status.RunnerRunning {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestRunnerPIDHelpers(t *testing.T) {
+	dir := t.TempDir()
+	if got := RunnerPIDPath(dir); got != filepath.Join(dir, "runner.pid") {
+		t.Fatalf("RunnerPIDPath = %q", got)
+	}
+	if _, err := readRunnerPID(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read missing PID error = %v", err)
+	}
+	if err := writeRunnerPID(dir, 12345); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readRunnerPID(dir); err != nil || got != 12345 {
+		t.Fatalf("readRunnerPID = %d, %v", got, err)
+	}
+	if err := os.WriteFile(RunnerPIDPath(dir), []byte("not-a-pid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRunnerPID(dir); err == nil || !strings.Contains(err.Error(), "invalid runner PID file") {
+		t.Fatalf("invalid PID error = %v", err)
+	}
+}
+
+func TestRunnerReachabilityHelpers(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := Values{"RUNNER_HOST": "0.0.0.0", "RUNNER_PORT": port}
+	host, gotPort := runnerListenTarget(values)
+	if host != "127.0.0.1" || gotPort != port {
+		t.Fatalf("runnerListenTarget = %s:%s", host, gotPort)
+	}
+	if !runnerAddressReachable(values, time.Second) {
+		t.Fatal("listener should be reachable")
+	}
+	if runnerAddressReachable(Values{"RUNNER_HOST": "127.0.0.1", "RUNNER_PORT": "1"}, 10*time.Millisecond) {
+		t.Fatal("closed port should not be reachable")
+	}
+}
+
+func TestLinuxSocketDiscoveryHelpers(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inodes, err := listeningSocketInodes(uint16(portNumber))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inodes) == 0 {
+		t.Fatal("expected listener socket inode")
+	}
+	for inode := range inodes {
+		if _, err := pidForSocketInode(inode); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("pidForSocketInode should ignore non-runner test process, got %v", err)
+		}
+		break
+	}
+	if _, err := listeningSocketInodes(1); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("closed port inodes error = %v", err)
+	}
+}
+
+func TestRunnerProcessDiscoveryBranches(t *testing.T) {
+	if processRunning(os.Getpid()) != true {
+		t.Fatal("current process should be running")
+	}
+	if processCommandMatches(os.Getpid()) {
+		t.Fatal("test process should not match runner serve")
+	}
+	if err := stopPID(context.Background(), os.Getpid()); err == nil || !strings.Contains(err.Error(), "refusing to stop PID") {
+		t.Fatalf("stopPID current process error = %v", err)
+	}
+	for _, port := range []string{"abc", "70000"} {
+		if _, err := discoverRunnerPID(Values{"RUNNER_PORT": port}); err == nil {
+			t.Fatalf("discoverRunnerPID(%s) should fail", port)
+		}
+	}
+	if _, err := discoverRunnerPID(Values{"RUNNER_PORT": "1"}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("discoverRunnerPID missing error = %v", err)
+	}
+}
+
+func TestStopRunnerServerBranches(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeRunnerPID(dir, os.Getpid()); err != nil {
+		t.Fatal(err)
+	}
+	if err := StopRunnerFromPIDFile(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "refusing to stop PID") {
+		t.Fatalf("StopRunnerFromPIDFile current process error = %v", err)
+	}
+	if err := os.WriteFile(RunnerPIDPath(dir), []byte("bad\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := StopRunnerServer(context.Background(), dir, Values{"RUNNER_PORT": "1"}); err == nil || !strings.Contains(err.Error(), "invalid runner PID file") {
+		t.Fatalf("StopRunnerServer invalid PID error = %v", err)
+	}
+
+	missingDir := t.TempDir()
+	if err := StopRunnerServer(context.Background(), missingDir, Values{"RUNNER_PORT": "1"}); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("StopRunnerServer missing error = %v", err)
+	}
+}
+
+func TestExecRunnerRunAndStart(t *testing.T) {
+	runner := ExecRunner{}
+	output, err := runner.Run(context.Background(), CommandSpec{
+		Name: "sh",
+		Args: []string{"-c", "printf ok"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "ok" {
+		t.Fatalf("output = %q", output)
+	}
+
+	cmd, err := runner.Start(context.Background(), CommandSpec{
+		Name:     "sh",
+		Args:     []string{"-c", "printf detached"},
+		Detached: true,
+		LogPath:  filepath.Join(t.TempDir(), "runner.log"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
 	}
 }
 

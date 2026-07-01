@@ -124,6 +124,25 @@ func TestRootCommandDefaultsToDashboard(t *testing.T) {
 	} else if !cmd.Hidden {
 		t.Fatal("serve command should be hidden from CLI help")
 	}
+	if cmd, _, err := rootCmd.Find([]string{"stop-server"}); err != nil || cmd == rootCmd || cmd.Name() != "stop-server" {
+		t.Fatalf("stop-server command should be registered, cmd=%v err=%v", cmd, err)
+	}
+}
+
+func TestRunStopServerMissingPID(t *testing.T) {
+	oldConfigDir := dashboardConfigDir
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+	})
+	dashboardConfigDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("RUNNER_PORT=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := &cobra.Command{Use: "stop-server"}
+	err := runStopServer(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "runner server was not found") {
+		t.Fatalf("runStopServer error = %v", err)
+	}
 }
 
 func TestExecuteHelp(t *testing.T) {
