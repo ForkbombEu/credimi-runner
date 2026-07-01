@@ -24,10 +24,11 @@ import (
 )
 
 var (
-	dashboardHost      string
-	dashboardPort      int
-	dashboardConfigDir string
-	dashboardOpen      bool
+	dashboardHost                string
+	dashboardPort                int
+	dashboardConfigDir           string
+	dashboardOpen                bool
+	dashboardRegistrationTimeout = 30 * time.Second
 )
 
 var openDashboardBrowserFunc = openDashboardBrowser
@@ -233,7 +234,7 @@ func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager
 		stdlog.Printf("dashboard runtime start pending: %v\n%s", err, runtimeStartupDiagnostics(ctx, manager, values))
 		return nil
 	}
-	registerCtx, registerCancel := context.WithTimeout(ctx, 8*time.Second)
+	registerCtx, registerCancel := context.WithTimeout(ctx, dashboardRegistrationTimeout)
 	defer registerCancel()
 	if err := registerDashboardRunner(registerCtx, manager, values); err != nil {
 		stdlog.Printf("dashboard runtime registration pending: %v", err)
@@ -361,6 +362,10 @@ func resolveDashboardRegistrationEndpoint(ctx context.Context, manager dashboard
 		}
 		return domain, "", nil
 	default:
+		status := manager.Status(ctx)
+		if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
+			return publicURL, "", nil
+		}
 		re := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()

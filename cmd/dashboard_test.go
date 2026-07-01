@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -19,11 +20,12 @@ import (
 )
 
 type dashboardFakeManager struct {
-	startCalls int
-	downCalls  int
-	logs       []dashboardruntime.LogLine
-	status     dashboardruntime.RuntimeStatus
-	startErr   error
+	startCalls  int
+	downCalls   int
+	logs        []dashboardruntime.LogLine
+	status      dashboardruntime.RuntimeStatus
+	startErr    error
+	logDeadline time.Time
 }
 
 func (f *dashboardFakeManager) Start(context.Context) error {
@@ -41,7 +43,10 @@ func (f *dashboardFakeManager) SetPublicURL(publicURL string) {
 func (f *dashboardFakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
 	return f.status
 }
-func (f *dashboardFakeManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
+func (f *dashboardFakeManager) Logs(ctx context.Context, _ int) ([]dashboardruntime.LogLine, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		f.logDeadline = deadline
+	}
 	return f.logs, nil
 }
 
@@ -311,6 +316,12 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 }
 
 func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
+	oldTimeout := dashboardRegistrationTimeout
+	dashboardRegistrationTimeout = 30 * time.Second
+	t.Cleanup(func() {
+		dashboardRegistrationTimeout = oldTimeout
+	})
+
 	var registeredBody string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/mobile-runner" {
@@ -343,6 +354,25 @@ func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
 	}
 	if !strings.Contains(registeredBody, "https://fresh-runner.trycloudflare.com") {
 		t.Fatalf("registration body did not include fresh tunnel URL: %s", registeredBody)
+	}
+	if manager.logDeadline.IsZero() || time.Until(manager.logDeadline) < 20*time.Second {
+		t.Fatalf("registration log scan deadline = %v, want startup window near %s", manager.logDeadline, dashboardRegistrationTimeout)
+	}
+}
+
+func TestResolveDashboardRegistrationEndpointPrefersRuntimePublicURL(t *testing.T) {
+	manager := &dashboardFakeManager{
+		status: dashboardruntime.RuntimeStatus{PublicURL: "https://cached.trycloudflare.com"},
+		logs:   []dashboardruntime.LogLine{{Message: "tunnel ready https://stale.trycloudflare.com"}},
+	}
+	publicURL, publicPort, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "auto",
+	})
+	if err != nil {
+		t.Fatalf("resolveDashboardRegistrationEndpoint = %v", err)
+	}
+	if publicURL != "https://cached.trycloudflare.com" || publicPort != "" {
+		t.Fatalf("endpoint = %q:%q", publicURL, publicPort)
 	}
 }
 
