@@ -215,6 +215,9 @@ func TestRenderer_SetupPage(t *testing.T) {
 	if !strings.Contains(html, "credimi.io/my/profile/api-keys") {
 		t.Errorf("setup page missing API key link")
 	}
+	if !strings.Contains(html, `name="RUNNER_PORT"`) {
+		t.Errorf("setup page missing runner port field")
+	}
 	if strings.Contains(html, "data-runner-conflict-choice") {
 		t.Errorf("setup page should not render inline runner conflict controls")
 	}
@@ -393,6 +396,9 @@ func TestRenderer_FullPage(t *testing.T) {
 	}
 	if strings.Contains(html, "across environments") {
 		t.Fatalf("overview should not render multi-environment copy: %s", html)
+	}
+	if strings.Contains(html, "OpenAPI docs at") || strings.Contains(html, "/docs") {
+		t.Fatalf("overview should not render obsolete docs copy: %s", html)
 	}
 	if !strings.Contains(html, `data-copy-value=`) {
 		t.Fatalf("overview should render public URL copy action: %s", html)

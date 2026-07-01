@@ -69,7 +69,7 @@ var Registry = []Field{
 	{Key: "CREDIMI_CONTAINER_MODE", Label: "Container mode", Group: "Network", Type: TypeSelect,
 		Options: []string{"usb", "wifi", "emulator", "no_device"}, Hint: "Derived from runner type and device connection. You can override it for advanced installs."},
 	{Key: "RUNNER_HOST", Label: "Bind host", Group: "Network", Type: TypeText},
-	{Key: "RUNNER_PORT", Label: "Port", Group: "Network", Type: TypeText},
+	{Key: "RUNNER_PORT", Label: "Runner port", Group: "Network", Type: TypeText, Hint: "Local runner API port. Default is 8050."},
 	{Key: "RUNNER_CADDY_SITE", Label: "Caddy site address", Group: "Network", Type: TypeText, Hint: "Keep :80 behind Cloudflare Tunnel."},
 	{Key: "RUNNER_DOMAIN", Label: "Runner domain", Group: "Network", Type: TypeText, Hint: "Public hostname pointed at http://caddy:80."},
 	{Key: "RUNNER_PUBLIC_URL", Label: "Manual public URL", Group: "Network", Type: TypeText, Hint: "Required when service mode is manual."},
