@@ -6,7 +6,7 @@ Use it to run Maestro tests or adb commands from inside the container.
 
 ## 🚀 Quick start
 
-Install `credimi-runner-service` with the bootstrap installer:
+Install `credimi-runner` with the bootstrap installer:
 
 ```bash
 curl -sL credimi.run | sh
@@ -14,20 +14,16 @@ curl -sL credimi.run | sh
 
 This works on **macOS** (Intel and Apple Silicon) and **Linux** (x86\_64 and arm64).
 
-Then start the service:
+The installer downloads the latest release binary, makes it executable, and starts
+the dashboard immediately:
 
 ```bash
-credimi-runner-service
+credimi-runner
 ```
 
-The installer writes the runtime configuration under `~/.config/credimi/runner/` and installs
-`credimi-runner-service` into `~/.local/bin` by default.
-
-On macOS, it also installs the local `credimi-runner` binary. You can verify that with:
-
-```bash
-credimi-runner version
-```
+The dashboard writes and manages the runtime configuration under
+`~/.config/credimi/runner/`. The installer only installs the binary into
+`~/.local/bin` by default and launches the dashboard.
 
 See [One-command install](#one-command-install) and [Run API server locally](#run-api-server-locally-serve) for configuration details and alternate workflows.
 
@@ -41,14 +37,10 @@ curl -fsSL https://raw.githubusercontent.com/ForkbombEu/credimi-runner/main/inst
 
 What it does:
 
-- on macOS, downloads the latest release binary for your OS and CPU
-- installs `credimi-runner-service` into `~/.local/bin` by default
-- on macOS, also installs the local `credimi-runner` binary into `~/.local/bin`
-- on Linux, asks whether to run a USB phone or the Android emulator, then uses the matching published container instead of starting a local `credimi-runner serve` process
-- writes config to `~/.config/credimi/runner/.env`
-- writes a minimal Docker Compose file to `~/.config/credimi/runner/docker-compose.yaml`
-- if `~/.config/credimi/runner/.env` already exists, reuses it without overwriting it and only appends any missing runtime settings that older installs did not have yet
-- asks the required questions interactively, then prints the one-line command to start the service
+- downloads the latest release binary for your OS and CPU
+- installs `credimi-runner` into `~/.local/bin` by default
+- makes the binary executable
+- starts the dashboard, which handles configuration and runtime startup
 
 Once you publish the same script behind your own domain, the flow can be:
 
