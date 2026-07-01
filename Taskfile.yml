@@ -55,7 +55,7 @@ tasks:
         .
 
   dashboard:
-    desc: Build and start the dashboard supervisor (http://localhost:8051)
+    desc: Build and start the dashboard supervisor (http://0.0.0.0:8051)
     deps: ["build"]
     cmds:
       - ./bin/credimi-runner

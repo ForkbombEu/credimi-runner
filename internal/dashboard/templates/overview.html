@@ -50,7 +50,7 @@
       <div class="divline"></div>
       <div class="grid-2">{{range .Snapshot.Services}}{{if .Expected}}{{template "service_row" .}}{{end}}{{end}}</div>
       <div class="divline"></div>
-      <div class="callout {{if .ServicesAllUp}}ok{{else}}warn{{end}}">{{icon "globe"}}<div>Public endpoint: <b style="font-family:var(--font-mono)">{{.PublicURL}}</b>. OpenAPI docs at <b style="font-family:var(--font-mono)">/docs</b>.</div></div>
+      <div class="callout {{if .ServicesAllUp}}ok{{else}}warn{{end}}">{{icon "globe"}}<div>Public endpoint: <b style="font-family:var(--font-mono)">{{.PublicURL}}</b>.</div></div>
     </div>
   </section>
 

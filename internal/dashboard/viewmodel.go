@@ -314,7 +314,7 @@ func (d PageData) SetupSteps() []SetupStep {
 			ID:      "identity",
 			Title:   "Identity",
 			Summary: "Paste your API key and name this runner.",
-			Fields:  []string{"CREDIMI_URL", "CREDIMI_USER_API_KEY", "CREDIMI_RUNNER_NAME", "CREDIMI_RUNNER_DESCRIPTION"},
+			Fields:  []string{"CREDIMI_URL", "CREDIMI_USER_API_KEY", "RUNNER_PORT", "CREDIMI_RUNNER_NAME", "CREDIMI_RUNNER_DESCRIPTION"},
 		},
 		{
 			ID:      "network",

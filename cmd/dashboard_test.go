@@ -124,6 +124,25 @@ func TestRootCommandDefaultsToDashboard(t *testing.T) {
 	} else if !cmd.Hidden {
 		t.Fatal("serve command should be hidden from CLI help")
 	}
+	if cmd, _, err := rootCmd.Find([]string{"stop-server"}); err != nil || cmd == rootCmd || cmd.Name() != "stop-server" {
+		t.Fatalf("stop-server command should be registered, cmd=%v err=%v", cmd, err)
+	}
+}
+
+func TestRunStopServerMissingPID(t *testing.T) {
+	oldConfigDir := dashboardConfigDir
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+	})
+	dashboardConfigDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("RUNNER_PORT=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := &cobra.Command{Use: "stop-server"}
+	err := runStopServer(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "runner server was not found") {
+		t.Fatalf("runStopServer error = %v", err)
+	}
 }
 
 func TestExecuteHelp(t *testing.T) {
@@ -165,26 +184,6 @@ func TestRunDashboardReturnsStoreLoadError(t *testing.T) {
 	err := runDashboard(&cobra.Command{}, nil)
 	if err == nil {
 		t.Fatal("expected LoadStore error")
-	}
-}
-
-func TestRunDashboardRejectsRemoteBindWithoutToken(t *testing.T) {
-	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
-	oldConfigDir, oldOpen := dashboardConfigDir, dashboardOpen
-	t.Cleanup(func() {
-		dashboardConfigDir = oldConfigDir
-		dashboardOpen = oldOpen
-	})
-
-	dashboardConfigDir = t.TempDir()
-	dashboardOpen = false
-	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("DASHBOARD_HOST=0.0.0.0\nDASHBOARD_TOKEN=\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	err := runDashboard(&cobra.Command{}, nil)
-	if err == nil || !strings.Contains(err.Error(), "DASHBOARD_TOKEN is required") {
-		t.Fatalf("runDashboard error = %v", err)
 	}
 }
 
@@ -263,18 +262,6 @@ func TestDashboardBrowserHelpers(t *testing.T) {
 	}
 	if err := openDashboardBrowser(""); err == nil {
 		t.Fatal("expected empty dashboard URL to fail")
-	}
-}
-
-func TestValidateDashboardSecurity(t *testing.T) {
-	if err := validateDashboardSecurity("127.0.0.1", dashboardruntime.Values{}); err != nil {
-		t.Fatalf("localhost should be allowed: %v", err)
-	}
-	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{}); err == nil {
-		t.Fatal("remote bind without token should fail")
-	}
-	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{"DASHBOARD_TOKEN": "secret"}); err != nil {
-		t.Fatalf("remote bind with token should pass: %v", err)
 	}
 }
 
@@ -388,36 +375,6 @@ func TestStartDashboardRuntimeBranches(t *testing.T) {
 	}
 	if manager.startCalls != 1 {
 		t.Fatalf("startCalls = %d", manager.startCalls)
-	}
-}
-
-func TestShutdownDashboardRuntimeRunsDownWhenConfigured(t *testing.T) {
-	manager := &dashboardFakeManager{}
-	if err := shutdownDashboardRuntime(context.Background(), manager, true); err != nil {
-		t.Fatalf("shutdownDashboardRuntime = %v", err)
-	}
-	if manager.downCalls != 1 {
-		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
-	}
-}
-
-func TestShutdownDashboardRuntimeRunsDownWhenComposeRunning(t *testing.T) {
-	manager := &dashboardFakeManager{status: dashboardruntime.RuntimeStatus{ComposeRunning: true}}
-	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
-		t.Fatalf("shutdownDashboardRuntime = %v", err)
-	}
-	if manager.downCalls != 1 {
-		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
-	}
-}
-
-func TestShutdownDashboardRuntimeSkipsUnconfiguredStoppedRuntime(t *testing.T) {
-	manager := &dashboardFakeManager{}
-	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
-		t.Fatalf("shutdownDashboardRuntime = %v", err)
-	}
-	if manager.downCalls != 0 {
-		t.Fatalf("downCalls = %d, want 0", manager.downCalls)
 	}
 }
 

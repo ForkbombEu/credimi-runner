@@ -45,6 +45,9 @@
                 {{template "field" $.Field "CREDIMI_URL"}}
               </details>
             </div>
+            <div class="field" style="grid-column:1/-1">
+              {{template "field" ($.FieldWithLabel "RUNNER_PORT" "Runner port")}}
+            </div>
             <div class="field" data-auth-field="user" {{if eq $.Runner.AuthMode "admin"}}hidden{{end}}>
               <label><span class="lbtx">User API key</span><span class="req">*</span><span class="envkey">CREDIMI_USER_API_KEY</span></label>
               <div class="inp-wrap">
@@ -243,6 +246,7 @@
               <div class="card-b">
                 <dl class="kv">
                   <dt>Service mode</dt><dd data-review="CREDIMI_SERVICE_MODE">—</dd>
+                  <dt>Runner port</dt><dd data-review="RUNNER_PORT">—</dd>
                   <dt data-review-net="manual">Public URL</dt><dd data-review="RUNNER_PUBLIC_URL" data-review-net="manual">—</dd>
                   <dt data-review-net="manual">Public port</dt><dd data-review="RUNNER_PUBLIC_PORT" data-review-net="manual">—</dd>
                   <dt data-review-net="cloudflare-managed">Domain</dt><dd data-review="RUNNER_DOMAIN" data-review-net="cloudflare-managed">—</dd>

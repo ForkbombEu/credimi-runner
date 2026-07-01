@@ -18,6 +18,9 @@ func TestLoadStoreMissingFile(t *testing.T) {
 	if store.Values["RUNNER_PORT"] != DefaultRunnerPort {
 		t.Fatalf("default RUNNER_PORT = %q", store.Values["RUNNER_PORT"])
 	}
+	if store.Values["DASHBOARD_HOST"] != "0.0.0.0" {
+		t.Fatalf("default DASHBOARD_HOST = %q", store.Values["DASHBOARD_HOST"])
+	}
 }
 
 func TestDefaultConfigDirHonorsOverride(t *testing.T) {
