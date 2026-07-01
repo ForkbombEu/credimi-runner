@@ -106,20 +106,11 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	cancelDashboard()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	runtimeShutdownCtx, runtimeShutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer runtimeShutdownCancel()
-	runtimeErrc := make(chan error, 1)
-	go func() {
-		runtimeErrc <- shutdownDashboardRuntime(runtimeShutdownCtx, manager, configFileExists(configDir))
-	}()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		stdlog.Printf("dashboard HTTP shutdown did not complete cleanly: %v", err)
 		if closeErr := server.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
 			stdlog.Printf("dashboard HTTP close failed: %v", closeErr)
 		}
-	}
-	if err := <-runtimeErrc; err != nil {
-		stdlog.Printf("dashboard runtime shutdown failed: %v", err)
 	}
 	return nil
 }
@@ -163,17 +154,6 @@ func dashboardEnvPath(configDir string) string {
 func configFileExists(configDir string) bool {
 	_, err := os.Stat(dashboardEnvPath(configDir))
 	return err == nil
-}
-
-func shutdownDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager, configExists bool) error {
-	if manager == nil {
-		return nil
-	}
-	status := manager.Status(context.Background())
-	if !configExists && !status.RunnerRunning && !status.ComposeRunning {
-		return nil
-	}
-	return manager.Down(ctx)
 }
 
 func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.Values) (string, int) {

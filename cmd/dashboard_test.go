@@ -359,36 +359,6 @@ func TestStartDashboardRuntimeBranches(t *testing.T) {
 	}
 }
 
-func TestShutdownDashboardRuntimeRunsDownWhenConfigured(t *testing.T) {
-	manager := &dashboardFakeManager{}
-	if err := shutdownDashboardRuntime(context.Background(), manager, true); err != nil {
-		t.Fatalf("shutdownDashboardRuntime = %v", err)
-	}
-	if manager.downCalls != 1 {
-		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
-	}
-}
-
-func TestShutdownDashboardRuntimeRunsDownWhenComposeRunning(t *testing.T) {
-	manager := &dashboardFakeManager{status: dashboardruntime.RuntimeStatus{ComposeRunning: true}}
-	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
-		t.Fatalf("shutdownDashboardRuntime = %v", err)
-	}
-	if manager.downCalls != 1 {
-		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
-	}
-}
-
-func TestShutdownDashboardRuntimeSkipsUnconfiguredStoppedRuntime(t *testing.T) {
-	manager := &dashboardFakeManager{}
-	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
-		t.Fatalf("shutdownDashboardRuntime = %v", err)
-	}
-	if manager.downCalls != 0 {
-		t.Fatalf("downCalls = %d, want 0", manager.downCalls)
-	}
-}
-
 func TestDashboardRuntimeHelpers(t *testing.T) {
 	manager := &dashboardFakeManager{logs: []dashboardruntime.LogLine{
 		{Message: "line-1"},
