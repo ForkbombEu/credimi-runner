@@ -28,8 +28,9 @@ var (
 )
 
 var serverCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "Start HTTP server to control  credimi mobile runner",
+	Use:    "serve",
+	Short:  "Start HTTP server to control credimi mobile runner",
+	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Load env from the working directory first, then from the XDG config dir.
 		envPath, err := loadDotEnv()

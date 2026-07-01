@@ -1,0 +1,97 @@
+{{define "main" -}}
+<main class="page">
+  <div class="page-head" style="display:flex;align-items:flex-end;justify-content:space-between">
+    <div>
+      <span class="eyebrow">API &amp; configuration</span>
+      <h1>API &amp; Config</h1>
+      <p>Everything written to <span class="tag mono">~/.config/credimi/runner/.env</span>. Changes are validated before they reach the running service.</p>
+    </div>
+    <a class="btn btn-out btn-sm" href="/config/raw" target="_blank" rel="noopener">View .env</a>
+  </div>
+
+  {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
+  {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some fields need attention — see the highlighted inputs below.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runner restart required before the latest changes take effect.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime recreate required before the latest changes take effect.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Credimi registration update required before the latest metadata is reflected remotely.</div></div>{{end}}
+
+  <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Applying configuration changes to the runner. Keep this page open.">
+    <section class="card">
+      <header class="card-h">{{icon "shield"}}<div><h3>Runner identity</h3><div class="sub">Who this runner is on the Credimi platform</div></div></header>
+      <div class="card-b">
+        <input type="hidden" name="CREDIMI_RUNNER_ID" value="{{.Runner.Get "CREDIMI_RUNNER_ID"}}">
+        <div class="field-row">
+          <div class="field">
+            <label><span class="lbtx">Runner ID</span><span class="envkey">CREDIMI_RUNNER_ID</span></label>
+            <input class="inp mono" value="{{.Runner.Get "CREDIMI_RUNNER_ID"}}" readonly autocomplete="off" spellcheck="false">
+            <p class="hint">Derived from the runner name and organization through Credimi.</p>
+          </div>
+          {{template "field" .Field "CREDIMI_RUNNER_NAME"}}
+        </div>
+        <div class="field-row">
+          {{if eq .Runner.AuthMode "admin"}}
+            {{template "field" .Field "CREDIMI_RUNNER_ORGANIZATION"}}
+          {{else}}
+            <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}">
+            <div class="field">
+              <label><span class="lbtx">Organization</span><span class="envkey">CREDIMI_RUNNER_ORGANIZATION</span></label>
+              <input class="inp mono" value="{{.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" readonly autocomplete="off" spellcheck="false">
+              <p class="hint">User-scoped runners use the organization connected to the API key.</p>
+            </div>
+          {{end}}
+          {{template "field" .Field "TEMPORAL_ADDRESS"}}
+        </div>
+        {{template "field" .Field "CREDIMI_RUNNER_DESCRIPTION"}}
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Credimi platform defaults</summary>
+          {{template "field" .Field "CREDIMI_URL"}}
+        </details>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card-h">{{icon "key"}}<div><h3>Authentication</h3><div class="sub">Credentials the runner presents to Credimi</div></div>
+        <div class="right"><span class="tag kind">{{title .Runner.AuthMode}} scope</span></div></header>
+      <div class="card-b">
+        <div class="field"><label><span class="lbtx">Authentication mode</span></label>
+          <div class="seg" data-auth-seg data-user="CREDIMI_USER_API_KEY" data-admin="CREDIMI_INTERNAL_ADMIN_KEY">
+            <button type="button" class="{{if ne .Runner.AuthMode "admin"}}on{{end}}" data-val="user">User API key</button>
+            <button type="button" class="{{if eq .Runner.AuthMode "admin"}}on{{end}}" data-val="admin">Internal admin key</button>
+          </div>
+        </div>
+        <div data-auth-field="user" {{if eq .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_USER_API_KEY"}}</div>
+        <div data-auth-field="admin" {{if ne .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_INTERNAL_ADMIN_KEY"}}</div>
+        <div class="callout warn">{{icon "warn"}}<div>Keys are stored in <b>plaintext</b> in <span class="tag mono">.env</span> with <span class="tag mono">chmod 600</span>. Anyone with read access to this file can act as this runner.</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card-h">{{icon "activity"}}<div><h3>Observability</h3><div class="sub">OpenTelemetry traces &amp; metrics</div></div></header>
+      <div class="card-b">
+        {{template "field" .Field "OTEL_ENABLED"}}
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Telemetry defaults</summary>
+          <div class="field-row">{{template "field" .Field "OTEL_EXPORTER_OTLP_ENDPOINT"}}{{template "field" .Field "OTEL_SERVICE_NAME"}}</div>
+        </details>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card-h">{{icon "server"}}<div><h3>Advanced</h3><div class="sub">Paths, temp dir &amp; emulator golden image</div></div></header>
+      <div class="card-b">
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Runtime defaults</summary>
+          {{template "field" .Field "CREDIMI_TEMP_DIR"}}
+        </details>
+      </div>
+    </section>
+
+    <div class="savebar" data-savebar hidden>
+      <span class="msg">{{icon "warn"}} Save writes <b>.env</b> and applies the required restart, recreate, or Credimi registration update.</span>
+      <div class="sp"></div>
+      <button type="button" class="btn btn-out btn-sm" data-discard>Discard</button>
+      <button type="submit" class="btn btn-pri">{{icon "check"}} Save</button>
+    </div>
+  </form>
+</main>
+{{- end}}

@@ -325,6 +325,7 @@ func TestStartExistingWorkers_ReturnsLookupFailures(t *testing.T) {
 }
 
 func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_PUBLISHED", "false")
 	store := NewProcessStore()
 	startedCh := make(chan string, 1)
 
@@ -367,6 +368,48 @@ func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T
 	require.True(t, ok)
 	require.True(t, proc.Running)
 	proc.Stop()
+}
+
+func TestStartExistingWorkers_PublishedUserAPIKeyStartsVisibleNamespaces(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_PUBLISHED", "true")
+	store := NewProcessStore()
+
+	client := &startWorkersHTTPClient{
+		responder: func(req *http.Request) (*http.Response, error) {
+			require.Equal(t, "/api/organizations/visible-namespaces", req.URL.Path)
+			require.Empty(t, req.URL.RawQuery)
+			return httpResp(http.StatusOK, `{"namespaces":["user-ns","published-ns",""]}`), nil
+		},
+	}
+
+	deps := Deps{
+		HTTPClient: client,
+		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
+			return func(ctx context.Context) error {
+				<-ctx.Done()
+				return nil
+			}
+		},
+	}
+
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{
+		URL:        "http://example.local",
+		UserAPIKey: "user-api-key",
+	}, deps)
+
+	err := srv.StartExistingWorkers(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "user-api-key", client.keyHeader())
+
+	userProc, ok := store.Get("user-ns")
+	require.True(t, ok)
+	require.True(t, userProc.Running)
+	userProc.Stop()
+
+	publishedProc, ok := store.Get("published-ns")
+	require.True(t, ok)
+	require.True(t, publishedProc.Running)
+	publishedProc.Stop()
 }
 
 func TestStartExistingWorkers_UserAPIKeyReturnsLookupErrors(t *testing.T) {

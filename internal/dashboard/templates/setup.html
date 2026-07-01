@@ -1,0 +1,322 @@
+{{define "main" -}}
+<main class="page setup-page">
+  <div class="page-head">
+    <span class="eyebrow">First run</span>
+    <h1>Set up Credimi Runner</h1>
+    <p>This wizard writes <span class="tag mono">{{.Runner.Path}}</span>, generates <span class="tag mono">docker-compose.yaml</span>, and starts the selected services from this binary.</p>
+  </div>
+
+  {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some fields need attention. Jump to the highlighted section and fix the marked inputs.</div></div>{{end}}
+  {{if .SetupError}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>{{.SetupError}}</div></div>{{end}}
+
+  <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" data-setup-form data-config-form data-busy-message="Writing runner config and starting services. Keep this page open.">
+    <nav class="wizard-steps" aria-label="Setup steps">
+      {{range $i, $s := .SetupSteps}}
+      <button type="button" class="wizard-step {{if eq $i 0}}on{{end}}" data-step-target="{{$s.ID}}">
+        <span class="n">{{add1 $i}}</span>
+        <span><b>{{$s.Title}}</b><small>{{$s.Summary}}</small></span>
+      </button>
+      {{end}}
+    </nav>
+
+    {{range $i, $s := .SetupSteps}}
+    <section class="card wizard-panel" data-step="{{$s.ID}}" {{if ne $i 0}}hidden{{end}}>
+      <header class="card-h">
+        {{icon "check"}}
+        <div><h3>{{$s.Title}}</h3><div class="sub">{{$s.Summary}}</div></div>
+        <div class="right"><span class="tag">Step {{add1 $i}} / {{len $.SetupSteps}}</span></div>
+      </header>
+      <div class="card-b">
+        {{if eq $s.ID "identity"}}
+          <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" data-org-value>
+          <input type="hidden" name="CREDIMI_RUNNER_ID" value="{{$.Runner.Get "CREDIMI_RUNNER_ID"}}" data-runner-id-value>
+          <input type="hidden" name="CREDIMI_RUNNER_NAME_CONFLICT_ACTION" value="update" data-runner-conflict-action>
+          <div class="wizard-fields">
+            <div class="field" style="grid-column:1/-1">
+              <label><span class="lbtx">Authentication mode</span></label>
+              <div class="seg" data-auth-seg data-user="CREDIMI_USER_API_KEY" data-admin="CREDIMI_INTERNAL_ADMIN_KEY">
+                <button type="button" class="{{if ne $.Runner.AuthMode "admin"}}on{{end}}" data-val="user">User API key</button>
+                <button type="button" class="{{if eq $.Runner.AuthMode "admin"}}on{{end}}" data-val="admin">Internal admin key</button>
+              </div>
+            </div>
+            <div class="field" style="grid-column:1/-1">
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Credimi platform defaults</summary>
+                {{template "field" $.Field "CREDIMI_URL"}}
+              </details>
+            </div>
+            <div class="field" data-auth-field="user" {{if eq $.Runner.AuthMode "admin"}}hidden{{end}}>
+              <label><span class="lbtx">User API key</span><span class="req">*</span><span class="envkey">CREDIMI_USER_API_KEY</span></label>
+              <div class="inp-wrap">
+                <input class="inp mono" type="password" name="CREDIMI_USER_API_KEY" value="{{$.Runner.Get "CREDIMI_USER_API_KEY"}}" data-secret="CREDIMI_USER_API_KEY" placeholder="credimi_..." autocomplete="new-password" spellcheck="false">
+                <div class="acts">
+                  <span data-api-key-status style="display:none;width:26px;height:26px;display:none;align-items:center;justify-content:center;font-size:13px"></span>
+                  <button type="button" class="minibtn" data-reveal-secret="CREDIMI_USER_API_KEY" title="Reveal">{{icon "eye"}}</button>
+                </div>
+              </div>
+              <p class="hint" style="margin-top:8px;display:flex;align-items:center;gap:8px">Get your user API key at <button type="button" class="minibtn" data-api-keys-link>credimi.io/my/profile/api-keys</button></p>
+              <p class="hint" data-api-key-error style="color:var(--down);display:none"></p>
+            </div>
+            <div class="field" data-auth-field="admin" {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}>
+              <label><span class="lbtx">Internal admin key</span><span class="req">*</span><span class="envkey">CREDIMI_INTERNAL_ADMIN_KEY</span></label>
+              <div class="inp-wrap">
+                <input class="inp mono" type="password" name="CREDIMI_INTERNAL_ADMIN_KEY" value="{{$.Runner.Get "CREDIMI_INTERNAL_ADMIN_KEY"}}" data-secret="CREDIMI_INTERNAL_ADMIN_KEY" placeholder="internal key" autocomplete="new-password" spellcheck="false">
+                <div class="acts"><button type="button" class="minibtn" data-reveal-secret="CREDIMI_INTERNAL_ADMIN_KEY" title="Reveal">{{icon "eye"}}</button></div>
+              </div>
+            </div>
+            <div data-identity-fields style="grid-column: 1 / -1; display:none">
+              <div class="field" data-admin-org-field {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}>
+                <label><span class="lbtx">Organization</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_ORGANIZATION</span></label>
+                <input class="inp mono" name="CREDIMI_RUNNER_ORGANIZATION_ADMIN" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" placeholder="organization-slug" data-admin-org-input>
+              </div>
+              <div class="field" style="grid-column: 1 / -1">
+                <label><span class="lbtx">Runner name</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_NAME</span></label>
+                <div style="display:flex;align-items:center;gap:0;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden">
+                  <span style="background:var(--bg-muted);padding:0 12px;height:38px;display:flex;align-items:center;font:600 13px var(--font-mono);color:var(--fg);white-space:nowrap;border-right:1px solid var(--border)" data-org-preview>{{or ($.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "org"}}</span>
+                  <span style="padding:0 6px;color:var(--fg-muted);font:600 14px var(--font-mono)">/</span>
+                  <input class="inp mono" name="CREDIMI_RUNNER_NAME" value="{{$.Runner.Get "CREDIMI_RUNNER_NAME"}}" placeholder="runner-name" style="border:none;border-radius:0;flex:1" required>
+                </div>
+                <p class="hint" style="margin-top:6px">Runner ID: <span class="tag mono" data-runner-id-preview>{{or ($.Runner.Get "CREDIMI_RUNNER_ID") "org/runner-name"}}</span><span data-canonified style="display:none"></span></p>
+              </div>
+              <div class="field">
+                <label><span class="lbtx">Runner description</span><span class="envkey">CREDIMI_RUNNER_DESCRIPTION</span></label>
+                <textarea class="ta mono" name="CREDIMI_RUNNER_DESCRIPTION" rows="3" placeholder="Optional note about this runner..." autocomplete="off">{{$.Runner.Get "CREDIMI_RUNNER_DESCRIPTION"}}</textarea>
+                {{if ($.Field "CREDIMI_RUNNER_DESCRIPTION").Hint}}<p class="hint">{{($.Field "CREDIMI_RUNNER_DESCRIPTION").Hint}}</p>{{end}}
+              </div>
+              <div data-publish-control data-initial="{{$.Runner.Get "CREDIMI_RUNNER_PUBLISHED"}}" data-publish-confirmed="0">
+                {{template "field" $.Field "CREDIMI_RUNNER_PUBLISHED"}}
+              </div>
+            </div>
+          </div>
+        {{else if eq $s.ID "network"}}
+          <div class="wizard-fields">
+            <div class="field" style="grid-column:1/-1">
+              <label><span class="lbtx">Service mode</span><span class="envkey">CREDIMI_SERVICE_MODE</span></label>
+              <div class="picks" style="grid-template-columns:repeat(3,1fr)">
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "auto"}}on{{end}}" data-net-pick="auto">
+                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="auto" {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "auto"}}checked{{end}} style="display:none">{{icon "cloud"}}<span><b>Auto</b><span>Quick tunnel</span></span>
+                </label>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "cloudflare-managed"}}on{{end}}" data-net-pick="cloudflare-managed">
+                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="cloudflare-managed" {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "cloudflare-managed"}}checked{{end}} style="display:none">{{icon "shield"}}<span><b>Managed</b><span>Named tunnel</span></span>
+                </label>
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "manual"}}on{{end}}" data-net-pick="manual">
+                  <input type="radio" name="CREDIMI_SERVICE_MODE" value="manual" {{if eq ($.Runner.Get "CREDIMI_SERVICE_MODE") "manual"}}checked{{end}} style="display:none">{{icon "globe"}}<span><b>Manual</b><span>Self-managed</span></span>
+                </label>
+              </div>
+            </div>
+            <div data-net-mode="auto">
+              <div class="callout info" style="grid-column:1/-1">{{icon "info"}}<div><b>Quick tunnel</b> — uses a free Cloudflare temporary tunnel. No setup needed, but the domain changes every few days. Recommended if you're just trying things out.</div></div>
+            </div>
+            <div data-net-mode="cloudflare-managed" style="display:none">
+              <div class="callout info" style="grid-column:1/-1;margin-bottom:16px">{{icon "info"}}<div><b>Named tunnel</b> — uses your own Cloudflare tunnel with a fixed domain. Get your tunnel token from the <a href="https://one.dash.cloudflare.com/" target="_blank" rel="noopener">Cloudflare Zero Trust dashboard</a> under Networks &rarr; Tunnels.</div></div>
+              {{template "field" $.Field "RUNNER_DOMAIN"}}
+              {{template "field" $.Field "CLOUDFLARE_TUNNEL_TOKEN"}}
+            </div>
+            <div data-net-mode="manual" style="display:none">
+              <div class="callout warn" style="grid-column:1/-1;margin-bottom:16px">{{icon "warn"}}<div><b>Self-managed</b> — you handle networking yourself. The runner is exposed directly on the public URL and port you provide. For advanced setups.</div></div>
+              {{template "field" $.Field "RUNNER_PUBLIC_URL"}}
+              {{template "field" $.Field "RUNNER_PUBLIC_PORT"}}
+            </div>
+          </div>
+        {{else if eq $s.ID "device"}}
+          <div class="wizard-fields">
+            <div class="field" style="grid-column:1/-1">
+              <label><span class="lbtx">Runner type</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_TYPE</span></label>
+              <div class="picks" style="grid-template-columns:repeat(4,1fr)">
+                {{range $.TargetProfiles}}
+                <label class="pick {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") .Type}}on{{end}}" data-dev-pick="{{.Type}}">
+                  <input type="radio" name="CREDIMI_RUNNER_TYPE" value="{{.Type}}" {{if eq ($.Runner.Get "CREDIMI_RUNNER_TYPE") .Type}}checked{{end}} style="display:none">
+                  {{if eq .Type "ios_simulator"}}{{icon "apple"}}{{else if eq .Type "redroid"}}{{icon "grid"}}{{else if eq .Type "android_emulator"}}{{icon "server"}}{{else}}{{icon "android"}}{{end}}
+                  <span><b>{{.Title}}</b><span>{{if eq .Type "android_phone"}}USB or Wi-Fi{{else if eq .Type "android_emulator"}}Android AVD{{else if eq .Type "ios_simulator"}}macOS only{{else}}Container-based{{end}}</span></span>
+                </label>
+                {{end}}
+              </div>
+            </div>
+            <div data-dev-type="android_phone" style="grid-column:1/-1">
+              <div class="divline"></div>
+              {{template "field" $.Field "CREDIMI_RUNNER_DEVICE_MODE"}}
+              <div data-dev-mode="wifi" style="grid-column:1/-1">
+                {{template "field" $.Field "CREDIMI_RUNNER_WIFI_IP"}}
+                {{template "field" $.Field "CREDIMI_RUNNER_WIFI_PORT"}}
+              </div>
+              {{template "field" $.Field "CREDIMI_RUNNER_SERIAL"}}
+            </div>
+            <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Runtime image default</summary>
+                {{template "field" $.Field "RUNNER_IMAGE"}}
+              </details>
+            </div>
+            <div data-dev-type="android_emulator" style="grid-column:1/-1">
+              <div class="callout info">{{icon "info"}}<div>Emulator paths and base image settings are filled from installer defaults. Change them later from the full configuration page only if this machine needs custom paths.</div></div>
+              {{template "field" $.EmulatorBaseNameField}}
+              <div class="card" style="margin-top:16px" data-android-emulator-assets-panel>
+                <div class="card-h">{{icon "server"}}<div><h3>Emulator assets</h3><div class="sub">AVD and golden image discovery</div></div></div>
+                <div class="card-b">
+                  <div class="callout info" data-android-emulator-assets-message>{{icon "info"}}<div>Checking emulator assets.</div></div>
+                  <div class="download-progress" data-android-emulator-progress hidden>
+                    <div class="download-progress-bar" data-android-emulator-progress-bar></div>
+                    <span class="download-progress-label mono" data-android-emulator-progress-label>0%</span>
+                  </div>
+                  <div class="field-row" data-android-emulator-avd-controls hidden>
+                    <div class="field" data-android-emulator-avd-field hidden>
+                      <label><span class="lbtx">Existing AVD</span></label>
+                      <select class="sel" data-android-emulator-avd-select></select>
+                    </div>
+                    <div class="field" data-android-emulator-golden-field hidden>
+                      <label><span class="lbtx">Golden image folder</span></label>
+                      <select class="sel" data-android-emulator-golden-select></select>
+                    </div>
+                  </div>
+                  <div class="savebar" style="margin-top:16px" data-android-emulator-actions>
+                    <button type="button" class="btn btn-out btn-sm" data-android-emulator-apply-avd hidden>Use existing AVD</button>
+                    <button type="button" class="btn btn-out btn-sm" data-android-emulator-apply-golden hidden>Use existing golden</button>
+                    <button type="button" class="btn btn-pri btn-sm" data-android-emulator-download>{{icon "check"}} Download Credimi assets</button>
+                  </div>
+                </div>
+              </div>
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Emulator defaults</summary>
+                <div class="field-row">{{template "field" $.Field "GOLDEN_PATH"}}</div>
+                <div class="field-row">{{template "field" $.Field "HOST_AVD_HOME_PATH"}}{{template "field" $.Field "HOST_AVD_GOLDEN_PATH"}}</div>
+              </details>
+            </div>
+            <div data-dev-type="ios_simulator" style="grid-column:1/-1">
+              {{template "field" $.SimulatorBaseNameField}}
+              <p class="hint" style="margin-top:-4px">Simulator name created or booted through xcrun simctl.</p>
+              <div class="card" style="margin-top:16px" data-ios-simulator-panel>
+                <div class="card-h">{{icon "apple"}}<div><h3>Simulator provisioning</h3><div class="sub">Discover or create the named simulator</div></div></div>
+                <div class="card-b">
+                  <div class="callout info" data-ios-simulator-message>{{icon "info"}}<div>Checking simulator status.</div></div>
+                  <div class="field-row" data-ios-simulator-selects hidden>
+                    <div class="field">
+                      <label><span class="lbtx">Device type</span></label>
+                      <select class="sel" data-ios-simulator-device-type></select>
+                    </div>
+                    <div class="field">
+                      <label><span class="lbtx">Runtime</span></label>
+                      <select class="sel" data-ios-simulator-runtime></select>
+                    </div>
+                  </div>
+                  <div class="savebar" style="margin-top:16px" data-ios-simulator-actions>
+                    <button type="button" class="btn btn-pri btn-sm" data-ios-simulator-create hidden>{{icon "plus"}} Create simulator</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div data-dev-type="redroid" style="grid-column:1/-1">
+              <details class="gear-panel">
+                <summary>{{icon "gear"}} Redroid and avdctl defaults</summary>
+                <div class="subhead">Redroid volumes</div>
+                {{template "field" $.Field "REDROID_DATA_DIR"}}
+                {{template "field" $.Field "REDROID_DATA_TAR"}}
+                <div class="divline"></div>
+                <div class="subhead">Remote avdctl (SSH)</div>
+                {{template "field" $.Field "AVDCTL_SSH_TARGET"}}
+                {{template "field" $.Field "AVDCTL_SSH_PASSWORD"}}
+                {{template "field" $.Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}
+                {{template "field" $.Field "AVDCTL_SUDO"}}
+                {{template "field" $.Field "AVDCTL_SUDO_PASSWORD"}}
+              </details>
+            </div>
+          </div>
+        {{else if eq $s.ID "review"}}
+          <div class="grid-2" style="margin-bottom:18px">
+            <div class="callout info">{{icon "info"}}<div><b>Config files</b><br>.env and docker-compose.yaml will be written to <span class="tag mono">{{$.Runner.Path}}</span></div></div>
+            <div class="callout warn">{{icon "warn"}}<div><b>Docker</b><br>If Docker is available, services are started automatically after writing config.</div></div>
+          </div>
+          <div class="grid-2" data-review-section>
+            <div class="card">
+              <div class="card-h">{{icon "key"}}<h3>Identity</h3></div>
+              <div class="card-b">
+                <dl class="kv">
+                  <dt>Organization</dt><dd data-review="CREDIMI_RUNNER_ORGANIZATION">—</dd>
+                  <dt>Runner name</dt><dd data-review="CREDIMI_RUNNER_NAME">—</dd>
+                  <dt>Runner ID</dt><dd class="mono" data-review="CREDIMI_RUNNER_ID">—</dd>
+                  <dt>Description</dt><dd data-review="CREDIMI_RUNNER_DESCRIPTION">—</dd>
+                  <dt>Published</dt><dd data-review="CREDIMI_RUNNER_PUBLISHED">—</dd>
+                </dl>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-h">{{icon "network"}}<h3>Networking</h3></div>
+              <div class="card-b">
+                <dl class="kv">
+                  <dt>Service mode</dt><dd data-review="CREDIMI_SERVICE_MODE">—</dd>
+                  <dt data-review-net="manual">Public URL</dt><dd data-review="RUNNER_PUBLIC_URL" data-review-net="manual">—</dd>
+                  <dt data-review-net="manual">Public port</dt><dd data-review="RUNNER_PUBLIC_PORT" data-review-net="manual">—</dd>
+                  <dt data-review-net="cloudflare-managed">Domain</dt><dd data-review="RUNNER_DOMAIN" data-review-net="cloudflare-managed">—</dd>
+                  <dt data-review-net="cloudflare-managed">Tunnel token</dt><dd data-review="CLOUDFLARE_TUNNEL_TOKEN" data-review-net="cloudflare-managed" data-review-secret>—</dd>
+                </dl>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-h">{{icon "phone"}}<h3>Device</h3></div>
+              <div class="card-b">
+                <dl class="kv">
+                  <dt>Type</dt><dd data-review="CREDIMI_RUNNER_TYPE">—</dd>
+                  <dt>Connection</dt><dd data-review="CREDIMI_RUNNER_DEVICE_MODE">—</dd>
+                  <dt data-review-dev="android_phone">Serial</dt><dd class="mono" data-review="CREDIMI_RUNNER_SERIAL" data-review-dev="android_phone">—</dd>
+                  <dt data-review-dev="android_emulator redroid">Wi-Fi IP</dt><dd class="mono" data-review="CREDIMI_RUNNER_WIFI_IP" data-review-dev="android_emulator redroid">—</dd>
+                  <dt data-review-not="ios_simulator">Image</dt><dd class="mono" data-review="RUNNER_IMAGE" data-review-not="ios_simulator" style="font-size:11px">—</dd>
+                </dl>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-h">{{icon "activity"}}<h3>Telemetry</h3></div>
+              <div class="card-b">
+                <dl class="kv">
+                  <dt>OTEL</dt><dd data-review="OTEL_ENABLED">—</dd>
+                  <dt>Endpoint</dt><dd class="mono" data-review="OTEL_EXPORTER_OTLP_ENDPOINT">—</dd>
+                  <dt>Service name</dt><dd class="mono" data-review="OTEL_SERVICE_NAME">—</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        {{else if eq $s.ID "advanced"}}
+          <div class="wizard-fields">
+            {{template "field" $.Field "OTEL_ENABLED"}}
+            <details class="gear-panel" style="grid-column:1/-1">
+              <summary>{{icon "gear"}} Telemetry defaults</summary>
+              <div class="field-row">{{template "field" $.Field "OTEL_EXPORTER_OTLP_ENDPOINT"}}{{template "field" $.Field "OTEL_SERVICE_NAME"}}</div>
+            </details>
+          </div>
+        {{else}}
+          <div class="wizard-fields">
+            {{range $s.Fields}}{{template "field" $.Field .}}{{end}}
+          </div>
+        {{end}}
+      </div>
+    </section>
+    {{end}}
+
+    <div class="savebar">
+      <button type="button" class="btn btn-out" data-step-prev>Back</button>
+      <div class="sp"></div>
+      <button type="button" class="btn btn-sec" data-step-next>Next</button>
+      <button type="submit" class="btn btn-pri" data-step-submit style="display:none">{{icon "check"}} Write config &amp; start</button>
+    </div>
+  </form>
+  <div id="runner-conflict-modal" class="modal-bk" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="runner-conflict-title">
+      <div class="modal-h">
+        {{icon "warn"}}
+        <div>
+          <h3 id="runner-conflict-title">Runner already exists</h3>
+          <p data-runner-conflict-modal-summary>Choose whether this setup should update the existing runner or create a new one.</p>
+        </div>
+        <button type="button" class="iconbtn x" data-runner-conflict-cancel title="Close">{{icon "x"}}</button>
+      </div>
+      <div class="modal-b">
+        <div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div data-runner-conflict-modal-existing>Existing runner: <span class="tag mono">org/runner</span></div></div>
+        <div class="callout info">{{icon "info"}}<div data-runner-conflict-modal-preview>New available runner ID: <span class="tag mono">org/runner-2</span></div></div>
+      </div>
+      <div class="modal-f">
+        <button type="button" class="btn btn-out btn-sm" data-runner-conflict-cancel>Cancel</button>
+        <button type="button" class="btn btn-out btn-sm" data-runner-conflict-decision="update">Update existing runner</button>
+        <button type="button" class="btn btn-pri btn-sm" data-runner-conflict-decision="create">{{icon "plus"}} Create new runner</button>
+      </div>
+    </div>
+  </div>
+</main>
+{{- end}}

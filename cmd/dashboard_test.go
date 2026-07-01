@@ -1,0 +1,529 @@
+package cmd
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/dashboard"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/spf13/cobra"
+)
+
+type dashboardFakeManager struct {
+	startCalls  int
+	downCalls   int
+	logs        []dashboardruntime.LogLine
+	status      dashboardruntime.RuntimeStatus
+	startErr    error
+	logDeadline time.Time
+}
+
+func (f *dashboardFakeManager) Start(context.Context) error {
+	f.startCalls++
+	return f.startErr
+}
+func (f *dashboardFakeManager) Stop(context.Context) error        { return nil }
+func (f *dashboardFakeManager) Restart(context.Context) error     { return nil }
+func (f *dashboardFakeManager) Down(context.Context) error        { f.downCalls++; return nil }
+func (f *dashboardFakeManager) UpdateImage(context.Context) error { return nil }
+func (f *dashboardFakeManager) Configure(dashboardruntime.Values) {}
+func (f *dashboardFakeManager) SetPublicURL(publicURL string) {
+	f.status.PublicURL = publicURL
+}
+func (f *dashboardFakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
+	return f.status
+}
+func (f *dashboardFakeManager) Logs(ctx context.Context, _ int) ([]dashboardruntime.LogLine, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		f.logDeadline = deadline
+	}
+	return f.logs, nil
+}
+
+func TestDashboardConfigPathHonorsOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", dir)
+	if got := dashboard.ConfigDir(); got != dir {
+		t.Fatalf("ConfigDir = %q", got)
+	}
+}
+
+func TestDashboardLoadStoreMissingConfig(t *testing.T) {
+	store, err := dashboardruntime.LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Exists() {
+		t.Fatal("store should report missing config")
+	}
+}
+
+func TestDashboardHandlerStartsWithoutRunnerIDOnFirstRun(t *testing.T) {
+	handler, cancel, err := dashboard.NewHandler(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d", rec.Code)
+	}
+	if body := rec.Body.String(); body == "" || !strings.Contains(body, "Set up Credimi Runner") {
+		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
+func TestDashboardConfigDirEnvPath(t *testing.T) {
+	dir := t.TempDir()
+	if got := dashboardEnvPath(dir); got != filepath.Join(dir, ".env") {
+		t.Fatalf("dashboardEnvPath = %q", got)
+	}
+	if configFileExists(dir) {
+		t.Fatal("configFileExists should be false before file creation")
+	}
+}
+
+func TestDashboardConfiguredStoreExists(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.Exists() {
+		t.Fatal("expected existing store")
+	}
+}
+
+func TestRootCommandDefaultsToDashboard(t *testing.T) {
+	if rootCmd.RunE == nil {
+		t.Fatal("root command should run the dashboard by default")
+	}
+	for _, name := range []string{"client", "dashboard"} {
+		if cmd, _, err := rootCmd.Find([]string{name}); err == nil && cmd != rootCmd {
+			t.Fatalf("%s command should not be registered", name)
+		}
+	}
+	if cmd, _, err := rootCmd.Find([]string{"serve"}); err != nil || cmd == rootCmd || cmd.Name() != "serve" {
+		t.Fatalf("serve command should remain registered, cmd=%v err=%v", cmd, err)
+	} else if !cmd.Hidden {
+		t.Fatal("serve command should be hidden from CLI help")
+	}
+}
+
+func TestExecuteHelp(t *testing.T) {
+	origArgs := os.Args
+	origOut := rootCmd.OutOrStdout()
+	origErr := rootCmd.ErrOrStderr()
+	var output bytes.Buffer
+	t.Cleanup(func() {
+		os.Args = origArgs
+		rootCmd.SetOut(origOut)
+		rootCmd.SetErr(origErr)
+	})
+
+	os.Args = []string{"credimi-runner", "--help"}
+	rootCmd.SetOut(&output)
+	rootCmd.SetErr(&output)
+
+	Execute()
+	if !strings.Contains(output.String(), "Credimi mobile runner") {
+		t.Fatalf("help output = %q", output.String())
+	}
+}
+
+func TestRunDashboardReturnsStoreLoadError(t *testing.T) {
+	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
+	oldConfigDir, oldOpen := dashboardConfigDir, dashboardOpen
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+		dashboardOpen = oldOpen
+	})
+
+	configFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(configFile, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dashboardConfigDir = configFile
+	dashboardOpen = false
+
+	err := runDashboard(&cobra.Command{}, nil)
+	if err == nil {
+		t.Fatal("expected LoadStore error")
+	}
+}
+
+func TestRunDashboardRejectsRemoteBindWithoutToken(t *testing.T) {
+	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
+	oldConfigDir, oldOpen := dashboardConfigDir, dashboardOpen
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+		dashboardOpen = oldOpen
+	})
+
+	dashboardConfigDir = t.TempDir()
+	dashboardOpen = false
+	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("DASHBOARD_HOST=0.0.0.0\nDASHBOARD_TOKEN=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDashboard(&cobra.Command{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "DASHBOARD_TOKEN is required") {
+		t.Fatalf("runDashboard error = %v", err)
+	}
+}
+
+func TestRunDashboardReturnsListenError(t *testing.T) {
+	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
+	oldConfigDir, oldOpen, oldPort := dashboardConfigDir, dashboardOpen, dashboardPort
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+		dashboardOpen = oldOpen
+		dashboardPort = oldPort
+	})
+
+	dashboardConfigDir = t.TempDir()
+	dashboardOpen = false
+	dashboardPort = -1
+	cmd := &cobra.Command{}
+	cmd.Flags().Int("port", 8051, "")
+	if err := cmd.Flags().Set("port", "-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runDashboard(cmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid port") {
+		t.Fatalf("runDashboard listen error = %v", err)
+	}
+}
+
+func TestResolveDashboardListenAddressUsesConfigValues(t *testing.T) {
+	cmd := &cobra.Command{Use: "dashboard"}
+	cmd.Flags().String("host", dashboardruntime.DefaultDashboardHost, "")
+	cmd.Flags().Int("port", 8051, "")
+
+	host, port := resolveDashboardListenAddress(cmd, dashboardruntime.Values{
+		"DASHBOARD_HOST": "0.0.0.0",
+		"DASHBOARD_PORT": "9001",
+	})
+	if host != "0.0.0.0" || port != 9001 {
+		t.Fatalf("resolveDashboardListenAddress = %s:%d", host, port)
+	}
+}
+
+func TestResolveDashboardListenAddressPrefersFlags(t *testing.T) {
+	oldHost, oldPort := dashboardHost, dashboardPort
+	t.Cleanup(func() {
+		dashboardHost = oldHost
+		dashboardPort = oldPort
+	})
+	dashboardHost = "127.0.0.2"
+	dashboardPort = 9010
+
+	cmd := &cobra.Command{Use: "dashboard"}
+	cmd.Flags().String("host", dashboardruntime.DefaultDashboardHost, "")
+	cmd.Flags().Int("port", 8051, "")
+	if err := cmd.Flags().Set("host", dashboardHost); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("port", "9010"); err != nil {
+		t.Fatal(err)
+	}
+
+	host, port := resolveDashboardListenAddress(cmd, dashboardruntime.Values{
+		"DASHBOARD_HOST": "0.0.0.0",
+		"DASHBOARD_PORT": "9001",
+	})
+	if host != dashboardHost || port != dashboardPort {
+		t.Fatalf("resolveDashboardListenAddress flags = %s:%d", host, port)
+	}
+}
+
+func TestDashboardBrowserHelpers(t *testing.T) {
+	if got := dashboardBrowserURL("0.0.0.0", 8051); got != "http://127.0.0.1:8051" {
+		t.Fatalf("dashboardBrowserURL(0.0.0.0) = %q", got)
+	}
+	if got := dashboardBrowserURL("localhost", 8051); got != "http://localhost:8051" {
+		t.Fatalf("dashboardBrowserURL(localhost) = %q", got)
+	}
+	if err := openDashboardBrowser(""); err == nil {
+		t.Fatal("expected empty dashboard URL to fail")
+	}
+}
+
+func TestValidateDashboardSecurity(t *testing.T) {
+	if err := validateDashboardSecurity("127.0.0.1", dashboardruntime.Values{}); err != nil {
+		t.Fatalf("localhost should be allowed: %v", err)
+	}
+	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{}); err == nil {
+		t.Fatal("remote bind without token should fail")
+	}
+	if err := validateDashboardSecurity("0.0.0.0", dashboardruntime.Values{"DASHBOARD_TOKEN": "secret"}); err != nil {
+		t.Fatalf("remote bind with token should pass: %v", err)
+	}
+}
+
+func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) {
+	var registered bool
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			registered = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+
+	manager := &dashboardFakeManager{
+		logs: []dashboardruntime.LogLine{{Message: "tunnel ready https://runner.example.trycloudflare.com"}},
+	}
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_SERVICE_MODE":   "auto",
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_NAME":    "runner",
+		"CREDIMI_URL":            api.URL,
+		"CREDIMI_USER_API_KEY":   "secret",
+		"RUNNER_HOST":            "127.0.0.1",
+		"RUNNER_PORT":            "1",
+	}
+	if err := startDashboardRuntime(context.Background(), manager, values); err != nil {
+		t.Fatalf("startDashboardRuntime = %v", err)
+	}
+	if manager.startCalls != 1 {
+		t.Fatalf("startCalls = %d", manager.startCalls)
+	}
+	if !registered {
+		t.Fatal("startDashboardRuntime should register container runners without waiting for localhost readiness")
+	}
+}
+
+func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
+	oldTimeout := dashboardRegistrationTimeout
+	dashboardRegistrationTimeout = 30 * time.Second
+	t.Cleanup(func() {
+		dashboardRegistrationTimeout = oldTimeout
+	})
+
+	var registeredBody string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			body, _ := io.ReadAll(r.Body)
+			registeredBody = string(body)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+
+	manager := &dashboardFakeManager{
+		logs: []dashboardruntime.LogLine{{Message: "tunnel ready https://fresh-runner.trycloudflare.com"}},
+	}
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND":      "host",
+		"CREDIMI_RUNNER_TYPE":         "ios_simulator",
+		"CREDIMI_SERVICE_MODE":        "auto",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_URL":                 api.URL,
+		"CREDIMI_USER_API_KEY":        "secret",
+		"RUNNER_HOST":                 "127.0.0.1",
+		"RUNNER_PORT":                 "1",
+	}
+	if err := startDashboardRuntime(context.Background(), manager, values); err != nil {
+		t.Fatalf("startDashboardRuntime = %v", err)
+	}
+	if !strings.Contains(registeredBody, "https://fresh-runner.trycloudflare.com") {
+		t.Fatalf("registration body did not include fresh tunnel URL: %s", registeredBody)
+	}
+	if manager.logDeadline.IsZero() || time.Until(manager.logDeadline) < 20*time.Second {
+		t.Fatalf("registration log scan deadline = %v, want startup window near %s", manager.logDeadline, dashboardRegistrationTimeout)
+	}
+}
+
+func TestResolveDashboardRegistrationEndpointPrefersRuntimePublicURL(t *testing.T) {
+	manager := &dashboardFakeManager{
+		status: dashboardruntime.RuntimeStatus{PublicURL: "https://cached.trycloudflare.com"},
+		logs:   []dashboardruntime.LogLine{{Message: "tunnel ready https://stale.trycloudflare.com"}},
+	}
+	publicURL, publicPort, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "auto",
+	})
+	if err != nil {
+		t.Fatalf("resolveDashboardRegistrationEndpoint = %v", err)
+	}
+	if publicURL != "https://cached.trycloudflare.com" || publicPort != "" {
+		t.Fatalf("endpoint = %q:%q", publicURL, publicPort)
+	}
+}
+
+func TestStartDashboardRuntimeBranches(t *testing.T) {
+	manager := &dashboardFakeManager{startErr: errors.New("boom")}
+	if err := startDashboardRuntime(context.Background(), manager, dashboardruntime.Values{}); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("startDashboardRuntime start error = %v", err)
+	}
+
+	manager = &dashboardFakeManager{}
+	if err := startDashboardRuntime(context.Background(), manager, dashboardruntime.Values{}); err != nil {
+		t.Fatalf("startDashboardRuntime without runner id = %v", err)
+	}
+	if manager.startCalls != 1 {
+		t.Fatalf("startCalls = %d", manager.startCalls)
+	}
+}
+
+func TestShutdownDashboardRuntimeRunsDownWhenConfigured(t *testing.T) {
+	manager := &dashboardFakeManager{}
+	if err := shutdownDashboardRuntime(context.Background(), manager, true); err != nil {
+		t.Fatalf("shutdownDashboardRuntime = %v", err)
+	}
+	if manager.downCalls != 1 {
+		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
+	}
+}
+
+func TestShutdownDashboardRuntimeRunsDownWhenComposeRunning(t *testing.T) {
+	manager := &dashboardFakeManager{status: dashboardruntime.RuntimeStatus{ComposeRunning: true}}
+	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
+		t.Fatalf("shutdownDashboardRuntime = %v", err)
+	}
+	if manager.downCalls != 1 {
+		t.Fatalf("downCalls = %d, want 1", manager.downCalls)
+	}
+}
+
+func TestShutdownDashboardRuntimeSkipsUnconfiguredStoppedRuntime(t *testing.T) {
+	manager := &dashboardFakeManager{}
+	if err := shutdownDashboardRuntime(context.Background(), manager, false); err != nil {
+		t.Fatalf("shutdownDashboardRuntime = %v", err)
+	}
+	if manager.downCalls != 0 {
+		t.Fatalf("downCalls = %d, want 0", manager.downCalls)
+	}
+}
+
+func TestDashboardRuntimeHelpers(t *testing.T) {
+	manager := &dashboardFakeManager{logs: []dashboardruntime.LogLine{
+		{Message: "line-1"},
+		{Message: "line-2"},
+	}, status: dashboardruntime.RuntimeStatus{LastError: "boom"}}
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
+	values := dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}
+	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "last runtime error: boom") || !strings.Contains(got, "recent runtime logs") {
+		t.Fatalf("runtimeStartupDiagnostics = %q", got)
+	}
+	values = dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual"}
+	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "diagnostics:") {
+		t.Fatalf("host runtimeStartupDiagnostics = %q", got)
+	}
+	if err := waitForDashboardRunnerReady(context.Background(), dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}); err != nil {
+		t.Fatalf("waitForDashboardRunnerReady should skip when readiness not required: %v", err)
+	}
+}
+
+func TestWaitForDashboardRunnerReady(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	addr := listener.Addr().String()
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
+		"RUNNER_HOST":            host,
+		"RUNNER_PORT":            port,
+	}
+	if err := waitForDashboardRunnerReady(context.Background(), values); err != nil {
+		t.Fatalf("waitForDashboardRunnerReady = %v", err)
+	}
+	<-done
+}
+
+func TestResolveDashboardRegistrationEndpointBranches(t *testing.T) {
+	manager := &dashboardFakeManager{logs: []dashboardruntime.LogLine{{Message: "https://runner.example.trycloudflare.com"}}}
+	if url, port, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "manual",
+		"RUNNER_PUBLIC_URL":    "https://manual.example",
+		"RUNNER_PUBLIC_PORT":   "443",
+	}); err != nil || url != "https://manual.example" || port != "443" {
+		t.Fatalf("manual endpoint = %q %q %v", url, port, err)
+	}
+	if url, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "cloudflare-managed",
+		"RUNNER_DOMAIN":        "runner.example",
+	}); err != nil || url != "https://runner.example" {
+		t.Fatalf("managed endpoint = %q %v", url, err)
+	}
+	if url, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "auto",
+	}); err != nil || url != "https://runner.example.trycloudflare.com" {
+		t.Fatalf("auto endpoint = %q %v", url, err)
+	}
+}
+
+func TestRegisterDashboardRunnerRequiresAPIKey(t *testing.T) {
+	err := registerDashboardRunner(context.Background(), &dashboardFakeManager{}, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "manual",
+		"RUNNER_PUBLIC_URL":    "https://manual.example",
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing Credimi API key") {
+		t.Fatalf("registerDashboardRunner error = %v", err)
+	}
+}
+
+func TestResolveDashboardRegistrationEndpointErrors(t *testing.T) {
+	manager := &dashboardFakeManager{}
+	if _, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "manual",
+	}); err == nil {
+		t.Fatal("expected manual mode without public URL to fail")
+	}
+	if _, _, err := resolveDashboardRegistrationEndpoint(context.Background(), manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "cloudflare-managed",
+	}); err == nil {
+		t.Fatal("expected managed mode without domain to fail")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := resolveDashboardRegistrationEndpoint(ctx, manager, dashboardruntime.Values{
+		"CREDIMI_SERVICE_MODE": "auto",
+	}); err == nil {
+		t.Fatal("expected auto mode without tunnel URL to fail")
+	}
+}

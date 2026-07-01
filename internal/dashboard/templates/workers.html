@@ -1,0 +1,20 @@
+{{define "main" -}}
+<main class="page">
+  <div class="page-head">
+    <span class="eyebrow">Credimi workers</span>
+    <h1>Workers</h1>
+    <p>Temporal workers poll task queues on <b style="color:var(--fg)">{{.Runner.Get "TEMPORAL_ADDRESS"}}</b> and execute mobile-runner workflows for this runner.</p>
+  </div>
+
+  <div class="grid-3" style="margin-bottom:16px">
+    <div class="stat"><div class="k">{{icon "workers"}} Polling</div><div class="v">{{.WorkersOnline}}<small>/ {{.WorkersTotal}}</small></div><div class="meta">across environments</div></div>
+    <div class="stat"><div class="k">{{icon "shield"}} Auth scope</div><div class="v" style="font-size:18px">{{title .Runner.AuthMode}}</div><div class="meta">{{if eq .Runner.AuthMode "admin"}}internal admin key{{else}}user API key{{end}}</div></div>
+    <div class="stat"><div class="k">{{icon "activity"}} Temporal</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "TEMPORAL_ADDRESS"}}</div><div class="meta">workflow backend</div></div>
+  </div>
+
+  <section class="card">
+    <header class="card-h">{{icon "workers"}}<div><h3>Running workers</h3><div class="sub">reported by the runner process</div></div></header>
+    <div class="card-b flush"><div class="list" id="worker-list" hx-ext="sse" sse-connect="/events/workers" sse-swap="rows">{{template "worker_rows" .Workers}}</div></div>
+  </section>
+</main>
+{{- end}}

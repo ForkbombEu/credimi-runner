@@ -1,0 +1,118 @@
+{{define "pill" -}}
+<span class="hd" style="background:{{if .OK}}var(--ok){{else}}var(--warn){{end}}"></span> {{.Label}}
+{{- end}}
+
+{{- /* ── Field renderer: text / select / secret / bool ── */ -}}
+{{define "field" -}}
+{{- if eq (printf "%s" .Type) "bool" -}}
+<div class="tog-row">
+  <div class="tx"><b>{{.Label}}</b>{{if .Hint}}<span>{{.Hint}}</span>{{end}}</div>
+  <button type="button" class="tog {{if .Checked}}on{{end}}" role="switch" aria-checked="{{.Checked}}" data-toggle="{{.Key}}"></button>
+  <input type="hidden" name="{{.Key}}" value="false">
+  <input type="checkbox" name="{{.Key}}" hidden {{if .Checked}}checked{{end}}>
+</div>
+{{- else -}}
+<div class="field">
+  <label><span class="lbtx">{{.Label}}</span>{{if .Required}}<span class="req">*</span>{{end}}<span class="envkey">{{.Key}}</span></label>
+  {{- if eq (printf "%s" .Type) "select" }}
+  <select class="sel" name="{{.Key}}">
+    {{range .Options}}<option value="{{.}}" {{if $.Selected .}}selected{{end}}>{{.}}</option>{{end}}
+  </select>
+  {{- else if .Secret }}
+  <div class="inp-wrap">
+    <input class="inp mono" type="password" name="{{.Key}}" value="{{.Value}}" data-secret="{{.Key}}" autocomplete="new-password" spellcheck="false">
+    <div class="acts">
+      <button type="button" class="minibtn" data-reveal-secret="{{.Key}}" title="Reveal">{{icon "eye"}}</button>
+      <button type="button" class="minibtn" data-copy="{{.Key}}" title="Copy">{{icon "copy"}}</button>
+    </div>
+  </div>
+  {{- else }}
+  <input class="inp mono" name="{{.Key}}" value="{{.Value}}" autocomplete="off" spellcheck="false">
+  {{- end }}
+  {{if .Err}}<p class="hint" style="color:var(--down)">{{.Err}}</p>{{else if .Hint}}<p class="hint">{{.Hint}}</p>{{end}}
+</div>
+{{- end -}}
+{{- end}}
+
+{{- /* ── Live device rows (SSE: /events/devices) ── */ -}}
+{{define "device_rows" -}}
+{{- if not . -}}
+<div style="padding:40px;text-align:center" class="muted">No devices attached. Use the runner target connection actions to attach one.</div>
+{{- end -}}
+{{range .}}
+<div class="row" id="dev-{{.Serial}}">
+  <span class="ic {{if eq (printf "%s" .Status) "offline"}}downbg{{else if eq (printf "%s" .Status) "degraded"}}warnbg{{end}}">{{deviceIcon .Type}}</span>
+  <div class="nm">
+    <div class="t">{{.Name}}
+      <span class="tag kind">{{deviceKind .Type}}</span>
+      <span class="tag">{{modeLabel .Mode}}</span>
+    </div>
+    <div class="s">{{.Serial}} · {{.OS}}</div>
+  </div>
+  <div class="rt">
+    {{if and (ne (printf "%s" .Status) "offline") (eq .Type "android_phone") (eq .Mode "wifi")}}<div class="metric"><div class="mv">{{.Battery}}%</div><div class="mk">battery</div></div>{{end}}
+    {{if ne (printf "%s" .Status) "offline"}}<div class="metric"><div class="mv">{{.CPU}}%</div><div class="mk">cpu</div></div>{{end}}
+    <span class="{{chipClass .Status}} pulse"><span class="d"></span>{{statusLabel .Status}}</span>
+    {{if eq (printf "%s" .Status) "offline"}}
+    <button class="btn btn-out btn-sm" hx-post="/devices/{{.Serial}}/reconnect" hx-target="#device-list" hx-swap="innerHTML">{{icon "refresh"}} Reconnect</button>
+    {{else}}
+    <button class="iconbtn" title="Disconnect" hx-post="/devices/{{.Serial}}/disconnect" hx-target="#device-list" hx-swap="innerHTML">{{icon "trash"}}</button>
+    {{end}}
+  </div>
+</div>
+{{end}}
+{{- end}}
+
+{{define "runtime_status" -}}
+<div class="grid-2">
+  <div class="stat">
+    <div class="k">{{icon "activity"}} Runtime</div>
+    <div class="v">{{.RuntimeHeadline}}</div>
+    <div class="meta">{{if .StartupMessage}}{{.StartupMessage}}{{else if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
+  </div>
+  <div class="stat">
+    <div class="k">{{icon "server"}} Runner API</div>
+    <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.RunnerAPIURL}}</div>
+    <div class="meta">{{if .RuntimeStatus.RunnerRunning}}process running{{else}}process stopped{{end}}</div>
+  </div>
+  <div class="stat">
+    <div class="k">{{icon "cloud"}} Public URL <button type="button" class="minibtn" data-copy-value="{{.PublicURL}}" title="Copy public URL">{{icon "copy"}} Copy</button></div>
+    <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.PublicURL}}</div>
+    <div class="meta">{{.Runner.Get "CREDIMI_SERVICE_MODE"}} exposure</div>
+  </div>
+  <div class="stat">
+    <div class="k">{{icon "phone"}} Target</div>
+    <div class="v">{{.ConfiguredTargetTitle}}</div>
+    <div class="meta">{{.ConfiguredTargetDetail}}</div>
+  </div>
+</div>
+{{- end}}
+
+{{- /* ── Live worker rows (SSE: /events/workers) — flat list for the Overview snapshot ── */ -}}
+{{define "worker_rows" -}}
+{{range .}}
+<div class="row" style="grid-template-columns:1fr auto" id="wrk-{{.ID}}">
+  <div class="nm">
+    <div class="t">{{.Queue}} <span class="tag {{if eq .Scope "admin"}}{{else}}kind{{end}}">{{.Env}}</span></div>
+    <div class="s">{{.Scope}} scope · {{.Host}}</div>
+  </div>
+  <div class="rt">
+    <span class="{{chipClass .Status}} pulse"><span class="d"></span>{{statusLabel .Status}}</span>
+  </div>
+</div>
+{{else}}
+<div style="padding:24px;text-align:center" class="muted">No running workers reported by the runner process.</div>
+{{end}}
+{{- end}}
+
+{{- /* ── Service health row (Overview) ── */ -}}
+{{define "service_row" -}}
+<div class="tog-row" style="padding:12px 0;border-bottom:none">
+  <span class="ic" style="width:36px;height:36px;border-radius:8px;background:var(--brand-secondary);color:var(--brand-primary);display:grid;place-items:center;flex:none">{{serviceIcon .ID}}</span>
+  <div class="tx"><b style="display:flex;align-items:center;gap:8px">{{.Name}} {{if .Image}}<span class="tag mono" style="font-size:10px">{{.Image}}</span>{{end}}</b><span>{{.Role}}</span></div>
+  <div style="text-align:right;display:flex;flex-direction:column;gap:6px;align-items:flex-end">
+    <span class="{{chipClass .Status}} pulse"><span class="d"></span>{{statusLabel .Status}}</span>
+    {{if .Reason}}<span class="muted" style="font:500 11px var(--font-mono)">{{.Reason}}</span>{{else if .Uptime}}<span class="muted" style="font:500 11px var(--font-mono)">{{.Uptime}}</span>{{end}}
+  </div>
+</div>
+{{- end}}

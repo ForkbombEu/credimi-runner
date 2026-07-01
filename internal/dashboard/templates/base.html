@@ -1,0 +1,83 @@
+{{define "base.html" -}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Credimi Runner — {{.Title}}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/credimi_logo_mark.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+</head>
+<body hx-boost="true">
+  <div class="app {{if .IsSetup}}setup-shell{{end}}">
+    {{if not .IsSetup}}
+    <aside class="sb">
+      <div class="sb-brand"><img src="/static/credimi_logo.svg" alt="Credimi"><span class="tag">Runner</span></div>
+      <button class="sb-env" type="button">
+        <span class="dot" style="background:{{if eq .Runner.AuthMode "admin"}}var(--warn){{else}}var(--ok){{end}}"></span>
+        <span class="meta"><b>{{or (.Runner.Get "CREDIMI_RUNNER_NAME") "runner"}}</b><span>{{or (.Runner.Get "CREDIMI_RUNNER_ID") "unconfigured"}}</span></span>
+        <span class="chev">{{icon "chev"}}</span>
+      </button>
+      <nav class="sb-nav">
+        <div class="sb-sec">Monitor</div>
+        <a class="nav-item {{.NavOn "overview"}}" href="/" hx-get="/" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "grid"}}Overview</a>
+        <a class="nav-item {{.NavOn "devices"}}" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "phone"}}Devices<span class="count">{{.DevicesOnline}}/{{.DevicesTotal}}</span></a>
+        <a class="nav-item {{.NavOn "workers"}}" href="/workers" hx-get="/workers" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "workers"}}Workers<span class="count">{{.WorkersOnline}}/{{.WorkersTotal}}</span></a>
+        <div class="sb-sec">Configure</div>
+        <a class="nav-item {{.NavOn "network"}}" href="/network" hx-get="/network" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "network"}}Network</a>
+        <a class="nav-item {{.NavOn "config"}}" href="/config" hx-get="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">{{icon "key"}}API &amp; Config</a>
+      </nav>
+      <div class="sb-foot">
+        <span class="av">{{.AvatarInitials}}</span>
+        <span class="who"><b>{{or (.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "Acme Labs"}}</b><span>{{title .Runner.AuthMode}}</span></span>
+      </div>
+    </aside>
+    {{end}}
+
+    <div class="main">
+      {{if not .IsSetup}}
+      <header class="topbar" hx-ext="sse" sse-connect="/events/health">
+        <span class="crumbs">Runner / <b>{{.Title}}</b></span>
+        <div class="grow"></div>
+        <span class="conn"><span class="livedot"></span> Live</span>
+        <span class="health-pill" sse-swap="pill">{{template "pill" .Pill}}</span>
+      </header>
+      {{end}}
+      {{template "main" .}}
+    </div>
+  </div>
+  <div id="toast-host"></div>
+  <div id="busy-overlay" class="busy-overlay" hidden aria-live="polite" aria-busy="true">
+    <div class="busy-card">
+      <div class="busy-spinner" aria-hidden="true"></div>
+      <div class="busy-copy">
+        <b>Applying runtime change</b>
+        <span data-busy-message>Keep this page open while Credimi Runner updates services.</span>
+      </div>
+    </div>
+  </div>
+  <div id="publish-warning-modal" class="modal-bk" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="publish-warning-title">
+      <div class="modal-h">
+        {{icon "warn"}}
+        <div>
+          <h3 id="publish-warning-title">Publish this runner?</h3>
+          <p>Published user runners can receive pipeline work from every visible published organization.</p>
+        </div>
+        <button type="button" class="iconbtn x" data-publish-warning-cancel title="Close">{{icon "x"}}</button>
+      </div>
+      <div class="modal-b">
+        <div class="callout warn">{{icon "warn"}}<div>Publishing this runner allows other published organizations to run pipelines on your runner.</div></div>
+      </div>
+      <div class="modal-f">
+        <button type="button" class="btn btn-out btn-sm" data-publish-warning-cancel>Keep private</button>
+        <button type="button" class="btn btn-pri btn-sm" data-publish-warning-confirm>{{icon "check"}} Publish runner</button>
+      </div>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
+{{- end}}

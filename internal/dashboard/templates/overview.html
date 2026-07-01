@@ -1,0 +1,63 @@
+{{define "main" -}}
+<main class="page">
+  <div class="page-head">
+    <span class="eyebrow">Health monitor</span>
+    <h1>Overview</h1>
+    <p>Live status of the runner service, attached devices, and the single Credimi runner for <b style="color:var(--fg)">{{or (.Runner.Get "CREDIMI_RUNNER_ID") "this runner"}}</b>.</p>
+  </div>
+
+  {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runner restart.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runtime recreate.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a Credimi registration update.</div></div>{{end}}
+  {{if .StartupMessage}}<div class="callout {{if eq .StartupPhase "needs_attention"}}danger{{else}}info{{end}}" style="margin-bottom:16px">{{icon "info"}}<div>{{.StartupMessage}}</div></div>{{end}}
+
+  <div class="grid-4" style="margin-bottom:16px">
+    <div class="stat"><div class="k">{{icon "shield"}} Service</div><div class="v">{{if .ServicesAllUp}}Healthy{{else}}Degraded{{end}}</div><div class="meta">{{len .Snapshot.Services}} expected services</div></div>
+    <div class="stat"><div class="k">{{icon "phone"}} Devices</div><div class="v">{{.DevicesOnline}}<small>/ {{.DevicesTotal}} online</small></div><div class="meta">{{.DevicesDegraded}} degraded · {{.DevicesOffline}} offline</div></div>
+    <div class="stat"><div class="k">{{icon "activity"}} Dashboard</div><div class="v">{{.RuntimeHeadline}}</div><div class="meta">{{.Runner.Get "DASHBOARD_HOST"}}:{{.Runner.Get "DASHBOARD_PORT"}}</div></div>
+    <div class="stat"><div class="k">{{icon "cloud"}} Exposure</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">public runner route</div></div>
+  </div>
+
+  <form hx-post="/overview/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Updating runner publication state. Keep this page open.">
+    <section class="card" style="margin-bottom:16px">
+      <header class="card-h">{{icon "shield"}}<div><h3>Runner publication</h3><div class="sub">Control whether published organizations can schedule pipelines here</div></div>
+        <div class="right"><button type="submit" class="btn btn-pri btn-sm">{{icon "check"}} Save</button></div></header>
+      <div class="card-b">
+        <div data-publish-control data-initial="{{.Runner.Get "CREDIMI_RUNNER_PUBLISHED"}}" data-publish-confirmed="0">
+          {{template "field" .Field "CREDIMI_RUNNER_PUBLISHED"}}
+        </div>
+      </div>
+    </section>
+  </form>
+
+  <section class="card">
+    <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">docker compose · {{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
+      <div class="right" style="display:flex;align-items:center;gap:10px">
+        <button class="btn {{if .RuntimeRunning}}btn-danger{{else}}btn-pri{{end}} runtime-cta"
+                hx-post="{{.RuntimeTogglePath}}"
+                hx-target="main"
+                hx-select="main"
+                hx-swap="outerHTML"
+                hx-push-url="false"
+                data-runtime-action
+                data-busy-message="{{.RuntimeToggleBusyMessage}}">
+          {{if .RuntimeRunning}}{{icon "x"}}{{else}}{{icon "check"}}{{end}} {{.RuntimeToggleLabel}}
+        </button>
+      </div></header>
+    <div class="card-b">
+      <div id="runtime-status" hx-ext="sse" sse-connect="/events/runtime" sse-swap="runtime">{{template "runtime_status" .}}</div>
+      <div class="divline"></div>
+      <div class="grid-2">{{range .Snapshot.Services}}{{if .Expected}}{{template "service_row" .}}{{end}}{{end}}</div>
+      <div class="divline"></div>
+      <div class="callout {{if .ServicesAllUp}}ok{{else}}warn{{end}}">{{icon "globe"}}<div>Public endpoint: <b style="font-family:var(--font-mono)">{{.PublicURL}}</b>. OpenAPI docs at <b style="font-family:var(--font-mono)">/docs</b>.</div></div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:16px">
+    <header class="card-h">{{icon "phone"}}<div><h3>Detected devices</h3><div class="sub">{{.DevicesOnline}} of {{.DevicesTotal}} online</div></div>
+      <div class="right"><a class="btn btn-out btn-sm" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">Open target page</a></div></header>
+    <div class="card-b flush"><div class="list" id="device-snapshot" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
+  </section>
+</main>
+{{- end}}

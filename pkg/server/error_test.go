@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/credimi"
+	"github.com/forkbombeu/credimi-runner/pkg/gen/docs"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/health"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/mobile"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
@@ -82,6 +83,30 @@ func TestWrapMobileAPIError(t *testing.T) {
 	var svcErr *mobile.APIError
 	require.ErrorAs(t, err, &svcErr)
 	require.Equal(t, "internal_error", svcErr.Name)
+}
+
+func TestWrapDocsAPIError(t *testing.T) {
+	t.Run("nil becomes internal error", func(t *testing.T) {
+		err := wrapDocsAPIError(nil)
+		var apiErr *docs.APIError
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, "internal_error", apiErr.Name)
+		require.Equal(t, http.StatusInternalServerError, apiErr.Code)
+		require.Equal(t, "server", apiErr.Domain)
+	})
+
+	t.Run("normalizes zero status and empty name", func(t *testing.T) {
+		err := wrapDocsAPIError(&docs.APIError{
+			Domain:  "docs",
+			Reason:  "broken",
+			Message: "failed",
+		})
+		var apiErr *docs.APIError
+		require.ErrorAs(t, err, &apiErr)
+		require.Equal(t, "internal_error", apiErr.Name)
+		require.Equal(t, http.StatusInternalServerError, apiErr.Code)
+		require.Equal(t, "docs", apiErr.Domain)
+	})
 }
 
 func TestWireFromRunnerAPIError(t *testing.T) {
@@ -170,6 +195,23 @@ func TestWireFromServiceSpecificAPIErrors(t *testing.T) {
 		require.Equal(t, "health", wire.Domain)
 		require.Equal(t, "adb unavailable", wire.Reason)
 	})
+
+	t.Run("docs nil uses internal defaults", func(t *testing.T) {
+		wire := wireFromdocsAPIError(nil)
+		require.Equal(t, "internal_error", wire.Name)
+		require.Equal(t, http.StatusInternalServerError, wire.StatusCode())
+	})
+
+	t.Run("docs zero status and empty name normalized", func(t *testing.T) {
+		wire := wireFromdocsAPIError(&docs.APIError{
+			Domain:  "docs",
+			Reason:  "broken",
+			Message: "failed",
+		})
+		require.Equal(t, "internal_error", wire.Name)
+		require.Equal(t, http.StatusInternalServerError, wire.StatusCode())
+		require.Equal(t, "docs", wire.Domain)
+	})
 }
 
 func TestGoaErrorFormatter(t *testing.T) {
@@ -229,6 +271,21 @@ func TestGoaErrorFormatter(t *testing.T) {
 		require.Equal(t, http.StatusServiceUnavailable, w.StatusCode())
 		require.Equal(t, "health", w.Domain)
 		require.Equal(t, "service_unavailable", w.Name)
+	})
+
+	t.Run("docs typed error", func(t *testing.T) {
+		wire := GoaErrorFormatter(context.Background(), &docs.APIError{
+			Name:    "internal_error",
+			Code:    http.StatusBadGateway,
+			Domain:  "docs",
+			Reason:  "asset unavailable",
+			Message: "read failed",
+		})
+		w, ok := wire.(*apiErrorWire)
+		require.True(t, ok)
+		require.Equal(t, http.StatusBadGateway, w.StatusCode())
+		require.Equal(t, "docs", w.Domain)
+		require.Equal(t, "internal_error", w.Name)
 	})
 
 	t.Run("decode payload maps to bad request", func(t *testing.T) {
