@@ -2,9 +2,6 @@ package cmd
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"os"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
@@ -41,12 +38,10 @@ func runStopServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := dashboardruntime.StopRunnerServer(ctx, configDir, values); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("runner server was not found from %s or the configured runner port", dashboardruntime.RunnerPIDPath(configDir))
-		}
+	manager := dashboardruntime.NewLifecycleManager("", configDir, values, nil)
+	if err := manager.Stop(ctx); err != nil {
 		return err
 	}
-	cmd.Printf("Stopped runner server from %s\n", dashboardruntime.RunnerPIDPath(configDir))
+	cmd.Println("Stopped runner server")
 	return nil
 }

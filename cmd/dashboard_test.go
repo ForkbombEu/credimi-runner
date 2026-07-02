@@ -129,19 +129,32 @@ func TestRootCommandDefaultsToDashboard(t *testing.T) {
 	}
 }
 
-func TestRunStopServerMissingPID(t *testing.T) {
+func TestRunStopServerStopsConfiguredRuntime(t *testing.T) {
 	oldConfigDir := dashboardConfigDir
 	t.Cleanup(func() {
 		dashboardConfigDir = oldConfigDir
 	})
 	dashboardConfigDir = t.TempDir()
-	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("RUNNER_PORT=1\n"), 0o600); err != nil {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	config := strings.Join([]string{
+		"CREDIMI_RUNNER_ID=acme/runner",
+		"CREDIMI_RUNNER_BACKEND=host",
+		"CREDIMI_RUNNER_TYPE=ios_simulator",
+		"CREDIMI_SERVICE_MODE=manual",
+		"RUNNER_PORT=1",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmd := &cobra.Command{Use: "stop-server"}
-	err := runStopServer(cmd, nil)
-	if err == nil || !strings.Contains(err.Error(), "runner server was not found") {
-		t.Fatalf("runStopServer error = %v", err)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	if err := runStopServer(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Stopped runner server") {
+		t.Fatalf("runStopServer output = %q", output.String())
 	}
 }
 
