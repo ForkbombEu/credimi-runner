@@ -51,11 +51,14 @@
   <div id="toast-host"></div>
   <div id="busy-overlay" class="busy-overlay" hidden aria-live="polite" aria-busy="true">
     <div class="busy-card">
-      <div class="busy-spinner" aria-hidden="true"></div>
-      <div class="busy-copy">
-        <b>Applying runtime change</b>
-        <span data-busy-message>Keep this page open while Credimi Runner updates services.</span>
+      <div class="busy-head">
+        <div class="busy-spinner" aria-hidden="true"></div>
+        <div class="busy-copy">
+          <b>Applying runtime change</b>
+          <span data-busy-message>Keep this page open while Credimi Runner updates services.</span>
+        </div>
       </div>
+      <pre class="busy-log" data-busy-log aria-label="Runtime progress log"></pre>
     </div>
   </div>
   <div id="publish-warning-modal" class="modal-bk" hidden>

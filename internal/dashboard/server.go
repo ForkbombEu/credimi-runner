@@ -175,6 +175,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/update-image", s.runtimeUpdateImage)
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
 	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
+	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
 
 	// Device actions
 	mux.HandleFunc("POST /devices/config", s.saveDevicesConfig)
@@ -435,6 +436,9 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 	status := s.manager.Status(ctx)
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
 	if runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)) {
+		if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
+			s.manager.SetPublicURL("")
+		}
 		if err := s.manager.Restart(ctx); err != nil {
 			return outcome, err
 		}
@@ -626,6 +630,11 @@ func validateSetupInput(values map[string]string) map[string]string {
 	if strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]) == "" && strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
 		errs["CREDIMI_RUNNER_NAME"] = "Required."
 	}
+	if strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) == "android_phone" &&
+		strings.TrimSpace(values["CREDIMI_RUNNER_DEVICE_MODE"]) != "wifi" &&
+		strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]) == "" {
+		errs["CREDIMI_RUNNER_SERIAL"] = "Select a connected Android device."
+	}
 	if strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) == "manual" && strings.TrimSpace(values["RUNNER_PUBLIC_URL"]) == "" {
 		errs["RUNNER_PUBLIC_URL"] = "Required."
 	}
@@ -661,6 +670,11 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 			return errors.New("xcrun simctl is required for iOS simulator runners")
 		}
 	}
+	if normalized["CREDIMI_RUNNER_TYPE"] == "android_phone" &&
+		normalized["CREDIMI_RUNNER_DEVICE_MODE"] == "usb" &&
+		!s.androidPhoneSerialConnected(normalized["CREDIMI_RUNNER_SERIAL"]) {
+		return errors.New("select a connected Android device")
+	}
 	if normalized["CREDIMI_RUNNER_TYPE"] == "android_emulator" && plan.Backend == dashboardruntime.DefaultContainerBackend {
 		if _, err := s.statPath("/dev/kvm"); err != nil {
 			return errors.New("/dev/kvm is required for Android emulator containers")
@@ -679,6 +693,19 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) androidPhoneSerialConnected(serial string) bool {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return false
+	}
+	for _, device := range s.hub.CurrentSnapshot().Devices {
+		if device.Type == "android_phone" && device.Status == Online && device.Serial == serial {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) lookupSetupOrganization(w http.ResponseWriter, r *http.Request) {
@@ -818,6 +845,28 @@ func (s *Server) runtimeRegister(w http.ResponseWriter, r *http.Request) {
 	}, "Credimi runner registration updated.")
 }
 
+func (s *Server) runtimeLogs(w http.ResponseWriter, r *http.Request) {
+	if s.manager == nil {
+		writeJSON(w, map[string]any{"lines": []string{}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	logs, err := s.manager.Logs(ctx, 80)
+	if err != nil {
+		writeJSON(w, map[string]any{"lines": []string{"runtime logs unavailable: " + err.Error()}})
+		return
+	}
+	lines := make([]string, 0, len(logs))
+	for _, line := range logs {
+		message := strings.TrimSpace(line.Message)
+		if message != "" {
+			lines = append(lines, message)
+		}
+	}
+	writeJSON(w, map[string]any{"lines": lines})
+}
+
 func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
 		s.mu.RLock()
@@ -827,23 +876,32 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 		if s.manager != nil {
 			s.manager.Configure(dashboardruntime.Values(values))
 		}
+		restarted := false
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) {
 			if err := WriteComposeFile(s.composeDir, values); err != nil {
 				return err
 			}
 			if s.manager != nil {
+				if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
+					s.manager.SetPublicURL("")
+				}
 				if err := s.manager.Down(ctx); err != nil {
 					return err
 				}
 				if err := s.manager.Start(ctx); err != nil {
 					return err
 				}
+				restarted = true
 			}
 		} else if hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
 			if s.manager != nil {
+				if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
+					s.manager.SetPublicURL("")
+				}
 				if err := s.manager.Restart(ctx); err != nil {
 					return err
 				}
+				restarted = true
 			}
 		}
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
@@ -853,7 +911,7 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired) {
+		if shouldRegisterAfterApply(diff, values, restarted) {
 			if err := s.registerCurrent(ctx, values); err != nil {
 				return err
 			}

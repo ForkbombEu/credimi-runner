@@ -30,6 +30,16 @@ func (d PageData) DevicesOnline() int {
 }
 func (d PageData) DevicesTotal() int { return len(d.Snapshot.Devices) }
 
+func (d PageData) AndroidPhoneDevices() []Device {
+	var devices []Device
+	for _, device := range d.Snapshot.Devices {
+		if device.Type == "android_phone" && device.Status == Online {
+			devices = append(devices, device)
+		}
+	}
+	return devices
+}
+
 func (d PageData) DevicesDegraded() int { return d.countDev(Degraded) }
 func (d PageData) DevicesOffline() int  { return d.countDev(Offline) }
 func (d PageData) countDev(s Status) int {

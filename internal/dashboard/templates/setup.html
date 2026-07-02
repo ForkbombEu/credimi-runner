@@ -138,11 +138,27 @@
             <div data-dev-type="android_phone" style="grid-column:1/-1">
               <div class="divline"></div>
               {{template "field" $.Field "CREDIMI_RUNNER_DEVICE_MODE"}}
+              <div data-dev-mode="usb" style="grid-column:1/-1">
+                <div class="field">
+                  <label><span class="lbtx">Connected Android device</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_SERIAL</span></label>
+                  <input type="hidden" name="CREDIMI_RUNNER_SERIAL" value="{{$.Runner.Get "CREDIMI_RUNNER_SERIAL"}}" data-android-phone-serial>
+                  <select class="sel mono" data-android-phone-device-select {{if not $.AndroidPhoneDevices}}disabled{{end}}>
+                    <option value="">Select a connected Android device</option>
+                    {{range $.AndroidPhoneDevices}}
+                    <option value="{{.Serial}}" {{if eq ($.Runner.Get "CREDIMI_RUNNER_SERIAL") .Serial}}selected{{end}}>{{.Name}} — {{.Serial}}</option>
+                    {{end}}
+                  </select>
+                  {{if $.AndroidPhoneDevices}}
+                  <p class="hint">Only online Android phones detected by ADB are listed.</p>
+                  {{else}}
+                  <p class="hint" style="color:var(--down)">No online Android phone detected. Connect a device with ADB before continuing.</p>
+                  {{end}}
+                </div>
+              </div>
               <div data-dev-mode="wifi" style="grid-column:1/-1">
                 {{template "field" $.Field "CREDIMI_RUNNER_WIFI_IP"}}
                 {{template "field" $.Field "CREDIMI_RUNNER_WIFI_PORT"}}
               </div>
-              {{template "field" $.Field "CREDIMI_RUNNER_SERIAL"}}
             </div>
             <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
               <details class="gear-panel">

@@ -92,7 +92,10 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	hub := NewHub(cfg, t.TempDir(), render, func() dashboardruntime.RuntimeStatus { return dashboardruntime.RuntimeStatus{} })
-	hub.snap = Snapshot{Services: []Service{{ID: "runner", Name: "runner", Status: Online}}}
+	hub.snap = Snapshot{
+		Services: []Service{{ID: "runner", Name: "runner", Status: Online}},
+		Devices:  []Device{{Serial: "device-1", Name: "Pixel 8", Type: "android_phone", Mode: "usb", Status: Online}},
+	}
 	hub.workers = []Worker{{ID: "runner-mr", Env: "runner", Status: Online}}
 	return &Server{
 		cfg:        cfg,
@@ -837,6 +840,7 @@ func TestFinishSetupValidationAndRequirementErrors(t *testing.T) {
 		"CREDIMI_USER_API_KEY":        {"user-key"},
 		"CREDIMI_SERVICE_MODE":        {"cloudflare-managed"},
 		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
 	}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.finishSetup(rec, req)
@@ -931,6 +935,58 @@ func TestResolveRegistrationEndpointBranches(t *testing.T) {
 	}
 }
 
+func TestApplySavedConfigClearsCachedQuickTunnelURL(t *testing.T) {
+	s := newTestServer(t)
+	fm := &fakeManager{
+		status: dashboardruntime.RuntimeStatus{
+			RunnerRunning: true,
+			PublicURL:     "https://old.example.trycloudflare.com",
+		},
+		logLines: []dashboardruntime.LogLine{
+			{Message: "INF quick tunnel ready at https://new.example.trycloudflare.com"},
+		},
+	}
+	s.manager = fm
+	values := map[string]string{
+		"CREDIMI_URL":                 "https://credimi.example",
+		"CREDIMI_USER_API_KEY":        "user-key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_SERVICE_MODE":        "auto",
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			var payload dashboardruntime.RegisterRunnerRequest
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.IP != "https://new.example.trycloudflare.com" {
+				t.Fatalf("registered IP = %q", payload.IP)
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+	values["CREDIMI_URL"] = api.URL
+
+	outcome, err := s.applySavedConfig(context.Background(), dashboardruntime.ConfigDiff{
+		ChangedKeys: []string{"RUNNER_PORT"},
+		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
+	}, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.Restarted || !outcome.CredimiUpdated {
+		t.Fatalf("outcome = %#v", outcome)
+	}
+	if fm.status.PublicURL != "https://new.example.trycloudflare.com" {
+		t.Fatalf("cached public URL = %q", fm.status.PublicURL)
+	}
+}
+
 func TestShouldRegisterAfterApply(t *testing.T) {
 	if !shouldRegisterAfterApply(dashboardruntime.ConfigDiff{
 		Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired},
@@ -946,6 +1002,23 @@ func TestShouldRegisterAfterApply(t *testing.T) {
 		Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
 	}, map[string]string{"CREDIMI_SERVICE_MODE": "auto"}, true) {
 		t.Fatal("auto restart should force registration")
+	}
+}
+
+func TestRuntimeLogsReturnsRecentLines(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = &fakeManager{logLines: []dashboardruntime.LogLine{
+		{Message: "runner pulling image"},
+		{Message: "runner started"},
+	}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/runtime/logs", nil)
+	s.runtimeLogs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("runtimeLogs = %d %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "runner pulling image") || !strings.Contains(rec.Body.String(), "runner started") {
+		t.Fatalf("runtimeLogs body = %s", rec.Body.String())
 	}
 }
 
@@ -971,6 +1044,7 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 		"CREDIMI_SERVICE_MODE":        {"manual"},
 		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
 		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
 		"RUNNER_PORT":                 {"8050"},
 	}
 
@@ -1186,6 +1260,7 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T)
 		"CREDIMI_SERVICE_MODE":        {"manual"},
 		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
 		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
+		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
 	}
 
 	rec := httptest.NewRecorder()
@@ -1320,12 +1395,63 @@ func TestServerRuntimeApply(t *testing.T) {
 	}
 }
 
+func TestServerRuntimeApplyAutoRestartRefreshesTunnelURL(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = &fakeManager{
+		status: dashboardruntime.RuntimeStatus{
+			RunnerRunning: true,
+			PublicURL:     "https://old.example.trycloudflare.com",
+		},
+		logLines: []dashboardruntime.LogLine{
+			{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"},
+		},
+	}
+	s.pendingDiff = dashboardruntime.ConfigDiff{
+		ChangedKeys: []string{"RUNNER_IMAGE"},
+		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
+	}
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+
+	var payload dashboardruntime.RegisterRunnerRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+	s.cfg.values["CREDIMI_URL"] = api.URL
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runtime/apply", nil)
+	s.runtimeApply(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("runtimeApply = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if payload.IP != "https://fresh.example.trycloudflare.com" {
+		t.Fatalf("registered IP = %q", payload.IP)
+	}
+	if got := s.manager.(*fakeManager).status.PublicURL; got != "https://fresh.example.trycloudflare.com" {
+		t.Fatalf("cached public URL = %q", got)
+	}
+}
+
 func TestValidateRuntimeRequirements(t *testing.T) {
 	s := newTestServer(t)
 	values := map[string]string{
 		"CREDIMI_RUNNER_BACKEND": "container",
 		"CREDIMI_SERVICE_MODE":   "auto",
 		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_RUNNER_SERIAL":  "device-1",
 	}
 	if err := s.validateRuntimeRequirements(values); err != nil {
 		t.Fatalf("validateRuntimeRequirements = %v", err)

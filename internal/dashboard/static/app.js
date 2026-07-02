@@ -47,18 +47,53 @@
   document.body.addEventListener('closeModal', () => closeModals());
 
   // ── Global busy overlay for runtime-changing requests ───────────────────
+  let busyLogTimer = null;
+  let busyLogSeen = new Set();
   function busyOverlay() { return $('#busy-overlay'); }
+  function busyLogNode() {
+    const overlay = busyOverlay();
+    return overlay && $('[data-busy-log]', overlay);
+  }
+  function appendBusyLog(line) {
+    const log = busyLogNode();
+    const text = String(line || '').trim();
+    if (!log || !text || busyLogSeen.has(text)) return;
+    busyLogSeen.add(text);
+    if (busyLogSeen.size > 160) busyLogSeen = new Set([...busyLogSeen].slice(-120));
+    const stamp = new Date().toLocaleTimeString([], { hour12: false });
+    log.textContent += `${stamp}  ${text}\n`;
+    log.scrollTop = log.scrollHeight;
+  }
+  async function pollBusyLogs() {
+    try {
+      const res = await fetch('/runtime/logs', { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      (data.lines || []).slice(-24).forEach(appendBusyLog);
+    } catch (_) {}
+  }
   function showBusy(message) {
     const overlay = busyOverlay();
     if (!overlay) return;
     const messageNode = $('[data-busy-message]', overlay);
     if (messageNode && message) messageNode.textContent = message;
+    const log = busyLogNode();
+    busyLogSeen = new Set();
+    if (log) log.textContent = '';
+    appendBusyLog(message || 'Starting runtime operation.');
+    appendBusyLog('Writing configuration and preparing Docker services.');
+    appendBusyLog('Large runner images can take several minutes the first time.');
+    clearInterval(busyLogTimer);
+    pollBusyLogs();
+    busyLogTimer = setInterval(pollBusyLogs, 1500);
     overlay.hidden = false;
     document.body.classList.add('busy-lock');
   }
   function hideBusy() {
     const overlay = busyOverlay();
     if (!overlay) return;
+    clearInterval(busyLogTimer);
+    busyLogTimer = null;
     overlay.hidden = true;
     document.body.classList.remove('busy-lock');
   }
@@ -173,6 +208,10 @@
           }
           case 'device': {
             const runnerType = value('CREDIMI_RUNNER_TYPE');
+            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
+            if (runnerType === 'android_phone' && mode !== 'wifi') {
+              return !valueMissing('CREDIMI_RUNNER_SERIAL');
+            }
             if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi') {
               return !valueMissing('CREDIMI_RUNNER_WIFI_IP');
             }
@@ -216,8 +255,12 @@
           case 'device': {
             const runnerType = value('CREDIMI_RUNNER_TYPE');
             if (!runnerType) return 'Runner type is required.';
-            if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
+            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
+            if (runnerType === 'android_phone' && mode === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
               return 'Wi-Fi mode requires an Android Wi-Fi IP.';
+            }
+            if (runnerType === 'android_phone' && mode !== 'wifi' && valueMissing('CREDIMI_RUNNER_SERIAL')) {
+              return 'Select a connected Android device.';
             }
             if (runnerType === 'android_emulator' && valueMissing('BASE_NAME')) return 'Base name is required.';
             if (runnerType === 'android_emulator') {
@@ -956,6 +999,13 @@
     refreshIOSSimulatorPanel(root);
     refreshAndroidEmulatorAssetsPanel(root);
   };
+  document.addEventListener('change', (e) => {
+    const select = e.target.closest('[data-android-phone-device-select]');
+    if (!select) return;
+    const root = select.closest('form') || document;
+    setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', select.value || '');
+    root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+  });
   document.addEventListener('click', (e) => {
     const pick = e.target.closest('[data-dev-pick]');
     if (!pick) return;

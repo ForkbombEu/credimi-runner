@@ -197,7 +197,7 @@ func TestRenderer_SetupPage(t *testing.T) {
 		Active:   "setup",
 		Title:    "Setup",
 		Runner:   &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
-		Snapshot: Snapshot{},
+		Snapshot: Snapshot{Devices: []Device{{Serial: "device-1", Name: "Pixel 8", Type: "android_phone", Mode: "usb", Status: Online}}},
 		Workers:  []Worker{},
 		Pill:     PillData{OK: true, Label: "Setup"},
 	}
@@ -217,6 +217,12 @@ func TestRenderer_SetupPage(t *testing.T) {
 	}
 	if !strings.Contains(html, `name="RUNNER_PORT"`) {
 		t.Errorf("setup page missing runner port field")
+	}
+	if !strings.Contains(html, `data-android-phone-device-select`) || !strings.Contains(html, "device-1") {
+		t.Errorf("setup page missing connected Android device selector")
+	}
+	if !strings.Contains(html, `data-busy-log`) {
+		t.Errorf("base template missing busy log output")
 	}
 	if strings.Contains(html, "data-runner-conflict-choice") {
 		t.Errorf("setup page should not render inline runner conflict controls")
