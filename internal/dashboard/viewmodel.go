@@ -262,6 +262,13 @@ func (d PageData) SetupError() string {
 	return ""
 }
 
+func (d PageData) SetupProgress() bool {
+	if progress, ok := d.payload()["SetupProgress"].(bool); ok {
+		return progress
+	}
+	return false
+}
+
 func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
 	if status, ok := d.payload()["RuntimeStatus"].(dashboardruntime.RuntimeStatus); ok {
 		return status

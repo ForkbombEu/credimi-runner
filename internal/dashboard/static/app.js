@@ -137,6 +137,88 @@
       showSetupBusy(message);
     }
   }
+  let setupProgressStatusTimer = null;
+  let setupProgressLogTimer = null;
+  let setupProgressHeartbeatTimer = null;
+  let setupProgressSeen = new Set();
+  let setupProgressLastMessage = '';
+  function setupProgressPanel(root = document) {
+    return $('[data-setup-progress]', root);
+  }
+  function appendSetupProgressLog(panel, line) {
+    const log = panel && $('[data-setup-progress-log]', panel);
+    const text = String(line || '').trim();
+    if (!log || !text || setupProgressSeen.has(text)) return;
+    setupProgressSeen.add(text);
+    if (setupProgressSeen.size > 220) setupProgressSeen = new Set([...setupProgressSeen].slice(-180));
+    const stamp = new Date().toLocaleTimeString([], { hour12: false });
+    log.textContent += `${stamp}  ${text}\n`;
+    log.scrollTop = log.scrollHeight;
+  }
+  async function pollSetupProgressLogs(panel) {
+    try {
+      const res = await fetch('/runtime/logs', { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      (data.lines || []).slice(-40).forEach((line) => appendSetupProgressLog(panel, line));
+    } catch (_) {}
+  }
+  async function pollSetupProgressStatus(panel) {
+    try {
+      const res = await fetch('/startup/status', { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      const phase = String(data.phase || '');
+      const message = String(data.message || '');
+      const messageNode = panel && $('[data-setup-progress-message]', panel);
+      if (message) {
+        setupProgressLastMessage = message;
+        if (messageNode) messageNode.innerHTML = `${info()}<div>${escapeHtml(message)}</div>`;
+        appendSetupProgressLog(panel, message);
+      }
+      if (phase === 'ready') {
+        appendSetupProgressLog(panel, 'Setup complete. Opening dashboard.');
+        stopSetupProgressPolling();
+        setTimeout(() => { window.location.assign('/'); }, 700);
+        return;
+      }
+      if (phase === 'needs_attention') {
+        appendSetupProgressLog(panel, 'Setup needs attention. Open the dashboard for details.');
+        if (messageNode) {
+          messageNode.className = 'callout danger';
+          messageNode.innerHTML = `${xmark()}<div>${escapeHtml(message || 'Setup needs attention.')}</div>`;
+        }
+        const actions = $('[data-setup-progress-actions]', panel);
+        if (actions) actions.hidden = false;
+        stopSetupProgressPolling();
+      }
+    } catch (_) {}
+  }
+  function stopSetupProgressPolling() {
+    clearInterval(setupProgressStatusTimer);
+    clearInterval(setupProgressLogTimer);
+    clearInterval(setupProgressHeartbeatTimer);
+    setupProgressStatusTimer = null;
+    setupProgressLogTimer = null;
+    setupProgressHeartbeatTimer = null;
+  }
+  function initSetupProgress(root = document) {
+    const panel = setupProgressPanel(root);
+    if (!panel || panel.dataset.progressReady === '1') return;
+    panel.dataset.progressReady = '1';
+    setupProgressSeen = new Set();
+    setupProgressLastMessage = '';
+    appendSetupProgressLog(panel, 'Configuration written. Starting setup job.');
+    appendSetupProgressLog(panel, 'Docker may download large runner images. This can take several minutes on first run.');
+    stopSetupProgressPolling();
+    pollSetupProgressStatus(panel);
+    pollSetupProgressLogs(panel);
+    setupProgressStatusTimer = setInterval(() => pollSetupProgressStatus(panel), 1200);
+    setupProgressLogTimer = setInterval(() => pollSetupProgressLogs(panel), 1500);
+    setupProgressHeartbeatTimer = setInterval(() => {
+      appendSetupProgressLog(panel, `Still working${setupProgressLastMessage ? ': ' + setupProgressLastMessage : '.'}`);
+    }, 10000);
+  }
   function busyTriggerForElement(el) {
     if (!el) return null;
     const trigger = el.closest('[data-runtime-action],[data-config-form],[data-setup-form]');
@@ -621,6 +703,7 @@
     });
   }
   initSetupWizard();
+  initSetupProgress();
 
   // ── Network step: radio cards + show/hide fields based on service mode ──
   const syncNetMode = (mode) => {
@@ -1465,6 +1548,7 @@
       hideBusy();
       syncNav();
       initSetupWizard(e.detail.target);
+      initSetupProgress(e.detail.target);
       initNetMode();
       initDeviceFields();
     }
@@ -1476,5 +1560,6 @@
   function decodeHtml(s) { const d = document.createElement('textarea'); d.innerHTML = s; return d.value; }
   function check() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'; }
   function xmark() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>'; }
+  function info() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'; }
   function warn() { return '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'; }
 })();

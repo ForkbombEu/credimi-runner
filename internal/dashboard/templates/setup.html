@@ -9,6 +9,24 @@
   {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some fields need attention. Jump to the highlighted section and fix the marked inputs.</div></div>{{end}}
   {{if .SetupError}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>{{.SetupError}}</div></div>{{end}}
 
+  {{if .SetupProgress}}
+  <section class="card setup-progress" data-setup-progress>
+    <header class="card-h">
+      {{icon "activity"}}
+      <div><h3>Starting runner services</h3><div class="sub">Writing config, pulling images, starting containers, and registering the runner</div></div>
+      <div class="right"><span class="tag">In progress</span></div>
+    </header>
+    <div class="card-b">
+      <div class="callout info" data-setup-progress-message>{{if .StartupMessage}}{{.StartupMessage}}{{else}}Setup saved. Starting runtime.{{end}}</div>
+      <pre class="setup-progress-log" data-setup-progress-log aria-label="Setup progress log"></pre>
+      <div class="savebar" data-setup-progress-actions hidden>
+        <div class="msg">{{icon "info"}} Setup needs attention. The dashboard has the latest runtime status.</div>
+        <div class="sp"></div>
+        <a class="btn btn-pri" href="/">Open dashboard</a>
+      </div>
+    </div>
+  </section>
+  {{else}}
   <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" data-setup-form data-config-form data-busy-message="Writing runner config and starting services. Keep this page open.">
     <nav class="wizard-steps" aria-label="Setup steps">
       {{range $i, $s := .SetupSteps}}
@@ -338,5 +356,6 @@
       </div>
     </div>
   </div>
+  {{end}}
 </main>
 {{- end}}

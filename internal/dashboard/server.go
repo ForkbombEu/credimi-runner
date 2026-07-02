@@ -524,8 +524,14 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/")
-		w.WriteHeader(http.StatusNoContent)
+		d := s.pageData("setup", map[string]any{"SetupProgress": true})
+		html, err := s.render.FragmentPage("setup", d)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(html))
 		return
 	}
 	w.Header().Set("Location", "/")

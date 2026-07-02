@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 func TestIcons_Present(t *testing.T) {
@@ -235,6 +237,22 @@ func TestRenderer_SetupPage(t *testing.T) {
 	}
 	if strings.Contains(html, `class="sb"`) {
 		t.Errorf("setup page should not render sidebar")
+	}
+
+	d.Data = map[string]any{
+		"RuntimeStatus": dashboardruntime.RuntimeStatus{},
+		"Startup":       startupState{Phase: StartupStarting, Message: "Setup saved. Starting runtime."},
+		"SetupProgress": true,
+	}
+	html, err = r.Page("setup", d)
+	if err != nil {
+		t.Fatalf("setup progress page failed: %v", err)
+	}
+	if !strings.Contains(html, `data-setup-progress`) || !strings.Contains(html, `data-setup-progress-log`) {
+		t.Fatalf("setup progress page missing progress log: %s", html)
+	}
+	if strings.Contains(html, `data-setup-form`) {
+		t.Fatalf("setup progress page should replace setup form: %s", html)
 	}
 }
 

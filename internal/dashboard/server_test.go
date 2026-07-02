@@ -529,8 +529,8 @@ func TestServerSetupRenderHelpers(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/setup", nil)
 	req.Header.Set("HX-Request", "true")
 	s.renderSetupComplete(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
-		t.Fatalf("htmx renderSetupComplete = %d headers=%v", rec.Code, rec.Header())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
+		t.Fatalf("htmx renderSetupComplete = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 
 	rec = httptest.NewRecorder()
@@ -1116,7 +1116,7 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
 		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 	waitForCondition(t, func() bool { return s.manager.(*fakeManager).startCalls > 0 })
@@ -1317,7 +1317,7 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
 		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 	waitForCondition(t, func() bool { return hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired) })
@@ -1353,7 +1353,7 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
 		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 	waitForCondition(t, func() bool { return strings.Contains(s.lastRegistrationStatus, "readiness was not confirmed") })
