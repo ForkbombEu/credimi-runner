@@ -69,9 +69,14 @@ const quickTunnelLogTail = -1000
 type startupState struct {
 	Phase   StartupPhase
 	Message string
+	Logs    []string
 	running bool
 	cancel  context.CancelFunc
 	done    chan struct{}
+}
+
+type managerProgressStarter interface {
+	StartWithProgress(context.Context, func(string)) error
 }
 
 // NewHandler creates the dashboard HTTP handler for mounting into an existing
@@ -518,56 +523,48 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.startStartupJob(values)
+	s.runStartupJobBlocking(r.Context(), values)
 	s.renderSetupComplete(w, r)
 }
 
 func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
-		d := s.pageData("setup", map[string]any{"SetupProgress": true})
-		html, err := s.render.FragmentPage("setup", d)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(html))
+		w.Header().Set("HX-Redirect", "/")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	w.Header().Set("Location", "/")
 	w.WriteHeader(http.StatusSeeOther)
 }
 
-func (s *Server) startStartupJob(values map[string]string) {
+func (s *Server) runStartupJobBlocking(parent context.Context, values map[string]string) {
 	s.mu.Lock()
-	waitFor := s.startup.done
 	if s.startup.running && s.startup.cancel != nil {
 		s.startup.cancel()
 	}
-	ctx, cancel := context.WithCancel(s.ctx)
+	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
-	s.startup.running = true
-	s.startup.cancel = cancel
-	s.startup.done = done
-	s.startup.Phase = StartupStarting
-	s.startup.Message = "Setup saved. Starting runtime."
+	s.startup = startupState{
+		Phase:   StartupStarting,
+		Message: "Setup saved. Starting runtime.",
+		Logs:    []string{"Setup saved. Starting runtime."},
+		running: true,
+		cancel:  cancel,
+		done:    done,
+	}
 	s.lastRegistrationStatus = s.startup.Message
 	s.mu.Unlock()
 
 	s.hub.poll(context.Background())
-	go func(wait <-chan struct{}, values map[string]string, ctx context.Context, done chan struct{}) {
-		if wait != nil {
-			<-wait
-		}
-		defer close(done)
-		s.runStartupJob(ctx, values)
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		if s.startup.done == done {
-			s.startup.running = false
-			s.startup.cancel = nil
-		}
-	}(waitFor, cloneStringMap(values), ctx, done)
+	s.runStartupJob(ctx, cloneStringMap(values))
+	s.mu.Lock()
+	if s.startup.done == done {
+		s.startup.running = false
+		s.startup.cancel = nil
+	}
+	close(done)
+	s.mu.Unlock()
+	cancel()
 }
 
 func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
@@ -575,7 +572,14 @@ func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
 		s.setStartupState(StartupReady, "Setup saved.")
 		return
 	}
-	if err := s.manager.Start(ctx); err != nil {
+	s.appendStartupLog("Starting runtime services.")
+	var err error
+	if starter, ok := s.manager.(managerProgressStarter); ok {
+		err = starter.StartWithProgress(ctx, s.appendStartupLog)
+	} else {
+		err = s.manager.Start(ctx)
+	}
+	if err != nil {
 		s.setStartupState(StartupNeedsAttention, "Setup saved, but runtime start failed: "+err.Error())
 		return
 	}
@@ -592,7 +596,7 @@ func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
 	}
 	s.setStartupState(StartupRegistering, "Runtime started. Updating Credimi registration.")
 	registerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err := s.registerCurrent(registerCtx, values)
+	err = s.registerCurrent(registerCtx, values)
 	cancel()
 	if err != nil {
 		s.mu.Lock()
@@ -611,9 +615,32 @@ func (s *Server) setStartupState(phase StartupPhase, message string) {
 	s.mu.Lock()
 	s.startup.Phase = phase
 	s.startup.Message = message
+	if strings.TrimSpace(message) != "" {
+		s.startup.Logs = appendStartupLogLine(s.startup.Logs, message)
+	}
 	s.lastRegistrationStatus = message
 	s.mu.Unlock()
 	s.hub.poll(context.Background())
+}
+
+func (s *Server) appendStartupLog(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	s.mu.Lock()
+	s.startup.Logs = appendStartupLogLine(s.startup.Logs, message)
+	s.mu.Unlock()
+}
+
+func appendStartupLogLine(logs []string, message string) []string {
+	if len(logs) == 0 || logs[len(logs)-1] != message {
+		logs = append(logs, message)
+	}
+	if len(logs) > 300 {
+		logs = logs[len(logs)-300:]
+	}
+	return logs
 }
 
 func (s *Server) startupSnapshot() startupState {
@@ -622,6 +649,7 @@ func (s *Server) startupSnapshot() startupState {
 	return startupState{
 		Phase:   s.startup.Phase,
 		Message: s.startup.Message,
+		Logs:    append([]string(nil), s.startup.Logs...),
 		running: s.startup.running,
 	}
 }
@@ -879,6 +907,7 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"phase":   startup.Phase,
 		"message": startup.Message,
+		"lines":   startup.Logs,
 		"running": startup.running,
 	})
 }

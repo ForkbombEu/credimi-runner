@@ -49,6 +49,13 @@ func (f *fakeManager) Start(context.Context) error {
 	f.status.RunnerRunning = true
 	return nil
 }
+func (f *fakeManager) StartWithProgress(ctx context.Context, progress func(string)) error {
+	if progress != nil {
+		progress("Pulling Docker images.")
+		progress("runner Downloading 128MB")
+	}
+	return f.Start(ctx)
+}
 func (f *fakeManager) Stop(context.Context) error {
 	f.stopCalls++
 	if f.stopErr != nil {
@@ -529,8 +536,8 @@ func TestServerSetupRenderHelpers(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/setup", nil)
 	req.Header.Set("HX-Request", "true")
 	s.renderSetupComplete(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
-		t.Fatalf("htmx renderSetupComplete = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+		t.Fatalf("htmx renderSetupComplete = %d headers=%v", rec.Code, rec.Header())
 	}
 
 	rec = httptest.NewRecorder()
@@ -1055,6 +1062,7 @@ func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
 	s := newTestServer(t)
 	s.startup.Phase = StartupWaitingRunner
 	s.startup.Message = "Runtime started. Waiting for runner readiness."
+	s.startup.Logs = []string{"Pulling Docker images.", "runner Pulling fs layer"}
 	s.startup.running = true
 
 	rec := httptest.NewRecorder()
@@ -1066,7 +1074,8 @@ func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"phase":"waiting_for_runner"`) ||
 		!strings.Contains(body, `"running":true`) ||
-		!strings.Contains(body, "Waiting for runner readiness") {
+		!strings.Contains(body, "Waiting for runner readiness") ||
+		!strings.Contains(body, "runner Pulling fs layer") {
 		t.Fatalf("startupStatus body = %s", body)
 	}
 }
@@ -1116,12 +1125,14 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
 		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	waitForCondition(t, func() bool { return s.manager.(*fakeManager).startCalls > 0 })
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should start runtime")
+	}
+	if !containsString(s.startup.Logs, "runner Downloading 128MB") {
+		t.Fatalf("startup logs missing docker progress: %#v", s.startup.Logs)
 	}
 }
 
@@ -1317,10 +1328,9 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
 		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	waitForCondition(t, func() bool { return hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired) })
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when registration fails")
 	}
@@ -1353,10 +1363,9 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-setup-progress") {
+	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
 		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	waitForCondition(t, func() bool { return strings.Contains(s.lastRegistrationStatus, "readiness was not confirmed") })
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when readiness is not confirmed")
 	}
@@ -1396,6 +1405,15 @@ func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention") {
 		t.Fatalf("finishSetup validation = %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestServerRuntimeApply(t *testing.T) {

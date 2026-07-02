@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -51,6 +53,7 @@ type CommandSpec struct {
 	Env      []string
 	Detached bool
 	LogPath  string
+	Stream   func(string)
 }
 
 type Runner interface {
@@ -66,7 +69,61 @@ func (ExecRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
 	if len(spec.Env) > 0 {
 		cmd.Env = spec.Env
 	}
+	if spec.Stream != nil {
+		return runStreaming(cmd, spec.Stream)
+	}
 	return cmd.CombinedOutput()
+}
+
+func runStreaming(cmd *exec.Cmd, stream func(string)) ([]byte, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	read := func(r io.Reader) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(r)
+		scanner.Split(scanDockerProgress)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			mu.Lock()
+			out.WriteString(line)
+			out.WriteByte('\n')
+			mu.Unlock()
+			stream(line)
+		}
+	}
+	wg.Add(2)
+	go read(stdout)
+	go read(stderr)
+	wg.Wait()
+	err = cmd.Wait()
+	return out.Bytes(), err
+}
+
+func scanDockerProgress(data []byte, atEOF bool) (int, []byte, error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func (ExecRunner) Start(ctx context.Context, spec CommandSpec) (*exec.Cmd, error) {
@@ -129,15 +186,25 @@ func NewLifecycleManager(binary, configDir string, values Values, runner Runner)
 }
 
 func (m *LifecycleManager) Start(ctx context.Context) error {
+	return m.start(ctx, nil)
+}
+
+func (m *LifecycleManager) StartWithProgress(ctx context.Context, progress func(string)) error {
+	return m.start(ctx, progress)
+}
+
+func (m *LifecycleManager) start(ctx context.Context, progress func(string)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	if plan.Backend == DefaultHostBackend {
 		if runnerAddressReachable(m.values, 500*time.Millisecond) {
+			emitProgress(progress, "Existing host runner is already reachable.")
 			m.status.RunnerRunning = true
 			m.status.LastStartedAt = time.Now()
 		} else if m.cmd == nil {
+			emitProgress(progress, "Starting detached host runner process.")
 			cmd, err := m.runner.Start(context.WithoutCancel(ctx), CommandSpec{
 				Name: m.binary,
 				Args: []string{
@@ -161,17 +228,27 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 	}
 
 	if len(plan.ComposeServices) > 0 {
+		emitProgress(progress, "Writing docker-compose.yaml.")
 		if err := WriteComposeFile(m.configDir, m.values); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
+		emitProgress(progress, "Stopping stale Docker services.")
 		if err := m.stopStaleComposeServicesLocked(ctx, plan); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
+		emitProgress(progress, "Pulling Docker images. Large runner images can take several minutes.")
+		pullArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "pull"}
+		pullArgs = append(pullArgs, plan.ComposeServices...)
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: progress}); err != nil {
+			m.status.LastError = err.Error()
+			return err
+		}
+		emitProgress(progress, "Starting Docker services.")
 		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d"}
 		args = append(args, plan.ComposeServices...)
-		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: progress}); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
@@ -182,6 +259,16 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 
 	m.status.PublicURL = resolvedRunnerPublicURL(m.values, "")
 	return nil
+}
+
+func emitProgress(progress func(string), message string) {
+	if progress != nil && strings.TrimSpace(message) != "" {
+		progress(message)
+	}
+}
+
+func composeProgressEnv() []string {
+	return append(os.Environ(), "COMPOSE_PROGRESS=plain", "DOCKER_CLI_HINTS=false")
 }
 
 func (m *LifecycleManager) stopStaleComposeServicesLocked(ctx context.Context, plan RuntimePlan) error {

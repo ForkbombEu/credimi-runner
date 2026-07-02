@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -26,7 +27,15 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, spec CommandSpec) ([]byte, error) {
 	f.runs = append(f.runs, spec)
 	if f.runOutput != nil || f.runErr != nil {
+		if spec.Stream != nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(f.runOutput)), "\n") {
+				spec.Stream(line)
+			}
+		}
 		return f.runOutput, f.runErr
+	}
+	if spec.Stream != nil {
+		spec.Stream("ok")
 	}
 	return []byte("ok"), nil
 }
@@ -64,10 +73,13 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if got := runner.starts[1]; got.Name != "docker" || !strings.Contains(strings.Join(got.Args, " "), "logs -f") {
 		t.Fatalf("log follower spec = %#v", got)
 	}
-	if len(runner.runs) != 2 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
+	if len(runner.runs) != 3 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
 		t.Fatalf("stale cleanup runs = %v", runner.runs)
 	}
-	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "compose") {
+	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "pull runner_host caddy tunnel") {
+		t.Fatalf("pull run = %v", runner.runs)
+	}
+	if runner.runs[2].Name != "docker" || !strings.Contains(strings.Join(runner.runs[2].Args, " "), "up -d runner_host caddy tunnel") {
 		t.Fatalf("runs = %v", runner.runs)
 	}
 	if _, err := os.Stat(filepath.Join(manager.configDir, "docker-compose.yaml")); err != nil {
@@ -126,6 +138,49 @@ func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
 	}
 	if status := manager.Status(context.Background()); !status.RunnerRunning {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestLifecycleManagerStartWithProgressStreamsComposePull(t *testing.T) {
+	runner := &fakeRunner{runOutput: []byte("runner Pulling fs layer\nrunner Downloading 128MB\nrunner Pull complete\n")}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "auto",
+	}, runner)
+	var progress []string
+	if err := manager.StartWithProgress(context.Background(), func(line string) {
+		progress = append(progress, line)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, "Pulling Docker images") || !strings.Contains(joined, "runner Downloading 128MB") || !strings.Contains(joined, "Starting Docker services") {
+		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func TestExecRunnerRunStreamsProgress(t *testing.T) {
+	if os.Getenv("CREDIMI_RUNNER_STREAM_HELPER") == "1" {
+		fmt.Fprint(os.Stdout, "runner Pulling fs layer\rrunner Downloading 128MB\n")
+		os.Exit(0)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestExecRunnerRunStreamsProgress")
+	cmd.Env = append(os.Environ(), "CREDIMI_RUNNER_STREAM_HELPER=1")
+	var lines []string
+	output, err := runStreaming(cmd, func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinedLines := strings.Join(lines, "\n")
+	if !strings.Contains(joinedLines, "runner Pulling fs layer") ||
+		!strings.Contains(joinedLines, "runner Downloading 128MB") {
+		t.Fatalf("lines = %#v", lines)
+	}
+	if !strings.Contains(string(output), "runner Downloading 128MB") {
+		t.Fatalf("output = %q", string(output))
 	}
 }
 
