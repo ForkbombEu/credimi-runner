@@ -1222,13 +1222,17 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 			return publicURL, "", nil
 		}
 		re := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
+		logTail := quickTunnelLogTail
+		if !status.LastStartedAt.IsZero() {
+			logTail = -quickTunnelLogTail
+		}
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		var lastErr error
 		for {
-			logs, err := s.manager.Logs(deadline, quickTunnelLogTail)
+			logs, err := s.manager.Logs(deadline, logTail)
 			if err != nil {
 				lastErr = err
 			} else {

@@ -31,6 +31,7 @@ type fakeManager struct {
 	downCalls        int
 	updateImageCalls int
 	logLines         []dashboardruntime.LogLine
+	logLinesSince    []dashboardruntime.LogLine
 	status           dashboardruntime.RuntimeStatus
 	startErr         error
 	stopErr          error
@@ -59,6 +60,9 @@ func (f *fakeManager) Stop(context.Context) error {
 }
 func (f *fakeManager) Restart(context.Context) error {
 	f.restartCalls++
+	if f.restartErr == nil {
+		f.status.LastStartedAt = time.Now()
+	}
 	return f.restartErr
 }
 func (f *fakeManager) Down(context.Context) error {
@@ -77,6 +81,9 @@ func (f *fakeManager) SetPublicURL(publicURL string)                         { f
 func (f *fakeManager) Status(context.Context) dashboardruntime.RuntimeStatus { return f.status }
 func (f *fakeManager) Logs(_ context.Context, tail int) ([]dashboardruntime.LogLine, error) {
 	f.logTail = tail
+	if tail > 0 && f.logLinesSince != nil {
+		return f.logLinesSince, nil
+	}
 	return f.logLines, nil
 }
 
@@ -932,6 +939,28 @@ func TestResolveRegistrationEndpointBranches(t *testing.T) {
 	})
 	if err != nil || url != "https://cached.example.trycloudflare.com" {
 		t.Fatalf("resolveRegistrationEndpoint cached auto URL = %q %v", url, err)
+	}
+
+	manager = &fakeManager{
+		status: dashboardruntime.RuntimeStatus{
+			LastStartedAt: time.Now(),
+		},
+		logLines: []dashboardruntime.LogLine{
+			{Message: "INF quick tunnel ready at https://old.example.trycloudflare.com"},
+		},
+		logLinesSince: []dashboardruntime.LogLine{
+			{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"},
+		},
+	}
+	s.manager = manager
+	url, _, err = s.resolveRegistrationEndpoint(context.Background(), map[string]string{
+		"CREDIMI_SERVICE_MODE": "auto",
+	})
+	if err != nil || url != "https://fresh.example.trycloudflare.com" {
+		t.Fatalf("resolveRegistrationEndpoint restarted auto URL = %q %v", url, err)
+	}
+	if manager.logTail <= 0 {
+		t.Fatalf("restarted auto URL should use current-start logs, tail = %d", manager.logTail)
 	}
 }
 
