@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,15 +65,20 @@ const (
 	StartupNeedsAttention StartupPhase = "needs_attention"
 )
 
-const quickTunnelLogTail = -1000
+const (
+	quickTunnelLogTail = -1000
+	startupLogRetain   = 2000
+)
 
 type startupState struct {
-	Phase   StartupPhase
-	Message string
-	Logs    []string
-	running bool
-	cancel  context.CancelFunc
-	done    chan struct{}
+	Phase     StartupPhase
+	Message   string
+	Logs      []string
+	LogBase   int64
+	LogNextID int64
+	running   bool
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 type managerProgressStarter interface {
@@ -548,13 +554,15 @@ func (s *Server) startStartupJob(values map[string]string) {
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
 	s.startup = startupState{
-		Phase:   StartupStarting,
-		Message: "Setup saved. Starting runtime.",
-		Logs:    []string{"Setup saved. Starting runtime."},
-		running: true,
-		cancel:  cancel,
-		done:    done,
+		Phase:     StartupStarting,
+		Message:   "Setup saved. Starting runtime.",
+		LogBase:   1,
+		LogNextID: 1,
+		running:   true,
+		cancel:    cancel,
+		done:      done,
 	}
+	s.appendStartupLogLocked("Setup saved. Starting runtime.")
 	s.lastRegistrationStatus = s.startup.Message
 	s.mu.Unlock()
 
@@ -621,7 +629,7 @@ func (s *Server) setStartupState(phase StartupPhase, message string) {
 	s.startup.Phase = phase
 	s.startup.Message = message
 	if strings.TrimSpace(message) != "" {
-		s.startup.Logs = appendStartupLogLine(s.startup.Logs, message)
+		s.appendStartupLogLocked(message)
 	}
 	s.lastRegistrationStatus = message
 	s.mu.Unlock()
@@ -634,28 +642,38 @@ func (s *Server) appendStartupLog(message string) {
 		return
 	}
 	s.mu.Lock()
-	s.startup.Logs = appendStartupLogLine(s.startup.Logs, message)
+	s.appendStartupLogLocked(message)
 	s.mu.Unlock()
 }
 
-func appendStartupLogLine(logs []string, message string) []string {
-	if len(logs) == 0 || logs[len(logs)-1] != message {
-		logs = append(logs, message)
+func (s *Server) appendStartupLogLocked(message string) {
+	if s.startup.LogBase == 0 {
+		s.startup.LogBase = 1
 	}
-	if len(logs) > 300 {
-		logs = logs[len(logs)-300:]
+	if s.startup.LogNextID == 0 {
+		s.startup.LogNextID = s.startup.LogBase + int64(len(s.startup.Logs))
 	}
-	return logs
+	if len(s.startup.Logs) > 0 && s.startup.Logs[len(s.startup.Logs)-1] == message {
+		return
+	}
+	s.startup.Logs = append(s.startup.Logs, message)
+	s.startup.LogNextID++
+	if extra := len(s.startup.Logs) - startupLogRetain; extra > 0 {
+		s.startup.Logs = append([]string(nil), s.startup.Logs[extra:]...)
+		s.startup.LogBase += int64(extra)
+	}
 }
 
 func (s *Server) startupSnapshot() startupState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return startupState{
-		Phase:   s.startup.Phase,
-		Message: s.startup.Message,
-		Logs:    append([]string(nil), s.startup.Logs...),
-		running: s.startup.running,
+		Phase:     s.startup.Phase,
+		Message:   s.startup.Message,
+		Logs:      append([]string(nil), s.startup.Logs...),
+		LogBase:   s.startup.LogBase,
+		LogNextID: s.startup.LogNextID,
+		running:   s.startup.running,
 	}
 }
 
@@ -909,10 +927,22 @@ func (s *Server) runtimeLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	startup := s.startupSnapshot()
+	lines := startup.Logs
+	if since, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("since")), 10, 64); err == nil && since > 0 {
+		start := 0
+		if startup.LogBase > 0 && since >= startup.LogBase {
+			start = int(since - startup.LogBase)
+			if start > len(lines) {
+				start = len(lines)
+			}
+		}
+		lines = lines[start:]
+	}
 	writeJSON(w, map[string]any{
 		"phase":   startup.Phase,
 		"message": startup.Message,
-		"lines":   startup.Logs,
+		"lines":   lines,
+		"next_id": startup.LogNextID,
 		"running": startup.running,
 	})
 }

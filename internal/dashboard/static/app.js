@@ -51,6 +51,7 @@
   let busyLogTimer = null;
   let busyStartupTimer = null;
   let busyLogSeen = new Set();
+  let busyStartupNextID = 0;
   const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering']);
   function busyOverlay() { return $('#busy-overlay'); }
   function busyLogNode() {
@@ -77,12 +78,14 @@
   }
   async function pollBusyStartupStatus() {
     try {
-      const res = await fetch('/startup/status', { headers: { Accept: 'application/json' } });
+      const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
       if (!res.ok) return;
       const data = await res.json();
       const phase = String(data.phase || '');
       const message = String(data.message || '');
-      (data.lines || []).slice(-80).forEach(appendBusyLog);
+      (data.lines || []).forEach(appendBusyLog);
+      if (Number.isFinite(Number(data.next_id))) busyStartupNextID = Number(data.next_id);
       if (message) {
         const overlay = busyOverlay();
         const messageNode = overlay && $('[data-busy-message]', overlay);
@@ -104,7 +107,7 @@
       }
     } catch (_) {}
   }
-  function showBusy(message) {
+  function showBusy(message, options = {}) {
     const overlay = busyOverlay();
     if (!overlay) return;
     const messageNode = $('[data-busy-message]', overlay);
@@ -112,12 +115,15 @@
     const log = busyLogNode();
     busyLogSeen = new Set();
     if (log) log.textContent = '';
+    busyStartupNextID = 0;
     appendBusyLog(message || 'Starting runtime operation.');
     appendBusyLog('Writing configuration and preparing Docker services.');
     appendBusyLog('Large runner images can take several minutes the first time.');
     clearInterval(busyLogTimer);
-    pollBusyLogs();
-    busyLogTimer = setInterval(pollBusyLogs, 1500);
+    if (options.runtimeLogs !== false) {
+      pollBusyLogs();
+      busyLogTimer = setInterval(pollBusyLogs, 1500);
+    }
     overlay.hidden = false;
     document.body.classList.add('busy-lock');
   }
@@ -132,7 +138,7 @@
     document.body.classList.remove('busy-lock');
   }
   function showSetupBusy(message) {
-    showBusy(message || 'Writing runner config and starting services. Keep this page open.');
+    showBusy(message || 'Writing runner config and starting services. Keep this page open.', { runtimeLogs: false });
     clearInterval(busyStartupTimer);
     pollBusyStartupStatus();
     busyStartupTimer = setInterval(pollBusyStartupStatus, 1500);

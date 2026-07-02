@@ -1063,6 +1063,8 @@ func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
 	s.startup.Phase = StartupWaitingRunner
 	s.startup.Message = "Runtime started. Waiting for runner readiness."
 	s.startup.Logs = []string{"Pulling Docker images.", "runner Pulling fs layer"}
+	s.startup.LogBase = 1
+	s.startup.LogNextID = 3
 	s.startup.running = true
 
 	rec := httptest.NewRecorder()
@@ -1074,9 +1076,21 @@ func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"phase":"waiting_for_runner"`) ||
 		!strings.Contains(body, `"running":true`) ||
+		!strings.Contains(body, `"next_id":3`) ||
 		!strings.Contains(body, "Waiting for runner readiness") ||
 		!strings.Contains(body, "runner Pulling fs layer") {
 		t.Fatalf("startupStatus body = %s", body)
+	}
+
+	s.appendStartupLog("runner Downloading 128MB")
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/startup/status?since=3", nil)
+	s.startupStatus(rec, req)
+	body = rec.Body.String()
+	if strings.Contains(body, "runner Pulling fs layer") ||
+		!strings.Contains(body, "runner Downloading 128MB") ||
+		!strings.Contains(body, `"next_id":4`) {
+		t.Fatalf("startupStatus cursor body = %s", body)
 	}
 }
 
