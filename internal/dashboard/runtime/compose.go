@@ -84,13 +84,13 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 		builder.WriteString("    network_mode: host\n")
 	} else {
 		builder.WriteString("    expose:\n")
-		fmt.Fprintf(builder, "      - \"%s\"\n", DefaultRunnerPort)
+		fmt.Fprintf(builder, "      - \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	}
 	builder.WriteString("    labels:\n      caddy: \"${RUNNER_CADDY_SITE:-:80}\"\n")
 	if networkMode == "host" {
 		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"127.0.0.1:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	} else {
-		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"{{upstreams %s}}\"\n", DefaultRunnerPort)
+		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"{{upstreams ${RUNNER_PORT:-%s}}}\"\n", DefaultRunnerPort)
 	}
 	if networkMode != "host" {
 		builder.WriteString("    networks:\n      - ingress\n")
