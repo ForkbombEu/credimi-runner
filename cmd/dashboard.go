@@ -31,6 +31,8 @@ var (
 	dashboardRegistrationTimeout = 30 * time.Second
 )
 
+const quickTunnelLogTail = -1000
+
 var openDashboardBrowserFunc = openDashboardBrowser
 
 func runDashboard(cmd *cobra.Command, args []string) error {
@@ -331,7 +333,7 @@ func resolveDashboardRegistrationEndpoint(ctx context.Context, manager dashboard
 		defer cancel()
 		var lastErr error
 		for {
-			logs, err := manager.Logs(deadline, 200)
+			logs, err := manager.Logs(deadline, quickTunnelLogTail)
 			if err != nil {
 				lastErr = err
 			} else {

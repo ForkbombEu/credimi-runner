@@ -37,6 +37,7 @@ type fakeManager struct {
 	restartErr       error
 	downErr          error
 	updateImageErr   error
+	logTail          int
 }
 
 func (f *fakeManager) Start(context.Context) error {
@@ -74,7 +75,8 @@ func (f *fakeManager) Configure(values dashboardruntime.Values) {
 }
 func (f *fakeManager) SetPublicURL(publicURL string)                         { f.status.PublicURL = publicURL }
 func (f *fakeManager) Status(context.Context) dashboardruntime.RuntimeStatus { return f.status }
-func (f *fakeManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
+func (f *fakeManager) Logs(_ context.Context, tail int) ([]dashboardruntime.LogLine, error) {
+	f.logTail = tail
 	return f.logLines, nil
 }
 
@@ -892,14 +894,18 @@ func TestResolveRegistrationEndpointBranches(t *testing.T) {
 		t.Fatalf("expected runtime manager unavailable, got %v", err)
 	}
 
-	s.manager = &fakeManager{logLines: []dashboardruntime.LogLine{
+	manager := &fakeManager{logLines: []dashboardruntime.LogLine{
 		{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
 	}}
+	s.manager = manager
 	url, port, err := s.resolveRegistrationEndpoint(context.Background(), map[string]string{
 		"CREDIMI_SERVICE_MODE": "auto",
 	})
 	if err != nil || url != "https://runner.example.trycloudflare.com" || port != "" {
 		t.Fatalf("resolveRegistrationEndpoint auto = %q %q %v", url, port, err)
+	}
+	if manager.logTail != quickTunnelLogTail {
+		t.Fatalf("registration log tail = %d, want %d", manager.logTail, quickTunnelLogTail)
 	}
 
 	url, port, err = s.resolveRegistrationEndpoint(context.Background(), map[string]string{

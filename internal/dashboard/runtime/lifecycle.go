@@ -622,7 +622,11 @@ func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error
 
 func composeLogArgs(plan RuntimePlan, tail int, since time.Time) []string {
 	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs"}
-	if !since.IsZero() {
+	includeHistory := tail < 0
+	if includeHistory {
+		tail = -tail
+	}
+	if !since.IsZero() && !includeHistory {
 		args = append(args, "--since", since.UTC().Format(time.RFC3339))
 	}
 	args = append(args, "--tail", fmt.Sprintf("%d", tail))

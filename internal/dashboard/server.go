@@ -64,6 +64,8 @@ const (
 	StartupNeedsAttention StartupPhase = "needs_attention"
 )
 
+const quickTunnelLogTail = -1000
+
 type startupState struct {
 	Phase   StartupPhase
 	Message string
@@ -1168,7 +1170,7 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 		defer cancel()
 		var lastErr error
 		for {
-			logs, err := s.manager.Logs(deadline, 200)
+			logs, err := s.manager.Logs(deadline, quickTunnelLogTail)
 			if err != nil {
 				lastErr = err
 			} else {

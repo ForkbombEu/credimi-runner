@@ -377,3 +377,15 @@ func TestComposeLogArgsIncludesSince(t *testing.T) {
 		t.Fatalf("composeLogArgs missing --since: %#v", args)
 	}
 }
+
+func TestComposeLogArgsCanIncludeHistoricalLogs(t *testing.T) {
+	plan := RuntimePlan{EnvPath: "/tmp/.env", ComposePath: "/tmp/docker-compose.yaml"}
+	args := composeLogArgs(plan, -1000, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--since") {
+		t.Fatalf("historical composeLogArgs should omit --since: %#v", args)
+	}
+	if !strings.Contains(joined, "--tail 1000") {
+		t.Fatalf("historical composeLogArgs tail = %#v", args)
+	}
+}

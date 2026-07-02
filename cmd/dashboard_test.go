@@ -26,6 +26,7 @@ type dashboardFakeManager struct {
 	status      dashboardruntime.RuntimeStatus
 	startErr    error
 	logDeadline time.Time
+	logTail     int
 }
 
 func (f *dashboardFakeManager) Start(context.Context) error {
@@ -43,7 +44,8 @@ func (f *dashboardFakeManager) SetPublicURL(publicURL string) {
 func (f *dashboardFakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
 	return f.status
 }
-func (f *dashboardFakeManager) Logs(ctx context.Context, _ int) ([]dashboardruntime.LogLine, error) {
+func (f *dashboardFakeManager) Logs(ctx context.Context, tail int) ([]dashboardruntime.LogLine, error) {
+	f.logTail = tail
 	if deadline, ok := ctx.Deadline(); ok {
 		f.logDeadline = deadline
 	}
@@ -357,6 +359,9 @@ func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
 	}
 	if manager.logDeadline.IsZero() || time.Until(manager.logDeadline) < 20*time.Second {
 		t.Fatalf("registration log scan deadline = %v, want startup window near %s", manager.logDeadline, dashboardRegistrationTimeout)
+	}
+	if manager.logTail != quickTunnelLogTail {
+		t.Fatalf("registration log tail = %d, want %d", manager.logTail, quickTunnelLogTail)
 	}
 }
 
