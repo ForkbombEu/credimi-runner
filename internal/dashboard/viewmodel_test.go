@@ -173,6 +173,25 @@ func TestPageDataAdditionalHelpers(t *testing.T) {
 	}
 }
 
+func TestPageDataAndroidDevicesIncludesOnlineADBEmulators(t *testing.T) {
+	d := PageData{
+		Snapshot: Snapshot{Devices: []Device{
+			{Serial: "emulator-5554", Name: "Pixel test", Type: "android_emulator", OS: "Android", Status: Online},
+			{Serial: "device-1", Name: "Phone", Type: "android_phone", OS: "Android", Status: Online},
+			{Serial: "offline-1", Name: "Offline", Type: "android_phone", OS: "Android", Status: Offline},
+			{Serial: "ios-1", Name: "iPhone", Type: "ios_simulator", OS: "iOS", Status: Online},
+		}},
+	}
+
+	devices := d.AndroidDevices()
+	if len(devices) != 2 {
+		t.Fatalf("AndroidDevices count = %d, devices = %#v", len(devices), devices)
+	}
+	if devices[0].Serial != "emulator-5554" || devices[1].Serial != "device-1" {
+		t.Fatalf("AndroidDevices = %#v", devices)
+	}
+}
+
 func TestRunnerTypeChoiceHelpers(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "darwin")
 	cfg := &Config{values: map[string]string{

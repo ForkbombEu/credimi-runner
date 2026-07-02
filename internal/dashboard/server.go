@@ -672,7 +672,7 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 	}
 	if normalized["CREDIMI_RUNNER_TYPE"] == "android_phone" &&
 		normalized["CREDIMI_RUNNER_DEVICE_MODE"] == "usb" &&
-		!s.androidPhoneSerialConnected(normalized["CREDIMI_RUNNER_SERIAL"]) {
+		!s.androidSerialConnected(normalized["CREDIMI_RUNNER_SERIAL"]) {
 		return errors.New("select a connected Android device")
 	}
 	if normalized["CREDIMI_RUNNER_TYPE"] == "android_emulator" && plan.Backend == dashboardruntime.DefaultContainerBackend {
@@ -695,13 +695,13 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 	return nil
 }
 
-func (s *Server) androidPhoneSerialConnected(serial string) bool {
+func (s *Server) androidSerialConnected(serial string) bool {
 	serial = strings.TrimSpace(serial)
 	if serial == "" {
 		return false
 	}
 	for _, device := range s.hub.CurrentSnapshot().Devices {
-		if device.Type == "android_phone" && device.Status == Online && device.Serial == serial {
+		if isAndroidADBDevice(device) && device.Status == Online && device.Serial == serial {
 			return true
 		}
 	}

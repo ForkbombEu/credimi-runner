@@ -1486,6 +1486,14 @@ func TestValidateRuntimeRequirements(t *testing.T) {
 		t.Fatalf("validateRuntimeRequirements = %v", err)
 	}
 
+	s.hub.snap.Devices = []Device{
+		{Serial: "emulator-5554", Name: "Pixel test", Type: "android_emulator", Mode: "emulator", OS: "Android", Status: Online},
+	}
+	values["CREDIMI_RUNNER_SERIAL"] = "emulator-5554"
+	if err := s.validateRuntimeRequirements(values); err != nil {
+		t.Fatalf("validateRuntimeRequirements emulator serial = %v", err)
+	}
+
 	s.lookupPath = func(name string) (string, error) {
 		if name == "docker" {
 			return "", os.ErrNotExist
