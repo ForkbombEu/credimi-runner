@@ -47,8 +47,11 @@
   document.body.addEventListener('closeModal', () => closeModals());
 
   // ── Global busy overlay for runtime-changing requests ───────────────────
+  const setupBusyKey = 'credimi-runner:setup-startup-busy';
   let busyLogTimer = null;
+  let busyStartupTimer = null;
   let busyLogSeen = new Set();
+  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering']);
   function busyOverlay() { return $('#busy-overlay'); }
   function busyLogNode() {
     const overlay = busyOverlay();
@@ -72,6 +75,27 @@
       (data.lines || []).slice(-24).forEach(appendBusyLog);
     } catch (_) {}
   }
+  async function pollBusyStartupStatus() {
+    try {
+      const res = await fetch('/startup/status', { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      const phase = String(data.phase || '');
+      const message = String(data.message || '');
+      if (message) {
+        const overlay = busyOverlay();
+        const messageNode = overlay && $('[data-busy-message]', overlay);
+        if (messageNode) messageNode.textContent = message;
+        appendBusyLog(message);
+      }
+      if (!startupBusyPhases.has(phase)) {
+        sessionStorage.removeItem(setupBusyKey);
+        if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
+        if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
+        setTimeout(hideBusy, phase === 'needs_attention' ? 2500 : 1000);
+      }
+    } catch (_) {}
+  }
   function showBusy(message) {
     const overlay = busyOverlay();
     if (!overlay) return;
@@ -93,9 +117,25 @@
     const overlay = busyOverlay();
     if (!overlay) return;
     clearInterval(busyLogTimer);
+    clearInterval(busyStartupTimer);
     busyLogTimer = null;
+    busyStartupTimer = null;
     overlay.hidden = true;
     document.body.classList.remove('busy-lock');
+  }
+  function showSetupBusy(message) {
+    showBusy(message || 'Writing runner config and starting services. Keep this page open.');
+    clearInterval(busyStartupTimer);
+    pollBusyStartupStatus();
+    busyStartupTimer = setInterval(pollBusyStartupStatus, 1500);
+  }
+  function resumeSetupBusyIfNeeded() {
+    const overlay = busyOverlay();
+    const phase = overlay && overlay.dataset.startupPhase;
+    const message = (overlay && overlay.dataset.startupMessage) || sessionStorage.getItem(setupBusyKey) || '';
+    if (startupBusyPhases.has(phase) || sessionStorage.getItem(setupBusyKey)) {
+      showSetupBusy(message);
+    }
   }
   function busyTriggerForElement(el) {
     if (!el) return null;
@@ -110,16 +150,33 @@
     const trigger = busyTriggerForElement(e.detail.elt);
     if (!trigger) return;
     const message = trigger.dataset.busyMessage || 'Applying runtime change. Keep this page open.';
+    if (trigger.matches('[data-setup-form]')) {
+      sessionStorage.setItem(setupBusyKey, message);
+      showSetupBusy(message);
+      return;
+    }
     showBusy(message);
   });
   document.body.addEventListener('htmx:afterRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
     const wasBusy = !!trigger;
     if (trigger && trigger.matches('[data-config-form]')) delete trigger.dataset.busyActive;
+    if (trigger && trigger.matches('[data-setup-form]')) {
+      const redirected = e.detail.xhr && e.detail.xhr.getResponseHeader('HX-Redirect');
+      if (redirected && e.detail.successful !== false) return;
+      sessionStorage.removeItem(setupBusyKey);
+    }
     if (wasBusy) hideBusy();
   });
-  document.body.addEventListener('htmx:responseError', hideBusy);
-  document.body.addEventListener('htmx:sendError', hideBusy);
+  document.body.addEventListener('htmx:responseError', () => {
+    sessionStorage.removeItem(setupBusyKey);
+    hideBusy();
+  });
+  document.body.addEventListener('htmx:sendError', () => {
+    sessionStorage.removeItem(setupBusyKey);
+    hideBusy();
+  });
+  resumeSetupBusyIfNeeded();
 
   // ── Modal open / close ───────────────────────────────────────────────────
   function closeModals() { $$('.modal-bk').forEach((m) => (m.hidden = true)); }

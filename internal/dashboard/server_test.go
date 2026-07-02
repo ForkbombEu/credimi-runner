@@ -1051,6 +1051,26 @@ func TestRuntimeLogsReturnsRecentLines(t *testing.T) {
 	}
 }
 
+func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
+	s := newTestServer(t)
+	s.startup.Phase = StartupWaitingRunner
+	s.startup.Message = "Runtime started. Waiting for runner readiness."
+	s.startup.running = true
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/startup/status", nil)
+	s.startupStatus(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("startupStatus = %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"phase":"waiting_for_runner"`) ||
+		!strings.Contains(body, `"running":true`) ||
+		!strings.Contains(body, "Waiting for runner readiness") {
+		t.Fatalf("startupStatus body = %s", body)
+	}
+}
+
 func TestServerSaveAndFinishSetup(t *testing.T) {
 	s := newTestServer(t)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

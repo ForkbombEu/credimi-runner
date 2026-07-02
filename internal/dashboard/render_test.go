@@ -224,6 +224,9 @@ func TestRenderer_SetupPage(t *testing.T) {
 	if !strings.Contains(html, `data-busy-log`) {
 		t.Errorf("base template missing busy log output")
 	}
+	if !strings.Contains(html, `data-startup-phase=`) || !strings.Contains(html, `data-startup-message=`) {
+		t.Errorf("base template missing startup state on busy overlay")
+	}
 	if strings.Contains(html, "data-runner-conflict-choice") {
 		t.Errorf("setup page should not render inline runner conflict controls")
 	}

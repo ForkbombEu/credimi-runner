@@ -176,6 +176,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
 	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
 	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
+	mux.HandleFunc("GET /startup/status", s.startupStatus)
 
 	// Device actions
 	mux.HandleFunc("POST /devices/config", s.saveDevicesConfig)
@@ -865,6 +866,15 @@ func (s *Server) runtimeLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"lines": lines})
+}
+
+func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
+	startup := s.startupSnapshot()
+	writeJSON(w, map[string]any{
+		"phase":   startup.Phase,
+		"message": startup.Message,
+		"running": startup.running,
+	})
 }
 
 func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
