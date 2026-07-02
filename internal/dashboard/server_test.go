@@ -536,7 +536,7 @@ func TestServerSetupRenderHelpers(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/setup", nil)
 	req.Header.Set("HX-Request", "true")
 	s.renderSetupComplete(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
 		t.Fatalf("htmx renderSetupComplete = %d headers=%v", rec.Code, rec.Header())
 	}
 
@@ -1125,14 +1125,18 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
 		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
+	waitForCondition(t, func() bool {
+		return s.manager.(*fakeManager).startCalls > 0
+	})
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should start runtime")
 	}
-	if !containsString(s.startup.Logs, "runner Downloading 128MB") {
-		t.Fatalf("startup logs missing docker progress: %#v", s.startup.Logs)
+	startup := s.startupSnapshot()
+	if !containsString(startup.Logs, "runner Downloading 128MB") {
+		t.Fatalf("startup logs missing docker progress: %#v", startup.Logs)
 	}
 }
 
@@ -1328,9 +1332,12 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
 		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
+	waitForCondition(t, func() bool {
+		return strings.Contains(s.startupSnapshot().Message, "Credimi registration failed")
+	})
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when registration fails")
 	}
@@ -1363,9 +1370,12 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
 	s.finishSetup(rec, req)
-	if rec.Code != http.StatusNoContent || rec.Header().Get("HX-Redirect") != "/" {
+	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
 		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
+	waitForCondition(t, func() bool {
+		return strings.Contains(s.startupSnapshot().Message, "readiness was not confirmed")
+	})
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when readiness is not confirmed")
 	}

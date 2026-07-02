@@ -97,7 +97,10 @@
         sessionStorage.removeItem(setupBusyKey);
         if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
         if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
-        setTimeout(hideBusy, phase === 'needs_attention' ? 2500 : 1000);
+        clearInterval(busyStartupTimer);
+        busyStartupTimer = null;
+        const delay = phase === 'needs_attention' ? 2500 : 1000;
+        setTimeout(() => { window.location.assign('/'); }, delay);
       }
     } catch (_) {}
   }
@@ -169,6 +172,7 @@
     if (trigger && trigger.matches('[data-setup-form]')) {
       const redirected = e.detail.xhr && e.detail.xhr.getResponseHeader('HX-Redirect');
       if (redirected && e.detail.successful !== false) return;
+      if (e.detail.successful !== false) return;
       sessionStorage.removeItem(setupBusyKey);
     }
     if (wasBusy) hideBusy();

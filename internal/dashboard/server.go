@@ -523,24 +523,27 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.runStartupJobBlocking(r.Context(), values)
+	s.startStartupJob(values)
 	s.renderSetupComplete(w, r)
 }
 
 func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/")
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	w.Header().Set("Location", "/")
 	w.WriteHeader(http.StatusSeeOther)
 }
 
-func (s *Server) runStartupJobBlocking(parent context.Context, values map[string]string) {
+func (s *Server) startStartupJob(values map[string]string) {
 	s.mu.Lock()
 	if s.startup.running && s.startup.cancel != nil {
 		s.startup.cancel()
+	}
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
@@ -556,15 +559,17 @@ func (s *Server) runStartupJobBlocking(parent context.Context, values map[string
 	s.mu.Unlock()
 
 	s.hub.poll(context.Background())
-	s.runStartupJob(ctx, cloneStringMap(values))
-	s.mu.Lock()
-	if s.startup.done == done {
-		s.startup.running = false
-		s.startup.cancel = nil
-	}
-	close(done)
-	s.mu.Unlock()
-	cancel()
+	go func() {
+		defer cancel()
+		defer close(done)
+		s.runStartupJob(ctx, cloneStringMap(values))
+		s.mu.Lock()
+		if s.startup.done == done {
+			s.startup.running = false
+			s.startup.cancel = nil
+		}
+		s.mu.Unlock()
+	}()
 }
 
 func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
