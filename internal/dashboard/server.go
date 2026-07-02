@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,12 +65,24 @@ const (
 	StartupNeedsAttention StartupPhase = "needs_attention"
 )
 
+const (
+	quickTunnelLogTail = -1000
+	startupLogRetain   = 2000
+)
+
 type startupState struct {
-	Phase   StartupPhase
-	Message string
-	running bool
-	cancel  context.CancelFunc
-	done    chan struct{}
+	Phase     StartupPhase
+	Message   string
+	Logs      []string
+	LogBase   int64
+	LogNextID int64
+	running   bool
+	cancel    context.CancelFunc
+	done      chan struct{}
+}
+
+type managerProgressStarter interface {
+	StartWithProgress(context.Context, func(string)) error
 }
 
 // NewHandler creates the dashboard HTTP handler for mounting into an existing
@@ -173,6 +186,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/update-image", s.runtimeUpdateImage)
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
 	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
+	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
+	mux.HandleFunc("GET /startup/status", s.startupStatus)
 
 	// Device actions
 	mux.HandleFunc("POST /devices/config", s.saveDevicesConfig)
@@ -433,6 +448,9 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 	status := s.manager.Status(ctx)
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
 	if runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)) {
+		if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
+			s.manager.SetPublicURL("")
+		}
 		if err := s.manager.Restart(ctx); err != nil {
 			return outcome, err
 		}
@@ -517,8 +535,7 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/")
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	w.Header().Set("Location", "/")
@@ -527,34 +544,40 @@ func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startStartupJob(values map[string]string) {
 	s.mu.Lock()
-	waitFor := s.startup.done
 	if s.startup.running && s.startup.cancel != nil {
 		s.startup.cancel()
 	}
-	ctx, cancel := context.WithCancel(s.ctx)
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
-	s.startup.running = true
-	s.startup.cancel = cancel
-	s.startup.done = done
-	s.startup.Phase = StartupStarting
-	s.startup.Message = "Setup saved. Starting runtime."
+	s.startup = startupState{
+		Phase:     StartupStarting,
+		Message:   "Setup saved. Starting runtime.",
+		LogBase:   1,
+		LogNextID: 1,
+		running:   true,
+		cancel:    cancel,
+		done:      done,
+	}
+	s.appendStartupLogLocked("Setup saved. Starting runtime.")
 	s.lastRegistrationStatus = s.startup.Message
 	s.mu.Unlock()
 
 	s.hub.poll(context.Background())
-	go func(wait <-chan struct{}, values map[string]string, ctx context.Context, done chan struct{}) {
-		if wait != nil {
-			<-wait
-		}
+	go func() {
+		defer cancel()
 		defer close(done)
-		s.runStartupJob(ctx, values)
+		s.runStartupJob(ctx, cloneStringMap(values))
 		s.mu.Lock()
-		defer s.mu.Unlock()
 		if s.startup.done == done {
 			s.startup.running = false
 			s.startup.cancel = nil
 		}
-	}(waitFor, cloneStringMap(values), ctx, done)
+		s.mu.Unlock()
+	}()
 }
 
 func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
@@ -562,7 +585,14 @@ func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
 		s.setStartupState(StartupReady, "Setup saved.")
 		return
 	}
-	if err := s.manager.Start(ctx); err != nil {
+	s.appendStartupLog("Starting runtime services.")
+	var err error
+	if starter, ok := s.manager.(managerProgressStarter); ok {
+		err = starter.StartWithProgress(ctx, s.appendStartupLog)
+	} else {
+		err = s.manager.Start(ctx)
+	}
+	if err != nil {
 		s.setStartupState(StartupNeedsAttention, "Setup saved, but runtime start failed: "+err.Error())
 		return
 	}
@@ -579,7 +609,7 @@ func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
 	}
 	s.setStartupState(StartupRegistering, "Runtime started. Updating Credimi registration.")
 	registerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err := s.registerCurrent(registerCtx, values)
+	err = s.registerCurrent(registerCtx, values)
 	cancel()
 	if err != nil {
 		s.mu.Lock()
@@ -598,18 +628,52 @@ func (s *Server) setStartupState(phase StartupPhase, message string) {
 	s.mu.Lock()
 	s.startup.Phase = phase
 	s.startup.Message = message
+	if strings.TrimSpace(message) != "" {
+		s.appendStartupLogLocked(message)
+	}
 	s.lastRegistrationStatus = message
 	s.mu.Unlock()
 	s.hub.poll(context.Background())
+}
+
+func (s *Server) appendStartupLog(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	s.mu.Lock()
+	s.appendStartupLogLocked(message)
+	s.mu.Unlock()
+}
+
+func (s *Server) appendStartupLogLocked(message string) {
+	if s.startup.LogBase == 0 {
+		s.startup.LogBase = 1
+	}
+	if s.startup.LogNextID == 0 {
+		s.startup.LogNextID = s.startup.LogBase + int64(len(s.startup.Logs))
+	}
+	if len(s.startup.Logs) > 0 && s.startup.Logs[len(s.startup.Logs)-1] == message {
+		return
+	}
+	s.startup.Logs = append(s.startup.Logs, message)
+	s.startup.LogNextID++
+	if extra := len(s.startup.Logs) - startupLogRetain; extra > 0 {
+		s.startup.Logs = append([]string(nil), s.startup.Logs[extra:]...)
+		s.startup.LogBase += int64(extra)
+	}
 }
 
 func (s *Server) startupSnapshot() startupState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return startupState{
-		Phase:   s.startup.Phase,
-		Message: s.startup.Message,
-		running: s.startup.running,
+		Phase:     s.startup.Phase,
+		Message:   s.startup.Message,
+		Logs:      append([]string(nil), s.startup.Logs...),
+		LogBase:   s.startup.LogBase,
+		LogNextID: s.startup.LogNextID,
+		running:   s.startup.running,
 	}
 }
 
@@ -623,6 +687,11 @@ func validateSetupInput(values map[string]string) map[string]string {
 	}
 	if strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]) == "" && strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
 		errs["CREDIMI_RUNNER_NAME"] = "Required."
+	}
+	if strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) == "android_phone" &&
+		strings.TrimSpace(values["CREDIMI_RUNNER_DEVICE_MODE"]) != "wifi" &&
+		strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]) == "" {
+		errs["CREDIMI_RUNNER_SERIAL"] = "Select a connected Android device."
 	}
 	if strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) == "manual" && strings.TrimSpace(values["RUNNER_PUBLIC_URL"]) == "" {
 		errs["RUNNER_PUBLIC_URL"] = "Required."
@@ -659,6 +728,11 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 			return errors.New("xcrun simctl is required for iOS simulator runners")
 		}
 	}
+	if normalized["CREDIMI_RUNNER_TYPE"] == "android_phone" &&
+		normalized["CREDIMI_RUNNER_DEVICE_MODE"] == "usb" &&
+		!s.androidSerialConnected(normalized["CREDIMI_RUNNER_SERIAL"]) {
+		return errors.New("select a connected Android device")
+	}
 	if normalized["CREDIMI_RUNNER_TYPE"] == "android_emulator" && plan.Backend == dashboardruntime.DefaultContainerBackend {
 		if _, err := s.statPath("/dev/kvm"); err != nil {
 			return errors.New("/dev/kvm is required for Android emulator containers")
@@ -677,6 +751,19 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 		}
 	}
 	return nil
+}
+
+func (s *Server) androidSerialConnected(serial string) bool {
+	serial = strings.TrimSpace(serial)
+	if serial == "" {
+		return false
+	}
+	for _, device := range s.hub.CurrentSnapshot().Devices {
+		if isAndroidADBDevice(device) && device.Status == Online && device.Serial == serial {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) lookupSetupOrganization(w http.ResponseWriter, r *http.Request) {
@@ -816,6 +903,50 @@ func (s *Server) runtimeRegister(w http.ResponseWriter, r *http.Request) {
 	}, "Credimi runner registration updated.")
 }
 
+func (s *Server) runtimeLogs(w http.ResponseWriter, r *http.Request) {
+	if s.manager == nil {
+		writeJSON(w, map[string]any{"lines": []string{}})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	logs, err := s.manager.Logs(ctx, 80)
+	if err != nil {
+		writeJSON(w, map[string]any{"lines": []string{"runtime logs unavailable: " + err.Error()}})
+		return
+	}
+	lines := make([]string, 0, len(logs))
+	for _, line := range logs {
+		message := strings.TrimSpace(line.Message)
+		if message != "" {
+			lines = append(lines, message)
+		}
+	}
+	writeJSON(w, map[string]any{"lines": lines})
+}
+
+func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
+	startup := s.startupSnapshot()
+	lines := startup.Logs
+	if since, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("since")), 10, 64); err == nil && since > 0 {
+		start := 0
+		if startup.LogBase > 0 && since >= startup.LogBase {
+			start = int(since - startup.LogBase)
+			if start > len(lines) {
+				start = len(lines)
+			}
+		}
+		lines = lines[start:]
+	}
+	writeJSON(w, map[string]any{
+		"phase":   startup.Phase,
+		"message": startup.Message,
+		"lines":   lines,
+		"next_id": startup.LogNextID,
+		"running": startup.running,
+	})
+}
+
 func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
 		s.mu.RLock()
@@ -825,23 +956,32 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 		if s.manager != nil {
 			s.manager.Configure(dashboardruntime.Values(values))
 		}
+		restarted := false
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) {
 			if err := WriteComposeFile(s.composeDir, values); err != nil {
 				return err
 			}
 			if s.manager != nil {
+				if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
+					s.manager.SetPublicURL("")
+				}
 				if err := s.manager.Down(ctx); err != nil {
 					return err
 				}
 				if err := s.manager.Start(ctx); err != nil {
 					return err
 				}
+				restarted = true
 			}
 		} else if hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
 			if s.manager != nil {
+				if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
+					s.manager.SetPublicURL("")
+				}
 				if err := s.manager.Restart(ctx); err != nil {
 					return err
 				}
+				restarted = true
 			}
 		}
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
@@ -851,7 +991,7 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired) {
+		if shouldRegisterAfterApply(diff, values, restarted) {
 			if err := s.registerCurrent(ctx, values); err != nil {
 				return err
 			}
@@ -1162,13 +1302,17 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 			return publicURL, "", nil
 		}
 		re := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
+		logTail := quickTunnelLogTail
+		if !status.LastStartedAt.IsZero() {
+			logTail = -quickTunnelLogTail
+		}
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		var lastErr error
 		for {
-			logs, err := s.manager.Logs(deadline, 200)
+			logs, err := s.manager.Logs(deadline, logTail)
 			if err != nil {
 				lastErr = err
 			} else {

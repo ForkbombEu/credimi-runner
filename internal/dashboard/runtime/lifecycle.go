@@ -1,14 +1,16 @@
 package runtime
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +53,7 @@ type CommandSpec struct {
 	Env      []string
 	Detached bool
 	LogPath  string
+	Stream   func(string)
 }
 
 type Runner interface {
@@ -66,7 +69,61 @@ func (ExecRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
 	if len(spec.Env) > 0 {
 		cmd.Env = spec.Env
 	}
+	if spec.Stream != nil {
+		return runStreaming(cmd, spec.Stream)
+	}
 	return cmd.CombinedOutput()
+}
+
+func runStreaming(cmd *exec.Cmd, stream func(string)) ([]byte, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	read := func(r io.Reader) {
+		defer wg.Done()
+		scanner := bufio.NewScanner(r)
+		scanner.Split(scanDockerProgress)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			mu.Lock()
+			out.WriteString(line)
+			out.WriteByte('\n')
+			mu.Unlock()
+			stream(line)
+		}
+	}
+	wg.Add(2)
+	go read(stdout)
+	go read(stderr)
+	wg.Wait()
+	err = cmd.Wait()
+	return out.Bytes(), err
+}
+
+func scanDockerProgress(data []byte, atEOF bool) (int, []byte, error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 func (ExecRunner) Start(ctx context.Context, spec CommandSpec) (*exec.Cmd, error) {
@@ -129,20 +186,25 @@ func NewLifecycleManager(binary, configDir string, values Values, runner Runner)
 }
 
 func (m *LifecycleManager) Start(ctx context.Context) error {
+	return m.start(ctx, nil)
+}
+
+func (m *LifecycleManager) StartWithProgress(ctx context.Context, progress func(string)) error {
+	return m.start(ctx, progress)
+}
+
+func (m *LifecycleManager) start(ctx context.Context, progress func(string)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	if plan.Backend == DefaultHostBackend {
 		if runnerAddressReachable(m.values, 500*time.Millisecond) {
-			if _, err := readRunnerPID(m.configDir); err != nil {
-				if pid, discoverErr := discoverRunnerPID(m.values); discoverErr == nil {
-					_ = writeRunnerPID(m.configDir, pid)
-				}
-			}
+			emitProgress(progress, "Existing host runner is already reachable.")
 			m.status.RunnerRunning = true
 			m.status.LastStartedAt = time.Now()
 		} else if m.cmd == nil {
+			emitProgress(progress, "Starting detached host runner process.")
 			cmd, err := m.runner.Start(context.WithoutCancel(ctx), CommandSpec{
 				Name: m.binary,
 				Args: []string{
@@ -160,29 +222,33 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 				return err
 			}
 			m.cmd = cmd
-			if cmd.Process != nil {
-				if err := writeRunnerPID(m.configDir, cmd.Process.Pid); err != nil {
-					m.status.LastError = err.Error()
-					return err
-				}
-			}
 			m.status.RunnerRunning = true
 			m.status.LastStartedAt = time.Now()
 		}
 	}
 
 	if len(plan.ComposeServices) > 0 {
+		emitProgress(progress, "Writing docker-compose.yaml.")
 		if err := WriteComposeFile(m.configDir, m.values); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
+		emitProgress(progress, "Stopping stale Docker services.")
 		if err := m.stopStaleComposeServicesLocked(ctx, plan); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
+		emitProgress(progress, "Pulling Docker images. Large runner images can take several minutes.")
+		pullArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "pull"}
+		pullArgs = append(pullArgs, plan.ComposeServices...)
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: progress}); err != nil {
+			m.status.LastError = err.Error()
+			return err
+		}
+		emitProgress(progress, "Starting Docker services.")
 		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d"}
 		args = append(args, plan.ComposeServices...)
-		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: progress}); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
@@ -193,6 +259,16 @@ func (m *LifecycleManager) Start(ctx context.Context) error {
 
 	m.status.PublicURL = resolvedRunnerPublicURL(m.values, "")
 	return nil
+}
+
+func emitProgress(progress func(string), message string) {
+	if progress != nil && strings.TrimSpace(message) != "" {
+		progress(message)
+	}
+}
+
+func composeProgressEnv() []string {
+	return append(os.Environ(), "COMPOSE_PROGRESS=plain", "DOCKER_CLI_HINTS=false")
 }
 
 func (m *LifecycleManager) stopStaleComposeServicesLocked(ctx context.Context, plan RuntimePlan) error {
@@ -224,48 +300,14 @@ func (m *LifecycleManager) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.cmd != nil && m.cmd.Process != nil {
-		_ = m.cmd.Process.Signal(syscall.SIGTERM)
-		waitDone := make(chan error, 1)
-		go func(cmd *exec.Cmd) {
-			waitDone <- cmd.Wait()
-		}(m.cmd)
-		select {
-		case err := <-waitDone:
-			if err != nil && !strings.Contains(err.Error(), "signal") {
-				m.status.LastError = err.Error()
-				return err
-			}
-		case <-time.After(10 * time.Second):
-			if err := m.cmd.Process.Kill(); err != nil {
-				m.status.LastError = err.Error()
-				return err
-			}
-			_, _ = m.cmd.Process.Wait()
-		case <-ctx.Done():
-			if err := m.cmd.Process.Kill(); err != nil {
-				m.status.LastError = err.Error()
-				return err
-			}
-			_, _ = m.cmd.Process.Wait()
-			return ctx.Err()
-		}
-		m.cmd = nil
-		_ = os.Remove(RunnerPIDPath(m.configDir))
-	} else if pid, err := readRunnerPID(m.configDir); err == nil {
-		if err := stopPID(ctx, pid); err != nil {
-			m.status.LastError = err.Error()
-			return err
-		}
-		_ = os.Remove(RunnerPIDPath(m.configDir))
-	} else if pid, err := discoverRunnerPID(m.values); err == nil {
-		if err := stopPID(ctx, pid); err != nil {
+	plan := BuildRuntimePlan(m.configDir, m.values)
+	if plan.Backend == DefaultHostBackend {
+		if err := m.stopHostRunnerLocked(ctx); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
 	}
 
-	plan := BuildRuntimePlan(m.configDir, m.values)
 	if len(plan.ComposeServices) > 0 {
 		m.stopComposeLogFollowerLocked()
 		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop"}
@@ -282,51 +324,47 @@ func (m *LifecycleManager) Stop(ctx context.Context) error {
 	return nil
 }
 
-func RunnerPIDPath(configDir string) string {
-	return filepath.Join(configDir, "runner.pid")
-}
-
-func StopRunnerFromPIDFile(ctx context.Context, configDir string) error {
-	pid, err := readRunnerPID(configDir)
+func (m *LifecycleManager) stopHostRunnerLocked(ctx context.Context) error {
+	if m.cmd != nil && m.cmd.Process != nil {
+		err := stopStartedCommand(ctx, m.cmd)
+		m.cmd = nil
+		return err
+	}
+	m.cmd = nil
+	pid, err := discoverRunnerPID(m.values)
 	if err != nil {
-		return err
-	}
-	if err := stopPID(ctx, pid); err != nil {
-		return err
-	}
-	return os.Remove(RunnerPIDPath(configDir))
-}
-
-func StopRunnerServer(ctx context.Context, configDir string, values Values) error {
-	if err := StopRunnerFromPIDFile(ctx, configDir); err == nil {
-		return nil
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	pid, err := discoverRunnerPID(values)
-	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	return stopPID(ctx, pid)
 }
 
-func writeRunnerPID(configDir string, pid int) error {
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return err
+func stopStartedCommand(ctx context.Context, cmd *exec.Cmd) error {
+	_ = cmd.Process.Signal(syscall.SIGTERM)
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+	select {
+	case err := <-waitDone:
+		if err != nil && !strings.Contains(err.Error(), "signal") {
+			return err
+		}
+	case <-time.After(10 * time.Second):
+		if err := cmd.Process.Kill(); err != nil {
+			return err
+		}
+		_, _ = cmd.Process.Wait()
+	case <-ctx.Done():
+		if err := cmd.Process.Kill(); err != nil {
+			return err
+		}
+		_, _ = cmd.Process.Wait()
+		return ctx.Err()
 	}
-	return os.WriteFile(RunnerPIDPath(configDir), []byte(strconv.Itoa(pid)+"\n"), 0o600)
-}
-
-func readRunnerPID(configDir string) (int, error) {
-	raw, err := os.ReadFile(RunnerPIDPath(configDir))
-	if err != nil {
-		return 0, err
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || pid <= 0 {
-		return 0, fmt.Errorf("invalid runner PID file %s", RunnerPIDPath(configDir))
-	}
-	return pid, nil
+	return nil
 }
 
 func stopPID(ctx context.Context, pid int) error {
@@ -337,7 +375,7 @@ func stopPID(ctx context.Context, pid int) error {
 	if !processRunning(pid) {
 		return nil
 	}
-	if goruntime.GOOS == "linux" && !processCommandMatches(pid) {
+	if !processCommandMatches(pid) {
 		return fmt.Errorf("refusing to stop PID %d because it is not credimi-runner serve", pid)
 	}
 	_ = process.Signal(syscall.SIGTERM)
@@ -393,9 +431,6 @@ func runnerListenTarget(values Values) (string, string) {
 }
 
 func discoverRunnerPID(values Values) (int, error) {
-	if goruntime.GOOS != "linux" {
-		return 0, os.ErrNotExist
-	}
 	_, port := runnerListenTarget(values)
 	portNumber, err := strconv.ParseInt(port, 10, 64)
 	if err != nil {
@@ -404,13 +439,43 @@ func discoverRunnerPID(values Values) (int, error) {
 	if portNumber < 1 || portNumber > 65535 {
 		return 0, fmt.Errorf("invalid runner port %q", port)
 	}
-	inodes, err := listeningSocketInodes(uint16(portNumber))
+	if runtime.GOOS == "linux" {
+		pid, err := discoverRunnerPIDFromProc(uint16(portNumber))
+		if err == nil {
+			return pid, nil
+		}
+		if !os.IsNotExist(err) {
+			return 0, err
+		}
+	}
+	return discoverRunnerPIDFromLsof(port)
+}
+
+func discoverRunnerPIDFromProc(port uint16) (int, error) {
+	inodes, err := listeningSocketInodes(port)
 	if err != nil {
 		return 0, err
 	}
 	for inode := range inodes {
 		pid, err := pidForSocketInode(inode)
 		if err == nil {
+			return pid, nil
+		}
+	}
+	return 0, os.ErrNotExist
+}
+
+func discoverRunnerPIDFromLsof(port string) (int, error) {
+	output, err := exec.Command("lsof", "-nP", "-tiTCP:"+port, "-sTCP:LISTEN").Output()
+	if err != nil {
+		return 0, os.ErrNotExist
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil {
+			continue
+		}
+		if processCommandMatches(pid) {
 			return pid, nil
 		}
 	}
@@ -478,12 +543,34 @@ func pidForSocketInode(inode string) (int, error) {
 }
 
 func processCommandMatches(pid int) bool {
-	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	cmdline, err := processCommandLine(pid)
 	if err != nil {
 		return false
 	}
+	return strings.Contains(cmdline, "credimi-runner") && strings.Contains(" "+cmdline+" ", " serve ")
+}
+
+func processCommandLine(pid int) (string, error) {
+	if runtime.GOOS != "linux" {
+		return processCommandLineFromPS(pid)
+	}
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return processCommandLineFromPS(pid)
+	}
 	cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
-	return strings.Contains(cmdline, "credimi-runner") && strings.Contains(cmdline, " serve ")
+	if strings.TrimSpace(cmdline) == "" {
+		return processCommandLineFromPS(pid)
+	}
+	return cmdline, nil
+}
+
+func processCommandLineFromPS(pid int) (string, error) {
+	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func (m *LifecycleManager) Restart(ctx context.Context) error {
@@ -622,7 +709,11 @@ func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error
 
 func composeLogArgs(plan RuntimePlan, tail int, since time.Time) []string {
 	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs"}
-	if !since.IsZero() {
+	includeHistory := tail < 0
+	if includeHistory {
+		tail = -tail
+	}
+	if !since.IsZero() && !includeHistory {
 		args = append(args, "--since", since.UTC().Format(time.RFC3339))
 	}
 	args = append(args, "--tail", fmt.Sprintf("%d", tail))

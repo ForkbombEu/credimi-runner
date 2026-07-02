@@ -30,6 +30,24 @@ func (d PageData) DevicesOnline() int {
 }
 func (d PageData) DevicesTotal() int { return len(d.Snapshot.Devices) }
 
+func (d PageData) AndroidDevices() []Device {
+	var devices []Device
+	for _, device := range d.Snapshot.Devices {
+		if isAndroidADBDevice(device) && device.Status == Online {
+			devices = append(devices, device)
+		}
+	}
+	return devices
+}
+
+func (d PageData) AndroidPhoneDevices() []Device {
+	return d.AndroidDevices()
+}
+
+func isAndroidADBDevice(device Device) bool {
+	return device.OS == "Android" || device.Type == "android_phone" || device.Type == "android_emulator"
+}
+
 func (d PageData) DevicesDegraded() int { return d.countDev(Degraded) }
 func (d PageData) DevicesOffline() int  { return d.countDev(Offline) }
 func (d PageData) countDev(s Status) int {

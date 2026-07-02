@@ -26,6 +26,7 @@ type dashboardFakeManager struct {
 	status      dashboardruntime.RuntimeStatus
 	startErr    error
 	logDeadline time.Time
+	logTail     int
 }
 
 func (f *dashboardFakeManager) Start(context.Context) error {
@@ -43,7 +44,8 @@ func (f *dashboardFakeManager) SetPublicURL(publicURL string) {
 func (f *dashboardFakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
 	return f.status
 }
-func (f *dashboardFakeManager) Logs(ctx context.Context, _ int) ([]dashboardruntime.LogLine, error) {
+func (f *dashboardFakeManager) Logs(ctx context.Context, tail int) ([]dashboardruntime.LogLine, error) {
+	f.logTail = tail
 	if deadline, ok := ctx.Deadline(); ok {
 		f.logDeadline = deadline
 	}
@@ -129,19 +131,32 @@ func TestRootCommandDefaultsToDashboard(t *testing.T) {
 	}
 }
 
-func TestRunStopServerMissingPID(t *testing.T) {
+func TestRunStopServerStopsConfiguredRuntime(t *testing.T) {
 	oldConfigDir := dashboardConfigDir
 	t.Cleanup(func() {
 		dashboardConfigDir = oldConfigDir
 	})
 	dashboardConfigDir = t.TempDir()
-	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte("RUNNER_PORT=1\n"), 0o600); err != nil {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	config := strings.Join([]string{
+		"CREDIMI_RUNNER_ID=acme/runner",
+		"CREDIMI_RUNNER_BACKEND=host",
+		"CREDIMI_RUNNER_TYPE=ios_simulator",
+		"CREDIMI_SERVICE_MODE=manual",
+		"RUNNER_PORT=1",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmd := &cobra.Command{Use: "stop-server"}
-	err := runStopServer(cmd, nil)
-	if err == nil || !strings.Contains(err.Error(), "runner server was not found") {
-		t.Fatalf("runStopServer error = %v", err)
+	var output bytes.Buffer
+	cmd.SetOut(&output)
+	if err := runStopServer(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Stopped runner server") {
+		t.Fatalf("runStopServer output = %q", output.String())
 	}
 }
 
@@ -344,6 +359,9 @@ func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
 	}
 	if manager.logDeadline.IsZero() || time.Until(manager.logDeadline) < 20*time.Second {
 		t.Fatalf("registration log scan deadline = %v, want startup window near %s", manager.logDeadline, dashboardRegistrationTimeout)
+	}
+	if manager.logTail != quickTunnelLogTail {
+		t.Fatalf("registration log tail = %d, want %d", manager.logTail, quickTunnelLogTail)
 	}
 }
 

@@ -3,10 +3,12 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,7 +27,15 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, spec CommandSpec) ([]byte, error) {
 	f.runs = append(f.runs, spec)
 	if f.runOutput != nil || f.runErr != nil {
+		if spec.Stream != nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(f.runOutput)), "\n") {
+				spec.Stream(line)
+			}
+		}
 		return f.runOutput, f.runErr
+	}
+	if spec.Stream != nil {
+		spec.Stream("ok")
 	}
 	return []byte("ok"), nil
 }
@@ -46,7 +56,7 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 		"CREDIMI_RUNNER_BACKEND": "host",
 		"CREDIMI_SERVICE_MODE":   "auto",
 		"RUNNER_HOST":            "127.0.0.1",
-		"RUNNER_PORT":            "8050",
+		"RUNNER_PORT":            "1",
 	}, runner)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -63,10 +73,13 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if got := runner.starts[1]; got.Name != "docker" || !strings.Contains(strings.Join(got.Args, " "), "logs -f") {
 		t.Fatalf("log follower spec = %#v", got)
 	}
-	if len(runner.runs) != 2 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
+	if len(runner.runs) != 3 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
 		t.Fatalf("stale cleanup runs = %v", runner.runs)
 	}
-	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "compose") {
+	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "pull runner_host caddy tunnel") {
+		t.Fatalf("pull run = %v", runner.runs)
+	}
+	if runner.runs[2].Name != "docker" || !strings.Contains(strings.Join(runner.runs[2].Args, " "), "up -d runner_host caddy tunnel") {
 		t.Fatalf("runs = %v", runner.runs)
 	}
 	if _, err := os.Stat(filepath.Join(manager.configDir, "docker-compose.yaml")); err != nil {
@@ -83,6 +96,7 @@ func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) 
 		"CREDIMI_RUNNER_ID":      "acme/runner",
 		"CREDIMI_RUNNER_BACKEND": "host",
 		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_PORT":            "1",
 	}, runner)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -127,6 +141,49 @@ func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
 	}
 }
 
+func TestLifecycleManagerStartWithProgressStreamsComposePull(t *testing.T) {
+	runner := &fakeRunner{runOutput: []byte("runner Pulling fs layer\nrunner Downloading 128MB\nrunner Pull complete\n")}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "auto",
+	}, runner)
+	var progress []string
+	if err := manager.StartWithProgress(context.Background(), func(line string) {
+		progress = append(progress, line)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, "Pulling Docker images") || !strings.Contains(joined, "runner Downloading 128MB") || !strings.Contains(joined, "Starting Docker services") {
+		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func TestExecRunnerRunStreamsProgress(t *testing.T) {
+	if os.Getenv("CREDIMI_RUNNER_STREAM_HELPER") == "1" {
+		fmt.Fprint(os.Stdout, "runner Pulling fs layer\rrunner Downloading 128MB\n")
+		os.Exit(0)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestExecRunnerRunStreamsProgress")
+	cmd.Env = append(os.Environ(), "CREDIMI_RUNNER_STREAM_HELPER=1")
+	var lines []string
+	output, err := runStreaming(cmd, func(line string) {
+		lines = append(lines, line)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinedLines := strings.Join(lines, "\n")
+	if !strings.Contains(joinedLines, "runner Pulling fs layer") ||
+		!strings.Contains(joinedLines, "runner Downloading 128MB") {
+		t.Fatalf("lines = %#v", lines)
+	}
+	if !strings.Contains(string(output), "runner Downloading 128MB") {
+		t.Fatalf("output = %q", string(output))
+	}
+}
+
 func TestStaleComposeServices(t *testing.T) {
 	got := strings.Join(staleComposeServices([]string{"runner", "caddy", "tunnel"}), ",")
 	if got != "runner_host,tunnel_named" {
@@ -134,28 +191,6 @@ func TestStaleComposeServices(t *testing.T) {
 	}
 	if got := staleComposeServices([]string{"runner", "runner_host", "caddy", "tunnel", "tunnel_named"}); len(got) != 0 {
 		t.Fatalf("staleComposeServices all active = %#v", got)
-	}
-}
-
-func TestRunnerPIDHelpers(t *testing.T) {
-	dir := t.TempDir()
-	if got := RunnerPIDPath(dir); got != filepath.Join(dir, "runner.pid") {
-		t.Fatalf("RunnerPIDPath = %q", got)
-	}
-	if _, err := readRunnerPID(dir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("read missing PID error = %v", err)
-	}
-	if err := writeRunnerPID(dir, 12345); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := readRunnerPID(dir); err != nil || got != 12345 {
-		t.Fatalf("readRunnerPID = %d, %v", got, err)
-	}
-	if err := os.WriteFile(RunnerPIDPath(dir), []byte("not-a-pid\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := readRunnerPID(dir); err == nil || !strings.Contains(err.Error(), "invalid runner PID file") {
-		t.Fatalf("invalid PID error = %v", err)
 	}
 }
 
@@ -183,6 +218,9 @@ func TestRunnerReachabilityHelpers(t *testing.T) {
 }
 
 func TestLinuxSocketDiscoveryHelpers(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("proc socket discovery is linux-only")
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -221,6 +259,12 @@ func TestRunnerProcessDiscoveryBranches(t *testing.T) {
 	if processCommandMatches(os.Getpid()) {
 		t.Fatal("test process should not match runner serve")
 	}
+	if _, err := processCommandLine(os.Getpid()); err != nil {
+		t.Fatalf("processCommandLine current process error = %v", err)
+	}
+	if _, err := processCommandLineFromPS(os.Getpid()); err != nil {
+		t.Fatalf("processCommandLineFromPS current process error = %v", err)
+	}
 	if err := stopPID(context.Background(), os.Getpid()); err == nil || !strings.Contains(err.Error(), "refusing to stop PID") {
 		t.Fatalf("stopPID current process error = %v", err)
 	}
@@ -234,24 +278,49 @@ func TestRunnerProcessDiscoveryBranches(t *testing.T) {
 	}
 }
 
-func TestStopRunnerServerBranches(t *testing.T) {
-	dir := t.TempDir()
-	if err := writeRunnerPID(dir, os.Getpid()); err != nil {
+func TestStopStartedCommandTerminatesProcess(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "sleep 30")
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if err := StopRunnerFromPIDFile(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "refusing to stop PID") {
-		t.Fatalf("StopRunnerFromPIDFile current process error = %v", err)
-	}
-	if err := os.WriteFile(RunnerPIDPath(dir), []byte("bad\n"), 0o600); err != nil {
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	if err := stopStartedCommand(context.Background(), cmd); err != nil {
 		t.Fatal(err)
 	}
-	if err := StopRunnerServer(context.Background(), dir, Values{"RUNNER_PORT": "1"}); err == nil || !strings.Contains(err.Error(), "invalid runner PID file") {
-		t.Fatalf("StopRunnerServer invalid PID error = %v", err)
+	if processRunning(cmd.Process.Pid) {
+		t.Fatalf("process %d should have stopped", cmd.Process.Pid)
+	}
+}
+
+func TestLifecycleManagerStopUsesBackendSourceOfTruth(t *testing.T) {
+	hostRunner := &fakeRunner{}
+	hostManager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_PORT":            "1",
+	}, hostRunner)
+	if err := hostManager.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(hostRunner.runs) != 0 {
+		t.Fatalf("host manual stop should not call docker: %#v", hostRunner.runs)
 	}
 
-	missingDir := t.TempDir()
-	if err := StopRunnerServer(context.Background(), missingDir, Values{"RUNNER_PORT": "1"}); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("StopRunnerServer missing error = %v", err)
+	containerRunner := &fakeRunner{}
+	containerManager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": DefaultContainerBackend,
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, containerRunner)
+	if err := containerManager.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(containerRunner.runs) != 1 || !strings.Contains(strings.Join(containerRunner.runs[0].Args, " "), "stop runner") {
+		t.Fatalf("container stop runs = %#v", containerRunner.runs)
 	}
 }
 
@@ -330,6 +399,7 @@ func TestLifecycleManagerRestartAndDownWithoutCompose(t *testing.T) {
 		"CREDIMI_RUNNER_ID":      "acme/runner",
 		"CREDIMI_RUNNER_BACKEND": "host",
 		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_PORT":            "1",
 	}, runner)
 	if err := manager.Restart(context.Background()); err != nil {
 		t.Fatal(err)
@@ -360,5 +430,17 @@ func TestComposeLogArgsIncludesSince(t *testing.T) {
 	args := composeLogArgs(plan, 50, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 	if !strings.Contains(strings.Join(args, " "), "--since 2026-01-02T03:04:05Z") {
 		t.Fatalf("composeLogArgs missing --since: %#v", args)
+	}
+}
+
+func TestComposeLogArgsCanIncludeHistoricalLogs(t *testing.T) {
+	plan := RuntimePlan{EnvPath: "/tmp/.env", ComposePath: "/tmp/docker-compose.yaml"}
+	args := composeLogArgs(plan, -1000, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--since") {
+		t.Fatalf("historical composeLogArgs should omit --since: %#v", args)
+	}
+	if !strings.Contains(joined, "--tail 1000") {
+		t.Fatalf("historical composeLogArgs tail = %#v", args)
 	}
 }

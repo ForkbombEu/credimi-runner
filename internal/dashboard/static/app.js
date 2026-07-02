@@ -47,20 +47,109 @@
   document.body.addEventListener('closeModal', () => closeModals());
 
   // ── Global busy overlay for runtime-changing requests ───────────────────
+  const setupBusyKey = 'credimi-runner:setup-startup-busy';
+  let busyLogTimer = null;
+  let busyStartupTimer = null;
+  let busyLogSeen = new Set();
+  let busyStartupNextID = 0;
+  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering']);
   function busyOverlay() { return $('#busy-overlay'); }
-  function showBusy(message) {
+  function busyLogNode() {
+    const overlay = busyOverlay();
+    return overlay && $('[data-busy-log]', overlay);
+  }
+  function appendBusyLog(line) {
+    const log = busyLogNode();
+    const text = String(line || '').trim();
+    if (!log || !text || busyLogSeen.has(text)) return;
+    busyLogSeen.add(text);
+    if (busyLogSeen.size > 160) busyLogSeen = new Set([...busyLogSeen].slice(-120));
+    const stamp = new Date().toLocaleTimeString([], { hour12: false });
+    log.textContent += `${stamp}  ${text}\n`;
+    log.scrollTop = log.scrollHeight;
+  }
+  async function pollBusyLogs() {
+    try {
+      const res = await fetch('/runtime/logs', { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      (data.lines || []).slice(-24).forEach(appendBusyLog);
+    } catch (_) {}
+  }
+  async function pollBusyStartupStatus() {
+    try {
+      const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      const phase = String(data.phase || '');
+      const message = String(data.message || '');
+      (data.lines || []).forEach(appendBusyLog);
+      if (Number.isFinite(Number(data.next_id))) busyStartupNextID = Number(data.next_id);
+      if (message) {
+        const overlay = busyOverlay();
+        const messageNode = overlay && $('[data-busy-message]', overlay);
+        if (messageNode) messageNode.textContent = message;
+        appendBusyLog(message);
+      }
+      if (phase === 'idle' && sessionStorage.getItem(setupBusyKey)) {
+        appendBusyLog('Waiting for setup job to start.');
+        return;
+      }
+      if (!startupBusyPhases.has(phase)) {
+        sessionStorage.removeItem(setupBusyKey);
+        if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
+        if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
+        clearInterval(busyStartupTimer);
+        busyStartupTimer = null;
+        const delay = phase === 'needs_attention' ? 2500 : 1000;
+        setTimeout(() => { window.location.assign('/'); }, delay);
+      }
+    } catch (_) {}
+  }
+  function showBusy(message, options = {}) {
     const overlay = busyOverlay();
     if (!overlay) return;
     const messageNode = $('[data-busy-message]', overlay);
     if (messageNode && message) messageNode.textContent = message;
+    const log = busyLogNode();
+    busyLogSeen = new Set();
+    if (log) log.textContent = '';
+    busyStartupNextID = 0;
+    appendBusyLog(message || 'Starting runtime operation.');
+    appendBusyLog('Writing configuration and preparing Docker services.');
+    appendBusyLog('Large runner images can take several minutes the first time.');
+    clearInterval(busyLogTimer);
+    if (options.runtimeLogs !== false) {
+      pollBusyLogs();
+      busyLogTimer = setInterval(pollBusyLogs, 1500);
+    }
     overlay.hidden = false;
     document.body.classList.add('busy-lock');
   }
   function hideBusy() {
     const overlay = busyOverlay();
     if (!overlay) return;
+    clearInterval(busyLogTimer);
+    clearInterval(busyStartupTimer);
+    busyLogTimer = null;
+    busyStartupTimer = null;
     overlay.hidden = true;
     document.body.classList.remove('busy-lock');
+  }
+  function showSetupBusy(message) {
+    showBusy(message || 'Writing runner config and starting services. Keep this page open.', { runtimeLogs: false });
+    clearInterval(busyStartupTimer);
+    pollBusyStartupStatus();
+    busyStartupTimer = setInterval(pollBusyStartupStatus, 1500);
+  }
+  function resumeSetupBusyIfNeeded() {
+    const overlay = busyOverlay();
+    const phase = overlay && overlay.dataset.startupPhase;
+    const message = (overlay && overlay.dataset.startupMessage) || sessionStorage.getItem(setupBusyKey) || '';
+    if (startupBusyPhases.has(phase) || sessionStorage.getItem(setupBusyKey)) {
+      showSetupBusy(message);
+    }
   }
   function busyTriggerForElement(el) {
     if (!el) return null;
@@ -75,16 +164,34 @@
     const trigger = busyTriggerForElement(e.detail.elt);
     if (!trigger) return;
     const message = trigger.dataset.busyMessage || 'Applying runtime change. Keep this page open.';
+    if (trigger.matches('[data-setup-form]')) {
+      sessionStorage.setItem(setupBusyKey, message);
+      showSetupBusy(message);
+      return;
+    }
     showBusy(message);
   });
   document.body.addEventListener('htmx:afterRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
     const wasBusy = !!trigger;
     if (trigger && trigger.matches('[data-config-form]')) delete trigger.dataset.busyActive;
+    if (trigger && trigger.matches('[data-setup-form]')) {
+      const redirected = e.detail.xhr && e.detail.xhr.getResponseHeader('HX-Redirect');
+      if (redirected && e.detail.successful !== false) return;
+      if (e.detail.successful !== false) return;
+      sessionStorage.removeItem(setupBusyKey);
+    }
     if (wasBusy) hideBusy();
   });
-  document.body.addEventListener('htmx:responseError', hideBusy);
-  document.body.addEventListener('htmx:sendError', hideBusy);
+  document.body.addEventListener('htmx:responseError', () => {
+    sessionStorage.removeItem(setupBusyKey);
+    hideBusy();
+  });
+  document.body.addEventListener('htmx:sendError', () => {
+    sessionStorage.removeItem(setupBusyKey);
+    hideBusy();
+  });
+  resumeSetupBusyIfNeeded();
 
   // ── Modal open / close ───────────────────────────────────────────────────
   function closeModals() { $$('.modal-bk').forEach((m) => (m.hidden = true)); }
@@ -173,6 +280,10 @@
           }
           case 'device': {
             const runnerType = value('CREDIMI_RUNNER_TYPE');
+            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
+            if (runnerType === 'android_phone' && mode !== 'wifi') {
+              return !valueMissing('CREDIMI_RUNNER_SERIAL');
+            }
             if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi') {
               return !valueMissing('CREDIMI_RUNNER_WIFI_IP');
             }
@@ -216,8 +327,12 @@
           case 'device': {
             const runnerType = value('CREDIMI_RUNNER_TYPE');
             if (!runnerType) return 'Runner type is required.';
-            if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
+            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
+            if (runnerType === 'android_phone' && mode === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
               return 'Wi-Fi mode requires an Android Wi-Fi IP.';
+            }
+            if (runnerType === 'android_phone' && mode !== 'wifi' && valueMissing('CREDIMI_RUNNER_SERIAL')) {
+              return 'Select a connected Android device.';
             }
             if (runnerType === 'android_emulator' && valueMissing('BASE_NAME')) return 'Base name is required.';
             if (runnerType === 'android_emulator') {
@@ -956,6 +1071,13 @@
     refreshIOSSimulatorPanel(root);
     refreshAndroidEmulatorAssetsPanel(root);
   };
+  document.addEventListener('change', (e) => {
+    const select = e.target.closest('[data-android-phone-device-select]');
+    if (!select) return;
+    const root = select.closest('form') || document;
+    setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', select.value || '');
+    root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+  });
   document.addEventListener('click', (e) => {
     const pick = e.target.closest('[data-dev-pick]');
     if (!pick) return;

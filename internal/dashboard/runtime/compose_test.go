@@ -50,12 +50,17 @@ func TestComposeParityCases(t *testing.T) {
 		{
 			name:     "emulator",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_emulator"},
-			contains: []string{"--emulator", "/dev/kvm:/dev/kvm", "${HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams 8050}}"`, "networks:\n      - ingress"},
+			contains: []string{"--emulator", "/dev/kvm:/dev/kvm", "${HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`, "networks:\n      - ingress"},
 		},
 		{
 			name:     "redroid known hosts",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid", "AVDCTL_SSH_TARGET": "box", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "/tmp/known_hosts"},
-			contains: []string{"--no-device", "${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro", `caddy.reverse_proxy: "{{upstreams 8050}}"`},
+			contains: []string{"--no-device", "${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
+		},
+		{
+			name:     "emulator custom runner port",
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "RUNNER_PORT": "8052"},
+			contains: []string{`PORT: "${RUNNER_PORT:-8050}"`, `- "${RUNNER_PORT:-8050}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
 			name:     "host edge service target",
