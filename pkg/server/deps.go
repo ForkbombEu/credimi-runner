@@ -19,8 +19,10 @@ type FileStore interface {
 	MkdirAll(path string, perm os.FileMode) error
 	Stat(name string) (os.FileInfo, error)
 	Lstat(name string) (os.FileInfo, error)
+	ReadDir(name string) ([]os.DirEntry, error)
 	Create(name string) (io.WriteCloser, error)
 	Open(name string) (io.ReadCloser, error)
+	Remove(path string) error
 	RemoveAll(path string) error
 }
 
@@ -74,12 +76,20 @@ func (osFileStore) Lstat(name string) (os.FileInfo, error) {
 	return os.Lstat(name)
 }
 
+func (osFileStore) ReadDir(name string) ([]os.DirEntry, error) {
+	return os.ReadDir(name)
+}
+
 func (osFileStore) Create(name string) (io.WriteCloser, error) {
 	return os.Create(name)
 }
 
 func (osFileStore) Open(name string) (io.ReadCloser, error) {
 	return os.Open(name)
+}
+
+func (osFileStore) Remove(path string) error {
+	return os.Remove(path)
 }
 
 func (osFileStore) RemoveAll(path string) error {

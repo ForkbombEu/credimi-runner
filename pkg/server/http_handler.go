@@ -183,9 +183,6 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 	if payload.LogPath != nil {
 		body.LogPath = *payload.LogPath
 	}
-	if payload.MaestroScreenshotPaths != nil {
-		body.MaestroScreenshotPaths = append([]string(nil), payload.MaestroScreenshotPaths...)
-	}
 	if payload.RunIdentifier != "" {
 		body.RunIdentifier = payload.RunIdentifier
 	}
@@ -217,6 +214,30 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 		return map[string]any{}, nil
 	}
 
+	return decoded, nil
+}
+
+func (s *runnerService) StoreExecutionScreenshots(ctx context.Context, payload *credimi.StoreExecutionScreenshotsPayload) (map[string]any, error) {
+	body := storeExecutionScreenshotsPayload{
+		RunIdentifier:    payload.RunIdentifier,
+		RunnerIdentifier: payload.RunnerIdentifier,
+		StepID:           payload.StepID,
+		ScreenshotPaths:  append([]string(nil), payload.ScreenshotPaths...),
+	}
+	result, apiErr := s.storeExecutionScreenshotsLogic(body)
+	if apiErr != nil {
+		return nil, wrapCredimiAPIError(apiErr)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(result, &decoded); err != nil || decoded == nil {
+		return nil, wrapCredimiAPIError(&runner.APIError{
+			Code:    http.StatusBadGateway,
+			Domain:  "upstream",
+			Reason:  "invalid response",
+			Message: "store step screenshots returned a non-object JSON body",
+		})
+	}
 	return decoded, nil
 }
 

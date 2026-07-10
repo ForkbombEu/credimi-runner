@@ -17,13 +17,12 @@ import (
 )
 
 type storePipelineResultPayload struct {
-	VideoPath              string   `json:"video_path"`
-	LastFramePath          string   `json:"last_frame_path"`
-	LogPath                string   `json:"log_path"`
-	MaestroScreenshotPaths []string `json:"maestro_screenshot_paths"`
-	RunIdentifier          string   `json:"run_identifier"`
-	RunnerIdentifier       string   `json:"runner_identifier"`
-	Platform               string   `json:"platform"`
+	VideoPath        string `json:"video_path"`
+	LastFramePath    string `json:"last_frame_path"`
+	LogPath          string `json:"log_path"`
+	RunIdentifier    string `json:"run_identifier"`
+	RunnerIdentifier string `json:"runner_identifier"`
+	Platform         string `json:"platform"`
 }
 
 const maxMaestroScreenshots = 99
@@ -43,15 +42,6 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		return nil, apiErr
 	}
 
-	screenshotPaths, apiErr := validateMaestroScreenshotPaths(
-		payload.MaestroScreenshotPaths,
-		s.Deps.ManagedWorkflowRoot,
-		s.Deps.FileStore,
-	)
-	if apiErr != nil {
-		return nil, apiErr
-	}
-
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
@@ -65,12 +55,6 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 
 	if apiErr := addFileToMultipart(writer, "logfile", payload.LogPath, s.Deps.FileStore); apiErr != nil {
 		return nil, apiErr
-	}
-
-	for _, screenshotPath := range screenshotPaths {
-		if apiErr := addFileToMultipart(writer, "maestro_screenshots", screenshotPath, s.Deps.FileStore); apiErr != nil {
-			return nil, apiErr
-		}
 	}
 
 	if err := writer.WriteField("runner_identifier", payload.RunnerIdentifier); err != nil {
@@ -164,7 +148,6 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 	}
 
 	artifactPaths := []string{payload.VideoPath, payload.LastFramePath, payload.LogPath}
-	artifactPaths = append(artifactPaths, screenshotPaths...)
 	for _, resultDir := range managedArtifactDirectories(artifactPaths, s.Deps.ManagedWorkflowRoot) {
 		if err := s.Deps.FileStore.RemoveAll(resultDir); err != nil {
 			log.Printf("pipeline result cleanup failed for directory %q: %v", filepath.Base(resultDir), err)
@@ -174,9 +157,9 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 	return respBody, nil
 }
 
-func validateMaestroScreenshotPaths(paths []string, root string, fileStore FileStore) ([]string, *runner.APIError) {
+func validateScreenshotPaths(paths []string, root string, fileStore FileStore) ([]string, *runner.APIError) {
 	if len(paths) > maxMaestroScreenshots {
-		return nil, badScreenshotPathError(fmt.Sprintf("maestro_screenshot_paths exceeds the maximum of %d files", maxMaestroScreenshots))
+		return nil, badScreenshotPathError(fmt.Sprintf("screenshot_paths exceeds the maximum of %d files", maxMaestroScreenshots))
 	}
 
 	validated := make([]string, 0, len(paths))
@@ -250,12 +233,7 @@ func badScreenshotPathError(message string) *runner.APIError {
 }
 
 func isImageFilename(path string) bool {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp":
-		return true
-	default:
-		return false
-	}
+	return strings.EqualFold(filepath.Ext(path), ".png")
 }
 
 func managedArtifactDirectories(paths []string, root string) []string {

@@ -105,8 +105,6 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	videoPath := "results/run-1/video.mp4"
 	lastFramePath := "results/run-1/last.png"
 	logPath := "results/run-1/log.txt"
-	screenshotOne := "results/child-1/checkout.png"
-	screenshotTwo := "results/child-2/checkout.png"
 
 	writer, err := store.Create(videoPath)
 	require.NoError(t, err)
@@ -120,12 +118,6 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	require.NoError(t, err)
 	_, _ = writer.Write([]byte("log"))
 	require.NoError(t, writer.Close())
-	for path, content := range map[string]string{screenshotOne: "one", screenshotTwo: "two"} {
-		writer, err = store.Create(path)
-		require.NoError(t, err)
-		_, _ = writer.Write([]byte(content))
-		require.NoError(t, writer.Close())
-	}
 
 	deps := Deps{
 		HTTPClient:          client,
@@ -134,13 +126,12 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := storePipelineResultPayload{
-		VideoPath:              videoPath,
-		LastFramePath:          lastFramePath,
-		LogPath:                logPath,
-		MaestroScreenshotPaths: []string{screenshotOne, screenshotTwo, screenshotOne},
-		RunIdentifier:          "run-1",
-		RunnerIdentifier:       "runner-1",
-		Platform:               "android",
+		VideoPath:        videoPath,
+		LastFramePath:    lastFramePath,
+		LogPath:          logPath,
+		RunIdentifier:    "run-1",
+		RunnerIdentifier: "runner-1",
+		Platform:         "android",
 	}
 
 	result, apiErr := server.storePipelineResultLogic(payload)
@@ -154,10 +145,8 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	require.Equal(t, []capturedMultipartFile{{name: "video.mp4", data: "video"}}, capture.files["result_video"])
 	require.Equal(t, []capturedMultipartFile{{name: "last.png", data: "frame"}}, capture.files["last_frame"])
 	require.Equal(t, []capturedMultipartFile{{name: "log.txt", data: "log"}}, capture.files["logfile"])
-	require.Equal(t, []capturedMultipartFile{{name: "checkout.png", data: "one"}, {name: "checkout.png", data: "two"}}, capture.files["maestro_screenshots"])
+	require.Empty(t, capture.files["maestro_screenshots"])
 	require.Contains(t, store.removed, filepath.Dir(videoPath))
-	require.Contains(t, store.removed, filepath.Dir(screenshotOne))
-	require.Contains(t, store.removed, filepath.Dir(screenshotTwo))
 }
 
 func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
@@ -239,13 +228,13 @@ func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 	require.Equal(t, "log.txt", capture.files["logfile"][0].name)
 }
 
-func TestValidateMaestroScreenshotPaths(t *testing.T) {
+func TestValidateScreenshotPaths(t *testing.T) {
 	root := t.TempDir()
 	valid := filepath.Join(root, "child", "screen.png")
 	require.NoError(t, os.MkdirAll(filepath.Dir(valid), 0755))
 	require.NoError(t, os.WriteFile(valid, []byte("png"), 0600))
 
-	paths, apiErr := validateMaestroScreenshotPaths([]string{valid, valid}, root, osFileStore{})
+	paths, apiErr := validateScreenshotPaths([]string{valid, valid}, root, osFileStore{})
 	require.Nil(t, apiErr)
 	require.Equal(t, []string{valid}, paths)
 
@@ -259,7 +248,7 @@ func TestValidateMaestroScreenshotPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(tests["not image"][0], []byte("text"), 0600))
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, apiErr := validateMaestroScreenshotPaths(input, root, osFileStore{})
+			_, apiErr := validateScreenshotPaths(input, root, osFileStore{})
 			require.NotNil(t, apiErr)
 			require.Equal(t, http.StatusBadRequest, apiErr.Code)
 		})
@@ -267,18 +256,18 @@ func TestValidateMaestroScreenshotPaths(t *testing.T) {
 
 	symlink := filepath.Join(root, "child", "link.png")
 	require.NoError(t, os.Symlink(valid, symlink))
-	_, apiErr = validateMaestroScreenshotPaths([]string{symlink}, root, osFileStore{})
+	_, apiErr = validateScreenshotPaths([]string{symlink}, root, osFileStore{})
 	require.NotNil(t, apiErr)
 	require.Contains(t, apiErr.Message, "symlink")
 
 	symlinkedDirectory := filepath.Join(root, "linked-child")
 	require.NoError(t, os.Symlink(filepath.Dir(valid), symlinkedDirectory))
-	_, apiErr = validateMaestroScreenshotPaths([]string{filepath.Join(symlinkedDirectory, "screen.png")}, root, osFileStore{})
+	_, apiErr = validateScreenshotPaths([]string{filepath.Join(symlinkedDirectory, "screen.png")}, root, osFileStore{})
 	require.NotNil(t, apiErr)
 	require.Contains(t, apiErr.Message, "symlink")
 
 	tooMany := make([]string, maxMaestroScreenshots+1)
-	_, apiErr = validateMaestroScreenshotPaths(tooMany, root, osFileStore{})
+	_, apiErr = validateScreenshotPaths(tooMany, root, osFileStore{})
 	require.NotNil(t, apiErr)
 	require.Contains(t, apiErr.Message, "maximum of 99")
 }

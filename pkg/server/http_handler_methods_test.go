@@ -36,9 +36,6 @@ func newStorePipelineMethodService(t *testing.T, responseStatus int, responseBod
 	writer, err = store.Create("results/run-1/log.txt")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
-	writer, err = store.Create("results/child/screen.png")
-	require.NoError(t, err)
-	require.NoError(t, writer.Close())
 
 	return NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
 		URL:        baseURL,
@@ -60,13 +57,12 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 	t.Run("empty body returns empty object", func(t *testing.T) {
 		srv := newStorePipelineMethodService(t, http.StatusOK, "")
 		result, err := srv.StorePipelineResult(context.Background(), &credimi.StorePipelineResultPayload{
-			VideoPath:              &video,
-			LastFramePath:          &last,
-			LogPath:                &log,
-			MaestroScreenshotPaths: []string{"results/child/screen.png"},
-			Platform:               platform,
-			RunIdentifier:          "run-1",
-			RunnerIdentifier:       &runnerID,
+			VideoPath:        &video,
+			LastFramePath:    &last,
+			LogPath:          &log,
+			Platform:         platform,
+			RunIdentifier:    "run-1",
+			RunnerIdentifier: &runnerID,
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]any{}, result)
