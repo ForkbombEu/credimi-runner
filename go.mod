@@ -1,6 +1,6 @@
 module github.com/forkbombeu/credimi-runner
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/forkbombeu/credimi v1.261.2
