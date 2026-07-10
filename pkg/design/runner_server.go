@@ -304,6 +304,41 @@ var _ = Service("credimi", func() {
 			Response("internal_error", StatusInternalServerError)
 		})
 	})
+
+	Method("store_execution_screenshots", func() {
+		Payload(func() {
+			CredimiAPIKeyPayload()
+			Attribute("run_identifier", String)
+			Attribute("runner_identifier", String)
+			Attribute("step_id", String)
+			Attribute("screenshot_paths", ArrayOf(String))
+			Required("run_identifier", "runner_identifier", "step_id", "screenshot_paths")
+			Example(map[string]any{
+				"run_identifier":    "organization/workflow-run",
+				"runner_identifier": "organization/runner",
+				"step_id":           "scan-credential",
+				"screenshot_paths":  []string{"/credimi/workflows/child-workflow/checkout.png"},
+			})
+		})
+		Result(MapOf(String, Any))
+
+		Error("bad_request", APIError)
+		Error("unauthorized", APIError)
+		Error("forbidden", APIError)
+		Error("bad_gateway", APIError)
+		Error("internal_error", APIError)
+
+		HTTP(func() {
+			POST("/credimi/execution-screenshots")
+			Header("api_key:Credimi-Api-Key")
+			Response(StatusOK)
+			Response("bad_request", StatusBadRequest)
+			Response("unauthorized", StatusUnauthorized)
+			Response("forbidden", StatusForbidden)
+			Response("bad_gateway", StatusBadGateway)
+			Response("internal_error", StatusInternalServerError)
+		})
+	})
 })
 
 var _ = Service("mobile", func() {

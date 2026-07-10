@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,8 +20,13 @@ import (
 
 type multipartCapture struct {
 	fields map[string]string
-	files  map[string]string
+	files  map[string][]capturedMultipartFile
 	err    error
+}
+
+type capturedMultipartFile struct {
+	name string
+	data string
 }
 
 type trackingFileStore struct {
@@ -71,7 +77,7 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 					return newResponse(http.StatusBadRequest, ""), nil
 				}
 				capture.fields = make(map[string]string)
-				capture.files = make(map[string]string)
+				capture.files = make(map[string][]capturedMultipartFile)
 				for {
 					part, err := reader.NextPart()
 					if err == io.EOF {
@@ -82,15 +88,15 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 						break
 					}
 					if part.FileName() != "" {
-						capture.files[part.FormName()] = part.FileName()
-						_, _ = io.Copy(io.Discard, part)
+						data, _ := io.ReadAll(part)
+						capture.files[part.FormName()] = append(capture.files[part.FormName()], capturedMultipartFile{name: part.FileName(), data: string(data)})
 					} else {
 						data, _ := io.ReadAll(part)
 						capture.fields[part.FormName()] = string(data)
 					}
 					_ = part.Close()
 				}
-				return newResponse(http.StatusOK, `{"status":"stored"}`), nil
+				return newResponse(http.StatusOK, `{"status":"stored","maestro_screenshot_urls":["https://example.test/one.png"]}`), nil
 			},
 		},
 	}
@@ -114,8 +120,9 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	require.NoError(t, writer.Close())
 
 	deps := Deps{
-		HTTPClient: client,
-		FileStore:  store,
+		HTTPClient:          client,
+		FileStore:           store,
+		ManagedWorkflowRoot: "results",
 	}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := storePipelineResultPayload{
@@ -130,14 +137,15 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	result, apiErr := server.storePipelineResultLogic(payload)
 
 	require.Nil(t, apiErr)
-	require.JSONEq(t, `{"status":"stored"}`, string(result))
+	require.JSONEq(t, `{"status":"stored","maestro_screenshot_urls":["https://example.test/one.png"]}`, string(result))
 	require.NoError(t, capture.err)
 	require.Equal(t, "runner-1", capture.fields["runner_identifier"])
 	require.Equal(t, "run-1", capture.fields["run_identifier"])
 	require.Equal(t, "android", capture.fields["platform"])
-	require.Equal(t, "video.mp4", capture.files["result_video"])
-	require.Equal(t, "last.png", capture.files["last_frame"])
-	require.Equal(t, "log.txt", capture.files["logfile"])
+	require.Equal(t, []capturedMultipartFile{{name: "video.mp4", data: "video"}}, capture.files["result_video"])
+	require.Equal(t, []capturedMultipartFile{{name: "last.png", data: "frame"}}, capture.files["last_frame"])
+	require.Equal(t, []capturedMultipartFile{{name: "log.txt", data: "log"}}, capture.files["logfile"])
+	require.Empty(t, capture.files["maestro_screenshots"])
 	require.Contains(t, store.removed, filepath.Dir(videoPath))
 }
 
@@ -155,7 +163,7 @@ func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 					return newResponse(http.StatusBadRequest, ""), nil
 				}
 				capture.fields = make(map[string]string)
-				capture.files = make(map[string]string)
+				capture.files = make(map[string][]capturedMultipartFile)
 				for {
 					part, err := reader.NextPart()
 					if err == io.EOF {
@@ -166,8 +174,8 @@ func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 						break
 					}
 					if part.FileName() != "" {
-						capture.files[part.FormName()] = part.FileName()
-						_, _ = io.Copy(io.Discard, part)
+						data, _ := io.ReadAll(part)
+						capture.files[part.FormName()] = append(capture.files[part.FormName()], capturedMultipartFile{name: part.FileName(), data: string(data)})
 					} else {
 						data, _ := io.ReadAll(part)
 						capture.fields[part.FormName()] = string(data)
@@ -215,9 +223,62 @@ func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 	require.JSONEq(t, `{"status":"stored"}`, string(result))
 	require.NoError(t, capture.err)
 	require.Equal(t, "ios", capture.fields["platform"])
-	require.Equal(t, "video.mp4", capture.files["result_video"])
-	require.Equal(t, "last.png", capture.files["last_frame"])
-	require.Equal(t, "log.txt", capture.files["logfile"])
+	require.Equal(t, "video.mp4", capture.files["result_video"][0].name)
+	require.Equal(t, "last.png", capture.files["last_frame"][0].name)
+	require.Equal(t, "log.txt", capture.files["logfile"][0].name)
+}
+
+func TestValidateScreenshotPaths(t *testing.T) {
+	root := t.TempDir()
+	valid := filepath.Join(root, "child", "screen.png")
+	require.NoError(t, os.MkdirAll(filepath.Dir(valid), 0755))
+	require.NoError(t, os.WriteFile(valid, []byte("png"), 0600))
+
+	paths, apiErr := validateScreenshotPaths([]string{valid, valid}, root, osFileStore{})
+	require.Nil(t, apiErr)
+	require.Equal(t, []string{valid}, paths)
+
+	tests := map[string][]string{
+		"empty":     {""},
+		"missing":   {filepath.Join(root, "child", "missing.png")},
+		"escaped":   {filepath.Join(root, "..", "escaped.png")},
+		"not image": {filepath.Join(root, "child", "screen.txt")},
+		"directory": {filepath.Join(root, "child")},
+	}
+	require.NoError(t, os.WriteFile(tests["not image"][0], []byte("text"), 0600))
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, apiErr := validateScreenshotPaths(input, root, osFileStore{})
+			require.NotNil(t, apiErr)
+			require.Equal(t, http.StatusBadRequest, apiErr.Code)
+		})
+	}
+
+	symlink := filepath.Join(root, "child", "link.png")
+	require.NoError(t, os.Symlink(valid, symlink))
+	_, apiErr = validateScreenshotPaths([]string{symlink}, root, osFileStore{})
+	require.NotNil(t, apiErr)
+	require.Contains(t, apiErr.Message, "symlink")
+
+	symlinkedDirectory := filepath.Join(root, "linked-child")
+	require.NoError(t, os.Symlink(filepath.Dir(valid), symlinkedDirectory))
+	_, apiErr = validateScreenshotPaths([]string{filepath.Join(symlinkedDirectory, "screen.png")}, root, osFileStore{})
+	require.NotNil(t, apiErr)
+	require.Contains(t, apiErr.Message, "symlink")
+
+	tooMany := make([]string, maxMaestroScreenshots+1)
+	_, apiErr = validateScreenshotPaths(tooMany, root, osFileStore{})
+	require.NotNil(t, apiErr)
+	require.Contains(t, apiErr.Message, "maximum of 99")
+}
+
+func TestManagedArtifactDirectoriesRejectsRootAndParents(t *testing.T) {
+	root := filepath.Join("credimi", "workflows")
+	require.Equal(t, []string{filepath.Join(root, "child")}, managedArtifactDirectories([]string{
+		filepath.Join(root, "file.png"),
+		filepath.Join(root, "child", "file.png"),
+		filepath.Join(root, "..", "outside", "file.png"),
+	}, root))
 }
 
 func TestStorePipelineResult_UpstreamError(t *testing.T) {
@@ -232,7 +293,7 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 		},
 	}
 
-	store := &memoryFileStore{}
+	store := &trackingFileStore{}
 	writer, err := store.Create("results/run-1/video.mp4")
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
@@ -244,8 +305,9 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 	require.NoError(t, writer.Close())
 
 	deps := Deps{
-		HTTPClient: client,
-		FileStore:  store,
+		HTTPClient:          client,
+		FileStore:           store,
+		ManagedWorkflowRoot: "results",
 	}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := storePipelineResultPayload{
@@ -266,6 +328,7 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 		Reason:  "bad",
 		Message: "nope",
 	}, apiErr)
+	require.Empty(t, store.removed)
 }
 
 func TestStorePipelineResult_UpstreamWrappedError(t *testing.T) {

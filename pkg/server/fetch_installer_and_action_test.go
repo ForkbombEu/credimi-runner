@@ -94,6 +94,38 @@ func (m *memoryFileStore) Stat(name string) (os.FileInfo, error) {
 	return fakeFileInfo{name: filepath.Base(name), size: int64(buf.Len())}, nil
 }
 
+func (m *memoryFileStore) Lstat(name string) (os.FileInfo, error) {
+	return m.Stat(name)
+}
+
+func (m *memoryFileStore) ReadDir(name string) ([]os.DirEntry, error) {
+	cleanName := filepath.Clean(name)
+	if _, ok := m.dirs[cleanName]; !ok {
+		return nil, os.ErrNotExist
+	}
+	entries := make([]os.DirEntry, 0)
+	seen := make(map[string]struct{})
+	for path := range m.files {
+		if filepath.Dir(path) == cleanName {
+			base := filepath.Base(path)
+			if _, ok := seen[base]; !ok {
+				entries = append(entries, fakeDirEntry{info: fakeFileInfo{name: base, size: int64(m.files[path].Len())}})
+				seen[base] = struct{}{}
+			}
+		}
+	}
+	for path := range m.dirs {
+		if path != cleanName && filepath.Dir(path) == cleanName {
+			base := filepath.Base(path)
+			if _, ok := seen[base]; !ok {
+				entries = append(entries, fakeDirEntry{info: fakeFileInfo{name: base, isDir: true}})
+				seen[base] = struct{}{}
+			}
+		}
+	}
+	return entries, nil
+}
+
 func (m *memoryFileStore) Create(name string) (io.WriteCloser, error) {
 	if m.files == nil {
 		m.files = make(map[string]*bytes.Buffer)
@@ -115,6 +147,26 @@ func (m *memoryFileStore) Open(name string) (io.ReadCloser, error) {
 		return nil, os.ErrNotExist
 	}
 	return io.NopCloser(bytes.NewReader(buf.Bytes())), nil
+}
+
+func (m *memoryFileStore) Remove(path string) error {
+	cleanPath := filepath.Clean(path)
+	if _, ok := m.files[cleanPath]; ok {
+		delete(m.files, cleanPath)
+		return nil
+	}
+	if _, ok := m.dirs[cleanPath]; ok {
+		entries, err := m.ReadDir(cleanPath)
+		if err != nil {
+			return err
+		}
+		if len(entries) != 0 {
+			return fmt.Errorf("directory not empty")
+		}
+		delete(m.dirs, cleanPath)
+		return nil
+	}
+	return os.ErrNotExist
 }
 
 func (m *memoryFileStore) RemoveAll(path string) error {
@@ -143,6 +195,13 @@ type fakeFileInfo struct {
 	size  int64
 	isDir bool
 }
+
+type fakeDirEntry struct{ info os.FileInfo }
+
+func (f fakeDirEntry) Name() string               { return f.info.Name() }
+func (f fakeDirEntry) IsDir() bool                { return f.info.IsDir() }
+func (f fakeDirEntry) Type() os.FileMode          { return f.info.Mode().Type() }
+func (f fakeDirEntry) Info() (os.FileInfo, error) { return f.info, nil }
 
 func (f fakeFileInfo) Name() string { return f.name }
 func (f fakeFileInfo) Size() int64  { return f.size }

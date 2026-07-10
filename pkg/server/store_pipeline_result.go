@@ -8,7 +8,9 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
@@ -22,6 +24,8 @@ type storePipelineResultPayload struct {
 	RunnerIdentifier string `json:"runner_identifier"`
 	Platform         string `json:"platform"`
 }
+
+const maxMaestroScreenshots = 99
 
 func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayload) ([]byte, *runner.APIError) {
 	if payload.VideoPath == "" {
@@ -143,12 +147,129 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		return nil, parseUpstreamRunnerAPIError(resp.StatusCode, respBody)
 	}
 
-	resultDir := filepath.Dir(payload.VideoPath)
-	if err := s.Deps.FileStore.RemoveAll(resultDir); err != nil {
-		log.Printf("cleanup failed for %s: %v", resultDir, err)
+	artifactPaths := []string{payload.VideoPath, payload.LastFramePath, payload.LogPath}
+	for _, resultDir := range managedArtifactDirectories(artifactPaths, s.Deps.ManagedWorkflowRoot) {
+		if err := s.Deps.FileStore.RemoveAll(resultDir); err != nil {
+			log.Printf("pipeline result cleanup failed for directory %q: %v", filepath.Base(resultDir), err)
+		}
 	}
 
 	return respBody, nil
+}
+
+func validateScreenshotPaths(paths []string, root string, fileStore FileStore) ([]string, *runner.APIError) {
+	if len(paths) > maxMaestroScreenshots {
+		return nil, badScreenshotPathError(fmt.Sprintf("screenshot_paths exceeds the maximum of %d files", maxMaestroScreenshots))
+	}
+
+	validated := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			return nil, badScreenshotPathError("maestro screenshot path must not be empty")
+		}
+		cleanPath := filepath.Clean(path)
+		if !isPathWithinRoot(cleanPath, root, false) {
+			return nil, badScreenshotPathError("maestro screenshot path must be within the managed workflow root")
+		}
+		if _, ok := seen[cleanPath]; ok {
+			continue
+		}
+		if hasSymlinkComponent(cleanPath, root, fileStore) {
+			return nil, badScreenshotPathError("maestro screenshot path must not contain symlinks")
+		}
+
+		info, err := fileStore.Lstat(cleanPath)
+		if err != nil {
+			return nil, badScreenshotPathError("maestro screenshot is missing or unreadable")
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, badScreenshotPathError("maestro screenshot must not be a symlink")
+		}
+		if !info.Mode().IsRegular() || !isImageFilename(cleanPath) {
+			return nil, badScreenshotPathError("maestro screenshot must be a regular image file")
+		}
+		file, err := fileStore.Open(cleanPath)
+		if err != nil {
+			return nil, badScreenshotPathError("maestro screenshot is missing or unreadable")
+		}
+		if err := file.Close(); err != nil {
+			return nil, badScreenshotPathError("maestro screenshot is unreadable")
+		}
+
+		seen[cleanPath] = struct{}{}
+		validated = append(validated, cleanPath)
+	}
+	return validated, nil
+}
+
+func hasSymlinkComponent(path, root string, fileStore FileStore) bool {
+	cleanRoot := filepath.Clean(root)
+	relative, err := filepath.Rel(cleanRoot, filepath.Clean(path))
+	if err != nil {
+		return true
+	}
+	current := cleanRoot
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := fileStore.Lstat(current)
+		if err != nil {
+			return false
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func badScreenshotPathError(message string) *runner.APIError {
+	return &runner.APIError{
+		Code:    http.StatusBadRequest,
+		Domain:  "server",
+		Reason:  "invalid maestro screenshots",
+		Message: message,
+	}
+}
+
+func isImageFilename(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".png")
+}
+
+func managedArtifactDirectories(paths []string, root string) []string {
+	directories := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		directory := filepath.Dir(filepath.Clean(path))
+		if !isPathWithinRoot(directory, root, false) {
+			continue
+		}
+		if _, ok := seen[directory]; ok {
+			continue
+		}
+		seen[directory] = struct{}{}
+		directories = append(directories, directory)
+	}
+	return directories
+}
+
+func isPathWithinRoot(path, root string, allowRoot bool) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(absRoot, absPath)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return allowRoot || relative != "."
 }
 
 func addFileToMultipart(writer *multipart.Writer, fieldName, filePath string, fileStore FileStore) *runner.APIError {

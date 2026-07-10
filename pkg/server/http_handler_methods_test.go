@@ -41,8 +41,9 @@ func newStorePipelineMethodService(t *testing.T, responseStatus int, responseBod
 		URL:        baseURL,
 		UserAPIKey: "user-key",
 	}, Deps{
-		HTTPClient: client,
-		FileStore:  store,
+		HTTPClient:          client,
+		FileStore:           store,
+		ManagedWorkflowRoot: "results",
 	})
 }
 

@@ -23,7 +23,7 @@ import (
 type storeCapture struct {
 	mu     sync.Mutex
 	fields map[string]string
-	files  map[string]string
+	files  map[string][]string
 	err    error
 }
 
@@ -48,21 +48,21 @@ func (c *storeCapture) recordFile(name, filename string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.files == nil {
-		c.files = make(map[string]string)
+		c.files = make(map[string][]string)
 	}
-	c.files[name] = filename
+	c.files[name] = append(c.files[name], filename)
 }
 
-func (c *storeCapture) snapshot() (map[string]string, map[string]string, error) {
+func (c *storeCapture) snapshot() (map[string]string, map[string][]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	fields := make(map[string]string)
 	for k, v := range c.fields {
 		fields[k] = v
 	}
-	files := make(map[string]string)
+	files := make(map[string][]string)
 	for k, v := range c.files {
-		files[k] = v
+		files[k] = append([]string(nil), v...)
 	}
 	return fields, files, c.err
 }
@@ -115,14 +115,35 @@ func newTestInstanceServer(t *testing.T, capture *storeCapture) *httptest.Server
 			}
 		}
 		for name, files := range r.MultipartForm.File {
-			if len(files) > 0 {
-				capture.recordFile(name, files[0].Filename)
+			for _, file := range files {
+				capture.recordFile(name, file.Filename)
 			}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"stored","id":"abc"}`))
+	})
+	mux.HandleFunc("/api/pipeline/store-step-screenshots", func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "test-api-key", r.Header.Get(internalAdminKeyHeader))
+		if err := r.ParseMultipartForm(10 << 20); err != nil {
+			capture.setErr(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		for name, values := range r.MultipartForm.Value {
+			if len(values) > 0 {
+				capture.recordField(name, values[0])
+			}
+		}
+		for name, files := range r.MultipartForm.File {
+			for _, file := range files {
+				capture.recordFile(name, file.Filename)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"success","step_id":"scan","screenshot_file_names":["one.png","two.png"],"screenshot_urls":["https://example.test/one.png","https://example.test/two.png"]}`))
 	})
 
 	return httptest.NewServer(mux)
@@ -136,7 +157,8 @@ func newRunnerServiceForTest(instance *utils.Instance, store *ProcessStore) http
 		instance = &utils.Instance{UserAPIKey: "test-api-key"}
 	}
 	deps := Deps{
-		Sleeper: func(time.Duration) {},
+		Sleeper:             func(time.Duration) {},
+		ManagedWorkflowRoot: string(filepath.Separator),
 	}
 	srv := NewRunnerServiceWithDeps(store, *instance, deps)
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
@@ -460,7 +482,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		require.NoError(t, os.WriteFile(logPath, []byte("log"), 0600))
 
 		server := newRunnerServiceForTest(instance, nil)
-		payload := map[string]string{
+		payload := map[string]any{
 			"video_path":        videoPath,
 			"last_frame_path":   lastFramePath,
 			"log_path":          logPath,
@@ -484,9 +506,53 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		require.Equal(t, "runner-1", fields["runner_identifier"])
 		require.Equal(t, "run-1", fields["run_identifier"])
 		require.Equal(t, "android", fields["platform"])
-		require.Equal(t, "video.mp4", files["result_video"])
-		require.Equal(t, "last.png", files["last_frame"])
-		require.Equal(t, "log.txt", files["logfile"])
+		require.Equal(t, []string{"video.mp4"}, files["result_video"])
+		require.Equal(t, []string{"last.png"}, files["last_frame"])
+		require.Equal(t, []string{"log.txt"}, files["logfile"])
+		require.Empty(t, files["maestro_screenshots"])
+	})
+}
+
+func TestServerContract_StoreExecutionScreenshots(t *testing.T) {
+	t.Run("empty paths", func(t *testing.T) {
+		server := newRunnerServiceForTest(nil, nil)
+		req := httptest.NewRequest(http.MethodPost, "/credimi/execution-screenshots", strings.NewReader(`{"run_identifier":"run","runner_identifier":"runner","step_id":"step","screenshot_paths":[]}`))
+		addTestAPIKey(req)
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, req)
+		require.Equal(t, http.StatusBadRequest, resp.Code)
+	})
+
+	t.Run("success", func(t *testing.T) {
+		capture := &storeCapture{}
+		upstream := newTestInstanceServer(t, capture)
+		defer upstream.Close()
+		tmpDir := t.TempDir()
+		first := filepath.Join(tmpDir, "child-1", "one.png")
+		second := filepath.Join(tmpDir, "child-2", "two.png")
+		require.NoError(t, os.MkdirAll(filepath.Dir(first), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Dir(second), 0755))
+		require.NoError(t, os.WriteFile(first, []byte("one"), 0600))
+		require.NoError(t, os.WriteFile(second, []byte("two"), 0600))
+
+		server := newRunnerServiceForTest(&utils.Instance{URL: upstream.URL, UserAPIKey: "test-api-key"}, nil)
+		body, err := json.Marshal(map[string]any{
+			"run_identifier": "run", "runner_identifier": "runner", "step_id": "scan", "screenshot_paths": []string{first, second},
+		})
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/credimi/execution-screenshots", bytes.NewReader(body))
+		addTestAPIKey(req)
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, req)
+
+		require.Equal(t, http.StatusOK, resp.Code)
+		require.JSONEq(t, `{"status":"success","step_id":"scan","screenshot_file_names":["one.png","two.png"],"screenshot_urls":["https://example.test/one.png","https://example.test/two.png"]}`, resp.Body.String())
+		fields, files, captureErr := capture.snapshot()
+		require.NoError(t, captureErr)
+		require.Equal(t, "run", fields["run_identifier"])
+		require.Equal(t, "runner", fields["runner_identifier"])
+		require.Equal(t, "scan", fields["step_id"])
+		require.Equal(t, []string{"one.png", "two.png"}, files["screenshots"])
 	})
 }
 
