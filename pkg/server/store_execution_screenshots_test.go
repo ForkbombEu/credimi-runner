@@ -142,6 +142,99 @@ func TestStoreExecutionScreenshots_PreservesFilesOnFailure(t *testing.T) {
 	}
 }
 
+func TestStoreExecutionScreenshots_RejectsInvalidSuccessfulResponseValues(t *testing.T) {
+	for name, body := range map[string]string{
+		"blank url":      `{"screenshot_urls":[""]}`,
+		"non-string url": `{"screenshot_urls":[42]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			apiErr := validateExecutionScreenshotResponse([]byte(body))
+			require.NotNil(t, apiErr)
+			require.Equal(t, http.StatusBadGateway, apiErr.Code)
+			require.Equal(t, "store step screenshots returned an invalid screenshot URL", apiErr.Message)
+		})
+	}
+}
+
+func TestStoreExecutionScreenshots_MissingCredentialsPreservesFile(t *testing.T) {
+	store := &memoryFileStore{}
+	path := "results/child/screen.png"
+	writeMemoryFile(t, store, path, "png")
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: "http://example.local"}, Deps{
+		FileStore: store, ManagedWorkflowRoot: "results",
+	})
+
+	result, apiErr := server.storeExecutionScreenshotsLogic(validExecutionScreenshotPayload(path))
+
+	require.Nil(t, result)
+	require.NotNil(t, apiErr)
+	require.Equal(t, http.StatusUnauthorized, apiErr.Code)
+	_, err := store.Stat(path)
+	require.NoError(t, err)
+}
+
+func TestCleanupExecutionScreenshots_ErrorBranches(t *testing.T) {
+	store := &cleanupFailureFileStore{
+		removeErrors: map[string]error{
+			"results/remove-fails/screen.png": errors.New("remove failed"),
+			"results/directory-remove-fails":  errors.New("directory remove failed"),
+		},
+		readDirErrors: map[string]error{
+			"results/read-fails": errors.New("read failed"),
+		},
+	}
+	for _, path := range []string{
+		"results/remove-fails/screen.png",
+		"results/read-fails/screen.png",
+		"results/directory-remove-fails/screen.png",
+		"outside/screen.png",
+	} {
+		writeMemoryFile(t, &store.memoryFileStore, path, "png")
+	}
+	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, Deps{
+		FileStore: store, ManagedWorkflowRoot: "results",
+	})
+
+	server.cleanupExecutionScreenshots([]string{
+		"results/remove-fails/screen.png",
+		"results/read-fails/screen.png",
+		"results/directory-remove-fails/screen.png",
+		"outside/screen.png",
+	})
+
+	_, err := store.Stat("results/remove-fails/screen.png")
+	require.NoError(t, err)
+	_, err = store.Stat("results/directory-remove-fails")
+	require.NoError(t, err)
+}
+
+func TestMultipartAPIError(t *testing.T) {
+	apiErr := multipartAPIError(errors.New("multipart broke"))
+	require.Equal(t, http.StatusInternalServerError, apiErr.Code)
+	require.Equal(t, "multipart failed", apiErr.Reason)
+	require.Equal(t, "multipart broke", apiErr.Message)
+}
+
+type cleanupFailureFileStore struct {
+	memoryFileStore
+	removeErrors  map[string]error
+	readDirErrors map[string]error
+}
+
+func (s *cleanupFailureFileStore) Remove(path string) error {
+	if err := s.removeErrors[filepath.Clean(path)]; err != nil {
+		return err
+	}
+	return s.memoryFileStore.Remove(path)
+}
+
+func (s *cleanupFailureFileStore) ReadDir(path string) ([]os.DirEntry, error) {
+	if err := s.readDirErrors[filepath.Clean(path)]; err != nil {
+		return nil, err
+	}
+	return s.memoryFileStore.ReadDir(path)
+}
+
 func validExecutionScreenshotPayload(path string) storeExecutionScreenshotsPayload {
 	return storeExecutionScreenshotsPayload{RunIdentifier: "run", RunnerIdentifier: "runner", StepID: "step", ScreenshotPaths: []string{path}}
 }
