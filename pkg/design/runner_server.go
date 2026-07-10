@@ -272,17 +272,19 @@ var _ = Service("credimi", func() {
 			Attribute("video_path", String)
 			Attribute("last_frame_path", String)
 			Attribute("log_path", String)
+			Attribute("maestro_screenshot_paths", ArrayOf(String))
 			Attribute("run_identifier", String)
 			Attribute("runner_identifier", String)
 			Attribute("platform", String)
 			Required("run_identifier", "platform")
 			Example(map[string]any{
-				"video_path":        "",
-				"last_frame_path":   "",
-				"log_path":          "",
-				"platform":          "android",
-				"run_identifier":    "",
-				"runner_identifier": "",
+				"video_path":               "",
+				"last_frame_path":          "",
+				"log_path":                 "",
+				"maestro_screenshot_paths": []string{},
+				"platform":                 "android",
+				"run_identifier":           "",
+				"runner_identifier":        "",
 			})
 		})
 		Result(MapOf(String, Any))

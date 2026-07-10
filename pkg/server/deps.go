@@ -18,6 +18,7 @@ type HTTPClient interface {
 type FileStore interface {
 	MkdirAll(path string, perm os.FileMode) error
 	Stat(name string) (os.FileInfo, error)
+	Lstat(name string) (os.FileInfo, error)
 	Create(name string) (io.WriteCloser, error)
 	Open(name string) (io.ReadCloser, error)
 	RemoveAll(path string) error
@@ -35,6 +36,7 @@ type Deps struct {
 	CommandRunner       CommandRunner
 	WorkerRunnerFactory WorkerRunnerFactory
 	Sleeper             func(time.Duration)
+	ManagedWorkflowRoot string
 }
 
 func (d *Deps) WithDefaults() {
@@ -53,6 +55,9 @@ func (d *Deps) WithDefaults() {
 	if d.Sleeper == nil {
 		d.Sleeper = time.Sleep
 	}
+	if d.ManagedWorkflowRoot == "" {
+		d.ManagedWorkflowRoot = "/credimi/workflows"
+	}
 }
 
 type osFileStore struct{}
@@ -63,6 +68,10 @@ func (osFileStore) MkdirAll(path string, perm os.FileMode) error {
 
 func (osFileStore) Stat(name string) (os.FileInfo, error) {
 	return os.Stat(name)
+}
+
+func (osFileStore) Lstat(name string) (os.FileInfo, error) {
+	return os.Lstat(name)
 }
 
 func (osFileStore) Create(name string) (io.WriteCloser, error) {

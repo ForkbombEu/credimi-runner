@@ -94,6 +94,10 @@ func (m *memoryFileStore) Stat(name string) (os.FileInfo, error) {
 	return fakeFileInfo{name: filepath.Base(name), size: int64(buf.Len())}, nil
 }
 
+func (m *memoryFileStore) Lstat(name string) (os.FileInfo, error) {
+	return m.Stat(name)
+}
+
 func (m *memoryFileStore) Create(name string) (io.WriteCloser, error) {
 	if m.files == nil {
 		m.files = make(map[string]*bytes.Buffer)

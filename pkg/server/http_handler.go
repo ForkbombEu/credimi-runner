@@ -183,6 +183,9 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 	if payload.LogPath != nil {
 		body.LogPath = *payload.LogPath
 	}
+	if payload.MaestroScreenshotPaths != nil {
+		body.MaestroScreenshotPaths = append([]string(nil), payload.MaestroScreenshotPaths...)
+	}
 	if payload.RunIdentifier != "" {
 		body.RunIdentifier = payload.RunIdentifier
 	}

@@ -23,7 +23,7 @@ import (
 type storeCapture struct {
 	mu     sync.Mutex
 	fields map[string]string
-	files  map[string]string
+	files  map[string][]string
 	err    error
 }
 
@@ -48,21 +48,21 @@ func (c *storeCapture) recordFile(name, filename string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.files == nil {
-		c.files = make(map[string]string)
+		c.files = make(map[string][]string)
 	}
-	c.files[name] = filename
+	c.files[name] = append(c.files[name], filename)
 }
 
-func (c *storeCapture) snapshot() (map[string]string, map[string]string, error) {
+func (c *storeCapture) snapshot() (map[string]string, map[string][]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	fields := make(map[string]string)
 	for k, v := range c.fields {
 		fields[k] = v
 	}
-	files := make(map[string]string)
+	files := make(map[string][]string)
 	for k, v := range c.files {
-		files[k] = v
+		files[k] = append([]string(nil), v...)
 	}
 	return fields, files, c.err
 }
@@ -115,8 +115,8 @@ func newTestInstanceServer(t *testing.T, capture *storeCapture) *httptest.Server
 			}
 		}
 		for name, files := range r.MultipartForm.File {
-			if len(files) > 0 {
-				capture.recordFile(name, files[0].Filename)
+			for _, file := range files {
+				capture.recordFile(name, file.Filename)
 			}
 		}
 
@@ -136,7 +136,8 @@ func newRunnerServiceForTest(instance *utils.Instance, store *ProcessStore) http
 		instance = &utils.Instance{UserAPIKey: "test-api-key"}
 	}
 	deps := Deps{
-		Sleeper: func(time.Duration) {},
+		Sleeper:             func(time.Duration) {},
+		ManagedWorkflowRoot: string(filepath.Separator),
 	}
 	srv := NewRunnerServiceWithDeps(store, *instance, deps)
 	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
@@ -455,18 +456,25 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		videoPath := filepath.Join(tmpDir, "video.mp4")
 		lastFramePath := filepath.Join(tmpDir, "last.png")
 		logPath := filepath.Join(tmpDir, "log.txt")
+		screenshotOne := filepath.Join(tmpDir, "child-1", "checkout.png")
+		screenshotTwo := filepath.Join(tmpDir, "child-2", "checkout.png")
+		require.NoError(t, os.MkdirAll(filepath.Dir(screenshotOne), 0755))
+		require.NoError(t, os.MkdirAll(filepath.Dir(screenshotTwo), 0755))
 		require.NoError(t, os.WriteFile(videoPath, []byte("video"), 0600))
 		require.NoError(t, os.WriteFile(lastFramePath, []byte("frame"), 0600))
 		require.NoError(t, os.WriteFile(logPath, []byte("log"), 0600))
+		require.NoError(t, os.WriteFile(screenshotOne, []byte("one"), 0600))
+		require.NoError(t, os.WriteFile(screenshotTwo, []byte("two"), 0600))
 
 		server := newRunnerServiceForTest(instance, nil)
-		payload := map[string]string{
-			"video_path":        videoPath,
-			"last_frame_path":   lastFramePath,
-			"log_path":          logPath,
-			"platform":          "android",
-			"run_identifier":    "run-1",
-			"runner_identifier": "runner-1",
+		payload := map[string]any{
+			"video_path":               videoPath,
+			"last_frame_path":          lastFramePath,
+			"log_path":                 logPath,
+			"platform":                 "android",
+			"run_identifier":           "run-1",
+			"runner_identifier":        "runner-1",
+			"maestro_screenshot_paths": []string{screenshotOne, screenshotTwo},
 		}
 		buf := &bytes.Buffer{}
 		require.NoError(t, json.NewEncoder(buf).Encode(payload))
@@ -484,9 +492,10 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 		require.Equal(t, "runner-1", fields["runner_identifier"])
 		require.Equal(t, "run-1", fields["run_identifier"])
 		require.Equal(t, "android", fields["platform"])
-		require.Equal(t, "video.mp4", files["result_video"])
-		require.Equal(t, "last.png", files["last_frame"])
-		require.Equal(t, "log.txt", files["logfile"])
+		require.Equal(t, []string{"video.mp4"}, files["result_video"])
+		require.Equal(t, []string{"last.png"}, files["last_frame"])
+		require.Equal(t, []string{"log.txt"}, files["logfile"])
+		require.Equal(t, []string{"checkout.png", "checkout.png"}, files["maestro_screenshots"])
 	})
 }
 
