@@ -81,6 +81,14 @@ func (f *fakeManager) UpdateImage(context.Context) error {
 	f.updateImageCalls++
 	return f.updateImageErr
 }
+func (f *fakeManager) UpgradeRunnerImage(_ context.Context, progress func(string)) error {
+	f.updateImageCalls++
+	if progress != nil {
+		progress("Stopping the runner and Docker services.")
+		progress("Downloading the latest runner image.")
+	}
+	return f.updateImageErr
+}
 func (f *fakeManager) Configure(values dashboardruntime.Values) {
 	f.status.Configured = strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != ""
 }
@@ -650,6 +658,23 @@ func TestServerRuntimeActionVariants(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s = %d %s", target.path, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) {
+	s := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	s.maintenanceUpgrade(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("maintenanceUpgrade = %d %s", recorder.Code, recorder.Body.String())
+	}
+	deadline := time.Now().Add(time.Second)
+	for s.startupSnapshot().running && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	startup := s.startupSnapshot()
+	if startup.Phase != StartupReady || !strings.Contains(strings.Join(startup.Logs, "\n"), "Downloading the latest runner image") {
+		t.Fatalf("startup = %#v", startup)
 	}
 }
 

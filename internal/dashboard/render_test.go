@@ -144,7 +144,7 @@ func TestRenderer_FragmentPage(t *testing.T) {
 		Title:  "Overview",
 		Runner: &Config{values: Defaults},
 		Snapshot: Snapshot{
-			Services: []Service{{ID: "runner", Name: "runner", Status: Online}},
+			Services: []Service{{ID: "runner", Name: "runner", Image: "example.test/runner:latest", Status: Online, Uptime: "Up 2 minutes"}},
 		},
 		Workers: []Worker{},
 		Pill:    PillData{OK: true, Label: "All healthy"},
@@ -160,8 +160,29 @@ func TestRenderer_FragmentPage(t *testing.T) {
 	if !strings.Contains(html, "Start Runner") {
 		t.Fatalf("overview fragment missing runtime start control: %s", html)
 	}
+	if !strings.Contains(html, "Maintenance") || !strings.Contains(html, "example.test/runner:latest") || !strings.Contains(html, "Up 2 minutes") {
+		t.Fatalf("overview fragment missing maintenance details: %s", html)
+	}
 	if strings.Contains(html, "health-pill") {
 		t.Fatalf("overview fragment should not render duplicate health pill: %s", html)
+	}
+}
+
+func TestRendererOverviewPageIncludesUpgradeLogModal(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := renderer.Page("overview", PageData{
+		Active: "overview",
+		Title:  "Overview",
+		Runner: &Config{values: Defaults},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, "runner-upgrade-modal") || !strings.Contains(html, "data-upgrade-log") || !strings.Contains(html, "data-upgrade-close disabled") {
+		t.Fatalf("overview page missing locked upgrade modal: %s", html)
 	}
 }
 

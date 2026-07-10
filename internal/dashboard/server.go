@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
@@ -61,6 +62,7 @@ const (
 	StartupStarting       StartupPhase = "starting"
 	StartupWaitingRunner  StartupPhase = "waiting_for_runner"
 	StartupRegistering    StartupPhase = "registering"
+	StartupUpgrading      StartupPhase = "upgrading"
 	StartupReady          StartupPhase = "ready"
 	StartupNeedsAttention StartupPhase = "needs_attention"
 )
@@ -83,6 +85,10 @@ type startupState struct {
 
 type managerProgressStarter interface {
 	StartWithProgress(context.Context, func(string)) error
+}
+
+type managerImageUpgrader interface {
+	UpgradeRunnerImage(context.Context, func(string)) error
 }
 
 // NewHandler creates the dashboard HTTP handler for mounting into an existing
@@ -184,6 +190,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/restart", s.runtimeRestart)
 	mux.HandleFunc("POST /runtime/down", s.runtimeDown)
 	mux.HandleFunc("POST /runtime/update-image", s.runtimeUpdateImage)
+	mux.HandleFunc("POST /maintenance/upgrade", s.maintenanceUpgrade)
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
 	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
 	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
@@ -255,6 +262,7 @@ func (s *Server) pageData(active string, payload any) PageData {
 	payloadMap := map[string]any{
 		"RuntimeStatus": runtimeStatus,
 		"Startup":       s.startupSnapshot(),
+		"RunnerVersion": buildinfo.String(),
 	}
 	if flash != "" {
 		payloadMap["Flash"] = flash
@@ -895,6 +903,58 @@ func (s *Server) runtimeUpdateImage(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.manager.UpdateImage(ctx)
 	}, "Runner image updated.")
+}
+
+func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.startup.running {
+		s.mu.Unlock()
+		http.Error(w, "another runtime operation is already running", http.StatusConflict)
+		return
+	}
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	s.startup = startupState{
+		Phase:     StartupUpgrading,
+		Message:   "Upgrading runner Docker image.",
+		LogBase:   1,
+		LogNextID: 1,
+		running:   true,
+		cancel:    cancel,
+		done:      done,
+	}
+	s.appendStartupLogLocked("Starting runner image upgrade.")
+	s.mu.Unlock()
+
+	go func() {
+		defer cancel()
+		defer close(done)
+		var err error
+		if upgrader, ok := s.manager.(managerImageUpgrader); ok {
+			err = upgrader.UpgradeRunnerImage(ctx, s.appendStartupLog)
+		} else if s.manager != nil {
+			err = s.manager.UpdateImage(ctx)
+		}
+		if err != nil {
+			s.setStartupState(StartupNeedsAttention, "Runner image upgrade failed: "+err.Error())
+		} else {
+			s.setStartupState(StartupReady, "Runner image upgrade complete.")
+		}
+		s.mu.Lock()
+		if s.startup.done == done {
+			s.startup.running = false
+			s.startup.cancel = nil
+		}
+		s.mu.Unlock()
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"started":true}`))
 }
 
 func (s *Server) runtimeRegister(w http.ResponseWriter, r *http.Request) {

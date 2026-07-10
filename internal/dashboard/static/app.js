@@ -52,7 +52,7 @@
   let busyStartupTimer = null;
   let busyLogSeen = new Set();
   let busyStartupNextID = 0;
-  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering']);
+  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering', 'upgrading']);
   function busyOverlay() { return $('#busy-overlay'); }
   function busyLogNode() {
     const overlay = busyOverlay();
@@ -193,13 +193,78 @@
   });
   resumeSetupBusyIfNeeded();
 
+  // ── Runner image upgrade modal ─────────────────────────────────────────
+  let upgradeTimer = null;
+  let upgradeNextID = 0;
+  function appendUpgradeLog(line) {
+    const log = $('[data-upgrade-log]');
+    const text = String(line || '').trim();
+    if (!log || !text) return;
+    const stamp = new Date().toLocaleTimeString([], { hour12: false });
+    log.textContent += `${stamp}  ${text}\n`;
+    log.scrollTop = log.scrollHeight;
+  }
+  async function pollUpgrade() {
+    try {
+      const url = upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status';
+      const response = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!response.ok) return;
+      const data = await response.json();
+      (data.lines || []).forEach(appendUpgradeLog);
+      upgradeNextID = Number(data.next_id || upgradeNextID);
+      const message = $('[data-upgrade-message]');
+      if (message && data.message) message.textContent = data.message;
+      if (!data.running) {
+        clearInterval(upgradeTimer);
+        upgradeTimer = null;
+        const modal = $('#runner-upgrade-modal');
+        if (modal) modal.dataset.upgradeRunning = '0';
+        const close = $('[data-upgrade-close]');
+        if (close) close.disabled = false;
+      }
+    } catch (_) {}
+  }
+  document.addEventListener('click', async (e) => {
+    const upgrade = e.target.closest('[data-runner-upgrade]');
+    if (upgrade) {
+      const modal = $('#runner-upgrade-modal');
+      const log = $('[data-upgrade-log]');
+      const close = $('[data-upgrade-close]');
+      if (!modal || !log || !close) return;
+      modal.hidden = false;
+      modal.dataset.upgradeRunning = '1';
+      log.textContent = '';
+      close.disabled = true;
+      upgradeNextID = 0;
+      appendUpgradeLog('Requesting runner image upgrade.');
+      try {
+        const response = await fetch('/maintenance/upgrade', { method: 'POST', headers: { Accept: 'application/json' } });
+        if (!response.ok) throw new Error(await response.text());
+        await pollUpgrade();
+        clearInterval(upgradeTimer);
+        upgradeTimer = setInterval(pollUpgrade, 1000);
+      } catch (error) {
+        appendUpgradeLog(`Upgrade could not start: ${String(error.message || error).trim()}`);
+        modal.dataset.upgradeRunning = '0';
+        close.disabled = false;
+      }
+    }
+    if (e.target.closest('[data-upgrade-close]')) {
+      const modal = $('#runner-upgrade-modal');
+      if (modal && modal.dataset.upgradeRunning !== '1') {
+        modal.hidden = true;
+        window.location.reload();
+      }
+    }
+  });
+
   // ── Modal open / close ───────────────────────────────────────────────────
-  function closeModals() { $$('.modal-bk').forEach((m) => (m.hidden = true)); }
+  function closeModals() { $$('.modal-bk').forEach((m) => { if (m.dataset.upgradeRunning !== '1') m.hidden = true; }); }
   document.addEventListener('click', (e) => {
     const open = e.target.closest('[data-open-modal]');
     if (open) { const m = $('#modal-' + open.dataset.openModal); if (m) { m.hidden = false; resetWizard(m); } }
     if (e.target.closest('[data-close-modal]')) closeModals();
-    if (e.target.classList && e.target.classList.contains('modal-bk')) e.target.hidden = true;
+    if (e.target.classList && e.target.classList.contains('modal-bk') && e.target.dataset.upgradeRunning !== '1') e.target.hidden = true;
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });
 

@@ -59,5 +59,19 @@
       <div class="right"><a class="btn btn-out btn-sm" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">Open target page</a></div></header>
     <div class="card-b flush"><div class="list" id="device-snapshot" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div>
   </section>
+
+  <section class="card maintenance-card" style="margin-top:16px">
+    <header class="card-h">{{icon "gear"}}<div><h3>Maintenance</h3><div class="sub">Runner build and Docker runtime</div></div>
+      <div class="right"><button type="button" class="btn btn-pri" data-runner-upgrade>{{icon "activity"}} Upgrade</button></div>
+    </header>
+    <div class="card-b">
+      <div class="maintenance-grid">
+        <div class="maintenance-detail"><span>Runner version</span><b>{{.RunnerVersion}}</b></div>
+        <div class="maintenance-detail"><span>Docker image</span><b class="mono">{{.RunnerImage}}</b></div>
+        <div class="maintenance-detail"><span>Runner container</span><b>{{.RunnerContainerDetails}}</b></div>
+      </div>
+      <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>The upgrade stops runner services, removes the current container and image, downloads the latest image for the configured tag, and restarts services.</div></div>
+    </div>
+  </section>
 </main>
 {{- end}}

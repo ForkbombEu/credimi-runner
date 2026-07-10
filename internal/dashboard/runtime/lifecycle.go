@@ -653,17 +653,71 @@ func (m *LifecycleManager) stopComposeLogFollowerLocked() {
 }
 
 func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
+	return m.UpgradeRunnerImage(ctx, nil)
+}
+
+// UpgradeRunnerImage replaces the configured runner image and brings the
+// runtime back up. Progress receives both lifecycle milestones and Docker's
+// plain-text pull output.
+func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func(string)) error {
+	m.mu.Lock()
 	image := strings.TrimSpace(m.values["RUNNER_IMAGE"])
+	plan := BuildRuntimePlan(m.configDir, m.values)
+	m.mu.Unlock()
 	if image == "" {
 		return fmt.Errorf("RUNNER_IMAGE is required")
 	}
-	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}}); err != nil {
-		m.mu.Lock()
-		m.status.LastError = err.Error()
-		m.mu.Unlock()
+	if !containsService(plan.ComposeServices, "runner") {
+		return fmt.Errorf("runner image upgrade requires the container backend")
+	}
+	emitProgress(progress, "Stopping the runner and Docker services.")
+	if err := m.Stop(ctx); err != nil {
 		return err
 	}
+	emitProgress(progress, "Removing the stopped runner container.")
+	if _, err := m.runner.Run(ctx, CommandSpec{
+		Name:   "docker",
+		Args:   []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "rm", "-f", "-s", "runner"},
+		Env:    composeProgressEnv(),
+		Stream: progress,
+	}); err != nil {
+		m.setLastError(err)
+		return err
+	}
+	emitProgress(progress, "Deleting the current runner image: "+image)
+	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"image", "rm", "-f", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+		m.setLastError(err)
+		return err
+	}
+	emitProgress(progress, "Downloading the latest runner image: "+image)
+	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+		m.setLastError(err)
+		return err
+	}
+	emitProgress(progress, "Restarting the runner and Docker services.")
+	if err := m.StartWithProgress(ctx, progress); err != nil {
+		return err
+	}
+	emitProgress(progress, "Runner image upgrade complete.")
 	return nil
+}
+
+func containsService(services []string, target string) bool {
+	for _, service := range services {
+		if service == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *LifecycleManager) setLastError(err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	m.status.LastError = err.Error()
+	m.mu.Unlock()
 }
 
 func (m *LifecycleManager) Configure(values Values) {
