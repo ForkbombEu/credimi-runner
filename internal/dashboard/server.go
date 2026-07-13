@@ -68,7 +68,7 @@ const (
 )
 
 const (
-	quickTunnelLogTail = -200
+	quickTunnelLogTail = -1000
 	startupLogRetain   = 2000
 )
 

@@ -505,10 +505,11 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if len(lines) != 2 || lines[0].Message != "line-1" || lines[1].Message != "line-2" {
 		t.Fatalf("logs = %#v", lines)
 	}
+	manager.status.LastStartedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	if _, err := manager.TunnelLogs(context.Background(), 100); err != nil {
 		t.Fatal(err)
 	}
-	if args := runner.runs[len(runner.runs)-1].Args; len(args) == 0 || args[len(args)-1] != "tunnel" {
+	if args := runner.runs[len(runner.runs)-1].Args; len(args) == 0 || args[len(args)-1] != "tunnel" || strings.Contains(strings.Join(args, " "), "--since") {
 		t.Fatalf("TunnelLogs args = %#v", args)
 	}
 	manager.Configure(Values{

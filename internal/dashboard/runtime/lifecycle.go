@@ -773,6 +773,9 @@ func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error
 // TunnelLogs returns only quick-tunnel service output. URL discovery must not
 // scan noisy runner/emulator logs because doing so can exhaust its deadline.
 func (m *LifecycleManager) TunnelLogs(ctx context.Context, tail int) ([]LogLine, error) {
+	if tail > 0 {
+		tail = -tail
+	}
 	return m.logs(ctx, tail, []string{"tunnel"})
 }
 

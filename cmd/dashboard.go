@@ -31,7 +31,7 @@ var (
 	dashboardRegistrationTimeout = 30 * time.Second
 )
 
-const quickTunnelLogTail = -200
+const quickTunnelLogTail = -1000
 
 type dashboardTunnelLogger interface {
 	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
