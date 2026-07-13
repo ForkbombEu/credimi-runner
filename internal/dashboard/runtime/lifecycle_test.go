@@ -24,6 +24,20 @@ type fakeRunner struct {
 	startErr    error
 }
 
+type failOnRunRunner struct {
+	fakeRunner
+	failAt int
+	calls  int
+}
+
+func (f *failOnRunRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
+	f.calls++
+	if f.calls == f.failAt {
+		return nil, errors.New("docker command failed")
+	}
+	return f.fakeRunner.Run(ctx, spec)
+}
+
 func (f *fakeRunner) Run(_ context.Context, spec CommandSpec) ([]byte, error) {
 	f.runs = append(f.runs, spec)
 	if f.runOutput != nil || f.runErr != nil {
@@ -205,6 +219,38 @@ func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
 	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "container backend") {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageReportsDockerStageErrors(t *testing.T) {
+	for _, failAt := range []int{2, 3, 4} {
+		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
+			runner := &failOnRunRunner{failAt: failAt}
+			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+				"CREDIMI_RUNNER_ID":      "acme/runner",
+				"CREDIMI_RUNNER_BACKEND": "container",
+				"CREDIMI_SERVICE_MODE":   "manual",
+				"RUNNER_IMAGE":           "example.test/runner:latest",
+			}, runner)
+			err := manager.UpgradeRunnerImage(context.Background(), nil)
+			if err == nil || !strings.Contains(err.Error(), "docker command failed") {
+				t.Fatalf("error = %v", err)
+			}
+			if status := manager.Status(context.Background()); !strings.Contains(status.LastError, "docker command failed") {
+				t.Fatalf("status = %#v", status)
+			}
+		})
+	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageRequiresImage(t *testing.T) {
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, &fakeRunner{})
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "RUNNER_IMAGE") {
+		t.Fatalf("error = %v", err)
+	}
+	manager.setLastError(nil)
 }
 
 func TestExecRunnerRunStreamsProgress(t *testing.T) {

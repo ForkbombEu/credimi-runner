@@ -929,15 +929,27 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	s.appendStartupLogLocked("Starting runner image upgrade.")
 	s.mu.Unlock()
+	values := s.cfg.Snapshot()
 
 	go func() {
 		defer cancel()
 		defer close(done)
 		var err error
+		if s.manager != nil && normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
+			s.manager.SetPublicURL("")
+		}
 		if upgrader, ok := s.manager.(managerImageUpgrader); ok {
 			err = upgrader.UpgradeRunnerImage(ctx, s.appendStartupLog)
 		} else if s.manager != nil {
 			err = s.manager.UpdateImage(ctx)
+		}
+		if err == nil && dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+			s.setStartupState(StartupWaitingRunner, "Runner image updated. Waiting for runner readiness.")
+			err = s.runnerReady(ctx, values)
+		}
+		if err == nil {
+			s.setStartupState(StartupRegistering, "Runner restarted. Discovering its public URL and updating Credimi registration.")
+			err = s.registerCurrent(ctx, values)
 		}
 		if err != nil {
 			s.setStartupState(StartupNeedsAttention, "Runner image upgrade failed: "+err.Error())

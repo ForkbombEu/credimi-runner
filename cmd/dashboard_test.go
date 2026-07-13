@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -277,6 +278,21 @@ func TestDashboardBrowserHelpers(t *testing.T) {
 	}
 	if err := openDashboardBrowser(""); err == nil {
 		t.Fatal("expected empty dashboard URL to fail")
+	}
+}
+
+func TestOpenDashboardBrowserStartsPlatformCommand(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("test supplies the Linux xdg-open command")
+	}
+	dir := t.TempDir()
+	opener := filepath.Join(dir, "xdg-open")
+	if err := os.WriteFile(opener, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if err := openDashboardBrowser("http://127.0.0.1:8051"); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -7,6 +7,37 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
+func TestPageDataAndroidPhoneDevicesDelegatesToAndroidDevices(t *testing.T) {
+	d := PageData{Snapshot: Snapshot{Devices: []Device{
+		{Serial: "online", Type: "android_phone", Status: Online},
+		{Serial: "offline", Type: "android_phone", Status: Offline},
+		{Serial: "ios", Type: "ios_simulator", Status: Online},
+	}}}
+	devices := d.AndroidPhoneDevices()
+	if len(devices) != 1 || devices[0].Serial != "online" {
+		t.Fatalf("devices = %#v", devices)
+	}
+}
+
+func TestConfiguredTargetDetailVariants(t *testing.T) {
+	for runnerType, want := range map[string]string{
+		"android_emulator": "emulator-base",
+		"ios_simulator":    "emulator-base",
+	} {
+		d := PageData{Runner: &Config{values: map[string]string{
+			"CREDIMI_RUNNER_TYPE": runnerType,
+			"BASE_NAME":           "emulator-base",
+		}}}
+		if got := d.ConfiguredTargetDetail(); got != want {
+			t.Fatalf("ConfiguredTargetDetail(%s) = %q", runnerType, got)
+		}
+	}
+	d := PageData{Runner: &Config{values: map[string]string{"CREDIMI_RUNNER_TYPE": "unknown"}}}
+	if profile := d.ActiveTargetProfile(); profile.Type == "" {
+		t.Fatalf("default profile = %#v", profile)
+	}
+}
+
 func TestPageDataWorkerAndNetworkViewModels(t *testing.T) {
 	cfg := &Config{values: map[string]string{
 		"CREDIMI_URL":                 "https://credimi.example",

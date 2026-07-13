@@ -30,6 +30,28 @@ func TestDefaultConfigDirHonorsOverride(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigDirUsesUserConfigDirectory(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if got := DefaultConfigDir(); !strings.HasSuffix(got, filepath.Join("credimi", "runner")) {
+		t.Fatalf("DefaultConfigDir = %q", got)
+	}
+}
+
+func TestLoadStoreAndSaveReportFilesystemErrors(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadStore(file); err == nil {
+		t.Fatal("LoadStore should reject a file as config directory")
+	}
+	store := &Store{Path: filepath.Join(file, ".env"), Values: DefaultValues()}
+	if err := store.Save(store.Snapshot()); err == nil {
+		t.Fatal("Save should report an invalid parent directory")
+	}
+}
+
 func TestStoreSaveCreates0600File(t *testing.T) {
 	dir := t.TempDir()
 	store, err := LoadStore(dir)

@@ -39,6 +39,7 @@ type fakeManager struct {
 	downErr          error
 	updateImageErr   error
 	logTail          int
+	upgradeBlock     chan struct{}
 }
 
 func (f *fakeManager) Start(context.Context) error {
@@ -87,6 +88,9 @@ func (f *fakeManager) UpgradeRunnerImage(_ context.Context, progress func(string
 		progress("Stopping the runner and Docker services.")
 		progress("Downloading the latest runner image.")
 	}
+	if f.upgradeBlock != nil {
+		<-f.upgradeBlock
+	}
 	return f.updateImageErr
 }
 func (f *fakeManager) Configure(values dashboardruntime.Values) {
@@ -132,6 +136,39 @@ func newTestServer(t *testing.T) *Server {
 		runnerReady: func(context.Context, map[string]string) error { return nil },
 		lookupPath:  func(string) (string, error) { return "/tmp/fake-bin", nil },
 		statPath:    func(string) (os.FileInfo, error) { return fakeFileInfo("ok"), nil },
+	}
+}
+
+func TestNewHandlerWithManagerWrapper(t *testing.T) {
+	handler, cancel, err := NewHandlerWithManager(t.TempDir(), &fakeManager{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	if handler == nil {
+		t.Fatal("handler is nil")
+	}
+}
+
+func TestApplyModeAndSaveMessageHelpers(t *testing.T) {
+	for input, want := range map[string]string{
+		"quick":              "auto",
+		"direct":             "manual",
+		"named":              "cloudflare-managed",
+		"auto":               "auto",
+		"manual":             "manual",
+		"cloudflare-managed": "cloudflare-managed",
+		"unexpected":         "auto",
+	} {
+		if got := normalizedApplyServiceMode(input); got != want {
+			t.Fatalf("normalizedApplyServiceMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if got := saveSuccessMessage(applyOutcome{Restarted: true}); got != "Runner restarted with the new configuration." {
+		t.Fatalf("restart message = %q", got)
+	}
+	if got := saveSuccessMessage(applyOutcome{}); got != "Configuration updated." {
+		t.Fatalf("save message = %q", got)
 	}
 }
 
@@ -662,7 +699,25 @@ func TestServerRuntimeActionVariants(t *testing.T) {
 }
 
 func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) {
+	registered := make(chan string, 1)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		registered <- string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
 	s := newTestServer(t)
+	manager := s.manager.(*fakeManager)
+	manager.status.PublicURL = "https://stale.example.trycloudflare.com"
+	manager.logLines = []dashboardruntime.LogLine{{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"}}
+	s.cfg.values["CREDIMI_URL"] = api.URL
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	s.cfg.values["CREDIMI_RUNNER_BACKEND"] = "container"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
 	recorder := httptest.NewRecorder()
 	s.maintenanceUpgrade(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
 	if recorder.Code != http.StatusAccepted {
@@ -674,6 +729,44 @@ func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) 
 	}
 	startup := s.startupSnapshot()
 	if startup.Phase != StartupReady || !strings.Contains(strings.Join(startup.Logs, "\n"), "Downloading the latest runner image") {
+		t.Fatalf("startup = %#v", startup)
+	}
+	select {
+	case body := <-registered:
+		if !strings.Contains(body, "https://fresh.example.trycloudflare.com") {
+			t.Fatalf("registration body = %s", body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Credimi registration was not updated")
+	}
+	if manager.status.PublicURL != "https://fresh.example.trycloudflare.com" {
+		t.Fatalf("manager public URL = %q", manager.status.PublicURL)
+	}
+}
+
+func TestServerMaintenanceUpgradeRejectsConcurrentJobAndReportsFailure(t *testing.T) {
+	s := newTestServer(t)
+	manager := s.manager.(*fakeManager)
+	manager.upgradeBlock = make(chan struct{})
+	manager.updateImageErr = errors.New("pull failed")
+
+	first := httptest.NewRecorder()
+	s.maintenanceUpgrade(first, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first upgrade = %d", first.Code)
+	}
+	second := httptest.NewRecorder()
+	s.maintenanceUpgrade(second, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second upgrade = %d %s", second.Code, second.Body.String())
+	}
+	close(manager.upgradeBlock)
+	deadline := time.Now().Add(time.Second)
+	for s.startupSnapshot().running && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	startup := s.startupSnapshot()
+	if startup.Phase != StartupNeedsAttention || !strings.Contains(startup.Message, "pull failed") {
 		t.Fatalf("startup = %#v", startup)
 	}
 }

@@ -29,6 +29,18 @@ var upgradeRunnerImageCmd = &cobra.Command{
 	RunE:  runUpgradeRunnerImage,
 }
 
+type runnerImageUpgradeManager interface {
+	dashboardruntime.Manager
+	UpgradeRunnerImage(context.Context, func(string)) error
+}
+
+var (
+	upgradeRunnerExecutable = os.Executable
+	newUpgradeRunnerManager = func(binaryPath, configDir string, values dashboardruntime.Values) runnerImageUpgradeManager {
+		return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
+	}
+)
+
 func runUpgradeRunnerImage(cmd *cobra.Command, _ []string) error {
 	configDir := dashboardConfigDir
 	if strings.TrimSpace(configDir) == "" {
@@ -42,19 +54,35 @@ func runUpgradeRunnerImage(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("normalize runner configuration: %w", err)
 	}
-	binaryPath, err := os.Executable()
+	binaryPath, err := upgradeRunnerExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve runner executable: %w", err)
 	}
-	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
+	manager := newUpgradeRunnerManager(binaryPath, configDir, values)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Minute)
 	defer cancel()
 
 	out := cmd.OutOrStdout()
 	printRunnerCLIHeader(out)
-	return manager.UpgradeRunnerImage(ctx, func(line string) {
+	progress := func(line string) {
 		fmt.Fprintln(out, line)
-	})
+	}
+	if strings.EqualFold(strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]), "auto") {
+		manager.SetPublicURL("")
+	}
+	if err := manager.UpgradeRunnerImage(ctx, progress); err != nil {
+		return err
+	}
+	progress("Waiting for the restarted runner to become ready.")
+	if err := waitForDashboardRunnerReady(ctx, values); err != nil {
+		return err
+	}
+	progress("Discovering the public URL and updating Credimi registration.")
+	if err := registerDashboardRunner(ctx, manager, values); err != nil {
+		return err
+	}
+	progress("Credimi registration updated.")
+	return nil
 }
 
 func printRunnerCLIHeader(out io.Writer) {
