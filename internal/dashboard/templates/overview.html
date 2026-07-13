@@ -70,7 +70,7 @@
         <div class="maintenance-detail"><span>Docker image</span><b class="mono">{{.RunnerImage}}</b></div>
         <div class="maintenance-detail"><span>Runner container</span><b>{{.RunnerContainerDetails}}</b></div>
       </div>
-      <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>The upgrade stops runner services, removes the current container and image, downloads the latest image for the configured tag, and restarts services.</div></div>
+      <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>The upgrade checks for a newer image using the local layer cache, stops runner services, removes the current container and any superseded image, then restarts services.</div></div>
     </div>
   </section>
 </main>

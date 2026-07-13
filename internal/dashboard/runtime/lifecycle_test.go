@@ -30,6 +30,22 @@ type failOnRunRunner struct {
 	calls  int
 }
 
+type imageVersionRunner struct {
+	fakeRunner
+	imageIDs    []string
+	inspectCall int
+}
+
+func (f *imageVersionRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
+	if len(spec.Args) >= 2 && spec.Args[0] == "image" && spec.Args[1] == "inspect" {
+		f.runs = append(f.runs, spec)
+		id := f.imageIDs[f.inspectCall]
+		f.inspectCall++
+		return []byte(id + "\n"), nil
+	}
+	return f.fakeRunner.Run(ctx, spec)
+}
+
 func (f *failOnRunRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
 	f.calls++
 	if f.calls == f.failAt {
@@ -190,10 +206,9 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 	}
 	commands := commandArgs(runner.runs)
 	ordered := []string{
+		"pull example.test/runner:latest",
 		"stop runner",
 		"rm -f -s runner",
-		"image rm -f example.test/runner:latest",
-		"pull example.test/runner:latest",
 		"up -d runner",
 	}
 	position := -1
@@ -204,8 +219,25 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 		}
 		position += next + 1
 	}
-	if joined := strings.Join(progress, "\n"); !strings.Contains(joined, "Deleting the current runner image") || !strings.Contains(joined, "upgrade complete") {
+	if joined := strings.Join(progress, "\n"); !strings.Contains(joined, "already current") || !strings.Contains(joined, "upgrade complete") {
 		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing.T) {
+	runner := &imageVersionRunner{imageIDs: []string{"sha256:old", "sha256:new"}}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_IMAGE":           "example.test/runner:latest",
+	}, runner)
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	commands := commandArgs(runner.runs)
+	if !strings.Contains(commands, "image rm -f sha256:old") || strings.Contains(commands, "image rm -f example.test/runner:latest") {
+		t.Fatalf("commands = %s", commands)
 	}
 }
 
@@ -479,8 +511,7 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if err := manager.UpdateImage(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if joined := commandArgs(runner.runs); !strings.Contains(joined, "image rm -f ghcr.io/forkbombeu/credimi-runner-phone:latest") ||
-		!strings.Contains(joined, "pull ghcr.io/forkbombeu/credimi-runner-phone:latest") ||
+	if joined := commandArgs(runner.runs); !strings.Contains(joined, "pull ghcr.io/forkbombeu/credimi-runner-phone:latest") ||
 		!strings.Contains(joined, "up -d runner") {
 		t.Fatalf("runs = %#v", runner.runs)
 	}

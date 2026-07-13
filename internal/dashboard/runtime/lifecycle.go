@@ -670,6 +670,17 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	if !containsService(plan.ComposeServices, "runner") {
 		return fmt.Errorf("runner image upgrade requires the container backend")
 	}
+	oldImageID, _ := m.runnerImageID(ctx, image)
+	emitProgress(progress, "Checking for a newer runner image: "+image)
+	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+		m.setLastError(err)
+		return err
+	}
+	newImageID, err := m.runnerImageID(ctx, image)
+	if err != nil {
+		m.setLastError(err)
+		return err
+	}
 	emitProgress(progress, "Stopping the runner and Docker services.")
 	if err := m.Stop(ctx); err != nil {
 		return err
@@ -684,15 +695,14 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 		m.setLastError(err)
 		return err
 	}
-	emitProgress(progress, "Deleting the current runner image: "+image)
-	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"image", "rm", "-f", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
-		m.setLastError(err)
-		return err
-	}
-	emitProgress(progress, "Downloading the latest runner image: "+image)
-	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
-		m.setLastError(err)
-		return err
+	if oldImageID != "" && oldImageID != newImageID {
+		emitProgress(progress, "Deleting the superseded runner image: "+oldImageID)
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"image", "rm", "-f", oldImageID}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+			m.setLastError(err)
+			return err
+		}
+	} else {
+		emitProgress(progress, "The configured runner image is already current; keeping its cached layers.")
 	}
 	emitProgress(progress, "Restarting the runner and Docker services.")
 	if err := m.StartWithProgress(ctx, progress); err != nil {
@@ -700,6 +710,17 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	}
 	emitProgress(progress, "Runner image upgrade complete.")
 	return nil
+}
+
+func (m *LifecycleManager) runnerImageID(ctx context.Context, image string) (string, error) {
+	output, err := m.runner.Run(ctx, CommandSpec{
+		Name: "docker",
+		Args: []string{"image", "inspect", "--format", "{{.Id}}", image},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 func containsService(services []string, target string) bool {

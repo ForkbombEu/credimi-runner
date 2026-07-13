@@ -438,7 +438,7 @@ button { font-family: inherit; }
 .modal-b { padding: 20px; max-height: 60vh; overflow-y: auto; }
 .modal-f { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; background: var(--bg-off-white); }
 .maintenance-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; }
-.maintenance-detail { border: 2px solid #000; background: var(--bg-off-white); padding: 16px; box-shadow: 3px 3px 0 #000; min-width: 0; }
+.maintenance-detail { border: 1px solid var(--border); border-radius: var(--radius-md); background: #fff; padding: 16px; min-width: 0; }
 .maintenance-detail span { display: block; margin-bottom: 8px; font: 700 11px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
 .maintenance-detail b { display: block; overflow-wrap: anywhere; }
 .upgrade-modal { max-width: 760px; }
