@@ -509,7 +509,7 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if _, err := manager.TunnelLogs(context.Background(), 100); err != nil {
 		t.Fatal(err)
 	}
-	if args := runner.runs[len(runner.runs)-1].Args; len(args) == 0 || args[len(args)-1] != "tunnel" || strings.Contains(strings.Join(args, " "), "--since") {
+	if args := runner.runs[len(runner.runs)-1].Args; len(args) == 0 || args[len(args)-1] != "tunnel" || !strings.Contains(strings.Join(args, " "), "--since 2026-01-02T03:04:05Z") {
 		t.Fatalf("TunnelLogs args = %#v", args)
 	}
 	manager.Configure(Values{

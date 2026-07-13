@@ -246,6 +246,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) err
 			return err
 		}
 		emitProgress(progress, "Starting Docker services.")
+		composeStartedAt := time.Now()
 		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d"}
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: progress}); err != nil {
@@ -254,7 +255,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) err
 		}
 		m.startComposeLogFollowerLocked(plan)
 		m.status.ComposeRunning = true
-		m.status.LastStartedAt = time.Now()
+		m.status.LastStartedAt = composeStartedAt
 	}
 
 	m.status.PublicURL = resolvedRunnerPublicURL(m.values, "")
@@ -773,9 +774,6 @@ func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error
 // TunnelLogs returns only quick-tunnel service output. URL discovery must not
 // scan noisy runner/emulator logs because doing so can exhaust its deadline.
 func (m *LifecycleManager) TunnelLogs(ctx context.Context, tail int) ([]LogLine, error) {
-	if tail > 0 {
-		tail = -tail
-	}
 	return m.logs(ctx, tail, []string{"tunnel"})
 }
 
