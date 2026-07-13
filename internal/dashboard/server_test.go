@@ -16,6 +16,7 @@ import (
 	"time"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -133,9 +134,13 @@ func newTestServer(t *testing.T) *Server {
 		manager: &fakeManager{logLines: []dashboardruntime.LogLine{
 			{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
 		}},
-		runnerReady: func(context.Context, map[string]string) error { return nil },
-		lookupPath:  func(string) (string, error) { return "/tmp/fake-bin", nil },
-		statPath:    func(string) (os.FileInfo, error) { return fakeFileInfo("ok"), nil },
+		runnerReady:        func(context.Context, map[string]string) error { return nil },
+		lookupPath:         func(string) (string, error) { return "/tmp/fake-bin", nil },
+		statPath:           func(string) (os.FileInfo, error) { return fakeFileInfo("ok"), nil },
+		maintenanceChecked: true,
+		maintenanceChecker: func(context.Context, string, time.Time, string) maintenance.Status { return maintenance.Status{} },
+		downloadBinary:     func(context.Context, *http.Client, string, func(string)) error { return nil },
+		restartDashboard:   func(string) error { return nil },
 	}
 }
 
@@ -718,6 +723,7 @@ func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) 
 	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
 	s.cfg.values["CREDIMI_RUNNER_BACKEND"] = "container"
 	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+	s.maintenance.Image.UpdateAvailable = true
 	recorder := httptest.NewRecorder()
 	s.maintenanceUpgrade(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
 	if recorder.Code != http.StatusAccepted {
@@ -749,6 +755,7 @@ func TestServerMaintenanceUpgradeRejectsConcurrentJobAndReportsFailure(t *testin
 	manager := s.manager.(*fakeManager)
 	manager.upgradeBlock = make(chan struct{})
 	manager.updateImageErr = errors.New("pull failed")
+	s.maintenance = maintenance.Status{Image: maintenance.Component{UpdateAvailable: true}}
 
 	first := httptest.NewRecorder()
 	s.maintenanceUpgrade(first, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
@@ -768,6 +775,92 @@ func TestServerMaintenanceUpgradeRejectsConcurrentJobAndReportsFailure(t *testin
 	startup := s.startupSnapshot()
 	if startup.Phase != StartupNeedsAttention || !strings.Contains(startup.Message, "pull failed") {
 		t.Fatalf("startup = %#v", startup)
+	}
+}
+
+func TestServerMaintenanceCheckRefreshesMetadata(t *testing.T) {
+	s := newTestServer(t)
+	s.maintenanceChecked = false
+	calls := 0
+	s.maintenanceChecker = func(context.Context, string, time.Time, string) maintenance.Status {
+		calls++
+		return maintenance.Status{Runner: maintenance.Component{LatestVersion: "v2", UpdateAvailable: true}}
+	}
+	recorder := httptest.NewRecorder()
+	s.maintenanceCheck(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/check", nil))
+	if recorder.Code != http.StatusOK || calls != 1 || !s.maintenance.Runner.UpdateAvailable {
+		t.Fatalf("code=%d calls=%d status=%#v", recorder.Code, calls, s.maintenance)
+	}
+	s.ensureMaintenanceChecked(context.Background(), false)
+	if calls != 1 {
+		t.Fatalf("cached check calls = %d", calls)
+	}
+}
+
+func TestServerMaintenanceUpgradeStagesBinaryAndSchedulesRestart(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer api.Close()
+	s := newTestServer(t)
+	s.binaryPath = "/installed/credimi-runner"
+	s.maintenance = maintenance.Status{Runner: maintenance.Component{UpdateAvailable: true}}
+	s.cfg.values["CREDIMI_URL"] = api.URL
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	var downloaded, restarted string
+	s.downloadBinary = func(_ context.Context, _ *http.Client, target string, progress func(string)) error {
+		downloaded = target
+		progress("binary staged")
+		return nil
+	}
+	s.restartDashboard = func(staged string) error { restarted = staged; return nil }
+	recorder := httptest.NewRecorder()
+	s.maintenanceUpgrade(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
+	deadline := time.Now().Add(time.Second)
+	for restarted == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if downloaded != "/installed/credimi-runner.upgrade" || restarted != downloaded {
+		t.Fatalf("downloaded=%q restarted=%q startup=%#v", downloaded, restarted, s.startupSnapshot())
+	}
+}
+
+func TestScheduleDashboardRestartUsesCurrentBinaryAsHelper(t *testing.T) {
+	originalExecutable, originalStart, originalTerminate := dashboardExecutable, startDashboardRestartHelper, terminateDashboardAfter
+	t.Cleanup(func() {
+		dashboardExecutable, startDashboardRestartHelper, terminateDashboardAfter = originalExecutable, originalStart, originalTerminate
+	})
+	dashboardExecutable = func() (string, error) { return "/installed/credimi-runner", nil }
+	var helper string
+	var args []string
+	startDashboardRestartHelper = func(name string, values ...string) error {
+		helper, args = name, append([]string(nil), values...)
+		return nil
+	}
+	terminated := false
+	terminateDashboardAfter = func(time.Duration, int) { terminated = true }
+	if err := scheduleDashboardRestart("/installed/credimi-runner.upgrade"); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if helper != "/installed/credimi-runner" || !strings.Contains(joined, "--staged /installed/credimi-runner.upgrade") || !terminated {
+		t.Fatalf("helper=%q args=%q terminated=%v", helper, joined, terminated)
+	}
+}
+
+func TestScheduleDashboardRestartReportsHelperErrors(t *testing.T) {
+	originalExecutable, originalStart := dashboardExecutable, startDashboardRestartHelper
+	t.Cleanup(func() { dashboardExecutable, startDashboardRestartHelper = originalExecutable, originalStart })
+	dashboardExecutable = func() (string, error) { return "", errors.New("executable failed") }
+	if err := scheduleDashboardRestart("staged"); err == nil || !strings.Contains(err.Error(), "executable failed") {
+		t.Fatalf("error = %v", err)
+	}
+	dashboardExecutable = func() (string, error) { return "/runner", nil }
+	startDashboardRestartHelper = func(string, ...string) error { return errors.New("start failed") }
+	if err := scheduleDashboardRestart("staged"); err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

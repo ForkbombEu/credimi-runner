@@ -6,8 +6,10 @@ import (
 	"net/url"
 	goruntime "runtime"
 	"strings"
+	"time"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
 // View-model helpers callable from templates. Keeps the templates declarative.
@@ -311,6 +313,59 @@ func (d PageData) RunnerContainerDetails() string {
 		return detail
 	}
 	return "Not present"
+}
+
+func (d PageData) RunnerServiceDetails() string { return d.RunnerContainerDetails() }
+
+func (d PageData) MaintenanceStatus() maintenance.Status {
+	if status, ok := d.payload()["Maintenance"].(maintenance.Status); ok {
+		return status
+	}
+	return maintenance.Status{}
+}
+
+func (d PageData) UpgradeAvailable() bool {
+	status := d.MaintenanceStatus()
+	return status.Runner.UpdateAvailable || status.Image.UpdateAvailable
+}
+
+func componentState(component maintenance.Component) string {
+	if component.UpdateAvailable {
+		return "New version available"
+	}
+	if component.LatestVersion != "" {
+		return "Latest version installed"
+	}
+	return "Version not checked"
+}
+
+func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
+func (d PageData) ImageVersionState() string  { return componentState(d.MaintenanceStatus().Image) }
+func (d PageData) RunnerCurrentBuiltAt() string {
+	return formatMaintenanceTime(d.MaintenanceStatus().Runner.CurrentBuiltAt)
+}
+func (d PageData) RunnerLatestBuiltAt() string {
+	return formatMaintenanceTime(d.MaintenanceStatus().Runner.LatestBuiltAt)
+}
+func (d PageData) ImageCurrentBuiltAt() string {
+	return formatMaintenanceTime(d.MaintenanceStatus().Image.CurrentBuiltAt)
+}
+func (d PageData) ImageLatestBuiltAt() string {
+	return formatMaintenanceTime(d.MaintenanceStatus().Image.LatestBuiltAt)
+}
+func (d PageData) LatestRunnerVersion() string {
+	return orDash(d.MaintenanceStatus().Runner.LatestVersion)
+}
+func (d PageData) LatestImageVersion() string {
+	return orDash(d.MaintenanceStatus().Image.LatestVersion)
+}
+func (d PageData) MaintenanceError() string { return d.MaintenanceStatus().Error }
+
+func formatMaintenanceTime(value time.Time) string {
+	if value.IsZero() {
+		return "Unavailable"
+	}
+	return value.Local().Format("2 Jan 2006, 15:04 MST")
 }
 
 // Field returns the render model for one config key.

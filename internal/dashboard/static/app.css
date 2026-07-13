@@ -437,10 +437,14 @@ button { font-family: inherit; }
 .modal-h .x { margin-left: auto; }
 .modal-b { padding: 20px; max-height: 60vh; overflow-y: auto; }
 .modal-f { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; background: var(--bg-off-white); }
-.maintenance-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; }
+.maintenance-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
 .maintenance-detail { border: 1px solid var(--border); border-radius: var(--radius-md); background: #fff; padding: 16px; min-width: 0; }
 .maintenance-detail span { display: block; margin-bottom: 8px; font: 700 11px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
 .maintenance-detail b { display: block; overflow-wrap: anywhere; }
+.maintenance-detail strong { display: block; margin-top: 12px; color: var(--brand-primary); font-size: 13px; }
+.maintenance-detail small { display: block; margin-top: 6px; color: var(--fg-muted); overflow-wrap: anywhere; }
+.maintenance-actions { display: flex; align-items: center; gap: 8px; }
+.maintenance-check { width: 34px; height: 34px; padding: 0; display: inline-grid; place-items: center; }
 .upgrade-modal { max-width: 760px; }
 .upgrade-log { min-height: 300px; max-height: 50vh; }
 @media (max-width: 800px) { .maintenance-grid { grid-template-columns: 1fr; } }

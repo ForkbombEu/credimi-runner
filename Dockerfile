@@ -6,6 +6,7 @@ WORKDIR /src
 ARG TARGETOS=linux
 ARG TARGETARCH
 ARG VERSION=dev
+ARG BUILD_TIME
 ENV GOCACHE=/go-cache
 ENV GOMODCACHE=/gomod-cache
 
@@ -26,7 +27,7 @@ COPY . ./
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache go generate ./...
 RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags=credimi_extra \
-    -ldflags "-s -w -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version=${VERSION}" \
+    -ldflags "-s -w -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version=${VERSION} -X github.com/forkbombeu/credimi-runner/internal/buildinfo.BuildTime=${BUILD_TIME}" \
     -o /out/credimi-runner main.go
 
 FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
