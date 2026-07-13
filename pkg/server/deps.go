@@ -6,10 +6,15 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 )
+
+const defaultCredimiRoot = "/credimi"
 
 type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
@@ -58,8 +63,17 @@ func (d *Deps) WithDefaults() {
 		d.Sleeper = time.Sleep
 	}
 	if d.ManagedWorkflowRoot == "" {
-		d.ManagedWorkflowRoot = "/credimi/workflows"
+		d.ManagedWorkflowRoot = managedWorkflowRootFromEnvironment()
 	}
+}
+
+func managedWorkflowRootFromEnvironment() string {
+	for _, name := range []string{"CREDIMI_DIR", "CREDIMI_TEMP_DIR"} {
+		if root := strings.TrimSpace(utils.GetEnvironmentVariable(name)); root != "" {
+			return filepath.Join(root, "workflows")
+		}
+	}
+	return filepath.Join(defaultCredimiRoot, "workflows")
 }
 
 type osFileStore struct{}
