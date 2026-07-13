@@ -31,7 +31,11 @@ var (
 	dashboardRegistrationTimeout = 30 * time.Second
 )
 
-const quickTunnelLogTail = -1000
+const quickTunnelLogTail = -200
+
+type dashboardTunnelLogger interface {
+	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
+}
 
 var openDashboardBrowserFunc = openDashboardBrowser
 
@@ -333,7 +337,7 @@ func resolveDashboardRegistrationEndpoint(ctx context.Context, manager dashboard
 		defer cancel()
 		var lastErr error
 		for {
-			logs, err := manager.Logs(deadline, quickTunnelLogTail)
+			logs, err := dashboardQuickTunnelLogs(deadline, manager, quickTunnelLogTail)
 			if err != nil {
 				lastErr = err
 			} else {
@@ -351,4 +355,11 @@ func resolveDashboardRegistrationEndpoint(ctx context.Context, manager dashboard
 			}
 		}
 	}
+}
+
+func dashboardQuickTunnelLogs(ctx context.Context, manager dashboardruntime.Manager, tail int) ([]dashboardruntime.LogLine, error) {
+	if logger, ok := manager.(dashboardTunnelLogger); ok {
+		return logger.TunnelLogs(ctx, tail)
+	}
+	return manager.Logs(ctx, tail)
 }

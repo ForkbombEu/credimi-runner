@@ -68,7 +68,7 @@ const (
 )
 
 const (
-	quickTunnelLogTail = -1000
+	quickTunnelLogTail = -200
 	startupLogRetain   = 2000
 )
 
@@ -89,6 +89,10 @@ type managerProgressStarter interface {
 
 type managerImageUpgrader interface {
 	UpgradeRunnerImage(context.Context, func(string)) error
+}
+
+type managerTunnelLogger interface {
+	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
 }
 
 // NewHandler creates the dashboard HTTP handler for mounting into an existing
@@ -1381,7 +1385,7 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 		defer cancel()
 		var lastErr error
 		for {
-			logs, err := s.manager.Logs(deadline, logTail)
+			logs, err := managerQuickTunnelLogs(deadline, s.manager, logTail)
 			if err != nil {
 				lastErr = err
 			} else {
@@ -1399,6 +1403,13 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 			}
 		}
 	}
+}
+
+func managerQuickTunnelLogs(ctx context.Context, manager dashboardruntime.Manager, tail int) ([]dashboardruntime.LogLine, error) {
+	if logger, ok := manager.(managerTunnelLogger); ok {
+		return logger.TunnelLogs(ctx, tail)
+	}
+	return manager.Logs(ctx, tail)
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {

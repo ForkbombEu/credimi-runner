@@ -767,12 +767,24 @@ func (m *LifecycleManager) Status(context.Context) RuntimeStatus {
 }
 
 func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error) {
+	return m.logs(ctx, tail, nil)
+}
+
+// TunnelLogs returns only quick-tunnel service output. URL discovery must not
+// scan noisy runner/emulator logs because doing so can exhaust its deadline.
+func (m *LifecycleManager) TunnelLogs(ctx context.Context, tail int) ([]LogLine, error) {
+	return m.logs(ctx, tail, []string{"tunnel"})
+}
+
+func (m *LifecycleManager) logs(ctx context.Context, tail int, services []string) ([]LogLine, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	plan := BuildRuntimePlan(m.configDir, m.values)
+	args := composeLogArgs(plan, tail, m.status.LastStartedAt)
+	args = append(args, services...)
 	output, err := m.runner.Run(ctx, CommandSpec{
 		Name: "docker",
-		Args: composeLogArgs(plan, tail, m.status.LastStartedAt),
+		Args: args,
 	})
 	if err != nil {
 		return nil, err

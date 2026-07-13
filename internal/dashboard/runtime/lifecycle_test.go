@@ -505,6 +505,12 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if len(lines) != 2 || lines[0].Message != "line-1" || lines[1].Message != "line-2" {
 		t.Fatalf("logs = %#v", lines)
 	}
+	if _, err := manager.TunnelLogs(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	if args := runner.runs[len(runner.runs)-1].Args; len(args) == 0 || args[len(args)-1] != "tunnel" {
+		t.Fatalf("TunnelLogs args = %#v", args)
+	}
 	manager.Configure(Values{
 		"CREDIMI_RUNNER_ID":      "acme/runner-2",
 		"CREDIMI_RUNNER_BACKEND": "container",
