@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ type dashboardFakeManager struct {
 	logs        []dashboardruntime.LogLine
 	status      dashboardruntime.RuntimeStatus
 	startErr    error
+	progress    []string
 	logDeadline time.Time
 	logTail     int
 }
@@ -33,6 +36,11 @@ type dashboardFakeManager struct {
 func (f *dashboardFakeManager) Start(context.Context) error {
 	f.startCalls++
 	return f.startErr
+}
+func (f *dashboardFakeManager) StartWithProgress(ctx context.Context, progress func(string)) error {
+	f.progress = append(f.progress, "Pulling Docker images.")
+	progress("Pulling Docker images.")
+	return f.Start(ctx)
 }
 func (f *dashboardFakeManager) Stop(context.Context) error        { return nil }
 func (f *dashboardFakeManager) Restart(context.Context) error     { return nil }
@@ -227,6 +235,68 @@ func TestRunDashboardReturnsListenError(t *testing.T) {
 	}
 }
 
+func TestRunDashboardServesUntilTerminationSignal(t *testing.T) {
+	restoreEnv(t, "CREDIMI_RUNNER_CONFIG_DIR")
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	oldConfigDir, oldOpen, oldHost, oldPort := dashboardConfigDir, dashboardOpen, dashboardHost, dashboardPort
+	t.Cleanup(func() {
+		dashboardConfigDir = oldConfigDir
+		dashboardOpen = oldOpen
+		dashboardHost = oldHost
+		dashboardPort = oldPort
+	})
+	dashboardConfigDir = t.TempDir()
+	dashboardOpen = false
+	dashboardHost = "127.0.0.1"
+	dashboardPort = port
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("host", dashboardruntime.DefaultDashboardHost, "")
+	cmd.Flags().Int("port", 8051, "")
+	if err := cmd.Flags().Set("host", dashboardHost); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("port", strconv.Itoa(port)); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	}()
+
+	if err := runDashboard(cmd, nil); err != nil {
+		t.Fatalf("runDashboard = %v", err)
+	}
+}
+
+func TestReserveDashboardListenerExplainsOccupiedPort(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	_, err = reserveDashboardListener("127.0.0.1", port)
+	if err == nil {
+		t.Fatal("expected occupied dashboard port to fail")
+	}
+	message := err.Error()
+	for _, want := range []string{strconv.Itoa(port), "lsof", "ss -ltnp", "kill <PID>", "--port"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("occupied port error %q does not contain %q", message, want)
+		}
+	}
+}
+
 func TestResolveDashboardListenAddressUsesConfigValues(t *testing.T) {
 	cmd := &cobra.Command{Use: "dashboard"}
 	cmd.Flags().String("host", dashboardruntime.DefaultDashboardHost, "")
@@ -353,7 +423,8 @@ func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
 	defer api.Close()
 
 	manager := &dashboardFakeManager{
-		logs: []dashboardruntime.LogLine{{Message: "tunnel ready https://fresh-runner.trycloudflare.com"}},
+		status: dashboardruntime.RuntimeStatus{PublicURL: "https://stale-runner.trycloudflare.com"},
+		logs:   []dashboardruntime.LogLine{{Message: "tunnel ready https://fresh-runner.trycloudflare.com"}},
 	}
 	values := dashboardruntime.Values{
 		"CREDIMI_RUNNER_BACKEND":      "host",
@@ -372,6 +443,9 @@ func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
 	}
 	if !strings.Contains(registeredBody, "https://fresh-runner.trycloudflare.com") {
 		t.Fatalf("registration body did not include fresh tunnel URL: %s", registeredBody)
+	}
+	if strings.Contains(registeredBody, "https://stale-runner.trycloudflare.com") {
+		t.Fatalf("registration body reused stale tunnel URL: %s", registeredBody)
 	}
 	if manager.logDeadline.IsZero() || time.Until(manager.logDeadline) < 20*time.Second {
 		t.Fatalf("registration log scan deadline = %v, want startup window near %s", manager.logDeadline, dashboardRegistrationTimeout)
@@ -409,6 +483,9 @@ func TestStartDashboardRuntimeBranches(t *testing.T) {
 	}
 	if manager.startCalls != 1 {
 		t.Fatalf("startCalls = %d", manager.startCalls)
+	}
+	if len(manager.progress) != 1 {
+		t.Fatalf("startup progress = %v", manager.progress)
 	}
 }
 
