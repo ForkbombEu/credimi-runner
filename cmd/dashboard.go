@@ -81,7 +81,10 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	defer cancelHandler()
 
 	if configFileExists(configDir) {
-		if err := startDashboardRuntime(cmd.Context(), manager, values); err != nil {
+		progress := func(line string) {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "runner startup: %s\n", line)
+		}
+		if err := startDashboardRuntimeWithProgress(cmd.Context(), manager, values, progress); err != nil {
 			stdlog.Printf("dashboard runtime start failed: %v", err)
 		}
 	}
@@ -207,14 +210,18 @@ func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.V
 }
 
 func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {
+	return startDashboardRuntimeWithProgress(ctx, manager, values, func(line string) {
+		stdlog.Printf("runner startup: %s", line)
+	})
+}
+
+func startDashboardRuntimeWithProgress(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values, progress func(string)) error {
 	if strings.EqualFold(strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]), "auto") {
 		manager.SetPublicURL("")
 	}
 	var err error
 	if starter, ok := manager.(dashboardProgressStarter); ok {
-		err = starter.StartWithProgress(ctx, func(line string) {
-			stdlog.Printf("runner startup: %s", line)
-		})
+		err = starter.StartWithProgress(ctx, progress)
 	} else {
 		err = manager.Start(ctx)
 	}

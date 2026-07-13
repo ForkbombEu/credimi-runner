@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -486,6 +487,21 @@ func TestStartDashboardRuntimeBranches(t *testing.T) {
 	}
 	if len(manager.progress) != 1 {
 		t.Fatalf("startup progress = %v", manager.progress)
+	}
+}
+
+func TestStartDashboardRuntimeWritesProgressToProvidedTerminalStream(t *testing.T) {
+	manager := &dashboardFakeManager{}
+	var terminal bytes.Buffer
+	progress := func(line string) {
+		_, _ = fmt.Fprintf(&terminal, "runner startup: %s\n", line)
+	}
+
+	if err := startDashboardRuntimeWithProgress(context.Background(), manager, dashboardruntime.Values{}, progress); err != nil {
+		t.Fatalf("startDashboardRuntimeWithProgress = %v", err)
+	}
+	if got := terminal.String(); !strings.Contains(got, "runner startup: Pulling Docker images.") {
+		t.Fatalf("terminal progress = %q", got)
 	}
 }
 
