@@ -12,7 +12,7 @@ var rootCmd = &cobra.Command{
 	Short:         "Credimi mobile runner",
 	Version:       buildinfo.String(),
 	SilenceErrors: true,
-	SilenceUsage:  true,
+	SilenceUsage:  false,
 	RunE:          runDashboard,
 }
 
