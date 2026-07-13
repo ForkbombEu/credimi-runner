@@ -205,6 +205,9 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := commandArgs(runner.runs)
+	if strings.Contains(commands, "stop runner caddy") || strings.Contains(commands, "stop runner tunnel") {
+		t.Fatalf("upgrade must keep network services online:\n%s", commands)
+	}
 	ordered := []string{
 		"pull example.test/runner:latest",
 		"stop runner",

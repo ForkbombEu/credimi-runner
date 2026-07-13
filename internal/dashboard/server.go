@@ -935,9 +935,6 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		defer close(done)
 		var err error
-		if s.manager != nil && normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
-			s.manager.SetPublicURL("")
-		}
 		if upgrader, ok := s.manager.(managerImageUpgrader); ok {
 			err = upgrader.UpgradeRunnerImage(ctx, s.appendStartupLog)
 		} else if s.manager != nil {

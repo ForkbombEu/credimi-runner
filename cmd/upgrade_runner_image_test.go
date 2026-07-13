@@ -73,7 +73,7 @@ func TestRunUpgradeRunnerImageUpdatesAutoTunnelRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &fakeUpgradeManager{
-		status: dashboardruntime.RuntimeStatus{PublicURL: "https://stale.example.trycloudflare.com"},
+		status: dashboardruntime.RuntimeStatus{},
 		logs:   []dashboardruntime.LogLine{{Message: "https://fresh.example.trycloudflare.com"}},
 	}
 	originalExecutable, originalFactory, originalConfigDir := upgradeRunnerExecutable, newUpgradeRunnerManager, dashboardConfigDir

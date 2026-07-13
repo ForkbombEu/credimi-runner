@@ -196,6 +196,12 @@
   // ── Runner image upgrade modal ─────────────────────────────────────────
   let upgradeTimer = null;
   let upgradeNextID = 0;
+  function upgradeURL(path) {
+    const url = new URL(path, window.location.origin);
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (token) url.searchParams.set('token', token);
+    return `${url.pathname}${url.search}`;
+  }
   function appendUpgradeLog(line) {
     const log = $('[data-upgrade-log]');
     const text = String(line || '').trim();
@@ -206,7 +212,7 @@
   }
   async function pollUpgrade() {
     try {
-      const url = upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status';
+      const url = upgradeURL(upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status');
       const response = await fetch(url, { headers: { Accept: 'application/json' } });
       if (!response.ok) return;
       const data = await response.json();
@@ -237,14 +243,25 @@
       close.disabled = true;
       upgradeNextID = 0;
       appendUpgradeLog('Requesting runner image upgrade.');
+      const controller = new AbortController();
+      const requestTimeout = setTimeout(() => controller.abort(), 10000);
       try {
-        const response = await fetch('/maintenance/upgrade', { method: 'POST', headers: { Accept: 'application/json' } });
+        const response = await fetch(upgradeURL('/maintenance/upgrade'), {
+          method: 'POST',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        });
+        clearTimeout(requestTimeout);
         if (!response.ok) throw new Error(await response.text());
         await pollUpgrade();
         clearInterval(upgradeTimer);
         upgradeTimer = setInterval(pollUpgrade, 1000);
       } catch (error) {
-        appendUpgradeLog(`Upgrade could not start: ${String(error.message || error).trim()}`);
+        clearTimeout(requestTimeout);
+        const reason = error && error.name === 'AbortError'
+          ? 'Dashboard did not accept the request within 10 seconds. Reload the page and verify that the dashboard process is reachable.'
+          : String(error.message || error).trim();
+        appendUpgradeLog(`Upgrade could not start: ${reason}`);
         modal.dataset.upgradeRunning = '0';
         close.disabled = false;
       }

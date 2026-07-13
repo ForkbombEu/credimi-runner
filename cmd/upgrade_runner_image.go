@@ -67,9 +67,6 @@ func runUpgradeRunnerImage(cmd *cobra.Command, _ []string) error {
 	progress := func(line string) {
 		fmt.Fprintln(out, line)
 	}
-	if strings.EqualFold(strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]), "auto") {
-		manager.SetPublicURL("")
-	}
 	if err := manager.UpgradeRunnerImage(ctx, progress); err != nil {
 		return err
 	}

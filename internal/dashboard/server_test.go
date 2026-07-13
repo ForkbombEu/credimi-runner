@@ -708,7 +708,7 @@ func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) 
 	defer api.Close()
 	s := newTestServer(t)
 	manager := s.manager.(*fakeManager)
-	manager.status.PublicURL = "https://stale.example.trycloudflare.com"
+	manager.status.PublicURL = ""
 	manager.logLines = []dashboardruntime.LogLine{{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"}}
 	s.cfg.values["CREDIMI_URL"] = api.URL
 	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
