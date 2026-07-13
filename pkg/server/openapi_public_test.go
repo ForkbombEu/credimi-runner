@@ -2,12 +2,20 @@ package server
 
 import (
 	"context"
+	"errors"
 	"io"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
+
+func TestInternalDocsAssetError(t *testing.T) {
+	err := internalDocsAssetError("decode asset", errors.New("broken"))
+	require.Equal(t, 500, err.Code)
+	require.Equal(t, "decode asset", err.Reason)
+	require.Equal(t, "broken", err.Message)
+}
 
 func TestResolvePublicServerURL(t *testing.T) {
 	t.Setenv("RUNNER_DOMAIN", "")

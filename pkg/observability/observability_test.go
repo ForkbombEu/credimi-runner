@@ -1,6 +1,21 @@
 package observability
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestStaticSpanAttributeProcessorNoopMethods(t *testing.T) {
+	processor := staticSpanAttributeProcessor{}
+	processor.OnStart(context.Background(), nil)
+	processor.OnEnd(nil)
+	if err := processor.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := processor.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestOTLPSignalEndpoint(t *testing.T) {
 	t.Parallel()

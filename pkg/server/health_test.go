@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -17,6 +18,16 @@ func newTestHealthService(output string, err error) *HealthService {
 		},
 	}
 	return svc
+}
+
+func TestNewHealthServiceDefaults(t *testing.T) {
+	service := NewHealthService()
+	if service.adbPath != "adb" || service.runADB == nil {
+		t.Fatalf("service = %#v", service)
+	}
+	if _, err := service.runADB(os.Args[0], "-test.run=^$"); err != nil {
+		t.Fatalf("default command runner: %v", err)
+	}
 }
 
 func TestCheck_NoDevices(t *testing.T) {

@@ -653,17 +653,98 @@ func (m *LifecycleManager) stopComposeLogFollowerLocked() {
 }
 
 func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
+	return m.UpgradeRunnerImage(ctx, nil)
+}
+
+// UpgradeRunnerImage replaces the configured runner image and brings the
+// runtime back up. Progress receives both lifecycle milestones and Docker's
+// plain-text pull output.
+func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func(string)) error {
+	m.mu.Lock()
 	image := strings.TrimSpace(m.values["RUNNER_IMAGE"])
+	plan := BuildRuntimePlan(m.configDir, m.values)
+	m.mu.Unlock()
 	if image == "" {
 		return fmt.Errorf("RUNNER_IMAGE is required")
 	}
-	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}}); err != nil {
-		m.mu.Lock()
-		m.status.LastError = err.Error()
-		m.mu.Unlock()
+	if !containsService(plan.ComposeServices, "runner") {
+		return fmt.Errorf("runner image upgrade requires the container backend")
+	}
+	oldImageID, _ := m.runnerImageID(ctx, image)
+	emitProgress(progress, "Checking for a newer runner image: "+image)
+	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+		m.setLastError(err)
 		return err
 	}
+	newImageID, err := m.runnerImageID(ctx, image)
+	if err != nil {
+		m.setLastError(err)
+		return err
+	}
+	emitProgress(progress, "Stopping the runner container while keeping network services online.")
+	if _, err := m.runner.Run(ctx, CommandSpec{
+		Name:   "docker",
+		Args:   []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop", "runner"},
+		Env:    composeProgressEnv(),
+		Stream: progress,
+	}); err != nil {
+		m.setLastError(err)
+		return err
+	}
+	emitProgress(progress, "Removing the stopped runner container.")
+	if _, err := m.runner.Run(ctx, CommandSpec{
+		Name:   "docker",
+		Args:   []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "rm", "-f", "-s", "runner"},
+		Env:    composeProgressEnv(),
+		Stream: progress,
+	}); err != nil {
+		m.setLastError(err)
+		return err
+	}
+	if oldImageID != "" && oldImageID != newImageID {
+		emitProgress(progress, "Deleting the superseded runner image: "+oldImageID)
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"image", "rm", "-f", oldImageID}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+			m.setLastError(err)
+			return err
+		}
+	} else {
+		emitProgress(progress, "The configured runner image is already current; keeping its cached layers.")
+	}
+	emitProgress(progress, "Restarting the runner and Docker services.")
+	if err := m.StartWithProgress(ctx, progress); err != nil {
+		return err
+	}
+	emitProgress(progress, "Runner image upgrade complete.")
 	return nil
+}
+
+func (m *LifecycleManager) runnerImageID(ctx context.Context, image string) (string, error) {
+	output, err := m.runner.Run(ctx, CommandSpec{
+		Name: "docker",
+		Args: []string{"image", "inspect", "--format", "{{.Id}}", image},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func containsService(services []string, target string) bool {
+	for _, service := range services {
+		if service == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *LifecycleManager) setLastError(err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	m.status.LastError = err.Error()
+	m.mu.Unlock()
 }
 
 func (m *LifecycleManager) Configure(values Values) {
@@ -686,12 +767,27 @@ func (m *LifecycleManager) Status(context.Context) RuntimeStatus {
 }
 
 func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error) {
+	return m.logs(ctx, tail, nil)
+}
+
+// TunnelLogs returns only quick-tunnel service output. URL discovery must not
+// scan noisy runner/emulator logs because doing so can exhaust its deadline.
+func (m *LifecycleManager) TunnelLogs(ctx context.Context, tail int) ([]LogLine, error) {
+	if tail > 0 {
+		tail = -tail
+	}
+	return m.logs(ctx, tail, []string{"tunnel"})
+}
+
+func (m *LifecycleManager) logs(ctx context.Context, tail int, services []string) ([]LogLine, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	plan := BuildRuntimePlan(m.configDir, m.values)
+	args := composeLogArgs(plan, tail, m.status.LastStartedAt)
+	args = append(args, services...)
 	output, err := m.runner.Run(ctx, CommandSpec{
 		Name: "docker",
-		Args: composeLogArgs(plan, tail, m.status.LastStartedAt),
+		Args: args,
 	})
 	if err != nil {
 		return nil, err

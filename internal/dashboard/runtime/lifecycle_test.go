@@ -24,6 +24,36 @@ type fakeRunner struct {
 	startErr    error
 }
 
+type failOnRunRunner struct {
+	fakeRunner
+	failAt int
+	calls  int
+}
+
+type imageVersionRunner struct {
+	fakeRunner
+	imageIDs    []string
+	inspectCall int
+}
+
+func (f *imageVersionRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
+	if len(spec.Args) >= 2 && spec.Args[0] == "image" && spec.Args[1] == "inspect" {
+		f.runs = append(f.runs, spec)
+		id := f.imageIDs[f.inspectCall]
+		f.inspectCall++
+		return []byte(id + "\n"), nil
+	}
+	return f.fakeRunner.Run(ctx, spec)
+}
+
+func (f *failOnRunRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
+	f.calls++
+	if f.calls == f.failAt {
+		return nil, errors.New("docker command failed")
+	}
+	return f.fakeRunner.Run(ctx, spec)
+}
+
 func (f *fakeRunner) Run(_ context.Context, spec CommandSpec) ([]byte, error) {
 	f.runs = append(f.runs, spec)
 	if f.runOutput != nil || f.runErr != nil {
@@ -158,6 +188,104 @@ func TestLifecycleManagerStartWithProgressStreamsComposePull(t *testing.T) {
 	if !strings.Contains(joined, "Pulling Docker images") || !strings.Contains(joined, "runner Downloading 128MB") || !strings.Contains(joined, "Starting Docker services") {
 		t.Fatalf("progress = %#v", progress)
 	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_IMAGE":           "example.test/runner:latest",
+	}, runner)
+	var progress []string
+	if err := manager.UpgradeRunnerImage(context.Background(), func(line string) {
+		progress = append(progress, line)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commands := commandArgs(runner.runs)
+	if strings.Contains(commands, "stop runner caddy") || strings.Contains(commands, "stop runner tunnel") {
+		t.Fatalf("upgrade must keep network services online:\n%s", commands)
+	}
+	ordered := []string{
+		"pull example.test/runner:latest",
+		"stop runner",
+		"rm -f -s runner",
+		"up -d runner",
+	}
+	position := -1
+	for _, command := range ordered {
+		next := strings.Index(commands[position+1:], command)
+		if next < 0 {
+			t.Fatalf("command %q missing or out of order in:\n%s", command, commands)
+		}
+		position += next + 1
+	}
+	if joined := strings.Join(progress, "\n"); !strings.Contains(joined, "already current") || !strings.Contains(joined, "upgrade complete") {
+		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing.T) {
+	runner := &imageVersionRunner{imageIDs: []string{"sha256:old", "sha256:new"}}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_IMAGE":           "example.test/runner:latest",
+	}, runner)
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	commands := commandArgs(runner.runs)
+	if !strings.Contains(commands, "image rm -f sha256:old") || strings.Contains(commands, "image rm -f example.test/runner:latest") {
+		t.Fatalf("commands = %s", commands)
+	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_IMAGE":           "example.test/runner:latest",
+	}, &fakeRunner{})
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "container backend") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageReportsDockerStageErrors(t *testing.T) {
+	for _, failAt := range []int{2, 3, 4} {
+		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
+			runner := &failOnRunRunner{failAt: failAt}
+			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+				"CREDIMI_RUNNER_ID":      "acme/runner",
+				"CREDIMI_RUNNER_BACKEND": "container",
+				"CREDIMI_SERVICE_MODE":   "manual",
+				"RUNNER_IMAGE":           "example.test/runner:latest",
+			}, runner)
+			err := manager.UpgradeRunnerImage(context.Background(), nil)
+			if err == nil || !strings.Contains(err.Error(), "docker command failed") {
+				t.Fatalf("error = %v", err)
+			}
+			if status := manager.Status(context.Background()); !strings.Contains(status.LastError, "docker command failed") {
+				t.Fatalf("status = %#v", status)
+			}
+		})
+	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageRequiresImage(t *testing.T) {
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, &fakeRunner{})
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "RUNNER_IMAGE") {
+		t.Fatalf("error = %v", err)
+	}
+	manager.setLastError(nil)
 }
 
 func TestExecRunnerRunStreamsProgress(t *testing.T) {
@@ -377,10 +505,24 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if len(lines) != 2 || lines[0].Message != "line-1" || lines[1].Message != "line-2" {
 		t.Fatalf("logs = %#v", lines)
 	}
+	manager.status.LastStartedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := manager.TunnelLogs(context.Background(), 100); err != nil {
+		t.Fatal(err)
+	}
+	if args := runner.runs[len(runner.runs)-1].Args; len(args) == 0 || args[len(args)-1] != "tunnel" || strings.Contains(strings.Join(args, " "), "--since") {
+		t.Fatalf("TunnelLogs args = %#v", args)
+	}
+	manager.Configure(Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner-2",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_IMAGE":           "ghcr.io/forkbombeu/credimi-runner-phone:latest",
+	})
 	if err := manager.UpdateImage(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(runner.runs) == 0 || runner.runs[len(runner.runs)-1].Args[0] != "pull" {
+	if joined := commandArgs(runner.runs); !strings.Contains(joined, "pull ghcr.io/forkbombeu/credimi-runner-phone:latest") ||
+		!strings.Contains(joined, "up -d runner") {
 		t.Fatalf("runs = %#v", runner.runs)
 	}
 
@@ -391,6 +533,14 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if status.PublicURL != "" {
 		t.Fatalf("public URL should be cleared on stop, got %q", status.PublicURL)
 	}
+}
+
+func commandArgs(specs []CommandSpec) string {
+	var commands []string
+	for _, spec := range specs {
+		commands = append(commands, strings.Join(spec.Args, " "))
+	}
+	return strings.Join(commands, "\n")
 }
 
 func TestLifecycleManagerRestartAndDownWithoutCompose(t *testing.T) {

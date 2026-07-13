@@ -48,6 +48,14 @@ type fakeLifecycleTicker struct {
 	ch chan time.Time
 }
 
+func TestTimeTickerDelegatesToStandardTicker(t *testing.T) {
+	ticker := timeTicker{ticker: time.NewTicker(time.Hour)}
+	if ticker.Chan() == nil {
+		t.Fatal("ticker channel is nil")
+	}
+	ticker.Stop()
+}
+
 func newFakeLifecycleTicker() *fakeLifecycleTicker {
 	return &fakeLifecycleTicker{ch: make(chan time.Time, 8)}
 }

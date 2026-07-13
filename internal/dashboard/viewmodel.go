@@ -283,6 +283,36 @@ func (d PageData) StartupMessage() string {
 	return ""
 }
 
+func (d PageData) RunnerVersion() string {
+	if version, ok := d.payload()["RunnerVersion"].(string); ok && strings.TrimSpace(version) != "" {
+		return version
+	}
+	return "dev"
+}
+
+func (d PageData) RunnerImage() string {
+	for _, service := range d.Snapshot.Services {
+		if service.ID == "runner" && strings.TrimSpace(service.Image) != "" {
+			return service.Image
+		}
+	}
+	return orDash(d.Runner.Get("RUNNER_IMAGE"))
+}
+
+func (d PageData) RunnerContainerDetails() string {
+	for _, service := range d.Snapshot.Services {
+		if service.ID != "runner" {
+			continue
+		}
+		detail := statusLabel(service.Status)
+		if strings.TrimSpace(service.Uptime) != "" {
+			detail += " · " + service.Uptime
+		}
+		return detail
+	}
+	return "Not present"
+}
+
 // Field returns the render model for one config key.
 func (d PageData) Field(key string) FieldVM {
 	field := fieldByKey[key]

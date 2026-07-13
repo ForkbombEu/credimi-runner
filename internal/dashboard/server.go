@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
@@ -61,6 +62,7 @@ const (
 	StartupStarting       StartupPhase = "starting"
 	StartupWaitingRunner  StartupPhase = "waiting_for_runner"
 	StartupRegistering    StartupPhase = "registering"
+	StartupUpgrading      StartupPhase = "upgrading"
 	StartupReady          StartupPhase = "ready"
 	StartupNeedsAttention StartupPhase = "needs_attention"
 )
@@ -83,6 +85,14 @@ type startupState struct {
 
 type managerProgressStarter interface {
 	StartWithProgress(context.Context, func(string)) error
+}
+
+type managerImageUpgrader interface {
+	UpgradeRunnerImage(context.Context, func(string)) error
+}
+
+type managerTunnelLogger interface {
+	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
 }
 
 // NewHandler creates the dashboard HTTP handler for mounting into an existing
@@ -184,6 +194,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/restart", s.runtimeRestart)
 	mux.HandleFunc("POST /runtime/down", s.runtimeDown)
 	mux.HandleFunc("POST /runtime/update-image", s.runtimeUpdateImage)
+	mux.HandleFunc("POST /maintenance/upgrade", s.maintenanceUpgrade)
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
 	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
 	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
@@ -255,6 +266,7 @@ func (s *Server) pageData(active string, payload any) PageData {
 	payloadMap := map[string]any{
 		"RuntimeStatus": runtimeStatus,
 		"Startup":       s.startupSnapshot(),
+		"RunnerVersion": buildinfo.String(),
 	}
 	if flash != "" {
 		payloadMap["Flash"] = flash
@@ -897,6 +909,67 @@ func (s *Server) runtimeUpdateImage(w http.ResponseWriter, r *http.Request) {
 	}, "Runner image updated.")
 }
 
+func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.startup.running {
+		s.mu.Unlock()
+		http.Error(w, "another runtime operation is already running", http.StatusConflict)
+		return
+	}
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	s.startup = startupState{
+		Phase:     StartupUpgrading,
+		Message:   "Upgrading runner Docker image.",
+		LogBase:   1,
+		LogNextID: 1,
+		running:   true,
+		cancel:    cancel,
+		done:      done,
+	}
+	s.appendStartupLogLocked("Starting runner image upgrade.")
+	s.mu.Unlock()
+	values := s.cfg.Snapshot()
+
+	go func() {
+		defer cancel()
+		defer close(done)
+		var err error
+		if upgrader, ok := s.manager.(managerImageUpgrader); ok {
+			err = upgrader.UpgradeRunnerImage(ctx, s.appendStartupLog)
+		} else if s.manager != nil {
+			err = s.manager.UpdateImage(ctx)
+		}
+		if err == nil && dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+			s.setStartupState(StartupWaitingRunner, "Runner image updated. Waiting for runner readiness.")
+			err = s.runnerReady(ctx, values)
+		}
+		if err == nil {
+			s.setStartupState(StartupRegistering, "Runner restarted. Discovering its public URL and updating Credimi registration.")
+			err = s.registerCurrent(ctx, values)
+		}
+		if err != nil {
+			s.setStartupState(StartupNeedsAttention, "Runner image upgrade failed: "+err.Error())
+		} else {
+			s.setStartupState(StartupReady, "Runner image upgrade complete.")
+		}
+		s.mu.Lock()
+		if s.startup.done == done {
+			s.startup.running = false
+			s.startup.cancel = nil
+		}
+		s.mu.Unlock()
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"started":true}`))
+}
+
 func (s *Server) runtimeRegister(w http.ResponseWriter, r *http.Request) {
 	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
 		return s.registerCurrent(ctx, s.cfg.Snapshot())
@@ -1312,7 +1385,7 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 		defer cancel()
 		var lastErr error
 		for {
-			logs, err := s.manager.Logs(deadline, logTail)
+			logs, err := managerQuickTunnelLogs(deadline, s.manager, logTail)
 			if err != nil {
 				lastErr = err
 			} else {
@@ -1330,6 +1403,13 @@ func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[str
 			}
 		}
 	}
+}
+
+func managerQuickTunnelLogs(ctx context.Context, manager dashboardruntime.Manager, tail int) ([]dashboardruntime.LogLine, error) {
+	if logger, ok := manager.(managerTunnelLogger); ok {
+		return logger.TunnelLogs(ctx, tail)
+	}
+	return manager.Logs(ctx, tail)
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {
