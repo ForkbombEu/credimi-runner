@@ -126,6 +126,9 @@ func TestRootCommandDefaultsToDashboard(t *testing.T) {
 	if rootCmd.RunE == nil {
 		t.Fatal("root command should run the dashboard by default")
 	}
+	if !rootCmd.SilenceErrors || !rootCmd.SilenceUsage {
+		t.Fatal("root command errors must be printed once by Execute without automatic usage output")
+	}
 	for _, name := range []string{"client", "dashboard"} {
 		if cmd, _, err := rootCmd.Find([]string{name}); err == nil && cmd != rootCmd {
 			t.Fatalf("%s command should not be registered", name)

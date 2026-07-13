@@ -8,10 +8,12 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "credimi-runner",
-	Short:   "Credimi mobile runner",
-	Version: buildinfo.String(),
-	RunE:    runDashboard,
+	Use:           "credimi-runner",
+	Short:         "Credimi mobile runner",
+	Version:       buildinfo.String(),
+	SilenceErrors: true,
+	SilenceUsage:  true,
+	RunE:          runDashboard,
 }
 
 func Execute() {
