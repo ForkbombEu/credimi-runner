@@ -17,10 +17,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -34,8 +36,18 @@ import (
 var staticFS embed.FS
 
 var (
-	lookupPath = exec.LookPath
-	statPath   = os.Stat
+	lookupPath                  = exec.LookPath
+	statPath                    = os.Stat
+	dashboardExecutable         = os.Executable
+	startDashboardRestartHelper = func(name string, args ...string) error {
+		helper := exec.Command(name, args...)
+		helper.Stdout = os.Stdout
+		helper.Stderr = os.Stderr
+		return helper.Start()
+	}
+	terminateDashboardAfter = func(delay time.Duration, pid int) {
+		time.AfterFunc(delay, func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
+	}
 )
 
 type Server struct {
@@ -52,6 +64,12 @@ type Server struct {
 	lastRegistrationStatus string
 	pendingDiff            dashboardruntime.ConfigDiff
 	startup                startupState
+	maintenance            maintenance.Status
+	maintenanceChecked     bool
+	maintenanceChecker     func(context.Context, string, time.Time, string) maintenance.Status
+	binaryPath             string
+	downloadBinary         func(context.Context, *http.Client, string, func(string)) error
+	restartDashboard       func(string) error
 	mu                     sync.RWMutex
 }
 
@@ -153,6 +171,11 @@ func NewHandlerWithManagerContext(parent context.Context, composeDir string, man
 		},
 	}
 	srv.runnerReady = srv.waitForRunnerReady
+	srv.binaryPath = executable
+	srv.downloadBinary = maintenance.DownloadLatestBinary
+	srv.restartDashboard = scheduleDashboardRestart
+	checker := maintenance.Checker{}
+	srv.maintenanceChecker = checker.Check
 
 	ctx, cancel := context.WithCancel(parent)
 	go hub.Run(ctx, 2*time.Second)
@@ -195,6 +218,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/down", s.runtimeDown)
 	mux.HandleFunc("POST /runtime/update-image", s.runtimeUpdateImage)
 	mux.HandleFunc("POST /maintenance/upgrade", s.maintenanceUpgrade)
+	mux.HandleFunc("POST /maintenance/check", s.maintenanceCheck)
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
 	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
 	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
@@ -262,11 +286,13 @@ func (s *Server) pageData(active string, payload any) PageData {
 	runtimeStatus.PendingRecreate = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyComposeRecreate)
 	runtimeStatus.PendingCredimiUpdate = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired)
 	flash := s.lastRegistrationStatus
+	maintenanceStatus := s.maintenance
 	s.mu.RUnlock()
 	payloadMap := map[string]any{
 		"RuntimeStatus": runtimeStatus,
 		"Startup":       s.startupSnapshot(),
 		"RunnerVersion": buildinfo.String(),
+		"Maintenance":   maintenanceStatus,
 	}
 	if flash != "" {
 		payloadMap["Flash"] = flash
@@ -293,6 +319,9 @@ func (s *Server) page(name string) http.HandlerFunc {
 		if pageName == "overview" && !s.cfg.Exists() {
 			pageName = "setup"
 		}
+		if pageName == "overview" {
+			s.ensureMaintenanceChecked(r.Context(), false)
+		}
 		d := s.pageData(pageName, nil)
 		var (
 			html string
@@ -310,6 +339,46 @@ func (s *Server) page(name string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(html))
 	}
+}
+
+func (s *Server) ensureMaintenanceChecked(ctx context.Context, force bool) {
+	s.mu.Lock()
+	if s.maintenanceChecked && !force {
+		s.mu.Unlock()
+		return
+	}
+	s.maintenanceChecked = true
+	checker := s.maintenanceChecker
+	s.mu.Unlock()
+	if checker == nil {
+		return
+	}
+	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt(), strings.TrimSpace(s.cfg.Get("RUNNER_IMAGE")))
+	s.mu.Lock()
+	s.maintenance = status
+	s.mu.Unlock()
+}
+
+func (s *Server) maintenanceCheck(w http.ResponseWriter, r *http.Request) {
+	s.ensureMaintenanceChecked(r.Context(), true)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"checked":true}`))
+}
+
+func scheduleDashboardRestart(stagedBinary string) error {
+	target, err := dashboardExecutable()
+	if err != nil {
+		return err
+	}
+	args := []string{"restart-dashboard-helper", "--wait-pid", strconv.Itoa(os.Getpid()), "--target", target, "--staged", stagedBinary}
+	for _, arg := range os.Args[1:] {
+		args = append(args, "--restart-arg", arg)
+	}
+	if err := startDashboardRestartHelper(target, args...); err != nil {
+		return err
+	}
+	terminateDashboardAfter(2*time.Second, os.Getpid())
+	return nil
 }
 
 func formValuesMap(values url.Values) map[string]string {
@@ -938,11 +1007,16 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer cancel()
 		defer close(done)
+		s.mu.RLock()
+		available := s.maintenance
+		s.mu.RUnlock()
 		var err error
-		if upgrader, ok := s.manager.(managerImageUpgrader); ok {
-			err = upgrader.UpgradeRunnerImage(ctx, s.appendStartupLog)
-		} else if s.manager != nil {
-			err = s.manager.UpdateImage(ctx)
+		if available.Image.UpdateAvailable {
+			if upgrader, ok := s.manager.(managerImageUpgrader); ok {
+				err = upgrader.UpgradeRunnerImage(ctx, s.appendStartupLog)
+			} else if s.manager != nil {
+				err = s.manager.UpdateImage(ctx)
+			}
 		}
 		if err == nil && dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
 			s.setStartupState(StartupWaitingRunner, "Runner image updated. Waiting for runner readiness.")
@@ -952,13 +1026,25 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 			s.setStartupState(StartupRegistering, "Runner restarted. Discovering its public URL and updating Credimi registration.")
 			err = s.registerCurrent(ctx, values)
 		}
+		stagedBinary := ""
+		if err == nil && available.Runner.UpdateAvailable {
+			stagedBinary = s.binaryPath + ".upgrade"
+			s.appendStartupLog("Downloading the latest Credimi Runner binary.")
+			err = s.downloadBinary(ctx, http.DefaultClient, stagedBinary, s.appendStartupLog)
+		}
 		if err != nil {
-			s.setStartupState(StartupNeedsAttention, "Runner image upgrade failed: "+err.Error())
+			s.setStartupState(StartupNeedsAttention, "Runner upgrade failed: "+err.Error())
 		} else {
-			s.setStartupState(StartupReady, "Runner image upgrade complete.")
+			s.setStartupState(StartupReady, "Runner upgrade complete.")
+			if stagedBinary != "" {
+				s.appendStartupLog("Restarting the Dashboard with the new Runner binary.")
+				if restartErr := s.restartDashboard(stagedBinary); restartErr != nil {
+					s.setStartupState(StartupNeedsAttention, "Dashboard restart failed: "+restartErr.Error())
+				}
+			}
 		}
 		s.mu.Lock()
-		if s.startup.done == done {
+		if s.startup.done == done && stagedBinary == "" {
 			s.startup.running = false
 			s.startup.cancel = nil
 		}

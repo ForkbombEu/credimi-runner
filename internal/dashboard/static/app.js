@@ -196,6 +196,7 @@
   // ── Runner image upgrade modal ─────────────────────────────────────────
   let upgradeTimer = null;
   let upgradeNextID = 0;
+  let upgradeDisconnected = false;
   function upgradeURL(path) {
     const url = new URL(path, window.location.origin);
     const token = new URLSearchParams(window.location.search).get('token');
@@ -215,6 +216,10 @@
       const url = upgradeURL(upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status');
       const response = await fetch(url, { headers: { Accept: 'application/json' } });
       if (!response.ok) return;
+      if (upgradeDisconnected) {
+        window.location.reload();
+        return;
+      }
       const data = await response.json();
       (data.lines || []).forEach(appendUpgradeLog);
       upgradeNextID = Number(data.next_id || upgradeNextID);
@@ -228,9 +233,28 @@
         const close = $('[data-upgrade-close]');
         if (close) close.disabled = false;
       }
-    } catch (_) {}
+    } catch (_) {
+      const modal = $('#runner-upgrade-modal');
+      if (modal && modal.dataset.upgradeRunning === '1' && !upgradeDisconnected) {
+        upgradeDisconnected = true;
+        appendUpgradeLog('Dashboard is restarting. Waiting to reconnect.');
+      }
+    }
   }
   document.addEventListener('click', async (e) => {
+    const check = e.target.closest('[data-maintenance-check]');
+    if (check) {
+      check.disabled = true;
+      try {
+        const response = await fetch(upgradeURL('/maintenance/check'), { method: 'POST', headers: { Accept: 'application/json' } });
+        if (!response.ok) throw new Error(await response.text());
+        window.location.reload();
+      } catch (error) {
+        check.disabled = false;
+        window.alert(`Update check failed: ${String(error.message || error).trim()}`);
+      }
+      return;
+    }
     const upgrade = e.target.closest('[data-runner-upgrade]');
     if (upgrade) {
       const modal = $('#runner-upgrade-modal');
@@ -242,6 +266,7 @@
       log.textContent = '';
       close.disabled = true;
       upgradeNextID = 0;
+      upgradeDisconnected = false;
       appendUpgradeLog('Requesting runner image upgrade.');
       const controller = new AbortController();
       const requestTimeout = setTimeout(() => controller.abort(), 10000);

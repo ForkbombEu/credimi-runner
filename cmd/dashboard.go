@@ -31,10 +31,14 @@ var (
 	dashboardRegistrationTimeout = 30 * time.Second
 )
 
-const quickTunnelLogTail = -1000
+const quickTunnelLogTail = 1000
 
 type dashboardTunnelLogger interface {
 	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
+}
+
+type dashboardProgressStarter interface {
+	StartWithProgress(context.Context, func(string)) error
 }
 
 var openDashboardBrowserFunc = openDashboardBrowser
@@ -61,6 +65,11 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
+	listener, err := reserveDashboardListener(listenHost, listenPort)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
 	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 
 	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
@@ -72,7 +81,10 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	defer cancelHandler()
 
 	if configFileExists(configDir) {
-		if err := startDashboardRuntime(cmd.Context(), manager, values); err != nil {
+		progress := func(line string) {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "runner startup: %s\n", line)
+		}
+		if err := startDashboardRuntimeWithProgress(cmd.Context(), manager, values, progress); err != nil {
 			stdlog.Printf("dashboard runtime start failed: %v", err)
 		}
 	}
@@ -86,7 +98,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	errc := make(chan error, 1)
 	go func() {
 		stdlog.Printf("Credimi Runner dashboard available at http://%s:%d", listenHost, listenPort)
-		errc <- server.ListenAndServe()
+		errc <- server.Serve(listener)
 	}()
 	if dashboardOpen {
 		go func() {
@@ -119,6 +131,18 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func reserveDashboardListener(host string, port int) (net.Listener, error) {
+	address := net.JoinHostPort(strings.Trim(strings.TrimSpace(host), "[]"), strconv.Itoa(port))
+	listener, err := net.Listen("tcp", address)
+	if err == nil {
+		return listener, nil
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return nil, fmt.Errorf("dashboard cannot start because port %d on %s is already in use; find the process with `lsof -nP -iTCP:%d -sTCP:LISTEN` or `ss -ltnp 'sport = :%d'`, then stop it with `kill <PID>`; alternatively choose another port with `credimi-runner --port <PORT>`", port, host, port, port)
+	}
+	return nil, fmt.Errorf("listen for dashboard on %s: %w", address, err)
 }
 
 func init() {
@@ -186,7 +210,22 @@ func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.V
 }
 
 func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {
-	if err := manager.Start(ctx); err != nil {
+	return startDashboardRuntimeWithProgress(ctx, manager, values, func(line string) {
+		stdlog.Printf("runner startup: %s", line)
+	})
+}
+
+func startDashboardRuntimeWithProgress(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values, progress func(string)) error {
+	if strings.EqualFold(strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]), "auto") {
+		manager.SetPublicURL("")
+	}
+	var err error
+	if starter, ok := manager.(dashboardProgressStarter); ok {
+		err = starter.StartWithProgress(ctx, progress)
+	} else {
+		err = manager.Start(ctx)
+	}
+	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
