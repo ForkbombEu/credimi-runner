@@ -49,6 +49,9 @@ func TestDiffValuesCoverageBranches(t *testing.T) {
 	if got := DiffValues(Values{"RUNNER_PORT": "8050"}, Values{"RUNNER_PORT": "8051"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("recreate diff = %#v", got)
 	}
+	if got := DiffValues(Values{"RUNNER_IMAGE_PULL_POLICY": "always"}, Values{"RUNNER_IMAGE_PULL_POLICY": "never"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) {
+		t.Fatalf("runner image pull policy diff = %#v", got)
+	}
 }
 
 func containsApplyClass(classes []ApplyClass, want ApplyClass) bool {

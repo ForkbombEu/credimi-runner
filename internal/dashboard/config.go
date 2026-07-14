@@ -83,6 +83,8 @@ var Registry = []Field{
 	// Advanced
 	{Key: "CREDIMI_TEMP_DIR", Label: "Temp directory", Group: "Advanced", Type: TypeText},
 	{Key: "RUNNER_IMAGE", Label: "Runner image", Group: "Advanced", Type: TypeText},
+	{Key: "RUNNER_IMAGE_PULL_POLICY", Label: "Runner image pull policy", Group: "Advanced", Type: TypeSelect,
+		Options: []string{"always", "never"}, Hint: "always pulls from the registry; never uses only an image already present on this machine."},
 	{Key: "ANDROID_KEYS_DIR", Label: "Android keys directory", Group: "Advanced", Type: TypeText},
 	{Key: "BASE_NAME", Label: "Emulator base name", Group: "Advanced", Type: TypeText},
 	{Key: "GOLDEN_PATH", Label: "Golden path", Group: "Advanced", Type: TypeText},

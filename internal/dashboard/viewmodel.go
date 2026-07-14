@@ -340,7 +340,12 @@ func componentState(component maintenance.Component) string {
 }
 
 func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
-func (d PageData) ImageVersionState() string  { return componentState(d.MaintenanceStatus().Image) }
+func (d PageData) ImageVersionState() string {
+	if d.Runner != nil && strings.TrimSpace(d.Runner.Get("RUNNER_IMAGE_PULL_POLICY")) == "never" {
+		return "Registry check disabled"
+	}
+	return componentState(d.MaintenanceStatus().Image)
+}
 func (d PageData) RunnerCurrentBuiltAt() string {
 	return formatMaintenanceTime(d.MaintenanceStatus().Runner.CurrentBuiltAt)
 }
@@ -429,7 +434,7 @@ func (d PageData) SetupSteps() []SetupStep {
 			ID:      "device",
 			Title:   "Device",
 			Summary: "Phone, emulator, simulator, and connection mode.",
-			Fields:  []string{"CREDIMI_RUNNER_TYPE", "CREDIMI_RUNNER_DEVICE_MODE", "CREDIMI_RUNNER_SERIAL", "CREDIMI_RUNNER_WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT", "RUNNER_IMAGE", "CREDIMI_TEMP_DIR", "ANDROID_KEYS_DIR", "BASE_NAME", "GOLDEN_PATH", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD", "REDROID_DATA_DIR", "REDROID_DATA_TAR"},
+			Fields:  []string{"CREDIMI_RUNNER_TYPE", "CREDIMI_RUNNER_DEVICE_MODE", "CREDIMI_RUNNER_SERIAL", "CREDIMI_RUNNER_WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT", "RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY", "CREDIMI_TEMP_DIR", "ANDROID_KEYS_DIR", "BASE_NAME", "GOLDEN_PATH", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD", "REDROID_DATA_DIR", "REDROID_DATA_TAR"},
 		},
 		{
 			ID:      "advanced",

@@ -36,7 +36,7 @@ FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
 ############################
 # Base runtime (physical devices)
 ############################
-FROM ubuntu:22.04 AS device
+FROM ubuntu:24.04 AS device
 
 ENV DEBIAN_FRONTEND=noninteractive
 

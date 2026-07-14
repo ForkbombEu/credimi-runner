@@ -353,7 +353,11 @@ func (s *Server) ensureMaintenanceChecked(ctx context.Context, force bool) {
 	if checker == nil {
 		return
 	}
-	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt(), strings.TrimSpace(s.cfg.Get("RUNNER_IMAGE")))
+	image := strings.TrimSpace(s.cfg.Get("RUNNER_IMAGE"))
+	if strings.TrimSpace(s.cfg.Get("RUNNER_IMAGE_PULL_POLICY")) == "never" {
+		image = ""
+	}
+	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt(), image)
 	s.mu.Lock()
 	s.maintenance = status
 	s.mu.Unlock()

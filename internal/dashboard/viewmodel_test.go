@@ -194,6 +194,10 @@ func TestPageDataAdditionalHelpers(t *testing.T) {
 	if got := d.RuntimeToggleBusyMessage(); !strings.Contains(got, "Stopping") {
 		t.Fatalf("RuntimeToggleBusyMessage = %q", got)
 	}
+	cfg.values["RUNNER_IMAGE_PULL_POLICY"] = "never"
+	if got := d.ImageVersionState(); got != "Registry check disabled" {
+		t.Fatalf("ImageVersionState = %q", got)
+	}
 
 	d.Data = map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{}}
 	if d.RuntimeRunning() {

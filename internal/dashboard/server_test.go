@@ -797,6 +797,25 @@ func TestServerMaintenanceCheckRefreshesMetadata(t *testing.T) {
 	}
 }
 
+func TestServerMaintenanceCheckSkipsLocalRunnerImage(t *testing.T) {
+	s := newTestServer(t)
+	s.maintenanceChecked = false
+	s.cfg.values["RUNNER_IMAGE"] = "credimi-runner-phone:latest"
+	s.cfg.values["RUNNER_IMAGE_PULL_POLICY"] = "never"
+	checkedImage := "not-called"
+	s.maintenanceChecker = func(_ context.Context, _ string, _ time.Time, image string) maintenance.Status {
+		checkedImage = image
+		return maintenance.Status{Runner: maintenance.Component{LatestVersion: "v2"}}
+	}
+	s.ensureMaintenanceChecked(context.Background(), true)
+	if checkedImage != "" {
+		t.Fatalf("checked image = %q", checkedImage)
+	}
+	if s.maintenance.Error != "" || s.maintenance.Runner.LatestVersion != "v2" {
+		t.Fatalf("maintenance status = %#v", s.maintenance)
+	}
+}
+
 func TestServerMaintenanceUpgradeStagesBinaryAndSchedulesRestart(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer api.Close()

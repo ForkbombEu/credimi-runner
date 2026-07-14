@@ -109,7 +109,7 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "pull runner_host caddy tunnel") {
 		t.Fatalf("pull run = %v", runner.runs)
 	}
-	if runner.runs[2].Name != "docker" || !strings.Contains(strings.Join(runner.runs[2].Args, " "), "up -d runner_host caddy tunnel") {
+	if runner.runs[2].Name != "docker" || !strings.Contains(strings.Join(runner.runs[2].Args, " "), "up -d --pull never runner_host caddy tunnel") {
 		t.Fatalf("runs = %v", runner.runs)
 	}
 	if _, err := os.Stat(filepath.Join(manager.configDir, "docker-compose.yaml")); err != nil {
@@ -190,6 +190,33 @@ func TestLifecycleManagerStartWithProgressStreamsComposePull(t *testing.T) {
 	}
 }
 
+func TestLifecycleManagerStartSkipsLocalRunnerPull(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":        "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":   "container",
+		"CREDIMI_SERVICE_MODE":     "auto",
+		"RUNNER_IMAGE":             "credimi-runner-phone:latest",
+		"RUNNER_IMAGE_PULL_POLICY": "never",
+	}, runner)
+	var progress []string
+	if err := manager.StartWithProgress(context.Background(), func(line string) {
+		progress = append(progress, line)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commands := commandArgs(runner.runs)
+	if strings.Contains(commands, "pull runner caddy tunnel") || !strings.Contains(commands, "pull caddy tunnel") {
+		t.Fatalf("pull commands =\n%s", commands)
+	}
+	if !strings.Contains(commands, "up -d --pull never runner caddy tunnel") {
+		t.Fatalf("up command =\n%s", commands)
+	}
+	if !strings.Contains(strings.Join(progress, "\n"), "local runner image without pulling") {
+		t.Fatalf("progress = %#v", progress)
+	}
+}
+
 func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
@@ -212,7 +239,7 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 		"pull example.test/runner:latest",
 		"stop runner",
 		"rm -f -s runner",
-		"up -d runner",
+		"up -d --pull never runner",
 	}
 	position := -1
 	for _, command := range ordered {
@@ -252,6 +279,19 @@ func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
 		"RUNNER_IMAGE":           "example.test/runner:latest",
 	}, &fakeRunner{})
 	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "container backend") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLifecycleManagerUpgradeRunnerImageRejectsLocalPolicy(t *testing.T) {
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":        "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":   "container",
+		"CREDIMI_SERVICE_MODE":     "manual",
+		"RUNNER_IMAGE":             "credimi-runner-phone:latest",
+		"RUNNER_IMAGE_PULL_POLICY": "never",
+	}, &fakeRunner{})
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "RUNNER_IMAGE_PULL_POLICY=never") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -522,7 +562,7 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if joined := commandArgs(runner.runs); !strings.Contains(joined, "pull ghcr.io/forkbombeu/credimi-runner-phone:latest") ||
-		!strings.Contains(joined, "up -d runner") {
+		!strings.Contains(joined, "up -d --pull never runner") {
 		t.Fatalf("runs = %#v", runner.runs)
 	}
 

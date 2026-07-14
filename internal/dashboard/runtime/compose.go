@@ -52,8 +52,9 @@ volumes:
 func writeRunnerService(builder *strings.Builder, values Values) {
 	mode := values["CREDIMI_CONTAINER_MODE"]
 	image := defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
+	pullPolicy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
 	networkMode := runnerNetworkMode(values, runtime.GOOS)
-	fmt.Fprintf(builder, "  runner:\n    image: %s\n    restart: unless-stopped\n", image)
+	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: unless-stopped\n", image, pullPolicy)
 	switch mode {
 	case "wifi":
 		fmt.Fprintf(builder, "    command:\n      - \"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-%s}\"\n", DefaultWiFiPort)

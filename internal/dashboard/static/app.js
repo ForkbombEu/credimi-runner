@@ -34,6 +34,7 @@
     'REDROID_DATA_DIR',
     'REDROID_DATA_TAR',
     'RUNNER_IMAGE',
+    'RUNNER_IMAGE_PULL_POLICY',
   ];
 
   // ── Toast (driven by HX-Trigger {"toast":"…"}) ───────────────────────────
