@@ -254,6 +254,30 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 	}
 }
 
+func TestLifecycleManagerUpgradeRunnerImageRestartsQuickTunnel(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "auto",
+		"RUNNER_IMAGE":           "example.test/runner:latest",
+	}, runner)
+
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	commands := commandArgs(runner.runs)
+	if !strings.Contains(commands, "stop runner tunnel") {
+		t.Fatalf("upgrade must restart the quick tunnel with the runner:\n%s", commands)
+	}
+	if strings.Contains(commands, "stop runner tunnel caddy") {
+		t.Fatalf("upgrade must keep the reverse proxy online:\n%s", commands)
+	}
+	if got := manager.Status(context.Background()).PublicURL; got != "" {
+		t.Fatalf("public URL = %q, want fresh tunnel discovery", got)
+	}
+}
+
 func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing.T) {
 	runner := &imageVersionRunner{imageIDs: []string{"sha256:old", "sha256:new"}}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{

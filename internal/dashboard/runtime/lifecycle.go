@@ -706,10 +706,18 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 		m.setLastError(err)
 		return err
 	}
-	emitProgress(progress, "Stopping the runner container while keeping network services online.")
+	stopServices := []string{"runner"}
+	stopMessage := "Stopping the runner container while keeping network services online."
+	if plan.ServiceMode == "auto" {
+		stopServices = append(stopServices, "tunnel")
+		stopMessage = "Stopping the runner and quick tunnel while keeping the reverse proxy online."
+	}
+	emitProgress(progress, stopMessage)
+	stopArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop"}
+	stopArgs = append(stopArgs, stopServices...)
 	if _, err := m.runner.Run(ctx, CommandSpec{
 		Name:   "docker",
-		Args:   []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop", "runner"},
+		Args:   stopArgs,
 		Env:    composeProgressEnv(),
 		Stream: progress,
 	}); err != nil {
