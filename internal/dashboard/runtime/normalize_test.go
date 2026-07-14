@@ -195,8 +195,24 @@ func TestNormalizeRunnerIdentityKeepsExplicitValues(t *testing.T) {
 
 func TestDefaultValuesIncludeHomePaths(t *testing.T) {
 	values := DefaultValues()
+	if values["RUNNER_IMAGE_PULL_POLICY"] != "always" {
+		t.Fatalf("RUNNER_IMAGE_PULL_POLICY = %q", values["RUNNER_IMAGE_PULL_POLICY"])
+	}
 	if values["ANDROID_KEYS_DIR"] != "" && filepath.Base(values["HOST_AVD_HOME_PATH"]) != "avd" {
 		t.Fatalf("defaults = %#v", values)
+	}
+}
+
+func TestNormalizeRunnerImagePullPolicy(t *testing.T) {
+	values, err := NormalizeValues(Values{"RUNNER_IMAGE_PULL_POLICY": "never"}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["RUNNER_IMAGE_PULL_POLICY"] != "never" {
+		t.Fatalf("RUNNER_IMAGE_PULL_POLICY = %q", values["RUNNER_IMAGE_PULL_POLICY"])
+	}
+	if _, err := NormalizeValues(Values{"RUNNER_IMAGE_PULL_POLICY": "sometimes"}, "linux"); err == nil {
+		t.Fatal("NormalizeValues should reject an unsupported runner image pull policy")
 	}
 }
 

@@ -71,6 +71,7 @@ var FieldImpacts = map[string]FieldImpact{
 	"RUNNER_DOMAIN":               {CredimiUpdate: true},
 	"RUNNER_HOST":                 {Recreate: true},
 	"RUNNER_IMAGE":                {Restart: true, Recreate: true},
+	"RUNNER_IMAGE_PULL_POLICY":    {Recreate: true},
 	"RUNNER_PORT":                 {Recreate: true, CredimiUpdate: true},
 	"RUNNER_PUBLIC_PORT":          {CredimiUpdate: true},
 	"RUNNER_PUBLIC_URL":           {CredimiUpdate: true},

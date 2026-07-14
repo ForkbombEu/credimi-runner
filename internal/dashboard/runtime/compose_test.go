@@ -40,7 +40,12 @@ func TestComposeParityCases(t *testing.T) {
 		{
 			name:     "usb container",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone"},
-			contains: []string{"--host-adb", "--usb", `ADB_SERVER_SOCKET: "${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}"`, "network_mode: host", `command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://127.0.0.1:80}`},
+			contains: []string{"pull_policy: always", "--host-adb", "--usb", `ADB_SERVER_SOCKET: "${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}"`, "network_mode: host", `command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://127.0.0.1:80}`},
+		},
+		{
+			name:     "local runner image",
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_IMAGE": "credimi-runner-phone:latest", "RUNNER_IMAGE_PULL_POLICY": "never"},
+			contains: []string{"image: credimi-runner-phone:latest", "pull_policy: never"},
 		},
 		{
 			name:     "wifi container",

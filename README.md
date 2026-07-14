@@ -489,6 +489,17 @@ Run a locally built image:
 docker run --rm -it --network host credimi-runner-phone 192.168.1.42
 ```
 
+To run that image from the dashboard without contacting a registry, set the
+advanced runtime fields to:
+
+```env
+RUNNER_IMAGE=credimi-runner-phone:latest
+RUNNER_IMAGE_PULL_POLICY=never
+```
+
+The default pull policy is `always`, which keeps registry-backed runner images
+updated during dashboard startup.
+
 Quick entrypoint argument checks (no device required):
 
 ```bash

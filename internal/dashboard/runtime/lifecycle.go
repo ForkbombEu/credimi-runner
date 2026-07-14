@@ -238,16 +238,22 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) err
 			m.status.LastError = err.Error()
 			return err
 		}
-		emitProgress(progress, "Pulling Docker images. Large runner images can take several minutes.")
-		pullArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "pull"}
-		pullArgs = append(pullArgs, plan.ComposeServices...)
-		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: progress}); err != nil {
-			m.status.LastError = err.Error()
-			return err
+		pullServices := composePullServices(plan.ComposeServices, m.values["RUNNER_IMAGE_PULL_POLICY"])
+		if !containsService(pullServices, "runner") && containsService(plan.ComposeServices, "runner") {
+			emitProgress(progress, "Using the configured local runner image without pulling it.")
+		}
+		if len(pullServices) > 0 {
+			emitProgress(progress, "Pulling Docker images. Large runner images can take several minutes.")
+			pullArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "pull"}
+			pullArgs = append(pullArgs, pullServices...)
+			if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: progress}); err != nil {
+				m.status.LastError = err.Error()
+				return err
+			}
 		}
 		emitProgress(progress, "Starting Docker services.")
 		composeStartedAt := time.Now()
-		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d"}
+		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d", "--pull", "never"}
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: progress}); err != nil {
 			m.status.LastError = err.Error()
@@ -260,6 +266,20 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) err
 
 	m.status.PublicURL = resolvedRunnerPublicURL(m.values, "")
 	return nil
+}
+
+func composePullServices(services []string, runnerPullPolicy string) []string {
+	pullServices := append([]string(nil), services...)
+	if defaultIfEmpty(runnerPullPolicy, DefaultRunnerImagePullPolicy) != "never" {
+		return pullServices
+	}
+	filtered := pullServices[:0]
+	for _, service := range pullServices {
+		if service != "runner" {
+			filtered = append(filtered, service)
+		}
+	}
+	return filtered
 }
 
 func emitProgress(progress func(string), message string) {
@@ -663,6 +683,7 @@ func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
 func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func(string)) error {
 	m.mu.Lock()
 	image := strings.TrimSpace(m.values["RUNNER_IMAGE"])
+	pullPolicy := defaultIfEmpty(m.values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	m.mu.Unlock()
 	if image == "" {
@@ -670,6 +691,9 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	}
 	if !containsService(plan.ComposeServices, "runner") {
 		return fmt.Errorf("runner image upgrade requires the container backend")
+	}
+	if pullPolicy == "never" {
+		return fmt.Errorf("runner image upgrade is disabled when RUNNER_IMAGE_PULL_POLICY=never")
 	}
 	oldImageID, _ := m.runnerImageID(ctx, image)
 	emitProgress(progress, "Checking for a newer runner image: "+image)

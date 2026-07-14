@@ -163,7 +163,7 @@
             <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
               <details class="gear-panel">
                 <summary>{{icon "gear"}} Runtime image default</summary>
-                {{template "field" $.Field "RUNNER_IMAGE"}}
+                <div class="field-row">{{template "field" $.Field "RUNNER_IMAGE"}}{{template "field" $.Field "RUNNER_IMAGE_PULL_POLICY"}}</div>
               </details>
             </div>
             <div data-dev-type="android_emulator" style="grid-column:1/-1">
@@ -279,6 +279,7 @@
                   <dt data-review-dev="android_phone">Serial</dt><dd class="mono" data-review="CREDIMI_RUNNER_SERIAL" data-review-dev="android_phone">—</dd>
                   <dt data-review-dev="android_emulator redroid">Wi-Fi IP</dt><dd class="mono" data-review="CREDIMI_RUNNER_WIFI_IP" data-review-dev="android_emulator redroid">—</dd>
                   <dt data-review-not="ios_simulator">Image</dt><dd class="mono" data-review="RUNNER_IMAGE" data-review-not="ios_simulator" style="font-size:11px">—</dd>
+                  <dt data-review-not="ios_simulator">Pull policy</dt><dd class="mono" data-review="RUNNER_IMAGE_PULL_POLICY" data-review-not="ios_simulator">—</dd>
                 </dl>
               </div>
             </div>

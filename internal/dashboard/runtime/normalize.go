@@ -8,28 +8,29 @@ import (
 )
 
 const (
-	DefaultCredimiURL       = "https://credimi.io"
-	DefaultTempDir          = "/tmp/credimi-runner-tmp"
-	DefaultTemporalAddress  = "temporal.credimi.io:7233"
-	DefaultOTLPEndpoint     = "https://otel-collector.credimi.io"
-	DefaultOTELServiceName  = "credimi-runner"
-	DefaultRunnerHost       = "127.0.0.1"
-	DefaultRunnerPort       = "8050"
-	DefaultDashboardHost    = "0.0.0.0"
-	DefaultDashboardPort    = "8051"
-	DefaultRunnerCaddySite  = ":80"
-	DefaultContainerMode    = "usb"
-	DefaultPhoneImage       = "ghcr.io/forkbombeu/credimi-runner-phone:latest"
-	DefaultEmulatorImage    = "ghcr.io/forkbombeu/credimi-runner-emulator:latest"
-	DefaultBaseName         = "credimi"
-	DefaultGoldenPath       = "/avd-golden/credimi-golden"
-	DefaultWiFiPort         = "5555"
-	DefaultRedroidDataDir   = "/home/credimi/redroid-data"
-	DefaultRedroidDataTar   = "/home/credimi/redroid-data.tar"
-	DefaultHostAVDHome      = ".android/avd"
-	DefaultHostAVDGolden    = "avd-golden"
-	DefaultContainerBackend = "container"
-	DefaultHostBackend      = "host"
+	DefaultCredimiURL            = "https://credimi.io"
+	DefaultTempDir               = "/tmp/credimi-runner-tmp"
+	DefaultTemporalAddress       = "temporal.credimi.io:7233"
+	DefaultOTLPEndpoint          = "https://otel-collector.credimi.io"
+	DefaultOTELServiceName       = "credimi-runner"
+	DefaultRunnerHost            = "127.0.0.1"
+	DefaultRunnerPort            = "8050"
+	DefaultRunnerImagePullPolicy = "always"
+	DefaultDashboardHost         = "0.0.0.0"
+	DefaultDashboardPort         = "8051"
+	DefaultRunnerCaddySite       = ":80"
+	DefaultContainerMode         = "usb"
+	DefaultPhoneImage            = "ghcr.io/forkbombeu/credimi-runner-phone:latest"
+	DefaultEmulatorImage         = "ghcr.io/forkbombeu/credimi-runner-emulator:latest"
+	DefaultBaseName              = "credimi"
+	DefaultGoldenPath            = "/avd-golden/credimi-golden"
+	DefaultWiFiPort              = "5555"
+	DefaultRedroidDataDir        = "/home/credimi/redroid-data"
+	DefaultRedroidDataTar        = "/home/credimi/redroid-data.tar"
+	DefaultHostAVDHome           = ".android/avd"
+	DefaultHostAVDGolden         = "avd-golden"
+	DefaultContainerBackend      = "container"
+	DefaultHostBackend           = "host"
 )
 
 var KnownKeys = map[string]struct{}{
@@ -73,6 +74,7 @@ var KnownKeys = map[string]struct{}{
 	"RUNNER_DOMAIN":               {},
 	"RUNNER_HOST":                 {},
 	"RUNNER_IMAGE":                {},
+	"RUNNER_IMAGE_PULL_POLICY":    {},
 	"RUNNER_PORT":                 {},
 	"RUNNER_PUBLIC_PORT":          {},
 	"RUNNER_PUBLIC_URL":           {},
@@ -96,6 +98,7 @@ func DefaultValues() Values {
 		"RUNNER_CADDY_SITE":           DefaultRunnerCaddySite,
 		"RUNNER_HOST":                 DefaultRunnerHost,
 		"RUNNER_IMAGE":                DefaultPhoneImage,
+		"RUNNER_IMAGE_PULL_POLICY":    DefaultRunnerImagePullPolicy,
 		"RUNNER_PORT":                 DefaultRunnerPort,
 		"TEMPORAL_ADDRESS":            DefaultTemporalAddress,
 	}
@@ -119,6 +122,9 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 
 	normalized["CREDIMI_RUNNER_BACKEND"] = defaultIfEmpty(normalized["CREDIMI_RUNNER_BACKEND"], defaultServiceBackend(goos))
 	normalized["CREDIMI_SERVICE_MODE"] = normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"])
+	if err := normalizeRunnerImagePullPolicy(normalized); err != nil {
+		return nil, err
+	}
 	normalized["CREDIMI_RUNNER_TYPE"] = defaultRunnerType(normalized, goos)
 	normalizeRunnerIdentity(normalized)
 	normalizeBackendForType(normalized, goos)
@@ -145,6 +151,17 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 	}
 
 	return normalized, nil
+}
+
+func normalizeRunnerImagePullPolicy(values Values) error {
+	policy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
+	switch policy {
+	case "always", "never":
+		values["RUNNER_IMAGE_PULL_POLICY"] = policy
+		return nil
+	default:
+		return fmt.Errorf("RUNNER_IMAGE_PULL_POLICY must be always or never, got %q", policy)
+	}
 }
 
 func normalizeRunnerIdentity(values Values) {

@@ -101,7 +101,7 @@
         <details class="gear-panel" style="grid-column:1/-1">
           <summary>{{icon "gear"}} Target defaults</summary>
           <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
-            {{template "field" .Field "RUNNER_IMAGE"}}
+            <div class="field-row">{{template "field" .Field "RUNNER_IMAGE"}}{{template "field" .Field "RUNNER_IMAGE_PULL_POLICY"}}</div>
           </div>
           <div data-dev-type="android_emulator" style="grid-column:1/-1">
             <div class="field-row">{{template "field" .Field "ANDROID_KEYS_DIR"}}{{template "field" .Field "GOLDEN_PATH"}}</div>

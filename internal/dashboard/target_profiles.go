@@ -20,7 +20,7 @@ func TargetProfilesForGOOS(goos string) []TargetProfile {
 			Title:         "Android phone",
 			PrimaryFields: []string{"CREDIMI_RUNNER_DEVICE_MODE", "CREDIMI_RUNNER_SERIAL", "CREDIMI_RUNNER_WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT"},
 			AdvancedFields: []string{
-				"RUNNER_IMAGE",
+				"RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY",
 			},
 		},
 		"android_emulator": {
@@ -28,7 +28,7 @@ func TargetProfilesForGOOS(goos string) []TargetProfile {
 			Title:         "Android emulator",
 			PrimaryFields: []string{"BASE_NAME"},
 			AdvancedFields: []string{
-				"RUNNER_IMAGE", "ANDROID_KEYS_DIR", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "GOLDEN_PATH",
+				"RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY", "ANDROID_KEYS_DIR", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "GOLDEN_PATH",
 			},
 		},
 		"ios_simulator": {
@@ -36,7 +36,7 @@ func TargetProfilesForGOOS(goos string) []TargetProfile {
 			Title:         "iOS simulator",
 			PrimaryFields: []string{"BASE_NAME"},
 			AdvancedFields: []string{
-				"RUNNER_IMAGE",
+				"RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY",
 			},
 		},
 		"redroid": {
@@ -44,7 +44,7 @@ func TargetProfilesForGOOS(goos string) []TargetProfile {
 			Title:         "Redroid",
 			PrimaryFields: []string{"REDROID_DATA_DIR", "REDROID_DATA_TAR"},
 			AdvancedFields: []string{
-				"RUNNER_IMAGE", "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD",
+				"RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY", "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD",
 			},
 		},
 	}
