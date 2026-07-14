@@ -340,7 +340,12 @@ func componentState(component maintenance.Component) string {
 }
 
 func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
-func (d PageData) ImageVersionState() string  { return componentState(d.MaintenanceStatus().Image) }
+func (d PageData) ImageVersionState() string {
+	if d.Runner != nil && strings.TrimSpace(d.Runner.Get("RUNNER_IMAGE_PULL_POLICY")) == "never" {
+		return "Registry check disabled"
+	}
+	return componentState(d.MaintenanceStatus().Image)
+}
 func (d PageData) RunnerCurrentBuiltAt() string {
 	return formatMaintenanceTime(d.MaintenanceStatus().Runner.CurrentBuiltAt)
 }
