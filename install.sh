@@ -32,8 +32,12 @@ say() {
   printf '%s%s%s\n' "${c_blue}" "$*" "${c_reset}" >&2
 }
 
-warn() {
-  printf '%s%s%s\n' "${c_yellow}" "$*" "${c_reset}" >&2
+path_notice() {
+  printf '%s%s%s%s\n' "${c_yellow}" "${c_bold}" "$*" "${c_reset}" >&2
+}
+
+path_command() {
+  printf '  %s%s%s%s\n' "${c_cyan}" "${c_bold}" "$*" "${c_reset}" >&2
 }
 
 success() {
@@ -52,6 +56,55 @@ need_cmd() {
 path_has_dir() {
   target_dir="$1"
   printf '%s\n' ":$PATH:" | grep -Fq ":${target_dir}:"
+}
+
+show_path_instructions() {
+  target_dir="$1"
+  shell_path="${SHELL:-}"
+  shell_name="${shell_path##*/}"
+  display_dir="$target_dir"
+  if [ "$target_dir" = "${HOME}/.local/bin" ]; then
+    display_dir='$HOME/.local/bin'
+  fi
+
+  path_notice ""
+  path_notice "======================================================================"
+  path_notice "ACTION REQUIRED: ${PROJECT_NAME} is not available on PATH"
+  path_notice "======================================================================"
+  say "Installed binary: ${target_dir}/${PROJECT_NAME}"
+  say "Detected shell: ${shell_name:-unknown}"
+  say "The installer did not modify your shell configuration."
+  say ""
+
+  case "$shell_name" in
+    fish)
+      say "Run this command; Fish will persist the path for future sessions:"
+      path_command "fish_add_path \"${display_dir}\""
+      ;;
+    bash)
+      say "Run this command for the current Bash session:"
+      path_command "export PATH=\"${display_dir}:\$PATH\""
+      say "Add the same export to ~/.bashrc (or ~/.bash_profile for login shells)."
+      ;;
+    zsh)
+      say "Run this command for the current Zsh session:"
+      path_command "export PATH=\"${display_dir}:\$PATH\""
+      say "Add the same export to ~/.zshrc for future sessions."
+      ;;
+    sh|dash|ksh|mksh|ash)
+      say "Run this command for the current ${shell_name} session:"
+      path_command "export PATH=\"${display_dir}:\$PATH\""
+      say "Add the same export to ~/.profile for future sessions."
+      ;;
+    *)
+      say "Run this command for the current session:"
+      path_command "export PATH=\"${display_dir}:\$PATH\""
+      say "Add the equivalent command to your shell's startup file."
+      ;;
+  esac
+
+  path_notice "======================================================================"
+  path_notice ""
 }
 
 normalize_asset_name() {
@@ -108,12 +161,7 @@ main() {
 
   success "Installed ${PROJECT_NAME} at ${binary_path}"
   if ! path_has_dir "$bin_dir"; then
-    warn "${bin_dir} is not in PATH for this shell."
-    if [ "$bin_dir" = "${HOME}/.local/bin" ]; then
-      say "Add it with: export PATH=\"\$HOME/.local/bin:\$PATH\""
-    else
-      say "Add it with: export PATH=\"${bin_dir}:\$PATH\""
-    fi
+    show_path_instructions "$bin_dir"
   fi
 
   say "Starting Credimi Runner dashboard..."
