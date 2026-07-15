@@ -12,7 +12,7 @@ Install `credimi-runner` with the bootstrap installer:
 curl -sL credimi.run | sh
 ```
 
-This works on **macOS** (Intel and Apple Silicon) and **Linux** (x86\_64 and arm64).
+This works on **macOS** (Intel and Apple Silicon) and **Linux** (x86_64 and arm64).
 
 The installer downloads the latest release binary, makes it executable, and starts
 the dashboard immediately:
@@ -65,13 +65,35 @@ These steps vary slightly by manufacturer, but the flow is similar on most Andro
    - Some phones show **IP:PORT** (for example `192.168.1.42:38349`). You can pass that as-is.
    - Ensure **Wireless debugging** stays enabled while you connect.
 1. Turn on **Developer Options > Stay awake**, if that doesn't work set it using adb:
-   - ```adb -s <serial> shell settings put global stay_on_while_plugged_in 3```
+   - `adb -s <serial> shell settings put global stay_on_while_plugged_in 3`
 1. (Optional) If you see a **Pair device with pairing code** option, that is for `adb pair`
    and is required on many Android 11+ devices before `adb connect` works.
 
 If your device doesn’t show **Wireless debugging**, you can enable **ADB debugging** and
 then use “ADB over network” or “ADB over Wi‑Fi” if your OEM provides it. The goal is to
 have the device listening on a TCP port shown on the phone.
+
+#### Optional: prepare a device for runner use
+
+With the device connected and authorized in `adb devices`, use the setup script to
+inspect its current settings and print any recommended changes:
+
+```bash
+bash scripts/android_device_setup.sh
+```
+
+If more than one device is attached, select one with `-d <DEVICE_SERIAL>`. Add
+`--config` to apply the recommended runner settings, including keeping the screen
+awake while powered, disabling screen rotation and the screensaver, and turning off
+battery saver:
+
+```bash
+bash scripts/android_device_setup.sh -d <DEVICE_SERIAL> --config
+```
+
+The script cannot remove a secure lock screen. For unattended automation, manually
+set the device's screen lock to **None** and remove any PIN, password, pattern, or
+fingerprint lock.
 
 ### 2) Start the service (recommended)
 
@@ -93,6 +115,7 @@ These examples are useful for debugging or direct device access without Caddy/Tu
 
 > [!IMPORTANT]
 > **Wi‑Fi (Wireless debugging)**
+>
 > ```bash
 > # If your phone shows IP:PORT, pass it as a single argument
 > docker run --rm -it --network host \
@@ -105,6 +128,7 @@ These examples are useful for debugging or direct device access without Caddy/Tu
 
 > [!IMPORTANT]
 > **USB (cable)**
+>
 > ```bash
 > docker run --rm -it --privileged --network host \
 >   -e CREDIMI_URL=https://credimi.io \
@@ -117,6 +141,7 @@ These examples are useful for debugging or direct device access without Caddy/Tu
 
 > [!IMPORTANT]
 > **Emulator (requires KVM)**
+>
 > ```bash
 > docker run --rm -it --device /dev/kvm --network host \
 >   -e CREDIMI_URL=https://credimi.io \
@@ -130,13 +155,16 @@ These examples are useful for debugging or direct device access without Caddy/Tu
 > ```
 
 Minimum useful environment variables (all modes):
+
 - `CREDIMI_RUNNER_ID`
 
 Authentication options (choose one):
+
 - `CREDIMI_USER_API_KEY`
 - `CREDIMI_INTERNAL_ADMIN_KEY`
 
 Defaulted/optional environment variables (all modes):
+
 - `CREDIMI_URL` (default: `https://credimi.io`)
 - `CREDIMI_RUNNER_LIFECYCLE_ENABLED` (default: `true`)
 - `CREDIMI_RUNNER_HEARTBEAT_INTERVAL` (default: `30s`)
@@ -145,6 +173,7 @@ Defaulted/optional environment variables (all modes):
 - `CREDIMI_INTERNAL_ADMIN_KEY` (added as `Credimi-Api-Key` on internal Credimi API requests)
 
 Emulator-only optional environment variables:
+
 - `BASE_NAME` (default: `credimi`)
 - `GOLDEN_PATH` (default: `/avd-golden/<BASE_NAME>-golden`)
 - `ADB_PRIVATE_KEY` and `ADB_PUBLIC_KEY` (provide to inject ADB keys; otherwise the container uses mounted keys if present, or disables ADB auth keys)
@@ -155,6 +184,7 @@ Emulator-only optional environment variables:
 ```bash
 docker exec -it <container> adb devices -l
 ```
+
 </details>
 
 <details>
@@ -171,6 +201,7 @@ Then connect:
 ```bash
 docker exec -it <container> adb connect 192.168.1.42:38349
 ```
+
 </details>
 
 <details>
@@ -183,6 +214,7 @@ docker run --rm -it --network host \
 ```
 
 `--no-wait` only attempts the ADB connect and then exits. It does not start `credimi-runner serve`.
+
 </details>
 
 <details>
@@ -195,6 +227,7 @@ docker run --rm -it --network host \
   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-phone-01 \
   ghcr.io/ForkbombEu/credimi-runner-phone:latest --no-device
 ```
+
 </details>
 
 <details>
@@ -221,6 +254,7 @@ docker run --rm -it --network host \
 ```
 
 Notes:
+
 - `--host-adb` skips starting a server in the container and uses the host's server.
 - If the host ADB server is running, it may lock USB; either use this mode or stop the host server.
 </details>
@@ -243,7 +277,7 @@ Notes:
 - Android 11+ “Wireless debugging pairing” may require `adb pair` and a pairing code.
   This image targets the `adb connect <ip>:<port>` workflow.
 - Networking: `--network host` is simplest on Linux. Without it, the container must
-  still reach the phone on the LAN (same Wi-Fi, routable subnet, port 5555 reachable).
+still reach the phone on the LAN (same Wi-Fi, routable subnet, port 5555 reachable).
 </details>
 
 <details>
@@ -306,13 +340,16 @@ Local env loading for `serve`:
 Runner container envs (phone/emulator):
 
 Minimum useful:
+
 - `CREDIMI_RUNNER_ID`
 
 Authentication options:
+
 - `CREDIMI_USER_API_KEY`
 - `CREDIMI_INTERNAL_ADMIN_KEY`
 
 Defaulted/optional:
+
 - `CREDIMI_URL` (default: `https://credimi.io`)
 - `CREDIMI_RUNNER_LIFECYCLE_ENABLED` (default: `true`)
 - `CREDIMI_RUNNER_HEARTBEAT_INTERVAL` (default: `30s`)
@@ -481,8 +518,6 @@ path inside the container and must stay under `/avd-golden`.
 If your bind already points at the extracted `credimi-golden` directory itself, use
 `GOLDEN_PATH=/avd-golden` instead of the nested default.
 
-
-
 Run a locally built image:
 
 ```bash
@@ -505,4 +540,5 @@ Quick entrypoint argument checks (no device required):
 ```bash
 ./scripts/test-entrypoint-args.sh
 ```
+
 </details>
