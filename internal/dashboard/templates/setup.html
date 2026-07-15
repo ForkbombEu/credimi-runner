@@ -224,6 +224,8 @@
               </div>
             </div>
             <div data-dev-type="redroid" style="grid-column:1/-1">
+              <div class="divline"></div>
+              <div class="field-row">{{template "field" $.Field "CREDIMI_RUNNER_WIFI_IP"}}{{template "field" $.Field "CREDIMI_RUNNER_WIFI_PORT"}}</div>
               <details class="gear-panel">
                 <summary>{{icon "gear"}} Redroid and avdctl defaults</summary>
                 <div class="subhead">Redroid volumes</div>
@@ -231,11 +233,7 @@
                 {{template "field" $.Field "REDROID_DATA_TAR"}}
                 <div class="divline"></div>
                 <div class="subhead">Remote avdctl (SSH)</div>
-                {{template "field" $.Field "AVDCTL_SSH_TARGET"}}
-                {{template "field" $.Field "AVDCTL_SSH_PASSWORD"}}
-                {{template "field" $.Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}
-                {{template "field" $.Field "AVDCTL_SUDO"}}
-                {{template "field" $.Field "AVDCTL_SUDO_PASSWORD"}}
+                {{template "avdctl_ssh_fields" $}}
               </details>
             </div>
           </div>
@@ -277,7 +275,8 @@
                   <dt>Type</dt><dd data-review="CREDIMI_RUNNER_TYPE">—</dd>
                   <dt>Connection</dt><dd data-review="CREDIMI_RUNNER_DEVICE_MODE">—</dd>
                   <dt data-review-dev="android_phone">Serial</dt><dd class="mono" data-review="CREDIMI_RUNNER_SERIAL" data-review-dev="android_phone">—</dd>
-                  <dt data-review-dev="android_emulator redroid">Wi-Fi IP</dt><dd class="mono" data-review="CREDIMI_RUNNER_WIFI_IP" data-review-dev="android_emulator redroid">—</dd>
+                  <dt data-review-dev="redroid">Wi-Fi IP</dt><dd class="mono" data-review="CREDIMI_RUNNER_WIFI_IP" data-review-dev="redroid">—</dd>
+                  <dt data-review-dev="redroid">Wi-Fi port</dt><dd class="mono" data-review="CREDIMI_RUNNER_WIFI_PORT" data-review-dev="redroid">—</dd>
                   <dt data-review-not="ios_simulator">Image</dt><dd class="mono" data-review="RUNNER_IMAGE" data-review-not="ios_simulator" style="font-size:11px">—</dd>
                   <dt data-review-not="ios_simulator">Pull policy</dt><dd class="mono" data-review="RUNNER_IMAGE_PULL_POLICY" data-review-not="ios_simulator">—</dd>
                 </dl>

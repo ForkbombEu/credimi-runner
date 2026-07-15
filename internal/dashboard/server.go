@@ -778,6 +778,9 @@ func validateSetupInput(values map[string]string) map[string]string {
 		strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]) == "" {
 		errs["CREDIMI_RUNNER_SERIAL"] = "Select a connected Android device."
 	}
+	if strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) == "redroid" && strings.TrimSpace(values["CREDIMI_RUNNER_WIFI_IP"]) == "" {
+		errs["CREDIMI_RUNNER_WIFI_IP"] = "Required."
+	}
 	if strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) == "manual" && strings.TrimSpace(values["RUNNER_PUBLIC_URL"]) == "" {
 		errs["RUNNER_PUBLIC_URL"] = "Required."
 	}

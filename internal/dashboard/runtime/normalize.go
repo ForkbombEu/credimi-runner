@@ -418,8 +418,33 @@ func normalizeRedroid(values Values) {
 	values["REDROID_DATA_DIR"] = defaultIfEmpty(values["REDROID_DATA_DIR"], DefaultRedroidDataDir)
 	values["REDROID_DATA_TAR"] = defaultIfEmpty(values["REDROID_DATA_TAR"], DefaultRedroidDataTar)
 	values["CREDIMI_CONTAINER_MODE"] = "no_device"
-	values["CREDIMI_RUNNER_WIFI_IP"] = ""
-	values["CREDIMI_RUNNER_WIFI_PORT"] = ""
+	values["CREDIMI_RUNNER_WIFI_IP"] = strings.TrimSpace(values["CREDIMI_RUNNER_WIFI_IP"])
+	values["CREDIMI_RUNNER_WIFI_PORT"] = defaultIfEmpty(values["CREDIMI_RUNNER_WIFI_PORT"], DefaultWiFiPort)
+	if values["CREDIMI_RUNNER_WIFI_IP"] == "" {
+		values["CREDIMI_RUNNER_SERIAL"] = ""
+	} else {
+		values["CREDIMI_RUNNER_SERIAL"] = values["CREDIMI_RUNNER_WIFI_IP"] + ":" + values["CREDIMI_RUNNER_WIFI_PORT"]
+	}
+
+	if strings.TrimSpace(values["AVDCTL_SSH_TARGET"]) == "" {
+		clearAVDCTLSSHConfig(values)
+		values["AVDCTL_SUDO"] = "false"
+		return
+	}
+	values["AVDCTL_SSH_TARGET"] = strings.TrimSpace(values["AVDCTL_SSH_TARGET"])
+	home, _ := homeDir()
+	knownHostsDefault := ""
+	if home != "" {
+		knownHostsDefault = filepath.Join(home, ".ssh", "known_hosts")
+	}
+	values["AVDCTL_SSH_KNOWN_HOSTS_PATH"] = defaultIfEmpty(
+		values["AVDCTL_SSH_KNOWN_HOSTS_PATH"],
+		knownHostsDefault,
+	)
+	values["AVDCTL_SUDO"] = boolString(defaultYesNoChoice(values["AVDCTL_SUDO"], false))
+	if values["AVDCTL_SUDO"] == "false" {
+		values["AVDCTL_SUDO_PASSWORD"] = ""
+	}
 }
 
 func normalizeAndroidPhone(values Values) error {
@@ -455,6 +480,13 @@ func defaultIfEmpty(value, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(value)
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func homeDir() (string, error) {

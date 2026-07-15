@@ -404,7 +404,11 @@
               return !valueMissing('BASE_NAME') && (!panel || panel.dataset.exists === '1');
             }
             if (runnerType === 'redroid') {
-              return !valueMissing('REDROID_DATA_DIR') && !valueMissing('REDROID_DATA_TAR');
+              const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
+              return !valueMissing('CREDIMI_RUNNER_WIFI_IP') &&
+                !valueMissing('REDROID_DATA_DIR') &&
+                !valueMissing('REDROID_DATA_TAR') &&
+                (!sshEnabled || !sshEnabled.checked || !valueMissing('AVDCTL_SSH_TARGET'));
             }
             return !!runnerType;
           }
@@ -450,8 +454,13 @@
             }
             if (runnerType === 'ios_simulator' && valueMissing('BASE_NAME')) return 'Simulator name is required.';
             if (runnerType === 'ios_simulator') return 'Create or select the named simulator before continuing.';
+            if (runnerType === 'redroid' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) return 'Redroid requires an Android Wi-Fi IP.';
             if (runnerType === 'redroid' && valueMissing('REDROID_DATA_DIR')) return 'Redroid data directory is required.';
             if (runnerType === 'redroid' && valueMissing('REDROID_DATA_TAR')) return 'Redroid data archive is required.';
+            if (runnerType === 'redroid') {
+              const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
+              if (sshEnabled && sshEnabled.checked && valueMissing('AVDCTL_SSH_TARGET')) return 'Remote avdctl requires an SSH target.';
+            }
             return '';
           }
           default:
@@ -1120,7 +1129,7 @@
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'no_device');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
-        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', TYPE_DEFAULTS.wifiPort);
         setFieldValue(root, 'BASE_NAME', '');
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
@@ -1197,6 +1206,9 @@
       markDirty();
       const finish = () => {
         updateDeviceFields(root);
+        const sshEnabled = root.querySelector('[data-avdctl-ssh-enabled]');
+        if (sshEnabled) sshEnabled.checked = radio.value === 'redroid' && !!fieldValue(root, 'AVDCTL_SSH_TARGET');
+        syncAVDCTLSSH(root);
         markDirty();
       };
       applyNormalizedPreview(root).then(finish).catch(() => {
@@ -1315,6 +1327,52 @@
     });
   };
   initDeviceFields();
+
+  const setToggleValue = (root, name, on) => {
+    const checkbox = root.querySelector(`input[type="checkbox"][name="${name}"]`);
+    if (checkbox) checkbox.checked = on;
+    const button = root.querySelector(`[data-toggle="${name}"]`);
+    if (button) {
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+  };
+  const syncAVDCTLSSH = (root = document, clearDisabled = false) => {
+    root.querySelectorAll('[data-avdctl-ssh-control]').forEach((control) => {
+      const enabled = control.querySelector('[data-avdctl-ssh-enabled]');
+      const form = control.closest('form') || root;
+      const fields = control.nextElementSibling;
+      const on = fieldValue(form, 'CREDIMI_RUNNER_TYPE') === 'redroid' && !!(enabled && enabled.checked);
+      if (fields && fields.matches('[data-avdctl-ssh-fields]')) fields.hidden = !on;
+      const target = form.querySelector('[name="AVDCTL_SSH_TARGET"]');
+      if (target) target.required = on;
+      if (on) {
+        if (!fieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH')) {
+          setFieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', control.dataset.defaultKnownHosts || '');
+        }
+        return;
+      }
+      if (!clearDisabled) return;
+      setFieldValue(form, 'AVDCTL_SSH_TARGET', '');
+      setFieldValue(form, 'AVDCTL_SSH_PASSWORD', '');
+      setFieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
+      setToggleValue(form, 'AVDCTL_SUDO', false);
+      setFieldValue(form, 'AVDCTL_SUDO_PASSWORD', '');
+    });
+  };
+  document.addEventListener('click', (e) => {
+    const toggle = e.target.closest('[data-avdctl-ssh-toggle]');
+    if (!toggle) return;
+    const control = toggle.closest('[data-avdctl-ssh-control]');
+    const enabled = control && control.querySelector('[data-avdctl-ssh-enabled]');
+    if (!control || !enabled) return;
+    enabled.checked = !enabled.checked;
+    toggle.classList.toggle('on', enabled.checked);
+    toggle.setAttribute('aria-checked', enabled.checked ? 'true' : 'false');
+    syncAVDCTLSSH(control.parentElement || document, !enabled.checked);
+    markDirty();
+  });
+  syncAVDCTLSSH();
 
   // ── API keys link button (reads from CREDIMI_URL field) ─────────────────
   document.addEventListener('click', (e) => {
@@ -1590,6 +1648,7 @@
       initSetupWizard(e.detail.target);
       initNetMode();
       initDeviceFields();
+      syncAVDCTLSSH(e.detail.target);
     }
   });
   window.addEventListener('popstate', syncNav);

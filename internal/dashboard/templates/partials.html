@@ -34,6 +34,19 @@
 {{- end -}}
 {{- end}}
 
+{{define "avdctl_ssh_fields" -}}
+<div class="tog-row" data-avdctl-ssh-control data-default-known-hosts="{{.DefaultSSHKnownHostsPath}}">
+  <div class="tx"><b>Use avdctl via SSH</b><span>Enable only when Redroid is managed on a remote machine.</span></div>
+  <button type="button" class="tog {{if .Runner.Get "AVDCTL_SSH_TARGET"}}on{{end}}" role="switch" aria-checked="{{if .Runner.Get "AVDCTL_SSH_TARGET"}}true{{else}}false{{end}}" data-avdctl-ssh-toggle></button>
+  <input type="checkbox" data-avdctl-ssh-enabled hidden {{if .Runner.Get "AVDCTL_SSH_TARGET"}}checked{{end}}>
+</div>
+<div data-avdctl-ssh-fields {{if not (.Runner.Get "AVDCTL_SSH_TARGET")}}hidden{{end}}>
+  <div class="field-row">{{template "field" .Field "AVDCTL_SSH_TARGET"}}{{template "field" .Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}</div>
+  <div class="field-row">{{template "field" .Field "AVDCTL_SSH_PASSWORD"}}{{template "field" .Field "AVDCTL_SUDO_PASSWORD"}}</div>
+  {{template "field" .Field "AVDCTL_SUDO"}}
+</div>
+{{- end}}
+
 {{- /* ── Live device rows (SSE: /events/devices) ── */ -}}
 {{define "device_rows" -}}
 {{- if not . -}}

@@ -29,6 +29,15 @@ assert_contains() {
   rg -Fq -- "$needle" "$path" || fail "expected '${needle}' in ${path}"
 }
 
+assert_not_contains() {
+  local needle="$1"
+  local path="$2"
+
+  if rg -Fq -- "$needle" "$path"; then
+    fail "did not expect '${needle}' in ${path}"
+  fi
+}
+
 create_mocks() {
   local mock_dir="$1"
   mkdir -p "$mock_dir"
@@ -175,10 +184,64 @@ run_unsupported_platform_case() {
   assert_contains "unsupported operating system: FreeBSD" "${case_dir}/stderr.log"
 }
 
+run_shell_path_message_case() {
+  local shell_name="$1"
+  local expected_message="$2"
+  local case_dir
+  case_dir="$(new_case_dir)"
+
+  run_install "$case_dir" env SHELL="/usr/bin/${shell_name}" FAKE_UNAME_S="Linux" FAKE_UNAME_M="x86_64"
+
+  assert_contains "ACTION REQUIRED: credimi-runner is not available on PATH" "${case_dir}/stderr.log"
+  assert_contains "Detected shell: ${shell_name}" "${case_dir}/stderr.log"
+  assert_contains "The installer did not modify your shell configuration." "${case_dir}/stderr.log"
+  assert_contains "$expected_message" "${case_dir}/stderr.log"
+}
+
+run_path_already_configured_case() {
+  local case_dir
+  case_dir="$(new_case_dir)"
+  mkdir -p "${case_dir}/bin"
+
+  PATH="${case_dir}/bin:${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  XDG_BIN_HOME="${case_dir}/bin" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  SHELL="/bin/bash" \
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  sh "${install_script}" >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+
+  assert_not_contains "ACTION REQUIRED" "${case_dir}/stderr.log"
+}
+
+run_default_bin_path_message_case() {
+  local case_dir
+  case_dir="$(new_case_dir)"
+
+  PATH="${case_dir}/mocks:${PATH}" \
+  HOME="${case_dir}/home" \
+  MOCK_LOG_DIR="${case_dir}/logs" \
+  SHELL="/bin/bash" \
+  FAKE_UNAME_S="Linux" \
+  FAKE_UNAME_M="x86_64" \
+  sh "${install_script}" >"${case_dir}/stdout.log" 2>"${case_dir}/stderr.log"
+
+  assert_file_exists "${case_dir}/home/.local/bin/credimi-runner"
+  assert_contains 'export PATH="$HOME/.local/bin:$PATH"' "${case_dir}/stderr.log"
+}
+
 run_linux_x86_64_case
 run_linux_arm64_case
 run_darwin_arm64_case
 run_custom_bin_dir_case
 run_unsupported_platform_case
+run_shell_path_message_case "bash" "~/.bashrc"
+run_shell_path_message_case "zsh" "~/.zshrc"
+run_shell_path_message_case "fish" "fish_add_path"
+run_shell_path_message_case "dash" "~/.profile"
+run_shell_path_message_case "elvish" "your shell's startup file"
+run_path_already_configured_case
+run_default_bin_path_message_case
 
 printf 'install.sh tests passed\n'

@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net"
 	"net/url"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"time"
@@ -414,6 +415,14 @@ func (d PageData) EmulatorBaseNameField() FieldVM {
 
 func (d PageData) SimulatorBaseNameField() FieldVM {
 	return d.FieldWithLabel("BASE_NAME", d.BaseNameFieldLabel("ios_simulator"))
+}
+
+func (d PageData) DefaultSSHKnownHostsPath() string {
+	home := homeDir()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "known_hosts")
 }
 
 func (d PageData) SetupSteps() []SetupStep {

@@ -44,6 +44,17 @@ func TestValidate(t *testing.T) {
 			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_PORT": "8050"},
 			hasErr: false,
 		},
+		{
+			name:   "redroid requires Wi-Fi IP",
+			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "redroid"},
+			key:    "CREDIMI_RUNNER_WIFI_IP",
+			hasErr: true,
+		},
+		{
+			name:   "redroid accepts Wi-Fi IP",
+			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.30"},
+			hasErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -185,6 +196,65 @@ func TestConfig_ApplyAndWrite(t *testing.T) {
 	content := string(data)
 	if !contains(content, "CREDIMI_URL=https://custom.credimi.io") {
 		t.Errorf("expected CREDIMI_URL in .env, got:\n%s", content)
+	}
+}
+
+func TestNormalizedConfigValuesPreservesSubmittedRedroidFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	current := map[string]string{
+		"CREDIMI_RUNNER_TYPE":   "android_phone",
+		"CREDIMI_RUNNER_SERIAL": "device-1",
+	}
+	incoming := map[string]string{
+		"CREDIMI_RUNNER_TYPE":    "redroid",
+		"CREDIMI_RUNNER_WIFI_IP": "192.168.1.30",
+		"AVDCTL_SSH_TARGET":      "credimi@redroid-host",
+	}
+
+	values, err := normalizedConfigValues(current, incoming, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["CREDIMI_RUNNER_SERIAL"] != "192.168.1.30:5555" || values["CREDIMI_RUNNER_WIFI_PORT"] != "5555" {
+		t.Fatalf("Redroid endpoint = %#v", values)
+	}
+	if values["AVDCTL_SSH_TARGET"] != "credimi@redroid-host" || values["AVDCTL_SSH_KNOWN_HOSTS_PATH"] != filepath.Join(home, ".ssh", "known_hosts") {
+		t.Fatalf("Redroid SSH = %#v", values)
+	}
+}
+
+func TestConfigApplyWritesRedroidEndpointAndSSHDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs, err := cfg.Apply(map[string]string{
+		"CREDIMI_RUNNER_ID":      "acme/redroid",
+		"CREDIMI_RUNNER_TYPE":    "redroid",
+		"CREDIMI_RUNNER_WIFI_IP": "192.168.1.30",
+		"AVDCTL_SSH_TARGET":      "credimi@redroid-host",
+	})
+	if err != nil {
+		t.Fatalf("Apply failed: %v (errors: %v)", err, errs)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"CREDIMI_RUNNER_DEVICE_MODE=no_device",
+		"CREDIMI_RUNNER_SERIAL=192.168.1.30:5555",
+		"CREDIMI_RUNNER_WIFI_IP=192.168.1.30",
+		"CREDIMI_RUNNER_WIFI_PORT=5555",
+		"AVDCTL_SSH_KNOWN_HOSTS_PATH=" + filepath.Join(home, ".ssh", "known_hosts"),
+	} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf(".env missing %q:\n%s", want, content)
+		}
 	}
 }
 
