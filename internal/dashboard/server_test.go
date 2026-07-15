@@ -1093,6 +1093,22 @@ func TestFinishSetupValidationAndRequirementErrors(t *testing.T) {
 	}
 }
 
+func TestValidateSetupInputRequiresRedroidWiFiIP(t *testing.T) {
+	values := map[string]string{
+		"CREDIMI_URL":          "https://credimi.example",
+		"CREDIMI_USER_API_KEY": "user-key",
+		"CREDIMI_RUNNER_NAME":  "runner",
+		"CREDIMI_RUNNER_TYPE":  "redroid",
+	}
+	if errs := validateSetupInput(values); errs["CREDIMI_RUNNER_WIFI_IP"] == "" {
+		t.Fatalf("validateSetupInput errors = %#v", errs)
+	}
+	values["CREDIMI_RUNNER_WIFI_IP"] = "192.168.1.30"
+	if errs := validateSetupInput(values); len(errs) != 0 {
+		t.Fatalf("validateSetupInput errors = %#v", errs)
+	}
+}
+
 func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "darwin")
 	s := newTestServer(t)

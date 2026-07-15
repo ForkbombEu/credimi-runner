@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -264,5 +265,8 @@ func TestRunnerTypeChoiceHelpers(t *testing.T) {
 	}
 	if got := d.SimulatorBaseNameField(); got.Label != "Simulator name" {
 		t.Fatalf("SimulatorBaseNameField = %#v", got)
+	}
+	if got := d.DefaultSSHKnownHostsPath(); got != filepath.Join(homeDir(), ".ssh", "known_hosts") {
+		t.Fatalf("DefaultSSHKnownHostsPath = %q", got)
 	}
 }

@@ -95,6 +95,7 @@
         </div>
 
         <div data-dev-type="redroid" style="grid-column:1/-1">
+          <div class="field-row">{{template "field" .Field "CREDIMI_RUNNER_WIFI_IP"}}{{template "field" .Field "CREDIMI_RUNNER_WIFI_PORT"}}</div>
           <div class="field-row">{{template "field" .Field "REDROID_DATA_DIR"}}{{template "field" .Field "REDROID_DATA_TAR"}}</div>
         </div>
 
@@ -108,9 +109,7 @@
             <div class="field-row">{{template "field" .Field "HOST_AVD_HOME_PATH"}}{{template "field" .Field "HOST_AVD_GOLDEN_PATH"}}</div>
           </div>
           <div data-dev-type="redroid" style="grid-column:1/-1">
-            <div class="field-row">{{template "field" .Field "AVDCTL_SSH_TARGET"}}{{template "field" .Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}</div>
-            <div class="field-row">{{template "field" .Field "AVDCTL_SSH_PASSWORD"}}{{template "field" .Field "AVDCTL_SUDO_PASSWORD"}}</div>
-            {{template "field" .Field "AVDCTL_SUDO"}}
+            {{template "avdctl_ssh_fields" .}}
           </div>
         </details>
       </div>

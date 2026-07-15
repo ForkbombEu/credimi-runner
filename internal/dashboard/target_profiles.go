@@ -42,7 +42,7 @@ func TargetProfilesForGOOS(goos string) []TargetProfile {
 		"redroid": {
 			Type:          "redroid",
 			Title:         "Redroid",
-			PrimaryFields: []string{"REDROID_DATA_DIR", "REDROID_DATA_TAR"},
+			PrimaryFields: []string{"CREDIMI_RUNNER_WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT", "REDROID_DATA_DIR", "REDROID_DATA_TAR"},
 			AdvancedFields: []string{
 				"RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY", "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD",
 			},

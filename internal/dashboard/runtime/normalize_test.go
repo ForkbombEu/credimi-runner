@@ -123,17 +123,41 @@ func TestNormalizeBackendForRunnerType(t *testing.T) {
 }
 
 func TestNormalizeRedroid(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	values, err := NormalizeValues(Values{
 		"CREDIMI_RUNNER_TYPE":    "redroid",
 		"CREDIMI_RUNNER_WIFI_IP": "10.0.0.1",
-		"AVDCTL_SSH_TARGET":      "host",
+		"AVDCTL_SSH_TARGET":      "credimi@host",
+		"AVDCTL_SUDO":            "no",
+		"AVDCTL_SUDO_PASSWORD":   "unused",
 		"REDROID_DATA_DIR":       "/data",
 		"REDROID_DATA_TAR":       "/data.tar",
 	}, "linux")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values["CREDIMI_RUNNER_DEVICE_MODE"] != "no_device" || values["CREDIMI_RUNNER_SERIAL"] != "" || values["CREDIMI_RUNNER_WIFI_IP"] != "" || values["CREDIMI_RUNNER_WIFI_PORT"] != "" || values["AVDCTL_SSH_TARGET"] != "host" {
+	if values["CREDIMI_RUNNER_DEVICE_MODE"] != "no_device" || values["CREDIMI_RUNNER_SERIAL"] != "10.0.0.1:5555" || values["CREDIMI_RUNNER_WIFI_IP"] != "10.0.0.1" || values["CREDIMI_RUNNER_WIFI_PORT"] != "5555" {
+		t.Fatalf("normalized Redroid endpoint = %#v", values)
+	}
+	if values["AVDCTL_SSH_TARGET"] != "credimi@host" || values["AVDCTL_SSH_KNOWN_HOSTS_PATH"] != filepath.Join(home, ".ssh", "known_hosts") || values["AVDCTL_SUDO"] != "false" || values["AVDCTL_SUDO_PASSWORD"] != "" {
+		t.Fatalf("normalized Redroid SSH = %#v", values)
+	}
+}
+
+func TestNormalizeRedroidWithoutSSHClearsRemoteConfig(t *testing.T) {
+	values, err := NormalizeValues(Values{
+		"CREDIMI_RUNNER_TYPE":         "redroid",
+		"CREDIMI_RUNNER_WIFI_IP":      "10.0.0.2",
+		"AVDCTL_SSH_PASSWORD":         "unused",
+		"AVDCTL_SSH_KNOWN_HOSTS_PATH": "/tmp/known_hosts",
+		"AVDCTL_SUDO":                 "true",
+		"AVDCTL_SUDO_PASSWORD":        "unused",
+	}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["AVDCTL_SSH_TARGET"] != "" || values["AVDCTL_SSH_PASSWORD"] != "" || values["AVDCTL_SSH_KNOWN_HOSTS_PATH"] != "" || values["AVDCTL_SUDO"] != "false" || values["AVDCTL_SUDO_PASSWORD"] != "" {
 		t.Fatalf("normalized = %#v", values)
 	}
 }

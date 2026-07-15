@@ -242,6 +242,9 @@ func TestRenderer_SetupPage(t *testing.T) {
 	if !strings.Contains(html, `data-android-phone-device-select`) || !strings.Contains(html, "device-1") {
 		t.Errorf("setup page missing connected Android device selector")
 	}
+	if !strings.Contains(html, `data-dev-type="redroid"`) || !strings.Contains(html, `name="CREDIMI_RUNNER_WIFI_IP"`) || !strings.Contains(html, `data-avdctl-ssh-control`) {
+		t.Errorf("setup page missing Redroid endpoint or SSH controls")
+	}
 	if !strings.Contains(html, `data-busy-log`) {
 		t.Errorf("base template missing busy log output")
 	}

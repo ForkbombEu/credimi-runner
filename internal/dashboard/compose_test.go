@@ -74,10 +74,15 @@ func TestNormalizeWizardValues(t *testing.T) {
 		},
 		{
 			name: "redroid forces no device",
-			in:   map[string]string{"CREDIMI_RUNNER_TYPE": "redroid"},
+			in: map[string]string{
+				"CREDIMI_RUNNER_TYPE":    "redroid",
+				"CREDIMI_RUNNER_WIFI_IP": "192.168.1.30",
+			},
 			want: map[string]string{
 				"CREDIMI_RUNNER_DEVICE_MODE": "no_device",
 				"CREDIMI_CONTAINER_MODE":     "no_device",
+				"CREDIMI_RUNNER_SERIAL":      "192.168.1.30:5555",
+				"CREDIMI_RUNNER_WIFI_PORT":   "5555",
 				"REDROID_DATA_DIR":           "/home/credimi/redroid-data",
 				"REDROID_DATA_TAR":           "/home/credimi/redroid-data.tar",
 			},

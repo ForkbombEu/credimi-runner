@@ -227,6 +227,9 @@ func Validate(vals map[string]string) map[string]string {
 			}
 		}
 	}
+	if strings.TrimSpace(vals["CREDIMI_RUNNER_TYPE"]) == "redroid" && strings.TrimSpace(vals["CREDIMI_RUNNER_WIFI_IP"]) == "" {
+		errs["CREDIMI_RUNNER_WIFI_IP"] = "Required for Redroid."
+	}
 	return errs
 }
 
@@ -248,6 +251,13 @@ func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
 
 func normalizedConfigValues(current, incoming map[string]string, goos string) (dashboardruntime.Values, error) {
 	next := cloneStringMap(current)
+	incomingType := strings.TrimSpace(next["CREDIMI_RUNNER_TYPE"])
+	if value, ok := incoming["CREDIMI_RUNNER_TYPE"]; ok {
+		incomingType = strings.TrimSpace(value)
+	}
+	if strings.TrimSpace(current["CREDIMI_RUNNER_TYPE"]) != incomingType {
+		resetTypeDerivedFields(next)
+	}
 	for _, f := range Registry {
 		if f.Type == TypeBool {
 			if v, present := incoming[f.Key]; present {
@@ -258,10 +268,6 @@ func normalizedConfigValues(current, incoming map[string]string, goos string) (d
 		if v, ok := incoming[f.Key]; ok {
 			next[f.Key] = strings.TrimSpace(v)
 		}
-	}
-	if strings.TrimSpace(current["CREDIMI_RUNNER_TYPE"]) != strings.TrimSpace(next["CREDIMI_RUNNER_TYPE"]) {
-		resetTypeDerivedFields(next)
-		next["CREDIMI_RUNNER_TYPE"] = strings.TrimSpace(incoming["CREDIMI_RUNNER_TYPE"])
 	}
 	return dashboardruntime.NormalizeValues(dashboardruntime.Values(next), goos)
 }
