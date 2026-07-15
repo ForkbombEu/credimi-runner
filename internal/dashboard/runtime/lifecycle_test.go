@@ -36,6 +36,8 @@ type imageVersionRunner struct {
 	inspectCall int
 }
 
+var fakeTunnelStartedAt = time.Date(2026, 7, 14, 16, 23, 32, 123456789, time.UTC)
+
 func (f *imageVersionRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
 	if len(spec.Args) >= 2 && spec.Args[0] == "image" && spec.Args[1] == "inspect" {
 		f.runs = append(f.runs, spec)
@@ -56,6 +58,13 @@ func (f *failOnRunRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, er
 
 func (f *fakeRunner) Run(_ context.Context, spec CommandSpec) ([]byte, error) {
 	f.runs = append(f.runs, spec)
+	args := strings.Join(spec.Args, " ")
+	if strings.Contains(args, " ps -q tunnel") {
+		return []byte("tunnel-container\n"), nil
+	}
+	if strings.HasPrefix(args, "inspect --format {{.State.StartedAt}} tunnel-container") {
+		return []byte(fakeTunnelStartedAt.Format(time.RFC3339Nano) + "\n"), nil
+	}
 	if f.runOutput != nil || f.runErr != nil {
 		if spec.Stream != nil {
 			for _, line := range strings.Split(strings.TrimSpace(string(f.runOutput)), "\n") {
@@ -103,7 +112,7 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if got := runner.starts[1]; got.Name != "docker" || !strings.Contains(strings.Join(got.Args, " "), "logs -f") {
 		t.Fatalf("log follower spec = %#v", got)
 	}
-	if len(runner.runs) != 3 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
+	if len(runner.runs) != 5 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
 		t.Fatalf("stale cleanup runs = %v", runner.runs)
 	}
 	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "pull runner_host caddy tunnel") {
@@ -111,6 +120,9 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	}
 	if runner.runs[2].Name != "docker" || !strings.Contains(strings.Join(runner.runs[2].Args, " "), "up -d --pull never runner_host caddy tunnel") {
 		t.Fatalf("runs = %v", runner.runs)
+	}
+	if status := manager.Status(context.Background()); !status.LastStartedAt.Equal(fakeTunnelStartedAt) {
+		t.Fatalf("tunnel start time = %v, want %v", status.LastStartedAt, fakeTunnelStartedAt)
 	}
 	if _, err := os.Stat(filepath.Join(manager.configDir, "docker-compose.yaml")); err != nil {
 		t.Fatalf("Start should write docker-compose.yaml: %v", err)

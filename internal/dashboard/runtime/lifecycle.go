@@ -259,6 +259,14 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) err
 			m.status.LastError = err.Error()
 			return err
 		}
+		if plan.ServiceMode == "auto" {
+			tunnelStartedAt, err := m.composeServiceStartedAtLocked(ctx, plan, "tunnel")
+			if err != nil {
+				m.status.LastError = err.Error()
+				return err
+			}
+			composeStartedAt = tunnelStartedAt
+		}
 		m.startComposeLogFollowerLocked(plan)
 		m.status.ComposeRunning = true
 		m.status.LastStartedAt = composeStartedAt
@@ -280,6 +288,30 @@ func composePullServices(services []string, runnerPullPolicy string) []string {
 		}
 	}
 	return filtered
+}
+
+func (m *LifecycleManager) composeServiceStartedAtLocked(ctx context.Context, plan RuntimePlan, service string) (time.Time, error) {
+	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "ps", "-q", service}
+	output, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("resolve %s container: %w", service, err)
+	}
+	containerID := strings.TrimSpace(string(output))
+	if containerID == "" {
+		return time.Time{}, fmt.Errorf("resolve %s container: no running container found", service)
+	}
+	output, err = m.runner.Run(ctx, CommandSpec{
+		Name: "docker",
+		Args: []string{"inspect", "--format", "{{.State.StartedAt}}", containerID},
+	})
+	if err != nil {
+		return time.Time{}, fmt.Errorf("inspect %s container start time: %w", service, err)
+	}
+	startedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(output)))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse %s container start time: %w", service, err)
+	}
+	return startedAt, nil
 }
 
 func emitProgress(progress func(string), message string) {
