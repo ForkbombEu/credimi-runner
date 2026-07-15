@@ -109,7 +109,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 			for _, act := range []workflowengine.ExecutableActivity{
 				activities.NewHTTPActivity(),
 				activities.NewRunMobileFlowActivity(),
-				activities.NewStartEmulatorActivity(),
+				activities.NewSetupMobileDeviceActivity(),
 				activities.NewApkInstallActivity(),
 				activities.NewApkPostInstallChecksActivity(),
 				activities.NewStartIOSSimulatorActivity(),
