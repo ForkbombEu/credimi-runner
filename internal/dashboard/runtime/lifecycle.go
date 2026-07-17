@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -435,13 +436,21 @@ func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 			m.status.LastError = err.Error()
 			return err
 		}
+		if runnerAddressReachable(m.values, 500*time.Millisecond) {
+			err := errors.New("host runner listener is still reachable after stop")
+			m.status.LastError = err.Error()
+			return err
+		}
 	}
 
 	if len(plan.ComposeServices) > 0 {
 		m.stopComposeLogFollowerLocked()
-		args := composeArgs(plan, "stop")
-		args = append(args, plan.ComposeServices...)
+		args := composeArgs(plan, "down", "--remove-orphans")
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
+			m.status.LastError = err.Error()
+			return err
+		}
+		if err := m.verifyComposeStoppedLocked(ctx, plan); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
@@ -451,6 +460,31 @@ func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 	m.status.ComposeRunning = false
 	m.status.PublicURL = ""
 	return nil
+}
+
+func (m *LifecycleManager) verifyComposeStoppedLocked(ctx context.Context, plan RuntimePlan) error {
+	output, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: composeArgs(plan, "ps", "-q")})
+	if err != nil {
+		return fmt.Errorf("verify managed Compose services stopped: %w", err)
+	}
+	for _, line := range strings.Fields(string(output)) {
+		if looksLikeContainerID(line) {
+			return fmt.Errorf("managed Compose service %s is still running after stop", line)
+		}
+	}
+	return nil
+}
+
+func looksLikeContainerID(value string) bool {
+	if len(value) < 12 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *LifecycleManager) stopHostRunnerLocked(ctx context.Context) error {
@@ -710,24 +744,7 @@ func (m *LifecycleManager) Restart(ctx context.Context) error {
 }
 
 func (m *LifecycleManager) Down(ctx context.Context) error {
-	plan := BuildRuntimePlan(m.configDir, m.values)
-	if err := m.Stop(ctx); err != nil {
-		return err
-	}
-	if len(plan.ComposeServices) == 0 {
-		return nil
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, err := m.runner.Run(ctx, CommandSpec{
-		Name: "docker",
-		Args: composeArgs(plan, "down", "--remove-orphans"),
-	}); err != nil {
-		m.status.LastError = err.Error()
-		return err
-	}
-	m.status.PublicURL = ""
-	return nil
+	return m.Stop(ctx)
 }
 
 func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {

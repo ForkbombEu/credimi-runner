@@ -546,8 +546,19 @@ func TestLifecycleManagerStopUsesBackendSourceOfTruth(t *testing.T) {
 	if err := containerManager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(containerRunner.runs) != 1 || !strings.Contains(strings.Join(containerRunner.runs[0].Args, " "), "stop runner") {
+	if len(containerRunner.runs) != 2 || !strings.Contains(strings.Join(containerRunner.runs[0].Args, " "), "down --remove-orphans") || !strings.Contains(strings.Join(containerRunner.runs[1].Args, " "), "ps -q") {
 		t.Fatalf("container stop runs = %#v", containerRunner.runs)
+	}
+}
+
+func TestVerifyComposeStoppedRejectsRemainingContainer(t *testing.T) {
+	runner := &fakeRunner{runOutput: []byte("0123456789abcdef\n")}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": DefaultContainerBackend,
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, runner)
+	if err := manager.Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("Stop error = %v", err)
 	}
 }
 
