@@ -101,3 +101,73 @@ func TestLoggerRejectsSymlink(t *testing.T) {
 		t.Fatal("expected symlink rejection")
 	}
 }
+
+func TestLoggerPathSyncAndClosedBehavior(t *testing.T) {
+	if err := (*Logger)(nil).Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if (*Logger)(nil).Path() != "" {
+		t.Fatal("nil logger path should be empty")
+	}
+	if _, err := New("", Options{}); err == nil {
+		t.Fatal("expected empty path rejection")
+	}
+	path := filepath.Join(t.TempDir(), "lifecycle.jsonl")
+	logger, err := New(path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logger.Path() != path || logger.Sync() != nil {
+		t.Fatalf("path=%q sync failed", logger.Path())
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Emit(Event{}); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("Emit after Close = %v", err)
+	}
+}
+
+func TestSanitizeFieldsHandlesNestedURLsAndLists(t *testing.T) {
+	fields := sanitizeFields(map[string]any{
+		"authorization": "Bearer secret",
+		"callback_url":  "https://user:pass@example.test/path?token=secret#fragment",
+		"nested": map[string]any{
+			"private_key": "secret",
+			"docs_url":    "https://example.test/docs?secret=value",
+		},
+		"urls":  []string{"https://example.test/a?key=value", "not a valid URL %"},
+		"count": 2,
+	})
+	if fields["authorization"] != "<redacted>" || fields["callback_url"] != "https://example.test/path" || fields["count"] != 2 {
+		t.Fatalf("fields = %#v", fields)
+	}
+	nested := fields["nested"].(map[string]any)
+	if nested["private_key"] != "<redacted>" || nested["docs_url"] != "https://example.test/docs" {
+		t.Fatalf("nested = %#v", nested)
+	}
+	urls := fields["urls"].([]any)
+	if urls[0] != "https://example.test/a" || urls[1] != "<invalid-url>" {
+		t.Fatalf("urls = %#v", urls)
+	}
+	if sanitizeFields(nil) != nil || safeURL("https://example.test/path?q=1#fragment") != "https://example.test/path" {
+		t.Fatal("expected empty fields and sanitized URL")
+	}
+}
+
+func TestLoggerCreatesNestedDirectoryAndDefaultsNegativeBackups(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "lifecycle.jsonl")
+	logger, err := New(path, Options{Backups: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if logger.max != DefaultMaxBytes || logger.backups != DefaultBackups {
+		t.Fatalf("logger defaults max=%d backups=%d", logger.max, logger.backups)
+	}
+	if !sensitiveKey("apiToken") || sensitiveKey("runner_name") {
+		t.Fatal("unexpected sensitive key classification")
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

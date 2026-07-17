@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 )
 
 type fakeRunner struct {
@@ -141,6 +143,25 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	}
 }
 
+func TestLifecycleManagerLifecycleLogCanBeEmittedAndClosed(t *testing.T) {
+	if (*LifecycleManager)(nil).Close() != nil {
+		t.Fatal("nil manager close should succeed")
+	}
+	(*LifecycleManager)(nil).EmitLifecycle(lifecyclelog.Event{Event: "ignored"})
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{}, &fakeRunner{})
+	manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.observed", Message: "observed"})
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := os.ReadFile(filepath.Join(manager.configDir, "lifecycle.jsonl"))
+	if err != nil || !strings.Contains(string(lifecycle), "controller.observed") {
+		t.Fatalf("lifecycle=%q err=%v", lifecycle, err)
+	}
+}
+
 func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
@@ -219,6 +240,44 @@ func TestLifecycleManagerStartRejectsForeignReachableHostListener(t *testing.T) 
 	}
 	if len(runner.starts) != 0 {
 		t.Fatalf("foreign listener must not start or adopt a runner, starts = %#v", runner.starts)
+	}
+}
+
+func TestValidateReachableHostRunnerRejectsMismatchedReadiness(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  int
+		body    string
+		values  Values
+		message string
+	}{
+		{name: "not ready", status: http.StatusServiceUnavailable, body: `{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"boot"}`, values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}, message: "HTTP 503"},
+		{name: "runner mismatch", status: http.StatusOK, body: `{"service":"credimi-runner","runner_id":"other","boot_id":"boot"}`, values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}, message: "does not match"},
+		{name: "serial mismatch", status: http.StatusOK, body: `{"service":"credimi-runner","boot_id":"boot","device_serial":"other"}`, values: Values{"CREDIMI_RUNNER_SERIAL": "device-1"}, message: "does not match"},
+		{name: "offline device", status: http.StatusOK, body: `{"service":"credimi-runner","boot_id":"boot","device_state":"offline"}`, values: Values{}, message: "offline"},
+		{name: "invalid JSON", status: http.StatusOK, body: `not JSON`, values: Values{}, message: "decode"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/readyz" {
+					http.NotFound(w, request)
+					return
+				}
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.values["RUNNER_HOST"] = host
+			test.values["RUNNER_PORT"] = port
+			err = validateReachableHostRunner(context.Background(), test.values)
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("validateReachableHostRunner error = %v", err)
+			}
+		})
 	}
 }
 

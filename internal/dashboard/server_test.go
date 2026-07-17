@@ -184,6 +184,140 @@ func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 	}
 }
 
+func TestControllerAPIsExposeAndCancelLifecycleOperations(t *testing.T) {
+	s := newTestServer(t)
+	s.operations = controller.NewCoordinator(context.Background())
+	status := httptest.NewRecorder()
+	s.controllerStatus(status, httptest.NewRequest(http.MethodGet, "/api/controller/status", nil))
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), "runtime") {
+		t.Fatalf("controller status = %d %s", status.Code, status.Body.String())
+	}
+
+	current := httptest.NewRecorder()
+	s.controllerOperationCurrent(current, httptest.NewRequest(http.MethodGet, "/api/controller/operations/current", nil))
+	if current.Code != http.StatusOK {
+		t.Fatalf("controller current = %d", current.Code)
+	}
+
+	missing := httptest.NewRecorder()
+	missingRequest := httptest.NewRequest(http.MethodGet, "/api/controller/operations/missing", nil)
+	missingRequest.SetPathValue("id", "missing")
+	s.controllerOperation(missing, missingRequest)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing operation = %d", missing.Code)
+	}
+
+	unavailable := httptest.NewRecorder()
+	s.manager = nil
+	action := httptest.NewRequest(http.MethodPost, "/api/controller/runtime/stop", nil)
+	action.SetPathValue("action", "stop")
+	s.controllerRuntimeAction(unavailable, action)
+	if unavailable.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unavailable action = %d", unavailable.Code)
+	}
+
+	s.manager = &fakeManager{}
+	queued := httptest.NewRecorder()
+	action = httptest.NewRequest(http.MethodPost, "/api/controller/runtime/stop", nil)
+	action.SetPathValue("action", "stop")
+	s.controllerRuntimeAction(queued, action)
+	if queued.Code != http.StatusAccepted {
+		t.Fatalf("queued action = %d %s", queued.Code, queued.Body.String())
+	}
+	operation := s.operations.Current()
+	if _, err := s.operations.Wait(context.Background(), operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := httptest.NewRecorder()
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/controller/operations/"+operation.ID, nil)
+	getRequest.SetPathValue("id", operation.ID)
+	s.controllerOperation(got, getRequest)
+	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), operation.ID) {
+		t.Fatalf("operation lookup = %d %s", got.Code, got.Body.String())
+	}
+
+	started := make(chan struct{})
+	blocking, err := s.operations.Submit(controller.OperationRuntimeStart, func(ctx context.Context, _ func(controller.Progress)) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	cancel := httptest.NewRecorder()
+	cancelRequest := httptest.NewRequest(http.MethodPost, "/api/controller/operations/"+blocking.ID+"/cancel", nil)
+	cancelRequest.SetPathValue("id", blocking.ID)
+	s.controllerOperationCancel(cancel, cancelRequest)
+	if cancel.Code != http.StatusOK || !strings.Contains(cancel.Body.String(), "cancelled") {
+		t.Fatalf("cancel = %d %s", cancel.Code, cancel.Body.String())
+	}
+	if _, err := s.operations.Wait(context.Background(), blocking.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestControllerIdentityRuntimeLogsAndStartupStatus(t *testing.T) {
+	s := newTestServer(t)
+	s.controllerID = "controller-1"
+	s.controllerFingerprint = "fingerprint"
+	s.controllerIdentityToken = "identity-token"
+	unauthorized := httptest.NewRecorder()
+	s.controllerIdentity(unauthorized, httptest.NewRequest(http.MethodGet, "/internal/controller/identity", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("identity without token = %d", unauthorized.Code)
+	}
+	identity := httptest.NewRecorder()
+	identityRequest := httptest.NewRequest(http.MethodGet, "/internal/controller/identity", nil)
+	identityRequest.Header.Set("X-Credimi-Controller-Token", "identity-token")
+	s.controllerIdentity(identity, identityRequest)
+	if identity.Code != http.StatusOK || !strings.Contains(identity.Body.String(), "controller-1") {
+		t.Fatalf("identity = %d %s", identity.Code, identity.Body.String())
+	}
+
+	s.manager = nil
+	logs := httptest.NewRecorder()
+	s.runtimeLogs(logs, httptest.NewRequest(http.MethodGet, "/runtime/logs", nil))
+	if logs.Code != http.StatusOK || !strings.Contains(logs.Body.String(), "lines") {
+		t.Fatalf("logs without manager = %d %s", logs.Code, logs.Body.String())
+	}
+	s.manager = &fakeManager{logLines: []dashboardruntime.LogLine{{Message: " line one "}, {Message: ""}}}
+	logs = httptest.NewRecorder()
+	s.runtimeLogs(logs, httptest.NewRequest(http.MethodGet, "/runtime/logs", nil))
+	if !strings.Contains(logs.Body.String(), "line one") {
+		t.Fatalf("logs with manager = %s", logs.Body.String())
+	}
+
+	s.operations = controller.NewCoordinator(context.Background())
+	started := make(chan struct{})
+	op, err := s.operations.Submit(controller.OperationRuntimeStart, func(ctx context.Context, _ func(controller.Progress)) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	startup := httptest.NewRecorder()
+	s.startupStatus(startup, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	if !strings.Contains(startup.Body.String(), string(StartupStarting)) {
+		t.Fatalf("running startup status = %s", startup.Body.String())
+	}
+	if err := s.operations.Cancel(op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+		t.Fatal(err)
+	}
+	startup = httptest.NewRecorder()
+	s.startupStatus(startup, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	if !strings.Contains(startup.Body.String(), string(StartupNeedsAttention)) {
+		t.Fatalf("cancelled startup status = %s", startup.Body.String())
+	}
+}
+
 func TestApplyModeAndSaveMessageHelpers(t *testing.T) {
 	for input, want := range map[string]string{
 		"quick":              "auto",
@@ -1148,6 +1282,22 @@ func TestValidateSetupInputRequiresRedroidWiFiIP(t *testing.T) {
 	values["CREDIMI_RUNNER_WIFI_IP"] = "192.168.1.30"
 	if errs := validateSetupInput(values); len(errs) != 0 {
 		t.Fatalf("validateSetupInput errors = %#v", errs)
+	}
+}
+
+func TestValidateSetupInputRequiresConnectionAndPublicEndpoint(t *testing.T) {
+	errs := validateSetupInput(map[string]string{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"})
+	for _, key := range []string{"CREDIMI_URL", "CREDIMI_USER_API_KEY", "CREDIMI_RUNNER_NAME", "CREDIMI_RUNNER_SERIAL", "RUNNER_PUBLIC_URL"} {
+		if errs[key] == "" {
+			t.Fatalf("missing validation error %s: %#v", key, errs)
+		}
+	}
+	valid := validateSetupInput(map[string]string{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_INTERNAL_ADMIN_KEY": "key", "CREDIMI_RUNNER_ID": "acme/runner",
+		"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	})
+	if len(valid) != 0 {
+		t.Fatalf("valid setup errors = %#v", valid)
 	}
 }
 

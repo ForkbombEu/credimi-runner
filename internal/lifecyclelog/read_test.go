@@ -37,3 +37,28 @@ func TestTailAndExportMarkdown(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTailAndExportHandleMissingOrEmptyLogs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.jsonl")
+	if _, err := Tail(path, 10); err == nil {
+		t.Fatal("expected missing lifecycle log error")
+	}
+	if _, err := ExportMarkdown(path, 10); err == nil {
+		t.Fatal("expected missing lifecycle report error")
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if events, err := Tail(path, 0); err != nil || len(events) != 0 {
+		t.Fatalf("empty tail events=%#v err=%v", events, err)
+	}
+	if report, err := ExportMarkdown(path, 10); err != nil || !strings.Contains(report, "No lifecycle events") {
+		t.Fatalf("empty report=%q err=%v", report, err)
+	}
+	if err := os.WriteFile(path, []byte("not-json\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Tail(path, 10); err == nil {
+		t.Fatal("expected malformed event error")
+	}
+}

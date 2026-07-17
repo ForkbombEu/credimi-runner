@@ -76,3 +76,22 @@ func TestHostObserveTreatsUnverifiedListenerAsForeign(t *testing.T) {
 		t.Fatalf("services = %#v", result.Services)
 	}
 }
+
+func TestHostObserveHandlesUnavailableAndForeignCommands(t *testing.T) {
+	unavailable := Host{Dial: func(string, string, time.Duration) (net.Conn, error) { return nil, errors.New("offline") }}.Observe(context.Background(), Request{HostBackend: true})
+	if len(unavailable.Services) != 1 || unavailable.Services[0].Running || unavailable.Services[0].Detail != "" {
+		t.Fatalf("unavailable = %#v", unavailable.Services)
+	}
+	foreign := Host{
+		Dial: func(string, string, time.Duration) (net.Conn, error) {
+			client, server := net.Pipe()
+			_ = server.Close()
+			return client, nil
+		},
+		PIDAtPort: func(string) (int, error) { return 42, nil },
+		CommandOf: func(context.Context, int) (string, error) { return "python -m http.server", nil },
+	}.Observe(context.Background(), Request{HostBackend: true})
+	if len(foreign.Services) != 1 || foreign.Services[0].Owned || foreign.Services[0].Detail != "foreign listener" {
+		t.Fatalf("foreign = %#v", foreign.Services)
+	}
+}

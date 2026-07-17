@@ -40,7 +40,13 @@ func TestObserverNeverAdoptsForeignListener(t *testing.T) {
 
 func TestObservedRuntimeStale(t *testing.T) {
 	now := time.Now()
+	if !(ObservedRuntime{}).Stale(now, time.Second) {
+		t.Fatal("expected zero observation to be stale")
+	}
 	if !(ObservedRuntime{ObservedAt: now.Add(-2 * time.Second)}).Stale(now, time.Second) {
 		t.Fatal("expected stale observation")
+	}
+	if (ObservedRuntime{ObservedAt: now}).Stale(now, time.Second) {
+		t.Fatal("expected fresh observation")
 	}
 }

@@ -4,8 +4,28 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestADBDeviceState(t *testing.T) {
+	dir := t.TempDir()
+	adb := filepath.Join(dir, "adb")
+	if err := os.WriteFile(adb, []byte("#!/bin/sh\nprintf 'device\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if got := adbDeviceState("serial-1"); got != "device" {
+		t.Fatalf("adb device state = %q", got)
+	}
+	if err := os.Remove(adb); err != nil {
+		t.Fatal(err)
+	}
+	if got := adbDeviceState("serial-1"); got != "missing" {
+		t.Fatalf("missing adb state = %q", got)
+	}
+}
 
 func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {

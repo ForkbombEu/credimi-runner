@@ -103,3 +103,45 @@ func TestCoordinatorWaitHonorsObserverDeadline(t *testing.T) {
 	}
 	_, _ = coordinator.Wait(context.Background(), operation.ID)
 }
+
+func TestCoordinatorExposesHistoryAndOperationErrors(t *testing.T) {
+	var nilCoordinator *Coordinator
+	if nilCoordinator.Current().ID != "" || nilCoordinator.History() != nil {
+		t.Fatal("nil coordinator should expose empty state")
+	}
+	if _, ok := nilCoordinator.Get("op-1"); ok {
+		t.Fatal("nil coordinator should not find operations")
+	}
+	if err := nilCoordinator.Cancel("op-1"); err == nil {
+		t.Fatal("nil coordinator cancellation should fail")
+	}
+
+	coordinator := NewCoordinator(context.Background())
+	operation, err := coordinator.Submit(OperationRuntimeStop, func(context.Context, func(Progress)) error { return errors.New("stop failed") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished, err := coordinator.Wait(context.Background(), operation.ID)
+	if err != nil || finished.Phase != PhaseFailed || finished.Error != "stop failed" {
+		t.Fatalf("finished=%#v err=%v", finished, err)
+	}
+	if got, ok := coordinator.Get(operation.ID); !ok || got.ID != operation.ID {
+		t.Fatalf("Get = %#v ok=%v", got, ok)
+	}
+	if got := coordinator.History(); len(got) != 1 || got[0].ID != operation.ID {
+		t.Fatalf("History = %#v", got)
+	}
+	if err := coordinator.Cancel(operation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Cancel("missing"); err == nil {
+		t.Fatal("expected missing operation cancellation error")
+	}
+	if _, err := coordinator.Wait(context.Background(), "missing"); err == nil {
+		t.Fatal("expected missing operation wait error")
+	}
+	conflict := &ConflictError{Active: operation}
+	if !strings.Contains(conflict.Error(), operation.ID) || !errors.Is(conflict, ErrOperationConflict) {
+		t.Fatalf("conflict = %v", conflict)
+	}
+}

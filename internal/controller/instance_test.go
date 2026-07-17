@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -78,5 +79,26 @@ func TestControllerProbeVerifiesBootIdentity(t *testing.T) {
 	metadata.ConfigFingerprint = "other"
 	if err := Probe(ctx, metadata); err == nil {
 		t.Fatal("expected controller identity mismatch")
+	}
+}
+
+func TestControllerIdentityTokenAndMetadataValidation(t *testing.T) {
+	token, err := NewIdentityToken()
+	if err != nil || len(token) < 40 {
+		t.Fatalf("identity token=%q err=%v", token, err)
+	}
+	dir := t.TempDir()
+	if _, err := ReadMetadata(dir); !os.IsNotExist(err) {
+		t.Fatalf("missing metadata error = %v", err)
+	}
+	raw, err := json.Marshal(Metadata{Schema: 1, ControllerID: "controller-1", IdentityToken: "token", ProbeURL: "http://example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "controller.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadMetadata(dir); err == nil {
+		t.Fatal("expected invalid metadata error")
 	}
 }
