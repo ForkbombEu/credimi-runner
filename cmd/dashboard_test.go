@@ -381,6 +381,19 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 		http.NotFound(w, r)
 	}))
 	defer api.Close()
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer runner.Close()
+	runnerHost, runnerPort, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	manager := &dashboardFakeManager{
 		logs: []dashboardruntime.LogLine{{Message: "tunnel ready https://runner.example.trycloudflare.com"}},
@@ -393,8 +406,8 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 		"CREDIMI_RUNNER_NAME":    "runner",
 		"CREDIMI_URL":            api.URL,
 		"CREDIMI_USER_API_KEY":   "secret",
-		"RUNNER_HOST":            "127.0.0.1",
-		"RUNNER_PORT":            "1",
+		"RUNNER_HOST":            runnerHost,
+		"RUNNER_PORT":            runnerPort,
 	}
 	if err := startDashboardRuntime(context.Background(), manager, values); err != nil {
 		t.Fatalf("startDashboardRuntime = %v", err)
@@ -403,7 +416,7 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 		t.Fatalf("startCalls = %d", manager.startCalls)
 	}
 	if !registered {
-		t.Fatal("startDashboardRuntime should register container runners without waiting for localhost readiness")
+		t.Fatal("startDashboardRuntime should register container runners after runner readiness")
 	}
 }
 
@@ -514,7 +527,7 @@ func TestDashboardRuntimeHelpers(t *testing.T) {
 		{Message: "line-2"},
 	}, status: dashboardruntime.RuntimeStatus{LastError: "boom"}}
 	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
-	values := dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}
+	values := dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_RUNNER_TYPE": "android_emulator"}
 	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "last runtime error: boom") || !strings.Contains(got, "recent runtime logs") {
 		t.Fatalf("runtimeStartupDiagnostics = %q", got)
 	}
@@ -522,32 +535,26 @@ func TestDashboardRuntimeHelpers(t *testing.T) {
 	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "diagnostics:") {
 		t.Fatalf("host runtimeStartupDiagnostics = %q", got)
 	}
-	if err := waitForDashboardRunnerReady(context.Background(), dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}); err != nil {
+	if err := waitForDashboardRunnerReady(context.Background(), dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_RUNNER_TYPE": "android_emulator"}); err != nil {
 		t.Fatalf("waitForDashboardRunnerReady should skip when readiness not required: %v", err)
 	}
 }
 
 func TestWaitForDashboardRunnerReady(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "darwin")
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-
-	addr := listener.Addr().String()
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		conn, err := listener.Accept()
-		if err == nil {
-			_ = conn.Close()
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+			return
 		}
-	}()
+		http.NotFound(w, r)
+	}))
+	defer runner.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	values := dashboardruntime.Values{
 		"CREDIMI_RUNNER_BACKEND": "host",
@@ -559,7 +566,6 @@ func TestWaitForDashboardRunnerReady(t *testing.T) {
 	if err := waitForDashboardRunnerReady(context.Background(), values); err != nil {
 		t.Fatalf("waitForDashboardRunnerReady = %v", err)
 	}
-	<-done
 }
 
 func TestResolveDashboardRegistrationEndpointBranches(t *testing.T) {

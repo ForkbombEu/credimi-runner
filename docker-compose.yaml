@@ -1,7 +1,7 @@
 services:
   runner:
     image: ${RUNNER_IMAGE:-ghcr.io/forkbombeu/credimi-runner-phone:latest}
-    restart: unless-stopped
+    restart: "no"
     profiles: ["phone"]
     command:
       - --no-device
@@ -22,7 +22,7 @@ services:
   
   runner_emulator:
     image: ${LOCAL_IMAGE:-ghcr.io/forkbombeu/credimi-runner-emulator:latest}
-    restart: unless-stopped
+    restart: "no"
     profiles: ["emulator"]
     devices:
       - /dev/kvm:/dev/kvm
@@ -44,7 +44,7 @@ services:
 
   runner_host:
     image: alpine:3.21
-    restart: unless-stopped
+    restart: "no"
     profiles: ["local"]
     command:
       - /bin/sh
@@ -60,7 +60,7 @@ services:
 
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine
-    restart: unless-stopped
+    restart: "no"
     environment:
       CADDY_INGRESS_NETWORKS: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
     extra_hosts:
@@ -74,7 +74,7 @@ services:
 
   tunnel:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: "no"
     command: tunnel --no-autoupdate --url http://caddy:80
     depends_on:
       - caddy
@@ -83,7 +83,7 @@ services:
 
   tunnel_named:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: "no"
     command: tunnel --no-autoupdate run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}

@@ -54,7 +54,7 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 	image := defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
 	pullPolicy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
 	networkMode := runnerNetworkMode(values, runtime.GOOS)
-	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: unless-stopped\n", image, pullPolicy)
+	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", image, pullPolicy)
 	switch mode {
 	case "wifi":
 		fmt.Fprintf(builder, "    command:\n      - \"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-%s}\"\n", DefaultWiFiPort)
@@ -66,7 +66,7 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 		builder.WriteString("    command:\n      - --host-adb\n      - --usb\n")
 	}
 	builder.WriteString("    env_file:\n      - .env\n")
-	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n      ANDROID_SERIAL: \"${CREDIMI_RUNNER_SERIAL:-}\"\n", DefaultRunnerPort)
 	switch mode {
 	case "emulator":
 		builder.WriteString("      BASE_NAME: \"${BASE_NAME:-credimi}\"\n")
@@ -113,7 +113,7 @@ func writeRunnerHostService(builder *strings.Builder) {
 	builder.WriteString(`
   runner_host:
     image: alpine:3.21
-    restart: unless-stopped
+    restart: "no"
     command:
       - /bin/sh
       - -c
@@ -132,7 +132,7 @@ func writeCaddyService(builder *strings.Builder, values Values, goos string) {
 	builder.WriteString(`
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine
-    restart: unless-stopped
+    restart: "no"
     environment:
       CADDY_INGRESS_NETWORKS: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
     volumes:
@@ -151,7 +151,7 @@ func writeTunnelService(builder *strings.Builder, values Values, goos string) {
 	builder.WriteString(`
   tunnel:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: "no"
     command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-`)
 	if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" && runnerNetworkMode(values, goos) == "host" {
 		builder.WriteString("http://127.0.0.1:80")
@@ -170,7 +170,7 @@ func writeNamedTunnelService(builder *strings.Builder) {
 	builder.WriteString(`
   tunnel_named:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: "no"
     command: tunnel --no-autoupdate run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}

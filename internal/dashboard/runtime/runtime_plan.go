@@ -177,7 +177,13 @@ func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool 
 		return false
 	}
 	plan := BuildRuntimePlan("", normalized)
-	return plan.Backend == DefaultHostBackend && plan.ServiceMode == "manual"
+	if plan.Backend == DefaultHostBackend && plan.ServiceMode == "manual" {
+		return true
+	}
+	// Linux phone containers use host networking so the controller can verify
+	// the runner API on the host. Registration must wait for that API instead
+	// of treating `docker compose up -d` as readiness.
+	return RunnerAPIReachableFromHost(normalized, goos)
 }
 
 func DiffValues(oldValues, newValues Values) ConfigDiff {

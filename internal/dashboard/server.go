@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
+	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
@@ -58,6 +59,7 @@ type Server struct {
 	ctx                    context.Context
 	authToken              string
 	manager                dashboardruntime.Manager
+	operations             *controller.Coordinator
 	runnerReady            func(context.Context, map[string]string) error
 	lookupPath             func(string) (string, error)
 	statPath               func(string) (os.FileInfo, error)
@@ -164,6 +166,7 @@ func NewHandlerWithManagerContext(parent context.Context, composeDir string, man
 		ctx:        parent,
 		authToken:  strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
 		manager:    manager,
+		operations: controller.NewCoordinator(parent),
 		lookupPath: lookupPath,
 		statPath:   statPath,
 		startup: startupState{
@@ -241,6 +244,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /events/runtime", s.sse("runtime"))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+	// Machine-readable lifecycle API. These endpoints return immediately and
+	// can be polled safely by remote CLI clients without tying an operation to
+	// the HTTP request lifetime.
+	mux.HandleFunc("GET /api/controller/status", s.controllerStatus)
+	mux.HandleFunc("GET /api/controller/operations/current", s.controllerOperationCurrent)
+	mux.HandleFunc("GET /api/controller/operations/{id}", s.controllerOperation)
+	mux.HandleFunc("POST /api/controller/operations/{id}/cancel", s.controllerOperationCancel)
+	mux.HandleFunc("POST /api/controller/runtime/{action}", s.controllerRuntimeAction)
 }
 
 // staticHTTPHandler returns a handler for the embedded static directory.
@@ -949,6 +960,102 @@ func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
 	}, "Runtime started.")
 }
 
+func (s *Server) controllerStatus(w http.ResponseWriter, r *http.Request) {
+	status := dashboardruntime.RuntimeStatus{}
+	if s.manager != nil {
+		status = s.manager.Status(r.Context())
+	}
+	writeJSON(w, map[string]any{"runtime": status, "operation": s.operations.Current()})
+}
+
+func (s *Server) controllerOperationCurrent(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.operations.Current())
+}
+
+func (s *Server) controllerOperation(w http.ResponseWriter, r *http.Request) {
+	snapshot, ok := s.operations.Get(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, snapshot)
+}
+
+func (s *Server) controllerOperationCancel(w http.ResponseWriter, r *http.Request) {
+	if err := s.operations.Cancel(r.PathValue("id")); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{"cancelled": true, "operation": s.operations.Current()})
+}
+
+func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request) {
+	if s.manager == nil {
+		http.Error(w, "runtime manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var kind controller.OperationKind
+	switch r.PathValue("action") {
+	case "start":
+		kind = controller.OperationRuntimeStart
+	case "stop":
+		kind = controller.OperationRuntimeStop
+	case "restart":
+		kind = controller.OperationRuntimeRestart
+	case "down":
+		kind = controller.OperationRuntimeDown
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	values := s.cfg.Snapshot()
+	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, progress func(controller.Progress)) error {
+		if kind == controller.OperationRuntimeStart {
+			if starter, ok := s.manager.(managerProgressStarter); ok {
+				err := starter.StartWithProgress(ctx, func(message string) { progress(controller.Progress{Message: message}) })
+				if err != nil {
+					return err
+				}
+			} else if err := s.manager.Start(ctx); err != nil {
+				return err
+			}
+		} else {
+			var err error
+			switch kind {
+			case controller.OperationRuntimeStop:
+				err = s.manager.Stop(ctx)
+			case controller.OperationRuntimeRestart:
+				err = s.manager.Restart(ctx)
+			case controller.OperationRuntimeDown:
+				err = s.manager.Down(ctx)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if kind == controller.OperationRuntimeStart {
+			if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+				if err := s.runnerReady(ctx, values); err != nil {
+					return s.runtimeStartupError(ctx, err)
+				}
+			}
+			return s.registerCurrent(ctx, values)
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, controller.ErrOperationConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, snapshot)
+}
+
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
 	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
 		if s.manager == nil {
@@ -1401,18 +1508,61 @@ func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]strin
 	defer ticker.Stop()
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	var lastErr error
 	for {
 		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = conn.Close()
-			return nil
+			if healthErr := waitForRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
+				return nil
+			} else {
+				lastErr = healthErr
+			}
+		} else {
+			lastErr = err
 		}
 		select {
 		case <-deadline.Done():
+			if lastErr != nil {
+				return fmt.Errorf("runner did not become ready on %s: %w", address, lastErr)
+			}
 			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func waitForRunnerHealth(ctx context.Context, host, port, serial string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("runner health returned %s", response.Status)
+	}
+	if serial == "" {
+		return nil
+	}
+	var payload struct {
+		Devices []struct {
+			Serial string `json:"serial"`
+			State  string `json:"state"`
+		} `json:"devices"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return fmt.Errorf("decode runner health: %w", err)
+	}
+	for _, device := range payload.Devices {
+		if strings.TrimSpace(device.Serial) == serial && strings.TrimSpace(device.State) == "device" {
+			return nil
+		}
+	}
+	return fmt.Errorf("configured device %q is not ready", serial)
 }
 
 func (s *Server) runtimeStartupError(ctx context.Context, cause error) error {

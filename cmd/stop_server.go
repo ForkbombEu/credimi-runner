@@ -39,6 +39,7 @@ func runStopServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	manager := dashboardruntime.NewLifecycleManager("", configDir, values, nil)
+	defer manager.Close()
 	if err := manager.Stop(ctx); err != nil {
 		return err
 	}

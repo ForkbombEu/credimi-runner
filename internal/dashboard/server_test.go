@@ -155,6 +155,34 @@ func TestNewHandlerWithManagerWrapper(t *testing.T) {
 	}
 }
 
+func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &fakeManager{}
+	handler, cancel, err := NewHandlerWithManagerContext(context.Background(), dir, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	request := httptest.NewRequest(http.MethodPost, "/api/controller/runtime/start", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("queue status = %d, body=%s", response.Code, response.Body.String())
+	}
+	var queued map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil || queued["ID"] == nil {
+		t.Fatalf("queued operation = %s", response.Body.String())
+	}
+	conflict := httptest.NewRecorder()
+	handler.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/api/controller/runtime/start", nil))
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("conflicting queue status = %d", conflict.Code)
+	}
+}
+
 func TestApplyModeAndSaveMessageHelpers(t *testing.T) {
 	for input, want := range map[string]string{
 		"quick":              "auto",

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	stdlog "log"
@@ -18,8 +19,10 @@ import (
 	"syscall"
 	"time"
 
+	controller "github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 	"github.com/spf13/cobra"
 )
 
@@ -64,6 +67,14 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	lease, err := controller.Acquire(configDir)
+	if err != nil {
+		if errors.Is(err, controller.ErrAlreadyRunning) {
+			return reopenExistingDashboard(cmd, configDir)
+		}
+		return err
+	}
+	defer lease.Close()
 	listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
 	listener, err := reserveDashboardListener(listenHost, listenPort)
 	if err != nil {
@@ -71,6 +82,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 	defer listener.Close()
 	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
+	defer manager.Close()
 
 	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
 	defer cancelDashboard()
@@ -79,15 +91,18 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer cancelHandler()
-
-	if configFileExists(configDir) {
-		progress := func(line string) {
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "runner startup: %s\n", line)
-		}
-		if err := startDashboardRuntimeWithProgress(cmd.Context(), manager, values, progress); err != nil {
-			stdlog.Printf("dashboard runtime start failed: %v", err)
-		}
+	if err := lease.Publish(controller.Metadata{
+		ControllerID: fmt.Sprintf("controller-%d", time.Now().UnixNano()),
+		PID:          os.Getpid(),
+		ConfigDir:    configDir,
+		ListenHost:   listenHost,
+		ListenPort:   listenPort,
+		ProbeURL:     fmt.Sprintf("http://127.0.0.1:%d/healthz", listenPort),
+		PublicURL:    dashboardBrowserURL(listenHost, listenPort),
+	}); err != nil {
+		return err
 	}
+	manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.started", Message: "dashboard controller started", Component: "controller", Phase: "running", Fields: map[string]any{"pid": os.Getpid(), "listen_host": listenHost, "listen_port": listenPort}})
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", listenHost, listenPort),
@@ -100,6 +115,16 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		stdlog.Printf("Credimi Runner dashboard available at http://%s:%d", listenHost, listenPort)
 		errc <- server.Serve(listener)
 	}()
+	if configFileExists(configDir) {
+		progress := func(line string) {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "runner startup: %s\n", line)
+		}
+		go func() {
+			if err := startDashboardRuntimeWithProgress(dashboardCtx, manager, values, progress); err != nil {
+				stdlog.Printf("dashboard runtime start failed: %v", err)
+			}
+		}()
+	}
 	if dashboardOpen {
 		go func() {
 			time.Sleep(250 * time.Millisecond)
@@ -122,12 +147,33 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 
 	cancelDashboard()
+	manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.stopped", Message: "dashboard controller stopped", Component: "controller", Phase: "stopped"})
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		stdlog.Printf("dashboard HTTP shutdown did not complete cleanly: %v", err)
 		if closeErr := server.Close(); closeErr != nil && closeErr != http.ErrServerClosed {
 			stdlog.Printf("dashboard HTTP close failed: %v", closeErr)
+		}
+	}
+	return nil
+}
+
+func reopenExistingDashboard(cmd *cobra.Command, configDir string) error {
+	metadata, err := controller.ReadMetadata(configDir)
+	if err != nil {
+		return fmt.Errorf("dashboard is already locked but its metadata is unavailable: %w", err)
+	}
+	url := metadata.PublicURL
+	if strings.TrimSpace(url) == "" {
+		url = dashboardBrowserURL(metadata.ListenHost, metadata.ListenPort)
+	}
+	if cmd != nil {
+		cmd.Printf("Credimi Runner dashboard is already running at %s\n", url)
+	}
+	if dashboardOpen {
+		if err := openDashboardBrowserFunc(url); err != nil {
+			stdlog.Printf("dashboard browser open skipped: %v", err)
 		}
 	}
 	return nil
@@ -262,18 +308,61 @@ func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Va
 	defer ticker.Stop()
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	var lastErr error
 	for {
 		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = conn.Close()
-			return nil
+			if healthErr := waitForDashboardRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
+				return nil
+			} else {
+				lastErr = healthErr
+			}
+		} else {
+			lastErr = err
 		}
 		select {
 		case <-deadline.Done():
+			if lastErr != nil {
+				return fmt.Errorf("runner did not become ready on %s: %w", address, lastErr)
+			}
 			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func waitForDashboardRunnerHealth(ctx context.Context, host, port, serial string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("runner health returned %s", response.Status)
+	}
+	if serial == "" {
+		return nil
+	}
+	var payload struct {
+		Devices []struct {
+			Serial string `json:"serial"`
+			State  string `json:"state"`
+		} `json:"devices"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return fmt.Errorf("decode runner health: %w", err)
+	}
+	for _, device := range payload.Devices {
+		if strings.TrimSpace(device.Serial) == serial && strings.TrimSpace(device.State) == "device" {
+			return nil
+		}
+	}
+	return fmt.Errorf("configured device %q is not ready", serial)
 }
 
 func currentDashboardGOOS() string {

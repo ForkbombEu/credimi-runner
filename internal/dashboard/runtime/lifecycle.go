@@ -16,6 +16,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 )
 
 type Manager interface {
@@ -168,21 +170,53 @@ type LifecycleManager struct {
 	logCmd    *exec.Cmd
 	logDone   chan struct{}
 	status    RuntimeStatus
+	lifecycle *lifecyclelog.Logger
 }
 
 func NewLifecycleManager(binary, configDir string, values Values, runner Runner) *LifecycleManager {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
+	var lifecycle *lifecyclelog.Logger
+	if strings.TrimSpace(configDir) != "" {
+		lifecycle, _ = lifecyclelog.New(filepath.Join(configDir, "lifecycle.jsonl"), lifecyclelog.Options{})
+	}
 	return &LifecycleManager{
 		binary:    binary,
 		configDir: configDir,
 		values:    cloneValues(values),
 		runner:    runner,
+		lifecycle: lifecycle,
 		status: RuntimeStatus{
 			Configured: strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != "",
 		},
 	}
+}
+
+// Close releases the lifecycle log file. It is safe to call more than once.
+func (m *LifecycleManager) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lifecycle == nil {
+		return nil
+	}
+	err := m.lifecycle.Close()
+	m.lifecycle = nil
+	return err
+}
+
+// EmitLifecycle records a controller/dashboard event in the bounded lifecycle
+// log without exposing the runner's verbose process logs.
+func (m *LifecycleManager) EmitLifecycle(event lifecyclelog.Event) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.emitLifecycleLocked(event)
 }
 
 func (m *LifecycleManager) Start(ctx context.Context) error {
@@ -193,11 +227,30 @@ func (m *LifecycleManager) StartWithProgress(ctx context.Context, progress func(
 	return m.start(ctx, progress)
 }
 
-func (m *LifecycleManager) start(ctx context.Context, progress func(string)) error {
+func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (result error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	plan := BuildRuntimePlan(m.configDir, m.values)
+	m.emitLifecycleLocked(lifecyclelog.Event{
+		Level: lifecyclelog.LevelInfo, Event: "operation.started",
+		Message: "runtime start requested", Component: "runtime", Phase: "starting",
+		Fields: map[string]any{"backend": plan.Backend, "service_mode": plan.ServiceMode, "runner_type": plan.RunnerType},
+	})
+	defer func() {
+		if result != nil {
+			m.emitLifecycleLocked(lifecyclelog.Event{
+				Level: lifecyclelog.LevelError, Event: "operation.failed",
+				Message: "runtime start failed", Component: "runtime", Phase: "failed",
+				Error: result.Error(),
+			})
+			return
+		}
+		m.emitLifecycleLocked(lifecyclelog.Event{
+			Level: lifecyclelog.LevelInfo, Event: "operation.succeeded",
+			Message: "runtime start completed", Component: "runtime", Phase: "running",
+		})
+	}()
 	if plan.Backend == DefaultHostBackend {
 		if runnerAddressReachable(m.values, 500*time.Millisecond) {
 			emitProgress(progress, "Existing host runner is already reachable.")
@@ -349,11 +402,30 @@ func staleComposeServices(active []string) []string {
 	return stale
 }
 
-func (m *LifecycleManager) Stop(ctx context.Context) error {
+func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	plan := BuildRuntimePlan(m.configDir, m.values)
+	m.emitLifecycleLocked(lifecyclelog.Event{
+		Level: lifecyclelog.LevelInfo, Event: "operation.started",
+		Message: "runtime stop requested", Component: "runtime", Phase: "stopping",
+		Fields: map[string]any{"backend": plan.Backend, "service_mode": plan.ServiceMode},
+	})
+	defer func() {
+		if result != nil {
+			m.emitLifecycleLocked(lifecyclelog.Event{
+				Level: lifecyclelog.LevelError, Event: "operation.failed",
+				Message: "runtime stop failed", Component: "runtime", Phase: "failed",
+				Error: result.Error(),
+			})
+			return
+		}
+		m.emitLifecycleLocked(lifecyclelog.Event{
+			Level: lifecyclelog.LevelInfo, Event: "operation.succeeded",
+			Message: "runtime stop completed", Component: "runtime", Phase: "stopped",
+		})
+	}()
 	if plan.Backend == DefaultHostBackend {
 		if err := m.stopHostRunnerLocked(ctx); err != nil {
 			m.status.LastError = err.Error()
@@ -823,6 +895,15 @@ func (m *LifecycleManager) SetPublicURL(publicURL string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.status.PublicURL = strings.TrimSpace(publicURL)
+}
+
+func (m *LifecycleManager) emitLifecycleLocked(event lifecyclelog.Event) {
+	if m.lifecycle == nil {
+		return
+	}
+	if err := m.lifecycle.Emit(event); err != nil {
+		m.status.LastError = "lifecycle log: " + err.Error()
+	}
 }
 
 func (m *LifecycleManager) Status(context.Context) RuntimeStatus {

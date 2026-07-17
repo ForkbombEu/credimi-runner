@@ -127,6 +127,13 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.configDir, "docker-compose.yaml")); err != nil {
 		t.Fatalf("Start should write docker-compose.yaml: %v", err)
 	}
+	lifecycle, err := os.ReadFile(filepath.Join(manager.configDir, "lifecycle.jsonl"))
+	if err != nil {
+		t.Fatalf("Start should write lifecycle.jsonl: %v", err)
+	}
+	if !strings.Contains(string(lifecycle), `"event":"operation.started"`) || !strings.Contains(string(lifecycle), `"event":"operation.succeeded"`) {
+		t.Fatalf("lifecycle log missing start events: %s", lifecycle)
+	}
 	if err := manager.Down(context.Background()); err != nil {
 		t.Fatal(err)
 	}
