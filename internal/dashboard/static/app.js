@@ -47,6 +47,47 @@
   document.body.addEventListener('toast', (e) => toast(typeof e.detail === 'string' ? e.detail : e.detail && e.detail.value));
   document.body.addEventListener('closeModal', () => closeModals());
 
+  // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
+  let runtimeOperationTimer = null;
+  function dashboardURL(path) {
+    const url = new URL(path, window.location.origin);
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (token) url.searchParams.set('token', token);
+    return `${url.pathname}${url.search}`;
+  }
+  function refreshOverview() {
+    htmx.ajax('GET', dashboardURL('/'), { target: 'main', select: 'main', swap: 'outerHTML' });
+  }
+  function runtimeOperationFailure(snapshot) {
+    const message = String(snapshot.error || snapshot.message || 'operation did not succeed').trim();
+    return `Runner operation failed: ${message}`;
+  }
+  async function pollRuntimeOperation(operation) {
+    try {
+      const response = await fetch(dashboardURL(`/api/controller/operations/${encodeURIComponent(operation.id)}`), { headers: { Accept: 'application/json' } });
+      if (!response.ok) return;
+      const snapshot = await response.json();
+      const phase = String(snapshot.phase || '');
+      if (phase === 'queued' || phase === 'running') return;
+      clearInterval(runtimeOperationTimer);
+      runtimeOperationTimer = null;
+      hideBusy();
+      if (phase === 'succeeded') {
+        toast(operation.success || 'Runner operation completed successfully.');
+      } else {
+        toast(runtimeOperationFailure(snapshot));
+      }
+      refreshOverview();
+    } catch (_) {}
+  }
+  document.body.addEventListener('runtimeOperation', (e) => {
+    const operation = e.detail && (e.detail.value || e.detail);
+    if (!operation || !operation.id) return;
+    clearInterval(runtimeOperationTimer);
+    pollRuntimeOperation(operation);
+    runtimeOperationTimer = setInterval(() => pollRuntimeOperation(operation), 500);
+  });
+
   // ── Global busy overlay for runtime-changing requests ───────────────────
   const setupBusyKey = 'credimi-runner:setup-startup-busy';
   let busyLogTimer = null;
@@ -182,6 +223,7 @@
       if (e.detail.successful !== false) return;
       sessionStorage.removeItem(setupBusyKey);
     }
+    if (trigger && trigger.matches('[data-runtime-action]') && e.detail.successful !== false) return;
     if (wasBusy) hideBusy();
   });
   document.body.addEventListener('htmx:responseError', () => {

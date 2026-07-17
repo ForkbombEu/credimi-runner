@@ -326,7 +326,6 @@ func (s *Server) pageData(active string, payload any) PageData {
 	runtimeStatus.PendingRestart = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRestartRequired)
 	runtimeStatus.PendingRecreate = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyComposeRecreate)
 	runtimeStatus.PendingCredimiUpdate = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired)
-	flash := s.lastRegistrationStatus
 	maintenanceStatus := s.maintenance
 	s.mu.RUnlock()
 	payloadMap := map[string]any{
@@ -334,9 +333,6 @@ func (s *Server) pageData(active string, payload any) PageData {
 		"Startup":       s.startupSnapshot(),
 		"RunnerVersion": buildinfo.String(),
 		"Maintenance":   maintenanceStatus,
-	}
-	if flash != "" {
-		payloadMap["Flash"] = flash
 	}
 	if p, ok := payload.(map[string]any); ok {
 		for key, value := range p {
@@ -973,21 +969,7 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
-	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeStart, func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		values := s.cfg.Snapshot()
-		if err := s.manager.Start(ctx); err != nil {
-			return err
-		}
-		if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
-			if err := s.runnerReady(ctx, values); err != nil {
-				return s.runtimeStartupError(ctx, err)
-			}
-		}
-		return s.registerCurrent(ctx, values)
-	}, "Runtime started.")
+	s.queueDashboardRuntimeAction(w, r, "start")
 }
 
 func (s *Server) controllerStatus(w http.ResponseWriter, r *http.Request) {
@@ -1012,12 +994,32 @@ func (s *Server) controllerOperation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request) {
-	if s.manager == nil {
-		http.Error(w, "runtime manager unavailable", http.StatusServiceUnavailable)
+	snapshot, err := s.submitRuntimeAction(r.PathValue("action"))
+	if err != nil {
+		if errors.Is(err, controller.ErrOperationConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if errors.Is(err, errRuntimeManagerUnavailable) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, snapshot)
+}
+
+var errRuntimeManagerUnavailable = errors.New("runtime manager unavailable")
+
+func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error) {
+	if s.manager == nil {
+		return controller.Snapshot{}, errRuntimeManagerUnavailable
+	}
 	var kind controller.OperationKind
-	switch r.PathValue("action") {
+	switch action {
 	case "start":
 		kind = controller.OperationRuntimeStart
 	case "stop":
@@ -1025,8 +1027,10 @@ func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request)
 	case "restart":
 		kind = controller.OperationRuntimeRestart
 	default:
-		http.NotFound(w, r)
-		return
+		return controller.Snapshot{}, fmt.Errorf("unsupported runtime action %q", action)
+	}
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
 	}
 	values := s.cfg.Snapshot()
 	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, progress func(controller.Progress)) error {
@@ -1061,35 +1065,15 @@ func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request)
 		}
 		return nil
 	})
-	if err != nil {
-		if errors.Is(err, controller.ErrOperationConflict) {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	writeJSON(w, snapshot)
+	return snapshot, err
 }
 
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
-	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeStop, func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		return s.manager.Stop(ctx)
-	}, "Runtime stopped.")
+	s.queueDashboardRuntimeAction(w, r, "stop")
 }
 
 func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
-	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeRestart, func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		return s.manager.Restart(ctx)
-	}, "Runtime restarted.")
+	s.queueDashboardRuntimeAction(w, r, "restart")
 }
 
 func (s *Server) runtimeUpdateImage(w http.ResponseWriter, r *http.Request) {
@@ -1301,6 +1285,15 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 	}, "Pending changes applied.")
 }
 
+func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, r *http.Request, action string) {
+	snapshot, err := s.submitRuntimeAction(action)
+	if err != nil {
+		s.renderRuntimeActionError(w, "overview", err)
+		return
+	}
+	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action))
+}
+
 func (s *Server) queueRuntimeAction(w http.ResponseWriter, r *http.Request, page string, kind controller.OperationKind, action func(context.Context) error, success string) {
 	if s.operations == nil {
 		s.operations = controller.NewCoordinator(s.ctx)
@@ -1309,30 +1302,46 @@ func (s *Server) queueRuntimeAction(w http.ResponseWriter, r *http.Request, page
 		return action(ctx)
 	})
 	if err != nil {
-		if errors.Is(err, controller.ErrOperationConflict) {
-			d := s.pageData(page, map[string]any{"Flash": err.Error()})
-			html, _ := s.render.FragmentPage(page, d)
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusConflict)
-			_, _ = w.Write([]byte(html))
-			return
-		}
-		d := s.pageData(page, map[string]any{"Flash": err.Error()})
-		html, _ := s.render.FragmentPage(page, d)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(html))
+		s.renderRuntimeActionError(w, page, err)
 		return
 	}
-	s.mu.Lock()
-	s.lastRegistrationStatus = fmt.Sprintf("%s Operation %s is running in the background.", success, snapshot.ID)
-	s.mu.Unlock()
-	d := s.pageData(page, map[string]any{"Flash": s.lastRegistrationStatus})
+	s.writeQueuedRuntimeAction(w, snapshot, success)
+}
+
+func (s *Server) renderRuntimeActionError(w http.ResponseWriter, page string, err error) {
+	d := s.pageData(page, map[string]any{"Flash": err.Error()})
 	html, _ := s.render.FragmentPage(page, d)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q,"operation":%q}`, s.lastRegistrationStatus, snapshot.ID))
-	w.WriteHeader(http.StatusAccepted)
+	if errors.Is(err, controller.ErrOperationConflict) {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusBadRequest)
+	}
 	_, _ = w.Write([]byte(html))
+}
+
+func (s *Server) writeQueuedRuntimeAction(w http.ResponseWriter, snapshot controller.Snapshot, success string) {
+	trigger, _ := json.Marshal(map[string]any{"runtimeOperation": map[string]string{
+		"id":      snapshot.ID,
+		"success": success,
+	}})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("HX-Reswap", "none")
+	w.Header().Set("HX-Trigger", string(trigger))
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func runtimeActionSuccessMessage(action string) string {
+	switch action {
+	case "start":
+		return "Runner started successfully."
+	case "stop":
+		return "Runner stopped successfully."
+	case "restart":
+		return "Runner restarted successfully."
+	default:
+		return "Runner operation completed successfully."
+	}
 }
 
 func (s *Server) rawConfig(w http.ResponseWriter, r *http.Request) {

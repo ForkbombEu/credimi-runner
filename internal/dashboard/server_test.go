@@ -2089,6 +2089,52 @@ func TestServerRuntimeStartRegistersRunner(t *testing.T) {
 	}
 }
 
+func TestDashboardRuntimeStartUsesControllerLifecycleAndRefreshesAutoURL(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+	s.manager.(*fakeManager).logLines = []dashboardruntime.LogLine{{Message: "tunnel ready https://new-url.trycloudflare.com"}}
+
+	var payload dashboardruntime.RegisterRunnerRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile-runner" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	s.cfg.values["CREDIMI_URL"] = api.URL
+
+	rec := httptest.NewRecorder()
+	s.runtimeStart(rec, httptest.NewRequest(http.MethodPost, "/runtime/start", nil))
+	if rec.Code != http.StatusAccepted || rec.Body.Len() != 0 || rec.Header().Get("HX-Reswap") != "none" {
+		t.Fatalf("runtime start response = %d headers=%v body=%q", rec.Code, rec.Header(), rec.Body.String())
+	}
+	trigger := rec.Header().Get("HX-Trigger")
+	if !strings.Contains(trigger, "runtimeOperation") || strings.Contains(trigger, "Operation op-") {
+		t.Fatalf("runtime start trigger = %q", trigger)
+	}
+
+	op := s.operations.Current()
+	completed, err := s.operations.Wait(context.Background(), op.ID)
+	if err != nil || completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("runtime start completed=%#v err=%v", completed, err)
+	}
+	if payload.IP != "https://new-url.trycloudflare.com" {
+		t.Fatalf("registered URL = %q", payload.IP)
+	}
+	if got := s.manager.Status(context.Background()).PublicURL; got != payload.IP {
+		t.Fatalf("dashboard public URL = %q, want %q", got, payload.IP)
+	}
+}
+
 func TestResolveRegistrationEndpointWaitsForTunnelURL(t *testing.T) {
 	s := newTestServer(t)
 	attempts := 0
