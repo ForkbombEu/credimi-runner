@@ -25,7 +25,6 @@ import (
 
 type dashboardFakeManager struct {
 	startCalls  int
-	downCalls   int
 	logs        []dashboardruntime.LogLine
 	status      dashboardruntime.RuntimeStatus
 	startErr    error
@@ -45,7 +44,6 @@ func (f *dashboardFakeManager) StartWithProgress(ctx context.Context, progress f
 }
 func (f *dashboardFakeManager) Stop(context.Context) error        { return nil }
 func (f *dashboardFakeManager) Restart(context.Context) error     { return nil }
-func (f *dashboardFakeManager) Down(context.Context) error        { f.downCalls++; return nil }
 func (f *dashboardFakeManager) UpdateImage(context.Context) error { return nil }
 func (f *dashboardFakeManager) Configure(dashboardruntime.Values) {}
 func (f *dashboardFakeManager) SetPublicURL(publicURL string) {

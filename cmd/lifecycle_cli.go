@@ -30,7 +30,6 @@ var lifecycleDashboardStopCmd = &cobra.Command{Use: "stop", Short: "Stop the das
 var lifecycleDashboardStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard status", RunE: runLifecycleStatus}
 var lifecycleDashboardOpenCmd = &cobra.Command{Use: "open", Short: "Open the running dashboard when a local display is available", RunE: runLifecycleDashboardOpen}
 var lifecycleRuntimeStatusCmd = &cobra.Command{Use: "status", Short: "Show runtime status", RunE: runLifecycleStatus}
-var lifecycleRuntimeCancelCmd = &cobra.Command{Use: "cancel OPERATION_ID", Short: "Cancel a running lifecycle operation", Args: cobra.ExactArgs(1), RunE: runLifecycleRuntimeCancel}
 var lifecycleLogLines int
 var lifecycleLogOutput string
 var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log"}
@@ -39,7 +38,7 @@ var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifec
 var lifecycleLogExportCmd = &cobra.Command{Use: "export", Short: "Export a sanitized Markdown diagnostic report", RunE: runLifecycleLogExport}
 
 func init() {
-	lifecycleRuntimeCmd.AddCommand(lifecycleRuntimeActionCmd("start"), lifecycleRuntimeActionCmd("stop"), lifecycleRuntimeActionCmd("restart"), lifecycleRuntimeActionCmd("down"), lifecycleRuntimeStatusCmd, lifecycleRuntimeCancelCmd)
+	lifecycleRuntimeCmd.AddCommand(lifecycleRuntimeActionCmd("start"), lifecycleRuntimeActionCmd("stop"), lifecycleRuntimeActionCmd("restart"), lifecycleRuntimeStatusCmd)
 	lifecycleDashboardCmd.AddCommand(lifecycleDashboardStopCmd, lifecycleDashboardStatusCmd, lifecycleDashboardOpenCmd)
 	lifecycleLogTailCmd.Flags().IntVar(&lifecycleLogLines, "lines", 100, "Number of lifecycle events")
 	lifecycleLogExportCmd.Flags().IntVar(&lifecycleLogLines, "lines", 500, "Number of lifecycle events")
@@ -99,25 +98,11 @@ func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 	if err := postLifecycleJSON(ctx, controllerBaseURL(metadata)+"/api/controller/runtime/"+action, &snapshot); err != nil {
 		return err
 	}
-	cmd.Printf("Operation %s queued: %s\n", snapshot.ID, snapshot.Message)
-	return nil
-}
-
-func runLifecycleRuntimeCancel(cmd *cobra.Command, args []string) error {
-	metadata, err := controller.ReadMetadata(lifecycleConfigDir())
-	if err != nil {
-		return fmt.Errorf("dashboard is not running: %w", err)
+	if action == "stop" {
+		cmd.Printf("Runner stop requested (operation %s). Use `credimi-runner runtime status` to follow progress.\n", snapshot.ID)
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
-	defer cancel()
-	if err := controller.Probe(ctx, metadata); err != nil {
-		return fmt.Errorf("dashboard is not reachable: %w", err)
-	}
-	var result map[string]any
-	if err := postLifecycleJSON(ctx, controllerBaseURL(metadata)+"/api/controller/operations/"+args[0]+"/cancel", &result); err != nil {
-		return err
-	}
-	cmd.Printf("Operation %s cancellation requested\n", args[0])
+	cmd.Printf("Runner %s requested (operation %s). Use `credimi-runner runtime status` to follow progress.\n", action, snapshot.ID)
 	return nil
 }
 

@@ -30,7 +30,6 @@ type fakeManager struct {
 	startCalls       int
 	stopCalls        int
 	restartCalls     int
-	downCalls        int
 	updateImageCalls int
 	logLines         []dashboardruntime.LogLine
 	logLinesSince    []dashboardruntime.LogLine
@@ -38,7 +37,6 @@ type fakeManager struct {
 	startErr         error
 	stopErr          error
 	restartErr       error
-	downErr          error
 	updateImageErr   error
 	logTail          int
 	upgradeBlock     chan struct{}
@@ -74,11 +72,6 @@ func (f *fakeManager) Restart(context.Context) error {
 		f.status.LastStartedAt = time.Now()
 	}
 	return f.restartErr
-}
-func (f *fakeManager) Down(context.Context) error {
-	f.downCalls++
-	f.status.PublicURL = ""
-	return f.downErr
 }
 func (f *fakeManager) UpdateImage(context.Context) error {
 	f.updateImageCalls++
@@ -184,7 +177,7 @@ func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 	}
 }
 
-func TestControllerAPIsExposeAndCancelLifecycleOperations(t *testing.T) {
+func TestControllerAPIsExposeLifecycleOperations(t *testing.T) {
 	s := newTestServer(t)
 	s.operations = controller.NewCoordinator(context.Background())
 	status := httptest.NewRecorder()
@@ -236,26 +229,6 @@ func TestControllerAPIsExposeAndCancelLifecycleOperations(t *testing.T) {
 		t.Fatalf("operation lookup = %d %s", got.Code, got.Body.String())
 	}
 
-	started := make(chan struct{})
-	blocking, err := s.operations.Submit(controller.OperationRuntimeStart, func(ctx context.Context, _ func(controller.Progress)) error {
-		close(started)
-		<-ctx.Done()
-		return ctx.Err()
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	<-started
-	cancel := httptest.NewRecorder()
-	cancelRequest := httptest.NewRequest(http.MethodPost, "/api/controller/operations/"+blocking.ID+"/cancel", nil)
-	cancelRequest.SetPathValue("id", blocking.ID)
-	s.controllerOperationCancel(cancel, cancelRequest)
-	if cancel.Code != http.StatusOK || !strings.Contains(cancel.Body.String(), "cancelled") {
-		t.Fatalf("cancel = %d %s", cancel.Code, cancel.Body.String())
-	}
-	if _, err := s.operations.Wait(context.Background(), blocking.ID); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestControllerIdentityRuntimeLogsAndStartupStatus(t *testing.T) {
@@ -289,7 +262,8 @@ func TestControllerIdentityRuntimeLogsAndStartupStatus(t *testing.T) {
 		t.Fatalf("logs with manager = %s", logs.Body.String())
 	}
 
-	s.operations = controller.NewCoordinator(context.Background())
+	parent, stop := context.WithCancel(context.Background())
+	s.operations = controller.NewCoordinator(parent)
 	started := make(chan struct{})
 	op, err := s.operations.Submit(controller.OperationRuntimeStart, func(ctx context.Context, _ func(controller.Progress)) error {
 		close(started)
@@ -305,9 +279,7 @@ func TestControllerIdentityRuntimeLogsAndStartupStatus(t *testing.T) {
 	if !strings.Contains(startup.Body.String(), string(StartupStarting)) {
 		t.Fatalf("running startup status = %s", startup.Body.String())
 	}
-	if err := s.operations.Cancel(op.ID); err != nil {
-		t.Fatal(err)
-	}
+	stop()
 	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -887,7 +859,6 @@ func TestServerRuntimeActionVariants(t *testing.T) {
 	}{
 		{"/runtime/stop", s.runtimeStop},
 		{"/runtime/restart", s.runtimeRestart},
-		{"/runtime/down", s.runtimeDown},
 		{"/runtime/update-image", s.runtimeUpdateImage},
 	} {
 		rec := httptest.NewRecorder()
@@ -2144,7 +2115,6 @@ type fakeLogManager func(context.Context, int) ([]dashboardruntime.LogLine, erro
 func (f fakeLogManager) Start(context.Context) error       { return nil }
 func (f fakeLogManager) Stop(context.Context) error        { return nil }
 func (f fakeLogManager) Restart(context.Context) error     { return nil }
-func (f fakeLogManager) Down(context.Context) error        { return nil }
 func (f fakeLogManager) UpdateImage(context.Context) error { return nil }
 func (f fakeLogManager) Configure(dashboardruntime.Values) {}
 func (f fakeLogManager) SetPublicURL(string)               {}

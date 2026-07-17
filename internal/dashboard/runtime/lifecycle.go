@@ -28,7 +28,6 @@ type Manager interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 	Restart(context.Context) error
-	Down(context.Context) error
 	UpdateImage(context.Context) error
 	Configure(Values)
 	SetPublicURL(string)
@@ -799,10 +798,6 @@ func (m *LifecycleManager) Restart(ctx context.Context) error {
 		return err
 	}
 	return m.Start(ctx)
-}
-
-func (m *LifecycleManager) Down(ctx context.Context) error {
-	return m.Stop(ctx)
 }
 
 func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {

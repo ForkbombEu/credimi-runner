@@ -241,7 +241,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/start", s.runtimeStart)
 	mux.HandleFunc("POST /runtime/stop", s.runtimeStop)
 	mux.HandleFunc("POST /runtime/restart", s.runtimeRestart)
-	mux.HandleFunc("POST /runtime/down", s.runtimeDown)
 	mux.HandleFunc("POST /runtime/update-image", s.runtimeUpdateImage)
 	mux.HandleFunc("POST /maintenance/upgrade", s.maintenanceUpgrade)
 	mux.HandleFunc("POST /maintenance/check", s.maintenanceCheck)
@@ -274,7 +273,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/controller/status", s.controllerStatus)
 	mux.HandleFunc("GET /api/controller/operations/current", s.controllerOperationCurrent)
 	mux.HandleFunc("GET /api/controller/operations/{id}", s.controllerOperation)
-	mux.HandleFunc("POST /api/controller/operations/{id}/cancel", s.controllerOperationCancel)
 	mux.HandleFunc("POST /api/controller/runtime/{action}", s.controllerRuntimeAction)
 }
 
@@ -1013,14 +1011,6 @@ func (s *Server) controllerOperation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, snapshot)
 }
 
-func (s *Server) controllerOperationCancel(w http.ResponseWriter, r *http.Request) {
-	if err := s.operations.Cancel(r.PathValue("id")); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	writeJSON(w, map[string]any{"cancelled": true, "operation": s.operations.Current()})
-}
-
 func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request) {
 	if s.manager == nil {
 		http.Error(w, "runtime manager unavailable", http.StatusServiceUnavailable)
@@ -1034,8 +1024,6 @@ func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request)
 		kind = controller.OperationRuntimeStop
 	case "restart":
 		kind = controller.OperationRuntimeRestart
-	case "down":
-		kind = controller.OperationRuntimeDown
 	default:
 		http.NotFound(w, r)
 		return
@@ -1058,8 +1046,6 @@ func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request)
 				err = s.manager.Stop(ctx)
 			case controller.OperationRuntimeRestart:
 				err = s.manager.Restart(ctx)
-			case controller.OperationRuntimeDown:
-				err = s.manager.Down(ctx)
 			}
 			if err != nil {
 				return err
@@ -1104,15 +1090,6 @@ func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.manager.Restart(ctx)
 	}, "Runtime restarted.")
-}
-
-func (s *Server) runtimeDown(w http.ResponseWriter, r *http.Request) {
-	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeDown, func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		return s.manager.Down(ctx)
-	}, "Runtime brought down.")
 }
 
 func (s *Server) runtimeUpdateImage(w http.ResponseWriter, r *http.Request) {
@@ -1286,7 +1263,7 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 				if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
 					s.manager.SetPublicURL("")
 				}
-				if err := s.manager.Down(ctx); err != nil {
+				if err := s.manager.Stop(ctx); err != nil {
 					return err
 				}
 				if err := s.manager.Start(ctx); err != nil {

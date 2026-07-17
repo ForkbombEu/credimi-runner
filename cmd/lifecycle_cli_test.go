@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestLifecycleCLIStatusRuntimeActionAndCancel(t *testing.T) {
+func TestLifecycleCLIStatusAndRuntimeAction(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/internal/controller/identity":
@@ -28,10 +28,8 @@ func TestLifecycleCLIStatusRuntimeActionAndCancel(t *testing.T) {
 			_, _ = w.Write([]byte(`{"controller_id":"controller-1","config_fingerprint":"fingerprint"}`))
 		case "/api/controller/status":
 			_, _ = w.Write([]byte(`{"runtime":{"runner_running":true},"operation":{"id":"op-1"}}`))
-		case "/api/controller/runtime/start":
+		case "/api/controller/runtime/start", "/api/controller/runtime/stop":
 			_, _ = w.Write([]byte(`{"id":"op-2","message":"operation queued"}`))
-		case "/api/controller/operations/op-2/cancel":
-			_, _ = w.Write([]byte(`{"cancelled":true}`))
 		default:
 			http.NotFound(w, request)
 		}
@@ -54,16 +52,16 @@ func TestLifecycleCLIStatusRuntimeActionAndCancel(t *testing.T) {
 	if err := runLifecycleRuntimeAction(command, "start"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "Operation op-2 queued") {
+	if !strings.Contains(output.String(), "Runner start requested (operation op-2)") {
 		t.Fatalf("runtime action output = %q", output.String())
 	}
 
 	output.Reset()
-	if err := runLifecycleRuntimeCancel(command, []string{"op-2"}); err != nil {
+	if err := runLifecycleRuntimeAction(command, "stop"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "cancellation requested") {
-		t.Fatalf("cancel output = %q", output.String())
+	if !strings.Contains(output.String(), "Runner stop requested (operation op-2)") {
+		t.Fatalf("stop output = %q", output.String())
 	}
 }
 
@@ -167,7 +165,6 @@ func TestLifecycleCLIReportsMissingAndStaleControllers(t *testing.T) {
 	command, output := lifecycleTestCommand()
 	for name, run := range map[string]func() error{
 		"runtime action": func() error { return runLifecycleRuntimeAction(command, "start") },
-		"runtime cancel": func() error { return runLifecycleRuntimeCancel(command, []string{"op-1"}) },
 		"dashboard open": func() error { return runLifecycleDashboardOpen(command, nil) },
 		"dashboard stop": func() error { return runLifecycleDashboardStop(command, nil) },
 	} {

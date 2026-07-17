@@ -26,7 +26,6 @@ type fakeUpgradeManager struct {
 func (f *fakeUpgradeManager) Start(context.Context) error                           { return nil }
 func (f *fakeUpgradeManager) Stop(context.Context) error                            { return nil }
 func (f *fakeUpgradeManager) Restart(context.Context) error                         { return nil }
-func (f *fakeUpgradeManager) Down(context.Context) error                            { return nil }
 func (f *fakeUpgradeManager) UpdateImage(context.Context) error                     { return nil }
 func (f *fakeUpgradeManager) Configure(dashboardruntime.Values)                     {}
 func (f *fakeUpgradeManager) SetPublicURL(value string)                             { f.status.PublicURL = value }

@@ -138,7 +138,7 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if !strings.Contains(string(lifecycle), `"event":"operation.started"`) || !strings.Contains(string(lifecycle), `"event":"operation.succeeded"`) {
 		t.Fatalf("lifecycle log missing start events: %s", lifecycle)
 	}
-	if err := manager.Down(context.Background()); err != nil {
+	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -790,7 +790,7 @@ func commandArgs(specs []CommandSpec) string {
 	return strings.Join(commands, "\n")
 }
 
-func TestLifecycleManagerRestartAndDownWithoutCompose(t *testing.T) {
+func TestLifecycleManagerRestartAndStopWithoutCompose(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":      "acme/runner",
@@ -805,11 +805,11 @@ func TestLifecycleManagerRestartAndDownWithoutCompose(t *testing.T) {
 		t.Fatalf("starts = %#v", runner.starts)
 	}
 	runner.runs = nil
-	if err := manager.Down(context.Background()); err != nil {
+	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(runner.runs) != 0 {
-		t.Fatalf("down should skip docker compose for no-compose plan: %#v", runner.runs)
+		t.Fatalf("stop should skip docker compose for no-compose plan: %#v", runner.runs)
 	}
 }
 

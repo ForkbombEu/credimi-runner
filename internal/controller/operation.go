@@ -14,7 +14,6 @@ const (
 	OperationRuntimeStart   OperationKind = "runtime_start"
 	OperationRuntimeStop    OperationKind = "runtime_stop"
 	OperationRuntimeRestart OperationKind = "runtime_restart"
-	OperationRuntimeDown    OperationKind = "runtime_down"
 	OperationRegistration   OperationKind = "registration"
 )
 
@@ -73,10 +72,9 @@ type Coordinator struct {
 }
 
 type operation struct {
-	mu     sync.Mutex
-	snap   Snapshot
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu   sync.Mutex
+	snap Snapshot
+	done chan struct{}
 }
 
 func NewCoordinator(parent context.Context) *Coordinator {
@@ -107,11 +105,10 @@ func (c *Coordinator) Submit(kind OperationKind, action Action) (Snapshot, error
 		ID: c.operationIDLocked(), Kind: kind, Phase: PhaseQueued,
 		StartedAt: now, UpdatedAt: now, Message: "operation queued",
 	}
-	ctx, cancel := context.WithCancel(c.parent)
-	op := &operation{snap: snapshot, cancel: cancel, done: make(chan struct{})}
+	op := &operation{snap: snapshot, done: make(chan struct{})}
 	c.active = op
 	c.byID[snapshot.ID] = op
-	go c.run(op, ctx, action)
+	go c.run(op, c.parent, action)
 	return snapshot, nil
 }
 
@@ -209,26 +206,6 @@ func (c *Coordinator) History() []Snapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]Snapshot(nil), c.history...)
-}
-
-func (c *Coordinator) Cancel(id string) error {
-	if c == nil {
-		return errors.New("operation coordinator is nil")
-	}
-	c.mu.Lock()
-	op, ok := c.byID[id]
-	c.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("operation %q not found", id)
-	}
-	op.mu.Lock()
-	active := op.snap.Phase == PhaseQueued || op.snap.Phase == PhaseRunning
-	op.mu.Unlock()
-	if !active {
-		return nil
-	}
-	op.cancel()
-	return nil
 }
 
 func (c *Coordinator) Wait(ctx context.Context, id string) (Snapshot, error) {

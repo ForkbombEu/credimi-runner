@@ -60,32 +60,9 @@ func TestCoordinatorRejectsConcurrentMutation(t *testing.T) {
 	}
 }
 
-func TestCoordinatorCancelIsIndependentFromCallerContext(t *testing.T) {
-	coordinator := NewCoordinator(context.Background())
-	started := make(chan struct{})
-	operation, err := coordinator.Submit(OperationRuntimeStart, func(ctx context.Context, _ func(Progress)) error {
-		close(started)
-		<-ctx.Done()
-		return ctx.Err()
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	<-started
-	if err := coordinator.Cancel(operation.ID); err != nil {
-		t.Fatal(err)
-	}
-	finished, err := coordinator.Wait(context.Background(), operation.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if finished.Phase != PhaseCancelled {
-		t.Fatalf("phase = %s", finished.Phase)
-	}
-}
-
 func TestCoordinatorWaitHonorsObserverDeadline(t *testing.T) {
-	coordinator := NewCoordinator(context.Background())
+	parent, stop := context.WithCancel(context.Background())
+	coordinator := NewCoordinator(parent)
 	operation, err := coordinator.Submit(OperationRuntimeStart, func(ctx context.Context, _ func(Progress)) error {
 		<-ctx.Done()
 		return ctx.Err()
@@ -98,10 +75,11 @@ func TestCoordinatorWaitHonorsObserverDeadline(t *testing.T) {
 	if _, err := coordinator.Wait(ctx, operation.ID); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("wait error = %v", err)
 	}
-	if err := coordinator.Cancel(operation.ID); err != nil {
-		t.Fatal(err)
+	stop()
+	finished, err := coordinator.Wait(context.Background(), operation.ID)
+	if err != nil || finished.Phase != PhaseCancelled {
+		t.Fatalf("finished=%#v err=%v", finished, err)
 	}
-	_, _ = coordinator.Wait(context.Background(), operation.ID)
 }
 
 func TestCoordinatorExposesHistoryAndOperationErrors(t *testing.T) {
@@ -111,9 +89,6 @@ func TestCoordinatorExposesHistoryAndOperationErrors(t *testing.T) {
 	}
 	if _, ok := nilCoordinator.Get("op-1"); ok {
 		t.Fatal("nil coordinator should not find operations")
-	}
-	if err := nilCoordinator.Cancel("op-1"); err == nil {
-		t.Fatal("nil coordinator cancellation should fail")
 	}
 
 	coordinator := NewCoordinator(context.Background())
@@ -130,12 +105,6 @@ func TestCoordinatorExposesHistoryAndOperationErrors(t *testing.T) {
 	}
 	if got := coordinator.History(); len(got) != 1 || got[0].ID != operation.ID {
 		t.Fatalf("History = %#v", got)
-	}
-	if err := coordinator.Cancel(operation.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := coordinator.Cancel("missing"); err == nil {
-		t.Fatal("expected missing operation cancellation error")
 	}
 	if _, err := coordinator.Wait(context.Background(), "missing"); err == nil {
 		t.Fatal("expected missing operation wait error")
