@@ -281,6 +281,52 @@ func TestValidateReachableHostRunnerRejectsMismatchedReadiness(t *testing.T) {
 	}
 }
 
+func TestObserveRuntimeReportsHostAndComposeFailures(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := observeRuntime(context.Background(), &fakeRunner{}, t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": DefaultHostBackend,
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_HOST":            "127.0.0.1",
+		"RUNNER_PORT":            port,
+	})
+	if !host.runnerRunning || host.err != nil || !host.deviceReady {
+		t.Fatalf("host observation = %#v", host)
+	}
+	composeFailure := observeRuntime(context.Background(), &fakeRunner{runErr: errors.New("docker unavailable")}, t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": DefaultContainerBackend,
+		"CREDIMI_SERVICE_MODE":   "manual",
+	})
+	if composeFailure.err == nil || !strings.Contains(composeFailure.err.Error(), "docker unavailable") {
+		t.Fatalf("compose failure = %#v", composeFailure)
+	}
+}
+
+func TestConfiguredDeviceReadyUsesADBState(t *testing.T) {
+	dir := t.TempDir()
+	adb := filepath.Join(dir, "adb")
+	if err := os.WriteFile(adb, []byte("#!/bin/sh\nprintf 'device\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if !configuredDeviceReady(context.Background(), Values{"CREDIMI_RUNNER_SERIAL": "device-1"}) {
+		t.Fatal("expected connected device")
+	}
+	if err := os.Remove(adb); err != nil {
+		t.Fatal(err)
+	}
+	if configuredDeviceReady(context.Background(), Values{"CREDIMI_RUNNER_SERIAL": "device-1"}) {
+		t.Fatal("missing adb should not be ready")
+	}
+}
+
 func TestObserveRuntimeUsesComposeProjectAndRunnerService(t *testing.T) {
 	runner := &fakeRunner{runOutput: []byte(`{"Service":"runner","State":"running"}` + "\n")}
 	values := Values{

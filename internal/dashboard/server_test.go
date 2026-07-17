@@ -318,6 +318,38 @@ func TestControllerIdentityRuntimeLogsAndStartupStatus(t *testing.T) {
 	}
 }
 
+func TestWaitForRunnerHealthValidatesConfiguredDevice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[{"serial":"ready","state":"device"}]}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForRunnerHealth(context.Background(), host, port, "ready"); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForRunnerHealth(context.Background(), host, port, "missing"); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("missing device error = %v", err)
+	}
+
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "down", http.StatusServiceUnavailable) }))
+	defer bad.Close()
+	badHost, badPort, err := net.SplitHostPort(strings.TrimPrefix(bad.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForRunnerHealth(context.Background(), badHost, badPort, ""); err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("bad health error = %v", err)
+	}
+}
+
 func TestApplyModeAndSaveMessageHelpers(t *testing.T) {
 	for input, want := range map[string]string{
 		"quick":              "auto",
