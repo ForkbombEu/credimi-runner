@@ -2,11 +2,22 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestSnapshotUsesStableJSONFieldNames(t *testing.T) {
+	raw, err := json.Marshal(Snapshot{ID: "op-1", Phase: PhaseSucceeded, Error: ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"id":"op-1"`) || !strings.Contains(string(raw), `"phase":"succeeded"`) || strings.Contains(string(raw), `"ID"`) {
+		t.Fatalf("snapshot JSON = %s", raw)
+	}
+}
 
 func TestCoordinatorRunsActionAndRetainsSnapshot(t *testing.T) {
 	coordinator := NewCoordinator(context.Background())

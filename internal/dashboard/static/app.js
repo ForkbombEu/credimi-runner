@@ -59,7 +59,7 @@
     htmx.ajax('GET', dashboardURL('/'), { target: 'main', select: 'main', swap: 'outerHTML' });
   }
   function runtimeOperationFailure(snapshot) {
-    const message = String(snapshot.error || snapshot.message || 'operation did not succeed').trim();
+    const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
     return `Runner operation failed: ${message}`;
   }
   async function pollRuntimeOperation(operation) {
@@ -67,7 +67,7 @@
       const response = await fetch(dashboardURL(`/api/controller/operations/${encodeURIComponent(operation.id)}`), { headers: { Accept: 'application/json' } });
       if (!response.ok) return;
       const snapshot = await response.json();
-      const phase = String(snapshot.phase || '');
+      const phase = String(snapshot.phase || snapshot.Phase || '');
       if (phase === 'queued' || phase === 'running') return;
       clearInterval(runtimeOperationTimer);
       runtimeOperationTimer = null;

@@ -167,7 +167,7 @@ func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 		t.Fatalf("queue status = %d, body=%s", response.Code, response.Body.String())
 	}
 	var queued map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil || queued["ID"] == nil {
+	if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil || queued["id"] == nil {
 		t.Fatalf("queued operation = %s", response.Body.String())
 	}
 	conflict := httptest.NewRecorder()

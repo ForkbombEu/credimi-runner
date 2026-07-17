@@ -35,14 +35,14 @@ type Progress struct {
 type Action func(context.Context, func(Progress)) error
 
 type Snapshot struct {
-	ID         string
-	Kind       OperationKind
-	Phase      OperationPhase
-	StartedAt  time.Time
-	UpdatedAt  time.Time
-	FinishedAt time.Time
-	Message    string
-	Error      string
+	ID         string         `json:"id"`
+	Kind       OperationKind  `json:"kind"`
+	Phase      OperationPhase `json:"phase"`
+	StartedAt  time.Time      `json:"started_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	FinishedAt time.Time      `json:"finished_at"`
+	Message    string         `json:"message"`
+	Error      string         `json:"error"`
 }
 
 var ErrOperationConflict = errors.New("another lifecycle operation is already running")
