@@ -3,6 +3,7 @@ package driver
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -88,7 +89,11 @@ func hostPIDAtPort(port string) (int, error) {
 				inodes[fields[9]] = struct{}{}
 			}
 		}
+		scanErr := scanner.Err()
 		_ = file.Close()
+		if scanErr != nil {
+			return 0, fmt.Errorf("scan %s: %w", path, scanErr)
+		}
 	}
 	if len(inodes) == 0 {
 		return 0, os.ErrNotExist

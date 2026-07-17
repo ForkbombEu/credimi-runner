@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
@@ -725,8 +726,12 @@ func TestServerRuntimeActionVariants(t *testing.T) {
 	} {
 		rec := httptest.NewRecorder()
 		target.fn(rec, httptest.NewRequest(http.MethodPost, target.path, nil))
-		if rec.Code != http.StatusOK {
+		if rec.Code != http.StatusAccepted {
 			t.Fatalf("%s = %d %s", target.path, rec.Code, rec.Body.String())
+		}
+		op := s.operations.Current()
+		if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+			t.Fatalf("%s operation: %v", target.path, err)
 		}
 	}
 }
@@ -934,15 +939,24 @@ func TestServerRuntimeRegisterAndActionError(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	s.runtimeRegister(rec, httptest.NewRequest(http.MethodPost, "/runtime/register", nil))
-	if rec.Code != http.StatusOK || manager.status.PublicURL != "https://runner.example" {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("runtimeRegister = %d body=%s publicURL=%q", rec.Code, rec.Body.String(), manager.status.PublicURL)
+	}
+	op := s.operations.Current()
+	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil || manager.status.PublicURL != "https://runner.example" {
+		t.Fatalf("runtimeRegister operation=%#v err=%v publicURL=%q", op, err, manager.status.PublicURL)
 	}
 
 	manager.stopErr = errors.New("stop failed")
 	rec = httptest.NewRecorder()
 	s.runtimeStop(rec, httptest.NewRequest(http.MethodPost, "/runtime/stop", nil))
-	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "stop failed") {
-		t.Fatalf("runtimeStop error = %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("runtimeStop = %d %s", rec.Code, rec.Body.String())
+	}
+	op = s.operations.Current()
+	result, err := s.operations.Wait(context.Background(), op.ID)
+	if err != nil || result.Phase != controller.PhaseFailed || !strings.Contains(result.Error, "stop failed") {
+		t.Fatalf("runtimeStop operation=%#v err=%v", result, err)
 	}
 }
 
@@ -1144,25 +1158,21 @@ func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
 		t.Fatal("expected registerCurrent without API key to fail")
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-
-	addr := listener.Addr().String()
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		conn, err := listener.Accept()
-		if err == nil {
-			_ = conn.Close()
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+		case "/readyz":
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","boot_id":"test-boot"}`))
+		default:
+			http.NotFound(w, r)
 		}
-	}()
+	}))
+	defer runner.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	values := map[string]string{
 		"CREDIMI_RUNNER_BACKEND": "host",
@@ -1174,7 +1184,6 @@ func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
 	if err := s.waitForRunnerReady(context.Background(), values); err != nil {
 		t.Fatalf("waitForRunnerReady = %v", err)
 	}
-	<-done
 }
 
 func TestResolveRegistrationEndpointBranches(t *testing.T) {
@@ -1748,8 +1757,12 @@ func TestServerRuntimeApply(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/runtime/apply", nil)
 	s.runtimeApply(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("runtimeApply = %d body=%s", rec.Code, rec.Body.String())
+	}
+	op := s.operations.Current()
+	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+		t.Fatalf("runtimeApply operation: %v", err)
 	}
 	fm := s.manager.(*fakeManager)
 	if fm.restartCalls == 0 {
@@ -1799,8 +1812,12 @@ func TestServerRuntimeApplyAutoRestartRefreshesTunnelURL(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/runtime/apply", nil)
 	s.runtimeApply(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("runtimeApply = %d body=%s", rec.Code, rec.Body.String())
+	}
+	op := s.operations.Current()
+	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+		t.Fatalf("runtimeApply operation: %v", err)
 	}
 	if payload.IP != "https://fresh.example.trycloudflare.com" {
 		t.Fatalf("registered IP = %q", payload.IP)
@@ -1903,8 +1920,12 @@ func TestServerRuntimeStartRegistersRunner(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/runtime/start", nil)
 	s.runtimeStart(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusAccepted {
 		t.Fatalf("runtimeStart = %d body=%s", rec.Code, rec.Body.String())
+	}
+	op := s.operations.Current()
+	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+		t.Fatalf("runtimeStart operation: %v", err)
 	}
 	fm := s.manager.(*fakeManager)
 	if fm.startCalls == 0 {

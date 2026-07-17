@@ -39,6 +39,7 @@ var (
 	newUpgradeRunnerManager = func(binaryPath, configDir string, values dashboardruntime.Values) runnerImageUpgradeManager {
 		return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 	}
+	waitForUpgradeRunnerReady = waitForDashboardRunnerReady
 )
 
 func runUpgradeRunnerImage(cmd *cobra.Command, _ []string) error {
@@ -71,7 +72,7 @@ func runUpgradeRunnerImage(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	progress("Waiting for the restarted runner to become ready.")
-	if err := waitForDashboardRunnerReady(ctx, values); err != nil {
+	if err := waitForUpgradeRunnerReady(ctx, values); err != nil {
 		return err
 	}
 	progress("Discovering the public URL and updating Credimi registration.")

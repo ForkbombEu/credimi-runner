@@ -76,12 +76,13 @@ func TestRunUpgradeRunnerImageUpdatesAutoTunnelRegistration(t *testing.T) {
 		status: dashboardruntime.RuntimeStatus{},
 		logs:   []dashboardruntime.LogLine{{Message: "https://fresh.example.trycloudflare.com"}},
 	}
-	originalExecutable, originalFactory, originalConfigDir := upgradeRunnerExecutable, newUpgradeRunnerManager, dashboardConfigDir
+	originalExecutable, originalFactory, originalReady, originalConfigDir := upgradeRunnerExecutable, newUpgradeRunnerManager, waitForUpgradeRunnerReady, dashboardConfigDir
 	t.Cleanup(func() {
-		upgradeRunnerExecutable, newUpgradeRunnerManager, dashboardConfigDir = originalExecutable, originalFactory, originalConfigDir
+		upgradeRunnerExecutable, newUpgradeRunnerManager, waitForUpgradeRunnerReady, dashboardConfigDir = originalExecutable, originalFactory, originalReady, originalConfigDir
 	})
 	upgradeRunnerExecutable = func() (string, error) { return "/tmp/credimi-runner", nil }
 	newUpgradeRunnerManager = func(string, string, dashboardruntime.Values) runnerImageUpgradeManager { return manager }
+	waitForUpgradeRunnerReady = func(context.Context, dashboardruntime.Values) error { return nil }
 	dashboardConfigDir = dir
 
 	command := &cobra.Command{}
@@ -100,10 +101,11 @@ func TestRunUpgradeRunnerImageUpdatesAutoTunnelRegistration(t *testing.T) {
 }
 
 func TestRunUpgradeRunnerImageReportsExecutableAndUpgradeErrors(t *testing.T) {
-	originalExecutable, originalFactory, originalConfigDir := upgradeRunnerExecutable, newUpgradeRunnerManager, dashboardConfigDir
+	originalExecutable, originalFactory, originalReady, originalConfigDir := upgradeRunnerExecutable, newUpgradeRunnerManager, waitForUpgradeRunnerReady, dashboardConfigDir
 	t.Cleanup(func() {
-		upgradeRunnerExecutable, newUpgradeRunnerManager, dashboardConfigDir = originalExecutable, originalFactory, originalConfigDir
+		upgradeRunnerExecutable, newUpgradeRunnerManager, waitForUpgradeRunnerReady, dashboardConfigDir = originalExecutable, originalFactory, originalReady, originalConfigDir
 	})
+	waitForUpgradeRunnerReady = func(context.Context, dashboardruntime.Values) error { return nil }
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_BACKEND=container\nCREDIMI_SERVICE_MODE=manual\nRUNNER_IMAGE=image\n"), 0o600); err != nil {
 		t.Fatal(err)

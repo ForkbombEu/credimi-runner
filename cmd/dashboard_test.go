@@ -129,10 +129,11 @@ func TestRootCommandDefaultsToDashboard(t *testing.T) {
 	if !rootCmd.SilenceErrors || rootCmd.SilenceUsage {
 		t.Fatal("root command must print errors once while retaining automatic usage output")
 	}
-	for _, name := range []string{"client", "dashboard"} {
-		if cmd, _, err := rootCmd.Find([]string{name}); err == nil && cmd != rootCmd {
-			t.Fatalf("%s command should not be registered", name)
-		}
+	if cmd, _, err := rootCmd.Find([]string{"client"}); err == nil && cmd != rootCmd {
+		t.Fatal("client command should not be registered")
+	}
+	if cmd, _, err := rootCmd.Find([]string{"dashboard", "status"}); err != nil || cmd.Name() != "status" {
+		t.Fatalf("dashboard status command should be registered, cmd=%v err=%v", cmd, err)
 	}
 	if cmd, _, err := rootCmd.Find([]string{"serve"}); err != nil || cmd == rootCmd || cmd.Name() != "serve" {
 		t.Fatalf("serve command should remain registered, cmd=%v err=%v", cmd, err)
@@ -352,7 +353,7 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/readyz" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"","boot_id":"test-boot"}`))
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
 			return
 		}
 		if r.URL.Path == "/health" {
@@ -516,6 +517,11 @@ func TestDashboardRuntimeHelpers(t *testing.T) {
 func TestWaitForDashboardRunnerReady(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "darwin")
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","boot_id":"test-boot"}`))
+			return
+		}
 		if r.URL.Path == "/health" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))

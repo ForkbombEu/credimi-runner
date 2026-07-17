@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -258,6 +260,10 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 	}()
 	if plan.Backend == DefaultHostBackend {
 		if runnerAddressReachable(m.values, 500*time.Millisecond) {
+			if err := validateReachableHostRunner(ctx, m.values); err != nil {
+				m.status.LastError = err.Error()
+				return fmt.Errorf("cannot adopt existing host runner: %w", err)
+			}
 			emitProgress(progress, "Existing host runner is already reachable.")
 			m.status.RunnerRunning = true
 			m.status.LastStartedAt = time.Now()
@@ -579,6 +585,58 @@ func runnerAddressReachable(values Values, timeout time.Duration) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// validateReachableHostRunner proves that the process already listening on the
+// configured host port is the configured credimi-runner. A TCP connection is
+// intentionally insufficient: the port can belong to a stale or unrelated
+// process, and adopting it would make later dashboard operations unsafe.
+func validateReachableHostRunner(ctx context.Context, values Values) error {
+	host, port := runnerListenTarget(values)
+	endpoint := "http://" + net.JoinHostPort(host, port) + "/readyz"
+	requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create readiness request: %w", err)
+	}
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
+	if err != nil {
+		return fmt.Errorf("request runner readiness: %w", err)
+	}
+	defer response.Body.Close()
+
+	var ready struct {
+		Service      string `json:"service"`
+		RunnerID     string `json:"runner_id"`
+		BootID       string `json:"boot_id"`
+		DeviceSerial string `json:"device_serial"`
+		DeviceState  string `json:"device_state"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&ready); err != nil {
+		return fmt.Errorf("decode runner readiness: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("runner readiness returned HTTP %d", response.StatusCode)
+	}
+	if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
+		return errors.New("listener is not an identified credimi-runner")
+	}
+	if expected := strings.TrimSpace(values["CREDIMI_RUNNER_ID"]); expected != "" && ready.RunnerID != expected {
+		return fmt.Errorf("runner ID %q does not match configured runner %q", ready.RunnerID, expected)
+	}
+	if expected := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]); expected != "" && ready.DeviceSerial != expected {
+		return fmt.Errorf("device serial %q does not match configured device %q", ready.DeviceSerial, expected)
+	}
+	switch strings.TrimSpace(ready.DeviceState) {
+	case "", "device":
+		return nil
+	case "offline", "unauthorized", "missing":
+		return fmt.Errorf("configured device is %s", ready.DeviceState)
+	default:
+		return fmt.Errorf("runner reports unknown device state %q", ready.DeviceState)
+	}
 }
 
 func runnerListenTarget(values Values) (string, string) {
@@ -982,7 +1040,12 @@ func observeRuntime(ctx context.Context, runner Runner, configDir string, values
 		result.err = fmt.Errorf("observe compose runtime: %w", err)
 		return result
 	}
-	for _, row := range driver.ParseComposePS(output) {
+	rows, err := driver.ParseComposePS(output)
+	if err != nil {
+		result.err = fmt.Errorf("parse compose runtime: %w", err)
+		return result
+	}
+	for _, row := range rows {
 		if strings.EqualFold(row.State, "running") {
 			result.composeRunning = true
 			if row.Service == "runner" || row.Service == "runner_host" {

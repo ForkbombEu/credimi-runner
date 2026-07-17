@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,14 +163,17 @@ func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) 
 }
 
 func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/readyz" {
+			http.NotFound(w, request)
+			return
+		}
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
+	}))
+	defer listener.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(listener.URL, "http://"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	defer listener.Close()
-	host, port, ok := strings.Cut(listener.Addr().String(), ":")
-	if !ok {
-		t.Fatalf("listener address = %q", listener.Addr().String())
 	}
 
 	runner := &fakeRunner{}
@@ -187,6 +192,33 @@ func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
 	}
 	if status := manager.Status(context.Background()); !status.RunnerRunning {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestLifecycleManagerStartRejectsForeignReachableHostListener(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"service":"other-service","boot_id":"test-boot"}`))
+	}))
+	defer listener.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(listener.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_HOST":            host,
+		"RUNNER_PORT":            port,
+	}, runner)
+	err = manager.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cannot adopt existing host runner") {
+		t.Fatalf("Start error = %v", err)
+	}
+	if len(runner.starts) != 0 {
+		t.Fatalf("foreign listener must not start or adopt a runner, starts = %#v", runner.starts)
 	}
 }
 

@@ -29,7 +29,10 @@ func TestComposeReportsUnavailableDockerAndCommandFailure(t *testing.T) {
 }
 
 func TestParseComposePSIgnoresMalformedRows(t *testing.T) {
-	rows := ParseComposePS([]byte("not json\n{\"Name\":\"fallback\",\"State\":\"running\"}\n"))
+	rows, err := ParseComposePS([]byte("not json\n{\"Name\":\"fallback\",\"State\":\"running\"}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if rows["fallback"].State != "running" {
 		t.Fatalf("rows = %#v", rows)
 	}

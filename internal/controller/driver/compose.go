@@ -49,12 +49,15 @@ func (d Compose) Observe(ctx context.Context, request Request) Result {
 	if len(request.ComposeServices) == 0 {
 		return Result{}
 	}
-	args := append([]string{"compose", "--project-name", request.ComposeProject, "--env-file", request.EnvPath, "-f", request.ComposePath, "ps", "--format", "json"})
+	args := []string{"compose", "--project-name", request.ComposeProject, "--env-file", request.EnvPath, "-f", request.ComposePath, "ps", "--format", "json"}
 	output, err := d.Runner.Run(ctx, "docker", args...)
 	if err != nil {
 		return Result{Error: fmt.Errorf("observe compose runtime: %w", err)}
 	}
-	rows := ParseComposePS(output)
+	rows, err := ParseComposePS(output)
+	if err != nil {
+		return Result{Error: fmt.Errorf("parse compose runtime: %w", err)}
+	}
 	services := make([]Service, 0, len(request.ComposeServices))
 	for _, expected := range request.ComposeServices {
 		if expected.Kind != "compose" {
@@ -68,7 +71,7 @@ func (d Compose) Observe(ctx context.Context, request Request) Result {
 
 type ComposeRow struct{ Service, Name, State, Status, Image string }
 
-func ParseComposePS(raw []byte) map[string]ComposeRow {
+func ParseComposePS(raw []byte) (map[string]ComposeRow, error) {
 	rows := map[string]ComposeRow{}
 	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
 	for scanner.Scan() {
@@ -84,7 +87,10 @@ func ParseComposePS(raw []byte) map[string]ComposeRow {
 			rows[key] = row
 		}
 	}
-	return rows
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan compose status: %w", err)
+	}
+	return rows, nil
 }
 
 var execLookPath = func(name string) (string, error) { return exec.LookPath(name) }
