@@ -350,6 +350,11 @@ func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) 
 	}))
 	defer api.Close()
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"","boot_id":"test-boot"}`))
+			return
+		}
 		if r.URL.Path == "/health" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))

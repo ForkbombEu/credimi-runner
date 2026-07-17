@@ -22,6 +22,7 @@ import (
 
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
+	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
@@ -148,11 +149,14 @@ func NewHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	if err != nil {
 		return nil, nil, fmt.Errorf("templates: %w", err)
 	}
-	hub := NewHub(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
+	observer := controller.Observer{Drivers: []driver.Driver{driver.Compose{}, driver.Host{}}}
+	hub := NewHubWithObservation(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
 		if manager == nil {
 			return dashboardruntime.RuntimeStatus{}
 		}
 		return manager.Status(context.Background())
+	}, func(ctx context.Context, values dashboardruntime.Values) controller.ObservedRuntime {
+		return observer.Observe(ctx, composeDir, values)
 	})
 	executable, err := os.Executable()
 	if err != nil {
@@ -1570,7 +1574,11 @@ func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]strin
 		if err == nil {
 			_ = conn.Close()
 			if healthErr := waitForRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
-				return nil
+				_, readinessErr := controller.ValidateReadiness(deadline, http.DefaultClient, "http://"+address, dashboardruntime.Values(values))
+				if readinessErr == nil {
+					return nil
+				}
+				lastErr = readinessErr
 			} else {
 				lastErr = healthErr
 			}

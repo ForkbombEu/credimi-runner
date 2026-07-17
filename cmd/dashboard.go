@@ -348,7 +348,11 @@ func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Va
 		if err == nil {
 			_ = conn.Close()
 			if healthErr := waitForDashboardRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
-				return nil
+				_, readinessErr := controller.ValidateReadiness(deadline, http.DefaultClient, "http://"+address, values)
+				if readinessErr == nil {
+					return nil
+				}
+				lastErr = readinessErr
 			} else {
 				lastErr = healthErr
 			}

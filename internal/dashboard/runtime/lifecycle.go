@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
 	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 )
 
@@ -982,14 +982,7 @@ func observeRuntime(ctx context.Context, runner Runner, configDir string, values
 		result.err = fmt.Errorf("observe compose runtime: %w", err)
 		return result
 	}
-	for _, line := range bytes.Split(output, []byte("\n")) {
-		var row struct {
-			Service string `json:"Service"`
-			State   string `json:"State"`
-		}
-		if json.Unmarshal(line, &row) != nil {
-			continue
-		}
+	for _, row := range driver.ParseComposePS(output) {
 		if strings.EqualFold(row.State, "running") {
 			result.composeRunning = true
 			if row.Service == "runner" || row.Service == "runner_host" {
