@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
+	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 	"github.com/spf13/cobra"
 )
 
@@ -25,12 +27,24 @@ var lifecycleRuntimeActionCmd = func(name string) *cobra.Command {
 }
 var lifecycleDashboardCmd = &cobra.Command{Use: "dashboard", Short: "Control the dashboard process"}
 var lifecycleDashboardStopCmd = &cobra.Command{Use: "stop", Short: "Stop the dashboard process", RunE: runLifecycleDashboardStop}
+var lifecycleLogLines int
+var lifecycleLogOutput string
+var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log"}
+var lifecycleLogPathCmd = &cobra.Command{Use: "path", Short: "Print the lifecycle log path", RunE: func(cmd *cobra.Command, args []string) error { cmd.Println(lifecycleLogPath()); return nil }}
+var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifecycle events", RunE: runLifecycleLogTail}
+var lifecycleLogExportCmd = &cobra.Command{Use: "export", Short: "Export a sanitized Markdown diagnostic report", RunE: runLifecycleLogExport}
 
 func init() {
 	lifecycleRuntimeCmd.AddCommand(lifecycleRuntimeActionCmd("start"), lifecycleRuntimeActionCmd("stop"), lifecycleRuntimeActionCmd("restart"), lifecycleRuntimeActionCmd("down"))
 	lifecycleDashboardCmd.AddCommand(lifecycleDashboardStopCmd)
-	rootCmd.AddCommand(lifecycleStatusCmd, lifecycleRuntimeCmd, lifecycleDashboardCmd)
+	lifecycleLogTailCmd.Flags().IntVar(&lifecycleLogLines, "lines", 100, "Number of lifecycle events")
+	lifecycleLogExportCmd.Flags().IntVar(&lifecycleLogLines, "lines", 500, "Number of lifecycle events")
+	lifecycleLogExportCmd.Flags().StringVar(&lifecycleLogOutput, "output", "", "Write report to this path instead of stdout")
+	lifecycleLogCmd.AddCommand(lifecycleLogPathCmd, lifecycleLogTailCmd, lifecycleLogExportCmd)
+	rootCmd.AddCommand(lifecycleStatusCmd, lifecycleRuntimeCmd, lifecycleDashboardCmd, lifecycleLogCmd)
 }
+
+func lifecycleLogPath() string { return filepath.Join(lifecycleConfigDir(), "lifecycle.jsonl") }
 
 func lifecycleConfigDir() string {
 	if strings.TrimSpace(dashboardConfigDir) != "" {
@@ -55,7 +69,7 @@ func runLifecycleStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	cmd.Printf("Dashboard: running at %s (pid %d)\n", metadata.PublicURL, metadata.PID)
-	base := strings.TrimSuffix(metadata.ProbeURL, "/healthz")
+	base := controllerBaseURL(metadata)
 	var payload struct {
 		Runtime   map[string]any `json:"runtime"`
 		Operation any            `json:"operation"`
@@ -78,10 +92,45 @@ func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 		return fmt.Errorf("dashboard is not reachable: %w", err)
 	}
 	var snapshot controller.Snapshot
-	if err := postLifecycleJSON(ctx, strings.TrimSuffix(metadata.ProbeURL, "/healthz")+"/api/controller/runtime/"+action, &snapshot); err != nil {
+	if err := postLifecycleJSON(ctx, controllerBaseURL(metadata)+"/api/controller/runtime/"+action, &snapshot); err != nil {
 		return err
 	}
 	cmd.Printf("Operation %s queued: %s\n", snapshot.ID, snapshot.Message)
+	return nil
+}
+
+func controllerBaseURL(metadata controller.Metadata) string {
+	return strings.TrimSuffix(metadata.ProbeURL, "/internal/controller/identity")
+}
+
+func runLifecycleLogTail(cmd *cobra.Command, args []string) error {
+	events, err := lifecyclelog.Tail(lifecycleLogPath(), lifecycleLogLines)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		encoded, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		cmd.Println(string(encoded))
+	}
+	return nil
+}
+
+func runLifecycleLogExport(cmd *cobra.Command, args []string) error {
+	report, err := lifecyclelog.ExportMarkdown(lifecycleLogPath(), lifecycleLogLines)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(lifecycleLogOutput) == "" {
+		cmd.Print(report)
+		return nil
+	}
+	if err := os.WriteFile(lifecycleLogOutput, []byte(report), 0o600); err != nil {
+		return err
+	}
+	cmd.Printf("Lifecycle diagnostic report written to %s\n", lifecycleLogOutput)
 	return nil
 }
 

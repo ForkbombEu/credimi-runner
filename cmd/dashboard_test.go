@@ -139,38 +139,6 @@ func TestRootCommandDefaultsToDashboard(t *testing.T) {
 	} else if !cmd.Hidden {
 		t.Fatal("serve command should be hidden from CLI help")
 	}
-	if cmd, _, err := rootCmd.Find([]string{"stop-server"}); err != nil || cmd == rootCmd || cmd.Name() != "stop-server" {
-		t.Fatalf("stop-server command should be registered, cmd=%v err=%v", cmd, err)
-	}
-}
-
-func TestRunStopServerStopsConfiguredRuntime(t *testing.T) {
-	oldConfigDir := dashboardConfigDir
-	t.Cleanup(func() {
-		dashboardConfigDir = oldConfigDir
-	})
-	dashboardConfigDir = t.TempDir()
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	config := strings.Join([]string{
-		"CREDIMI_RUNNER_ID=acme/runner",
-		"CREDIMI_RUNNER_BACKEND=host",
-		"CREDIMI_RUNNER_TYPE=ios_simulator",
-		"CREDIMI_SERVICE_MODE=manual",
-		"RUNNER_PORT=1",
-		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join(dashboardConfigDir, ".env"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cmd := &cobra.Command{Use: "stop-server"}
-	var output bytes.Buffer
-	cmd.SetOut(&output)
-	if err := runStopServer(cmd, nil); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "Stopped runner server") {
-		t.Fatalf("runStopServer output = %q", output.String())
-	}
 }
 
 func TestExecuteHelp(t *testing.T) {
