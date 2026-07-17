@@ -93,6 +93,11 @@ func runLifecycleDashboardStop(cmd *cobra.Command, args []string) error {
 	if metadata.PID <= 1 {
 		return errors.New("refusing to stop invalid dashboard PID")
 	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+	defer cancel()
+	if err := controller.Probe(ctx, metadata); err != nil {
+		return fmt.Errorf("refusing to stop an unverified dashboard controller: %w", err)
+	}
 	if err := syscall.Kill(metadata.PID, syscall.SIGTERM); err != nil {
 		return err
 	}

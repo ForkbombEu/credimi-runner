@@ -83,22 +83,31 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	defer listener.Close()
 	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 	defer manager.Close()
+	controllerID := fmt.Sprintf("controller-%d", time.Now().UnixNano())
+	identityToken, err := controller.NewIdentityToken()
+	if err != nil {
+		return err
+	}
+	plan := dashboardruntime.BuildRuntimePlan(configDir, values)
 
 	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
 	defer cancelDashboard()
-	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContext(dashboardCtx, configDir, manager)
+	operations := controller.NewCoordinator(dashboardCtx)
+	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinator(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations)
 	if err != nil {
 		return err
 	}
 	defer cancelHandler()
 	if err := lease.Publish(controller.Metadata{
-		ControllerID: fmt.Sprintf("controller-%d", time.Now().UnixNano()),
-		PID:          os.Getpid(),
-		ConfigDir:    configDir,
-		ListenHost:   listenHost,
-		ListenPort:   listenPort,
-		ProbeURL:     fmt.Sprintf("http://127.0.0.1:%d/healthz", listenPort),
-		PublicURL:    dashboardBrowserURL(listenHost, listenPort),
+		ControllerID:      controllerID,
+		PID:               os.Getpid(),
+		ConfigDir:         configDir,
+		ListenHost:        listenHost,
+		ListenPort:        listenPort,
+		ProbeURL:          fmt.Sprintf("http://127.0.0.1:%d/internal/controller/identity", listenPort),
+		PublicURL:         dashboardDisplayURL(listenHost, listenPort),
+		ConfigFingerprint: plan.ConfigFingerprint,
+		IdentityToken:     identityToken,
 	}); err != nil {
 		return err
 	}
@@ -119,13 +128,16 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		progress := func(line string) {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "runner startup: %s\n", line)
 		}
-		go func() {
-			if err := startDashboardRuntimeWithProgress(dashboardCtx, manager, values, progress); err != nil {
-				stdlog.Printf("dashboard runtime start failed: %v", err)
-			}
-		}()
+		if _, err := operations.Submit(controller.OperationRuntimeStart, func(ctx context.Context, report func(controller.Progress)) error {
+			return startDashboardRuntimeWithProgress(ctx, manager, values, func(line string) {
+				report(controller.Progress{Message: line})
+				progress(line)
+			})
+		}); err != nil {
+			stdlog.Printf("dashboard runtime startup was not queued: %v", err)
+		}
 	}
-	if dashboardOpen {
+	if dashboardOpen && dashboardCanOpenBrowser() {
 		go func() {
 			time.Sleep(250 * time.Millisecond)
 			if err := openDashboardBrowserFunc(dashboardBrowserURL(listenHost, listenPort)); err != nil {
@@ -164,14 +176,19 @@ func reopenExistingDashboard(cmd *cobra.Command, configDir string) error {
 	if err != nil {
 		return fmt.Errorf("dashboard is already locked but its metadata is unavailable: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := controller.Probe(ctx, metadata); err != nil {
+		return fmt.Errorf("dashboard lock is held but controller identity verification failed: %w", err)
+	}
 	url := metadata.PublicURL
 	if strings.TrimSpace(url) == "" {
-		url = dashboardBrowserURL(metadata.ListenHost, metadata.ListenPort)
+		url = dashboardDisplayURL(metadata.ListenHost, metadata.ListenPort)
 	}
 	if cmd != nil {
 		cmd.Printf("Credimi Runner dashboard is already running at %s\n", url)
 	}
-	if dashboardOpen {
+	if dashboardOpen && dashboardCanOpenBrowser() {
 		if err := openDashboardBrowserFunc(url); err != nil {
 			stdlog.Printf("dashboard browser open skipped: %v", err)
 		}
@@ -205,6 +222,23 @@ func dashboardBrowserURL(host string, port int) string {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("http://%s:%d", host, port)
+}
+
+func dashboardDisplayURL(host string, port int) string {
+	if strings.TrimSpace(host) != "0.0.0.0" && strings.TrimSpace(host) != "::" && strings.TrimSpace(host) != "[::]" {
+		return dashboardBrowserURL(host, port)
+	}
+	if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
+		return fmt.Sprintf("http://%s:%d", hostname, port)
+	}
+	return dashboardBrowserURL(host, port)
+}
+
+func dashboardCanOpenBrowser() bool {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return true
+	}
+	return strings.TrimSpace(os.Getenv("DISPLAY")) != "" || strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != ""
 }
 
 func openDashboardBrowser(url string) error {

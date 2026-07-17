@@ -139,7 +139,7 @@
     document.body.classList.remove('busy-lock');
   }
   function showSetupBusy(message) {
-    showBusy(message || 'Writing runner config and starting services. Keep this page open.', { runtimeLogs: false });
+    showBusy(message || 'Writing runner config and starting services. You may close this page safely.', { runtimeLogs: false });
     clearInterval(busyStartupTimer);
     pollBusyStartupStatus();
     busyStartupTimer = setInterval(pollBusyStartupStatus, 1500);
@@ -164,7 +164,7 @@
   document.body.addEventListener('htmx:beforeRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
     if (!trigger) return;
-    const message = trigger.dataset.busyMessage || 'Applying runtime change. Keep this page open.';
+    const message = trigger.dataset.busyMessage || 'Applying runtime change in the background.';
     if (trigger.matches('[data-setup-form]')) {
       sessionStorage.setItem(setupBusyKey, message);
       showSetupBusy(message);

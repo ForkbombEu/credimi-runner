@@ -52,27 +52,30 @@ var (
 )
 
 type Server struct {
-	cfg                    *Config
-	hub                    *Hub
-	render                 *Renderer
-	composeDir             string
-	ctx                    context.Context
-	authToken              string
-	manager                dashboardruntime.Manager
-	operations             *controller.Coordinator
-	runnerReady            func(context.Context, map[string]string) error
-	lookupPath             func(string) (string, error)
-	statPath               func(string) (os.FileInfo, error)
-	lastRegistrationStatus string
-	pendingDiff            dashboardruntime.ConfigDiff
-	startup                startupState
-	maintenance            maintenance.Status
-	maintenanceChecked     bool
-	maintenanceChecker     func(context.Context, string, time.Time, string) maintenance.Status
-	binaryPath             string
-	downloadBinary         func(context.Context, *http.Client, string, func(string)) error
-	restartDashboard       func(string) error
-	mu                     sync.RWMutex
+	cfg                     *Config
+	hub                     *Hub
+	render                  *Renderer
+	composeDir              string
+	ctx                     context.Context
+	authToken               string
+	controllerID            string
+	controllerIdentityToken string
+	controllerFingerprint   string
+	manager                 dashboardruntime.Manager
+	operations              *controller.Coordinator
+	runnerReady             func(context.Context, map[string]string) error
+	lookupPath              func(string) (string, error)
+	statPath                func(string) (os.FileInfo, error)
+	lastRegistrationStatus  string
+	pendingDiff             dashboardruntime.ConfigDiff
+	startup                 startupState
+	maintenance             maintenance.Status
+	maintenanceChecked      bool
+	maintenanceChecker      func(context.Context, string, time.Time, string) maintenance.Status
+	binaryPath              string
+	downloadBinary          func(context.Context, *http.Client, string, func(string)) error
+	restartDashboard        func(string) error
+	mu                      sync.RWMutex
 }
 
 type StartupPhase string
@@ -127,6 +130,16 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 }
 
 func NewHandlerWithManagerContext(parent context.Context, composeDir string, manager dashboardruntime.Manager) (http.Handler, context.CancelFunc, error) {
+	return NewHandlerWithManagerContextAndIdentity(parent, composeDir, manager, "", "", "")
+}
+
+func NewHandlerWithManagerContextAndIdentity(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string) (http.Handler, context.CancelFunc, error) {
+	return NewHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, nil)
+}
+
+// NewHandlerWithManagerContextAndIdentityAndCoordinator makes all dashboard
+// actions and non-HTTP entrypoints share one operation owner.
+func NewHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
 	cfg, err := LoadConfig(composeDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -159,19 +172,25 @@ func NewHandlerWithManagerContext(parent context.Context, composeDir string, man
 	}
 
 	srv := &Server{
-		cfg:        cfg,
-		hub:        hub,
-		render:     render,
-		composeDir: composeDir,
-		ctx:        parent,
-		authToken:  strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
-		manager:    manager,
-		operations: controller.NewCoordinator(parent),
-		lookupPath: lookupPath,
-		statPath:   statPath,
+		cfg:                     cfg,
+		hub:                     hub,
+		render:                  render,
+		composeDir:              composeDir,
+		ctx:                     parent,
+		authToken:               strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
+		controllerID:            controllerID,
+		controllerIdentityToken: identityToken,
+		controllerFingerprint:   fingerprint,
+		manager:                 manager,
+		operations:              operations,
+		lookupPath:              lookupPath,
+		statPath:                statPath,
 		startup: startupState{
 			Phase: StartupIdle,
 		},
+	}
+	if srv.operations == nil {
+		srv.operations = controller.NewCoordinator(parent)
 	}
 	srv.runnerReady = srv.waitForRunnerReady
 	srv.binaryPath = executable
@@ -244,6 +263,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /events/runtime", s.sse("runtime"))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /internal/controller/identity", s.controllerIdentity)
 	// Machine-readable lifecycle API. These endpoints return immediately and
 	// can be polled safely by remote CLI clients without tying an operation to
 	// the HTTP request lifetime.
@@ -266,7 +286,7 @@ func staticHTTPHandler() (http.Handler, error) {
 // auth wraps the mux with optional bearer/basic protection.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authToken == "" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" {
+		if s.authToken == "" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" || r.URL.Path == "/internal/controller/identity" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -282,6 +302,14 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) controllerIdentity(w http.ResponseWriter, r *http.Request) {
+	if s.controllerIdentityToken == "" || r.Header.Get("X-Credimi-Controller-Token") != s.controllerIdentityToken {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, map[string]string{"controller_id": s.controllerID, "config_fingerprint": s.controllerFingerprint})
 }
 
 // ── page rendering ───────────────────────────────────────────────────────────
@@ -943,7 +971,7 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeStart, func(ctx context.Context) error {
 		if s.manager == nil {
 			return nil
 		}
@@ -1057,7 +1085,7 @@ func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeStop, func(ctx context.Context) error {
 		if s.manager == nil {
 			return nil
 		}
@@ -1066,7 +1094,7 @@ func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeRestart, func(ctx context.Context) error {
 		if s.manager == nil {
 			return nil
 		}
@@ -1075,7 +1103,7 @@ func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeDown(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeDown, func(ctx context.Context) error {
 		if s.manager == nil {
 			return nil
 		}
@@ -1084,7 +1112,7 @@ func (s *Server) runtimeDown(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeUpdateImage(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeRestart, func(ctx context.Context) error {
 		if s.manager == nil {
 			return nil
 		}
@@ -1171,7 +1199,7 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeRegister(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRegistration, func(ctx context.Context) error {
 		return s.registerCurrent(ctx, s.cfg.Snapshot())
 	}, "Credimi runner registration updated.")
 }
@@ -1200,6 +1228,22 @@ func (s *Server) runtimeLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	startup := s.startupSnapshot()
+	if s.operations != nil {
+		op := s.operations.Current()
+		if op.Phase == controller.PhaseQueued || op.Phase == controller.PhaseRunning {
+			startup.Phase = StartupStarting
+			startup.Message = op.Message
+			startup.running = true
+		}
+		if op.Phase == controller.PhaseFailed || op.Phase == controller.PhaseCancelled {
+			startup.Phase = StartupNeedsAttention
+			startup.Message = op.Error
+			if startup.Message == "" {
+				startup.Message = op.Message
+			}
+			startup.running = false
+		}
+	}
 	lines := startup.Logs
 	if since, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("since")), 10, 64); err == nil && since > 0 {
 		start := 0
@@ -1221,7 +1265,7 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRuntimeRestart, func(ctx context.Context) error {
 		s.mu.RLock()
 		diff := s.pendingDiff
 		s.mu.RUnlock()
@@ -1276,26 +1320,38 @@ func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
 	}, "Pending changes applied.")
 }
 
-func (s *Server) runtimeAction(w http.ResponseWriter, r *http.Request, page string, action func(context.Context) error, success string) {
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	if err := action(ctx); err != nil {
+func (s *Server) queueRuntimeAction(w http.ResponseWriter, r *http.Request, page string, kind controller.OperationKind, action func(context.Context) error, success string) {
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
+	}
+	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, _ func(controller.Progress)) error {
+		return action(ctx)
+	})
+	if err != nil {
+		if errors.Is(err, controller.ErrOperationConflict) {
+			d := s.pageData(page, map[string]any{"Flash": err.Error()})
+			html, _ := s.render.FragmentPage(page, d)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(html))
+			return
+		}
 		d := s.pageData(page, map[string]any{"Flash": err.Error()})
 		html, _ := s.render.FragmentPage(page, d)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(html))
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(html))
 		return
 	}
 	s.mu.Lock()
-	s.lastRegistrationStatus = success
+	s.lastRegistrationStatus = fmt.Sprintf("%s Operation %s is running in the background.", success, snapshot.ID)
 	s.mu.Unlock()
-	s.hub.poll(ctx)
-	d := s.pageData(page, map[string]any{"Flash": success})
+	d := s.pageData(page, map[string]any{"Flash": s.lastRegistrationStatus})
 	html, _ := s.render.FragmentPage(page, d)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, success))
-	w.Write([]byte(html))
+	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q,"operation":%q}`, s.lastRegistrationStatus, snapshot.ID))
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(html))
 }
 
 func (s *Server) rawConfig(w http.ResponseWriter, r *http.Request) {

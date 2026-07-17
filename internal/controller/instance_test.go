@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +21,8 @@ func TestControllerLeaseExcludesSecondOwnerAndPublishesMetadata(t *testing.T) {
 	metadata := Metadata{
 		ControllerID: "controller-1", PID: os.Getpid(), ConfigDir: dir,
 		ListenHost: "0.0.0.0", ListenPort: 8051,
-		ProbeURL: "http://127.0.0.1:8051/healthz", StartedAt: time.Now(),
+		ProbeURL: "http://127.0.0.1:8051/internal/controller/identity", StartedAt: time.Now(),
+		ConfigFingerprint: "test-fingerprint", IdentityToken: "test-token",
 	}
 	if err := lease.Publish(metadata); err != nil {
 		t.Fatal(err)
@@ -54,5 +57,26 @@ func TestControllerProbeRejectsUnavailableEndpoint(t *testing.T) {
 	err := Probe(ctx, Metadata{ProbeURL: "http://127.0.0.1:1/healthz"})
 	if err == nil {
 		t.Fatal("expected unavailable controller probe")
+	}
+}
+
+func TestControllerProbeVerifiesBootIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Credimi-Controller-Token") != "token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"controller_id":"controller-1","config_fingerprint":"fingerprint"}`))
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	metadata := Metadata{ControllerID: "controller-1", ConfigFingerprint: "fingerprint", IdentityToken: "token", ProbeURL: server.URL}
+	if err := Probe(ctx, metadata); err != nil {
+		t.Fatal(err)
+	}
+	metadata.ConfigFingerprint = "other"
+	if err := Probe(ctx, metadata); err == nil {
+		t.Fatal("expected controller identity mismatch")
 	}
 }

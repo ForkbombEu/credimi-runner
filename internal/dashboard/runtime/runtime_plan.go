@@ -1,23 +1,29 @@
 package runtime
 
 import (
+	"fmt"
+	"hash/fnv"
+	"os"
+	"path/filepath"
 	goruntime "runtime"
 	"strings"
 )
 
 type RuntimePlan struct {
-	ConfigDir        string
-	EnvPath          string
-	ComposePath      string
-	Backend          string
-	RunnerType       string
-	ContainerMode    string
-	ServiceMode      string
-	ComposeServices  []string
-	PublicMode       string
-	RequiresDocker   bool
-	RequiresHostRun  bool
-	ExpectedServices []PlannedService
+	ConfigDir         string
+	EnvPath           string
+	ComposePath       string
+	ComposeProject    string
+	ConfigFingerprint string
+	Backend           string
+	RunnerType        string
+	ContainerMode     string
+	ServiceMode       string
+	ComposeServices   []string
+	PublicMode        string
+	RequiresDocker    bool
+	RequiresHostRun   bool
+	ExpectedServices  []PlannedService
 }
 
 type PlannedService struct {
@@ -91,17 +97,24 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	runnerType := defaultIfEmpty(values["CREDIMI_RUNNER_TYPE"], "android_phone")
 	containerMode := strings.TrimSpace(values["CREDIMI_CONTAINER_MODE"])
 
+	canonicalDir, err := filepath.Abs(configDir)
+	if err != nil {
+		canonicalDir = configDir
+	}
+	fingerprint := configFingerprint(canonicalDir, values)
 	plan := RuntimePlan{
-		ConfigDir:       configDir,
-		EnvPath:         filepathJoin(configDir, ".env"),
-		ComposePath:     filepathJoin(configDir, "docker-compose.yaml"),
-		Backend:         backend,
-		RunnerType:      runnerType,
-		ContainerMode:   containerMode,
-		ServiceMode:     serviceMode,
-		PublicMode:      serviceMode,
-		RequiresDocker:  backend == DefaultContainerBackend || serviceMode != "manual",
-		RequiresHostRun: backend == DefaultHostBackend,
+		ConfigDir:         configDir,
+		EnvPath:           filepathJoin(configDir, ".env"),
+		ComposePath:       filepathJoin(configDir, "docker-compose.yaml"),
+		ComposeProject:    composeProjectName(canonicalDir),
+		ConfigFingerprint: fingerprint,
+		Backend:           backend,
+		RunnerType:        runnerType,
+		ContainerMode:     containerMode,
+		ServiceMode:       serviceMode,
+		PublicMode:        serviceMode,
+		RequiresDocker:    backend == DefaultContainerBackend || serviceMode != "manual",
+		RequiresHostRun:   backend == DefaultHostBackend,
 	}
 
 	switch {
@@ -122,6 +135,26 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	plan.ExpectedServices = expectedServices(plan)
 
 	return plan
+}
+
+func composeProjectName(configDir string) string {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(configDir))
+	return fmt.Sprintf("credimi-runner-%d-%08x", os.Getuid(), hash.Sum32())
+}
+
+func configFingerprint(configDir string, values Values) string {
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(configDir))
+	for _, key := range []string{"CREDIMI_RUNNER_ID", "CREDIMI_RUNNER_BACKEND", "CREDIMI_RUNNER_TYPE", "CREDIMI_RUNNER_SERIAL", "CREDIMI_SERVICE_MODE", "RUNNER_HOST", "RUNNER_PORT"} {
+		_, _ = hash.Write([]byte(key + "=" + values[key] + "\n"))
+	}
+	return fmt.Sprintf("%016x", hash.Sum64())
+}
+
+func composeArgs(plan RuntimePlan, command ...string) []string {
+	args := []string{"compose", "--project-name", plan.ComposeProject, "--env-file", plan.EnvPath, "-f", plan.ComposePath}
+	return append(args, command...)
 }
 
 func expectedServices(plan RuntimePlan) []PlannedService {

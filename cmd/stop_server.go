@@ -20,6 +20,7 @@ func init() {
 }
 
 func runStopServer(cmd *cobra.Command, args []string) error {
+	cmd.PrintErrln("warning: stop-server is deprecated; use `credimi-runner runtime stop`")
 	configDir := dashboardConfigDir
 	if configDir == "" {
 		configDir = dashboard.ConfigDir()

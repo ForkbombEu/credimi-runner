@@ -15,7 +15,7 @@
   {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime recreate required before the latest changes take effect.</div></div>{{end}}
   {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Credimi registration update required before the latest metadata is reflected remotely.</div></div>{{end}}
 
-  <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Applying configuration changes to the runner. Keep this page open.">
+  <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Applying configuration changes to the runner in the background.">
     <section class="card">
       <header class="card-h">{{icon "shield"}}<div><h3>Runner identity</h3><div class="sub">Who this runner is on the Credimi platform</div></div></header>
       <div class="card-b">

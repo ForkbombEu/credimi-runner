@@ -297,7 +297,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 		}
 		if len(pullServices) > 0 {
 			emitProgress(progress, "Pulling Docker images. Large runner images can take several minutes.")
-			pullArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "pull"}
+			pullArgs := composeArgs(plan, "pull")
 			pullArgs = append(pullArgs, pullServices...)
 			if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: progress}); err != nil {
 				m.status.LastError = err.Error()
@@ -306,7 +306,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 		}
 		emitProgress(progress, "Starting Docker services.")
 		composeStartedAt := time.Now()
-		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d", "--pull", "never"}
+		args := composeArgs(plan, "up", "-d", "--pull", "never")
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: progress}); err != nil {
 			m.status.LastError = err.Error()
@@ -344,7 +344,7 @@ func composePullServices(services []string, runnerPullPolicy string) []string {
 }
 
 func (m *LifecycleManager) composeServiceStartedAtLocked(ctx context.Context, plan RuntimePlan, service string) (time.Time, error) {
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "ps", "-q", service}
+	args := composeArgs(plan, "ps", "-q", service)
 	output, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args})
 	if err != nil {
 		return time.Time{}, fmt.Errorf("resolve %s container: %w", service, err)
@@ -382,7 +382,7 @@ func (m *LifecycleManager) stopStaleComposeServicesLocked(ctx context.Context, p
 	if len(staleServices) == 0 {
 		return nil
 	}
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "rm", "-f", "-s"}
+	args := composeArgs(plan, "rm", "-f", "-s")
 	args = append(args, staleServices...)
 	_, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args})
 	return err
@@ -435,7 +435,7 @@ func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 
 	if len(plan.ComposeServices) > 0 {
 		m.stopComposeLogFollowerLocked()
-		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop"}
+		args := composeArgs(plan, "stop")
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
 			m.status.LastError = err.Error()
@@ -717,7 +717,7 @@ func (m *LifecycleManager) Down(ctx context.Context) error {
 	defer m.mu.Unlock()
 	if _, err := m.runner.Run(ctx, CommandSpec{
 		Name: "docker",
-		Args: []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "down"},
+		Args: composeArgs(plan, "down", "--remove-orphans"),
 	}); err != nil {
 		m.status.LastError = err.Error()
 		return err
@@ -730,7 +730,7 @@ func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {
 	if m.logCmd != nil || len(plan.ComposeServices) == 0 {
 		return
 	}
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs", "-f", "--tail", "80"}
+	args := composeArgs(plan, "logs", "-f", "--tail", "80")
 	args = append(args, plan.ComposeServices...)
 	cmd, err := m.runner.Start(context.Background(), CommandSpec{Name: "docker", Args: args})
 	if err != nil {
@@ -817,7 +817,7 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 		stopMessage = "Stopping the runner and quick tunnel while keeping the reverse proxy online."
 	}
 	emitProgress(progress, stopMessage)
-	stopArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop"}
+	stopArgs := composeArgs(plan, "stop")
 	stopArgs = append(stopArgs, stopServices...)
 	if _, err := m.runner.Run(ctx, CommandSpec{
 		Name:   "docker",
@@ -831,7 +831,7 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	emitProgress(progress, "Removing the stopped runner container.")
 	if _, err := m.runner.Run(ctx, CommandSpec{
 		Name:   "docker",
-		Args:   []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "rm", "-f", "-s", "runner"},
+		Args:   composeArgs(plan, "rm", "-f", "-s", "runner"),
 		Env:    composeProgressEnv(),
 		Stream: progress,
 	}); err != nil {
@@ -947,7 +947,7 @@ func (m *LifecycleManager) logs(ctx context.Context, tail int, services []string
 }
 
 func composeLogArgs(plan RuntimePlan, tail int, since time.Time) []string {
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs"}
+	args := composeArgs(plan, "logs")
 	includeHistory := tail < 0
 	if includeHistory {
 		tail = -tail
