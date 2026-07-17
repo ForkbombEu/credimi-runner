@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -36,6 +37,9 @@ type RuntimeStatus struct {
 	Configured           bool
 	RunnerRunning        bool
 	ComposeRunning       bool
+	ObservedAt           time.Time
+	Observed             bool
+	DeviceReady          bool
 	PublicURL            string
 	LastStartedAt        time.Time
 	LastError            string
@@ -906,10 +910,86 @@ func (m *LifecycleManager) emitLifecycleLocked(event lifecyclelog.Event) {
 	}
 }
 
-func (m *LifecycleManager) Status(context.Context) RuntimeStatus {
+func (m *LifecycleManager) Status(ctx context.Context) RuntimeStatus {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.status
+	status := m.status
+	values := cloneValues(m.values)
+	runner := m.runner
+	configDir := m.configDir
+	m.mu.Unlock()
+
+	// Test/embedded runners are command fakes; their in-memory status remains
+	// authoritative. The production ExecRunner always observes the host before
+	// rendering state so a restarted dashboard can adopt an existing runtime.
+	if _, ok := runner.(ExecRunner); !ok {
+		return status
+	}
+	observed := observeRuntime(ctx, runner, configDir, values)
+	status.Observed = true
+	status.ObservedAt = time.Now().UTC()
+	status.RunnerRunning = observed.runnerRunning
+	status.ComposeRunning = observed.composeRunning
+	status.DeviceReady = observed.deviceReady
+	if observed.err != nil {
+		status.LastError = observed.err.Error()
+	}
+	m.mu.Lock()
+	m.status = status
+	m.mu.Unlock()
+	return status
+}
+
+type observedRuntime struct {
+	runnerRunning  bool
+	composeRunning bool
+	deviceReady    bool
+	err            error
+}
+
+func observeRuntime(ctx context.Context, runner Runner, configDir string, values Values) observedRuntime {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	plan := BuildRuntimePlan(configDir, values)
+	result := observedRuntime{deviceReady: configuredDeviceReady(ctx, values)}
+	if plan.Backend == DefaultHostBackend {
+		result.runnerRunning = runnerAddressReachable(values, 500*time.Millisecond)
+	}
+	if len(plan.ComposeServices) == 0 {
+		return result
+	}
+	output, err := runner.Run(ctx, CommandSpec{Name: "docker", Args: composeArgs(plan, "ps", "--format", "json")})
+	if err != nil {
+		result.err = fmt.Errorf("observe compose runtime: %w", err)
+		return result
+	}
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		var row struct {
+			Service string `json:"Service"`
+			State   string `json:"State"`
+		}
+		if json.Unmarshal(line, &row) != nil {
+			continue
+		}
+		if strings.EqualFold(row.State, "running") {
+			result.composeRunning = true
+			if row.Service == "runner" || row.Service == "runner_host" {
+				result.runnerRunning = true
+			}
+		}
+	}
+	return result
+}
+
+func configuredDeviceReady(ctx context.Context, values Values) bool {
+	serial := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
+	if serial == "" {
+		return true
+	}
+	output, err := exec.CommandContext(ctx, "adb", "-s", serial, "get-state").Output()
+	return err == nil && strings.TrimSpace(string(output)) == "device"
 }
 
 func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error) {

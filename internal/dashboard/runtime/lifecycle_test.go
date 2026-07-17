@@ -190,6 +190,22 @@ func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
 	}
 }
 
+func TestObserveRuntimeUsesComposeProjectAndRunnerService(t *testing.T) {
+	runner := &fakeRunner{runOutput: []byte(`{"Service":"runner","State":"running"}` + "\n")}
+	values := Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}
+	observed := observeRuntime(context.Background(), runner, t.TempDir(), values)
+	if !observed.composeRunning || !observed.runnerRunning || observed.err != nil {
+		t.Fatalf("observed=%#v", observed)
+	}
+	if len(runner.runs) != 1 || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "--project-name credimi-runner-") {
+		t.Fatalf("compose observation args=%#v", runner.runs)
+	}
+}
+
 func TestLifecycleManagerStartWithProgressStreamsComposePull(t *testing.T) {
 	runner := &fakeRunner{runOutput: []byte("runner Pulling fs layer\nrunner Downloading 128MB\nrunner Pull complete\n")}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{

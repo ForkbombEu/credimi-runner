@@ -729,7 +729,7 @@ Behavior:
 - If a runtime command requires a controller and none exists, `runtime start` may start the dashboard controller first.
 - `runtime status` remains read-only and may perform direct observation if no controller exists.
 - `stop` performs runtime stop followed by dashboard stop.
-- `stop-server` remains temporarily as a deprecated alias for `runtime stop`, with a clear warning.
+- `stop-server` is removed. `credimi-runner runtime stop` is the only runtime-stop command.
 - `serve` remains hidden and intended only as the controller-managed runner child/container entrypoint.
 
 All status commands must have deterministic exit codes:
@@ -1200,7 +1200,7 @@ Exit criteria: a crashed detached runner never blocks a subsequent start, and un
 1. Add controller lock and identity metadata.
 2. Make the plain command idempotent.
 3. Add dashboard/runtime/status/log commands.
-4. Deprecate `stop-server`.
+4. Remove `stop-server` after the controller-backed runtime command is available.
 5. Add deterministic exit codes and JSON status.
 
 Exit criteria: repeated SSH invocation is safe and useful without manual PID discovery.
@@ -1367,7 +1367,7 @@ Do not replace existing observability with the lifecycle log. Do not route all e
 2. Existing dashboard routes remain temporarily available.
 3. Existing quick, named, and manual service modes remain supported.
 4. Existing host/container selection remains supported.
-5. `stop-server` remains for at least one release with deprecation output.
+5. `stop-server` is removed once the controller-backed runtime command is available.
 6. Existing running containers are adopted before being recreated.
 7. Existing volumes are never removed by migration.
 8. Existing configuration secrets are never rewritten into lifecycle metadata.
