@@ -30,6 +30,8 @@ func TestLifecycleCLIStatusAndRuntimeAction(t *testing.T) {
 			_, _ = w.Write([]byte(`{"runtime":{"runner_running":true},"operation":{"id":"op-1"}}`))
 		case "/api/controller/runtime/start", "/api/controller/runtime/stop":
 			_, _ = w.Write([]byte(`{"id":"op-2","message":"operation queued"}`))
+		case "/api/controller/operations/op-2":
+			_, _ = w.Write([]byte(`{"id":"op-2","phase":"succeeded"}`))
 		default:
 			http.NotFound(w, request)
 		}
@@ -52,7 +54,7 @@ func TestLifecycleCLIStatusAndRuntimeAction(t *testing.T) {
 	if err := runLifecycleRuntimeAction(command, "start"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "Runner start requested (operation op-2)") {
+	if output.String() != "Runner started successfully.\n" {
 		t.Fatalf("runtime action output = %q", output.String())
 	}
 
@@ -60,8 +62,41 @@ func TestLifecycleCLIStatusAndRuntimeAction(t *testing.T) {
 	if err := runLifecycleRuntimeAction(command, "stop"); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "Runner stop requested (operation op-2)") {
+	if output.String() != "Runner stopped successfully.\n" {
 		t.Fatalf("stop output = %q", output.String())
+	}
+}
+
+func TestLifecycleRuntimeActionReportsOperationFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/internal/controller/identity":
+			_, _ = w.Write([]byte(`{"controller_id":"controller-1","config_fingerprint":"fingerprint"}`))
+		case "/api/controller/runtime/start":
+			_, _ = w.Write([]byte(`{"id":"op-2"}`))
+		case "/api/controller/operations/op-2":
+			_, _ = w.Write([]byte(`{"id":"op-2","phase":"failed","error":"device unavailable"}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	writeLifecycleMetadata(t, dir, server.URL+"/internal/controller/identity", 42)
+	command, _ := lifecycleTestCommand()
+	err := runLifecycleRuntimeAction(command, "start")
+	if err == nil || !strings.Contains(err.Error(), "runner start failed: device unavailable") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestLifecycleActionPastTense(t *testing.T) {
+	for action, want := range map[string]string{"start": "started", "stop": "stopped", "restart": "restarted"} {
+		if got := lifecycleActionPastTense(action); got != want {
+			t.Fatalf("%s = %q, want %q", action, got, want)
+		}
 	}
 }
 

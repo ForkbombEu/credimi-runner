@@ -32,6 +32,7 @@ var lifecycleDashboardOpenCmd = &cobra.Command{Use: "open", Short: "Open the run
 var lifecycleRuntimeStatusCmd = &cobra.Command{Use: "status", Short: "Show runtime status", RunE: runLifecycleStatus}
 var lifecycleLogLines int
 var lifecycleLogOutput string
+var lifecycleOperationPollInterval = 250 * time.Millisecond
 var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log"}
 var lifecycleLogPathCmd = &cobra.Command{Use: "path", Short: "Print the lifecycle log path", RunE: func(cmd *cobra.Command, args []string) error { cmd.Println(lifecycleLogPath()); return nil }}
 var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifecycle events", RunE: runLifecycleLogTail}
@@ -89,7 +90,7 @@ func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 	if err != nil {
 		return fmt.Errorf("dashboard is not running: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer cancel()
 	if err := controller.Probe(ctx, metadata); err != nil {
 		return fmt.Errorf("dashboard is not reachable: %w", err)
@@ -98,12 +99,69 @@ func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 	if err := postLifecycleJSON(ctx, controllerBaseURL(metadata)+"/api/controller/runtime/"+action, &snapshot); err != nil {
 		return err
 	}
-	if action == "stop" {
-		cmd.Printf("Runner stop requested (operation %s). Use `credimi-runner runtime status` to follow progress.\n", snapshot.ID)
-		return nil
+	completed, err := waitForLifecycleOperation(ctx, controllerBaseURL(metadata), snapshot.ID)
+	if err != nil {
+		return fmt.Errorf("runner %s did not complete: %w", action, err)
 	}
-	cmd.Printf("Runner %s requested (operation %s). Use `credimi-runner runtime status` to follow progress.\n", action, snapshot.ID)
+	if completed.Phase != controller.PhaseSucceeded {
+		message := strings.TrimSpace(completed.Error)
+		if message == "" {
+			message = strings.TrimSpace(completed.Message)
+		}
+		if message == "" {
+			message = "operation did not succeed"
+		}
+		return fmt.Errorf("runner %s failed: %s", action, message)
+	}
+	cmd.Printf("Runner %s successfully.\n", lifecycleActionPastTense(action))
 	return nil
+}
+
+func waitForLifecycleOperation(ctx context.Context, baseURL, operationID string) (controller.Snapshot, error) {
+	if strings.TrimSpace(operationID) == "" {
+		return controller.Snapshot{}, errors.New("dashboard returned an operation without an ID")
+	}
+	poll := func() (controller.Snapshot, bool, error) {
+		var snapshot controller.Snapshot
+		if err := getLifecycleJSON(ctx, baseURL+"/api/controller/operations/"+operationID, &snapshot); err != nil {
+			return controller.Snapshot{}, false, err
+		}
+		switch snapshot.Phase {
+		case controller.PhaseSucceeded, controller.PhaseFailed, controller.PhaseCancelled:
+			return snapshot, true, nil
+		default:
+			return snapshot, false, nil
+		}
+	}
+	if snapshot, done, err := poll(); err != nil || done {
+		return snapshot, err
+	}
+	ticker := time.NewTicker(lifecycleOperationPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return controller.Snapshot{}, ctx.Err()
+		case <-ticker.C:
+			snapshot, done, err := poll()
+			if err != nil || done {
+				return snapshot, err
+			}
+		}
+	}
+}
+
+func lifecycleActionPastTense(action string) string {
+	switch action {
+	case "start":
+		return "started"
+	case "stop":
+		return "stopped"
+	case "restart":
+		return "restarted"
+	default:
+		return action + "ed"
+	}
 }
 
 func runLifecycleDashboardOpen(cmd *cobra.Command, args []string) error {
