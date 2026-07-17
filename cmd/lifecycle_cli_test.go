@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/controller"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 	"github.com/spf13/cobra"
 )
@@ -107,7 +108,7 @@ func TestLifecycleCLIStoppedDashboardAndLogs(t *testing.T) {
 	if err := runLifecycleStatus(command, nil); err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != "Dashboard: stopped\n" {
+	if output.String() != "Dashboard: stopped\nRunner: not configured\n" {
 		t.Fatalf("status output = %q", output.String())
 	}
 
@@ -198,8 +199,10 @@ func TestLifecycleCLIReportsMissingAndStaleControllers(t *testing.T) {
 	dir := t.TempDir()
 	setLifecycleConfigDir(t, dir)
 	command, output := lifecycleTestCommand()
+	if err := runLifecycleRuntimeAction(command, "start"); err == nil || !strings.Contains(err.Error(), "runner configuration is missing") {
+		t.Fatalf("runtime action error = %v", err)
+	}
 	for name, run := range map[string]func() error{
-		"runtime action": func() error { return runLifecycleRuntimeAction(command, "start") },
 		"dashboard open": func() error { return runLifecycleDashboardOpen(command, nil) },
 		"dashboard stop": func() error { return runLifecycleDashboardStop(command, nil) },
 	} {
@@ -220,8 +223,91 @@ func TestLifecycleCLIReportsMissingAndStaleControllers(t *testing.T) {
 	defer server.Close()
 	writeLifecycleMetadata(t, dir, server.URL+"/internal/controller/identity", 42)
 	command, output = lifecycleTestCommand()
-	if err := runLifecycleStatus(command, nil); err != nil || !strings.Contains(output.String(), "stale") {
+	if err := runLifecycleStatus(command, nil); err != nil || !strings.Contains(output.String(), "Dashboard: unavailable") {
 		t.Fatalf("stale status error=%v output=%q", err, output.String())
+	}
+}
+
+type lifecycleDirectFakeManager struct {
+	starts, stops, restarts int
+	status                  dashboardruntime.RuntimeStatus
+}
+
+func (f *lifecycleDirectFakeManager) Start(context.Context) error   { f.starts++; return nil }
+func (f *lifecycleDirectFakeManager) Stop(context.Context) error    { f.stops++; return nil }
+func (f *lifecycleDirectFakeManager) Restart(context.Context) error { f.restarts++; return nil }
+func (f *lifecycleDirectFakeManager) UpdateImage(context.Context) error {
+	return nil
+}
+func (f *lifecycleDirectFakeManager) Configure(dashboardruntime.Values) {}
+func (f *lifecycleDirectFakeManager) SetPublicURL(string)               {}
+func (f *lifecycleDirectFakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
+	return f.status
+}
+func (f *lifecycleDirectFakeManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
+	return nil, nil
+}
+
+func TestLifecycleCLIDirectRuntimeControlWithoutDashboard(t *testing.T) {
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=host\nCREDIMI_SERVICE_MODE=manual\nRUNNER_PUBLIC_URL=https://runner.example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &lifecycleDirectFakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true}}
+	originalExecutable, originalFactory := lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory
+	originalReady, originalRegister := lifecycleRuntimeReady, lifecycleRuntimeRegister
+	lifecycleRuntimeExecutable = func() (string, error) { return "credimi-runner", nil }
+	lifecycleRuntimeManagerFactory = func(string, string, dashboardruntime.Values) dashboardruntime.Manager { return manager }
+	readyCalls, registerCalls := 0, 0
+	lifecycleRuntimeReady = func(context.Context, dashboardruntime.Values) error { readyCalls++; return nil }
+	lifecycleRuntimeRegister = func(context.Context, dashboardruntime.Manager, dashboardruntime.Values) error {
+		registerCalls++
+		return nil
+	}
+	t.Cleanup(func() {
+		lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory = originalExecutable, originalFactory
+		lifecycleRuntimeReady, lifecycleRuntimeRegister = originalReady, originalRegister
+	})
+
+	command, output := lifecycleTestCommand()
+	if err := runLifecycleRuntimeAction(command, "start"); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "Runner started successfully.\n" || manager.starts != 1 || readyCalls != 1 || registerCalls != 1 {
+		t.Fatalf("start output=%q starts=%d ready=%d register=%d", output.String(), manager.starts, readyCalls, registerCalls)
+	}
+	output.Reset()
+	if err := runLifecycleRuntimeAction(command, "stop"); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "Runner stopped successfully.\n" || manager.stops != 1 {
+		t.Fatalf("stop output=%q stops=%d", output.String(), manager.stops)
+	}
+	output.Reset()
+	if err := runLifecycleStatus(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "Dashboard: stopped\nRunner: running\n" {
+		t.Fatalf("status output = %q", output.String())
+	}
+}
+
+func TestLifecycleCLIDirectRuntimeControlRefusesHeldDashboardLock(t *testing.T) {
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := controller.Acquire(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	command, _ := lifecycleTestCommand()
+	err = runLifecycleRuntimeAction(command, "stop")
+	if err == nil || !strings.Contains(err.Error(), "refusing direct runtime control") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

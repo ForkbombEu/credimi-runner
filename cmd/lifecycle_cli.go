@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 	"github.com/spf13/cobra"
 )
@@ -33,6 +35,12 @@ var lifecycleRuntimeStatusCmd = &cobra.Command{Use: "status", Short: "Show runti
 var lifecycleLogLines int
 var lifecycleLogOutput string
 var lifecycleOperationPollInterval = 250 * time.Millisecond
+var lifecycleRuntimeExecutable = os.Executable
+var lifecycleRuntimeManagerFactory = func(binaryPath, configDir string, values dashboardruntime.Values) dashboardruntime.Manager {
+	return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
+}
+var lifecycleRuntimeReady = waitForDashboardRunnerReady
+var lifecycleRuntimeRegister = registerDashboardRunner
 var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log"}
 var lifecycleLogPathCmd = &cobra.Command{Use: "path", Short: "Print the lifecycle log path", RunE: func(cmd *cobra.Command, args []string) error { cmd.Println(lifecycleLogPath()); return nil }}
 var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifecycle events", RunE: runLifecycleLogTail}
@@ -59,47 +67,60 @@ func lifecycleConfigDir() string {
 
 func runLifecycleStatus(cmd *cobra.Command, args []string) error {
 	metadata, err := controller.ReadMetadata(lifecycleConfigDir())
+	dashboardState := "Dashboard: stopped"
+	ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+	defer cancel()
+	if err == nil && controller.Probe(ctx, metadata) == nil {
+		cmd.Printf("Dashboard: running at %s (pid %d)\n", metadata.PublicURL, metadata.PID)
+		base := controllerBaseURL(metadata)
+		var payload struct {
+			Runtime   map[string]any `json:"runtime"`
+			Operation any            `json:"operation"`
+		}
+		if err := getLifecycleJSON(ctx, base+"/api/controller/status", &payload); err == nil {
+			encoded, _ := json.Marshal(payload)
+			cmd.Printf("Lifecycle: %s\n", encoded)
+		}
+		return nil
+	}
+	if err == nil {
+		dashboardState = fmt.Sprintf("Dashboard: unavailable (pid %d)", metadata.PID)
+	}
+	cmd.Println(dashboardState)
+	manager, _, closeManager, err := lifecycleDirectManager()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			cmd.Println("Dashboard: stopped")
+		if errors.Is(err, errLifecycleConfigMissing) {
+			cmd.Println("Runner: not configured")
 			return nil
 		}
 		return err
 	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
-	defer cancel()
-	if err := controller.Probe(ctx, metadata); err != nil {
-		cmd.Printf("Dashboard: stale (pid %d, %s)\n", metadata.PID, err)
+	defer closeManager()
+	status := manager.Status(ctx)
+	if status.RunnerRunning || status.ComposeRunning {
+		cmd.Println("Runner: running")
 		return nil
 	}
-	cmd.Printf("Dashboard: running at %s (pid %d)\n", metadata.PublicURL, metadata.PID)
-	base := controllerBaseURL(metadata)
-	var payload struct {
-		Runtime   map[string]any `json:"runtime"`
-		Operation any            `json:"operation"`
-	}
-	if err := getLifecycleJSON(ctx, base+"/api/controller/status", &payload); err == nil {
-		encoded, _ := json.Marshal(payload)
-		cmd.Printf("Lifecycle: %s\n", encoded)
-	}
+	cmd.Println("Runner: stopped")
 	return nil
 }
 
 func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 	metadata, err := controller.ReadMetadata(lifecycleConfigDir())
-	if err != nil {
-		return fmt.Errorf("dashboard is not running: %w", err)
-	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer cancel()
-	if err := controller.Probe(ctx, metadata); err != nil {
-		return fmt.Errorf("dashboard is not reachable: %w", err)
+	if err == nil && controller.Probe(ctx, metadata) == nil {
+		return runLifecycleDashboardAction(ctx, cmd, controllerBaseURL(metadata), action)
 	}
+	return runLifecycleDirectAction(ctx, cmd, action)
+}
+
+func runLifecycleDashboardAction(ctx context.Context, cmd *cobra.Command, baseURL, action string) error {
 	var snapshot controller.Snapshot
-	if err := postLifecycleJSON(ctx, controllerBaseURL(metadata)+"/api/controller/runtime/"+action, &snapshot); err != nil {
+	if err := postLifecycleJSON(ctx, baseURL+"/api/controller/runtime/"+action, &snapshot); err != nil {
 		return err
 	}
-	completed, err := waitForLifecycleOperation(ctx, controllerBaseURL(metadata), snapshot.ID)
+	completed, err := waitForLifecycleOperation(ctx, baseURL, snapshot.ID)
 	if err != nil {
 		return fmt.Errorf("runner %s did not complete: %w", action, err)
 	}
@@ -112,6 +133,79 @@ func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 			message = "operation did not succeed"
 		}
 		return fmt.Errorf("runner %s failed: %s", action, message)
+	}
+	cmd.Printf("Runner %s successfully.\n", lifecycleActionPastTense(action))
+	return nil
+}
+
+var errLifecycleConfigMissing = errors.New("runner configuration is missing")
+
+func lifecycleDirectManager() (dashboardruntime.Manager, dashboardruntime.Values, func() error, error) {
+	configDir := lifecycleConfigDir()
+	store, err := dashboardruntime.LoadStore(configDir)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load runner configuration: %w", err)
+	}
+	if !store.Exists() {
+		return nil, nil, nil, errLifecycleConfigMissing
+	}
+	values, err := dashboardruntime.NormalizeValues(store.Snapshot(), runtime.GOOS)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("normalize runner configuration: %w", err)
+	}
+	binaryPath, err := lifecycleRuntimeExecutable()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve runner executable: %w", err)
+	}
+	manager := lifecycleRuntimeManagerFactory(binaryPath, configDir, values)
+	closeManager := func() error {
+		if closer, ok := manager.(interface{ Close() error }); ok {
+			return closer.Close()
+		}
+		return nil
+	}
+	return manager, values, closeManager, nil
+}
+
+func runLifecycleDirectAction(ctx context.Context, cmd *cobra.Command, action string) error {
+	lease, err := controller.Acquire(lifecycleConfigDir())
+	if err != nil {
+		if errors.Is(err, controller.ErrAlreadyRunning) {
+			return errors.New("dashboard controller is active but could not be verified; refusing direct runtime control")
+		}
+		return err
+	}
+	defer lease.Close()
+
+	manager, values, closeManager, err := lifecycleDirectManager()
+	if err != nil {
+		return err
+	}
+	defer closeManager()
+
+	switch action {
+	case "start":
+		if err := manager.Start(ctx); err != nil {
+			return fmt.Errorf("runner start failed: %w", err)
+		}
+		if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(values, runtime.GOOS) {
+			if err := lifecycleRuntimeReady(ctx, values); err != nil {
+				return fmt.Errorf("runner start failed: %w", err)
+			}
+		}
+		if err := lifecycleRuntimeRegister(ctx, manager, values); err != nil {
+			return fmt.Errorf("runner start failed: %w", err)
+		}
+	case "stop":
+		if err := manager.Stop(ctx); err != nil {
+			return fmt.Errorf("runner stop failed: %w", err)
+		}
+	case "restart":
+		if err := manager.Restart(ctx); err != nil {
+			return fmt.Errorf("runner restart failed: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported runtime action %q", action)
 	}
 	cmd.Printf("Runner %s successfully.\n", lifecycleActionPastTense(action))
 	return nil
