@@ -27,6 +27,10 @@ var lifecycleRuntimeActionCmd = func(name string) *cobra.Command {
 }
 var lifecycleDashboardCmd = &cobra.Command{Use: "dashboard", Short: "Control the dashboard process"}
 var lifecycleDashboardStopCmd = &cobra.Command{Use: "stop", Short: "Stop the dashboard process", RunE: runLifecycleDashboardStop}
+var lifecycleDashboardStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard status", RunE: runLifecycleStatus}
+var lifecycleDashboardOpenCmd = &cobra.Command{Use: "open", Short: "Open the running dashboard when a local display is available", RunE: runLifecycleDashboardOpen}
+var lifecycleRuntimeStatusCmd = &cobra.Command{Use: "status", Short: "Show runtime status", RunE: runLifecycleStatus}
+var lifecycleRuntimeCancelCmd = &cobra.Command{Use: "cancel OPERATION_ID", Short: "Cancel a running lifecycle operation", Args: cobra.ExactArgs(1), RunE: runLifecycleRuntimeCancel}
 var lifecycleLogLines int
 var lifecycleLogOutput string
 var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log"}
@@ -35,8 +39,8 @@ var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifec
 var lifecycleLogExportCmd = &cobra.Command{Use: "export", Short: "Export a sanitized Markdown diagnostic report", RunE: runLifecycleLogExport}
 
 func init() {
-	lifecycleRuntimeCmd.AddCommand(lifecycleRuntimeActionCmd("start"), lifecycleRuntimeActionCmd("stop"), lifecycleRuntimeActionCmd("restart"), lifecycleRuntimeActionCmd("down"))
-	lifecycleDashboardCmd.AddCommand(lifecycleDashboardStopCmd)
+	lifecycleRuntimeCmd.AddCommand(lifecycleRuntimeActionCmd("start"), lifecycleRuntimeActionCmd("stop"), lifecycleRuntimeActionCmd("restart"), lifecycleRuntimeActionCmd("down"), lifecycleRuntimeStatusCmd, lifecycleRuntimeCancelCmd)
+	lifecycleDashboardCmd.AddCommand(lifecycleDashboardStopCmd, lifecycleDashboardStatusCmd, lifecycleDashboardOpenCmd)
 	lifecycleLogTailCmd.Flags().IntVar(&lifecycleLogLines, "lines", 100, "Number of lifecycle events")
 	lifecycleLogExportCmd.Flags().IntVar(&lifecycleLogLines, "lines", 500, "Number of lifecycle events")
 	lifecycleLogExportCmd.Flags().StringVar(&lifecycleLogOutput, "output", "", "Write report to this path instead of stdout")
@@ -97,6 +101,41 @@ func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 	}
 	cmd.Printf("Operation %s queued: %s\n", snapshot.ID, snapshot.Message)
 	return nil
+}
+
+func runLifecycleRuntimeCancel(cmd *cobra.Command, args []string) error {
+	metadata, err := controller.ReadMetadata(lifecycleConfigDir())
+	if err != nil {
+		return fmt.Errorf("dashboard is not running: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+	defer cancel()
+	if err := controller.Probe(ctx, metadata); err != nil {
+		return fmt.Errorf("dashboard is not reachable: %w", err)
+	}
+	var result map[string]any
+	if err := postLifecycleJSON(ctx, controllerBaseURL(metadata)+"/api/controller/operations/"+args[0]+"/cancel", &result); err != nil {
+		return err
+	}
+	cmd.Printf("Operation %s cancellation requested\n", args[0])
+	return nil
+}
+
+func runLifecycleDashboardOpen(cmd *cobra.Command, args []string) error {
+	metadata, err := controller.ReadMetadata(lifecycleConfigDir())
+	if err != nil {
+		return fmt.Errorf("dashboard is not running: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+	defer cancel()
+	if err := controller.Probe(ctx, metadata); err != nil {
+		return fmt.Errorf("dashboard is not reachable: %w", err)
+	}
+	if !dashboardCanOpenBrowser() {
+		cmd.Printf("Dashboard is running at %s (no local graphical display available)\n", metadata.PublicURL)
+		return nil
+	}
+	return openDashboardBrowser(metadata.PublicURL)
 }
 
 func controllerBaseURL(metadata controller.Metadata) string {
