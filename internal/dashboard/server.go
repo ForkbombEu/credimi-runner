@@ -1540,10 +1540,7 @@ func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]strin
 		}
 		select {
 		case <-deadline.Done():
-			if lastErr != nil {
-				return fmt.Errorf("runner did not become ready on %s: %w", address, lastErr)
-			}
-			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
+			return controller.ReadinessFailure(dashboardruntime.Values(values), address, lastErr, deadline.Err())
 		case <-ticker.C:
 		}
 	}

@@ -40,6 +40,8 @@ func (l RuntimeLifecycle) Start(ctx context.Context, progress func(string)) erro
 	if l.Manager == nil {
 		return errors.New("runtime manager unavailable")
 	}
+	statusBeforeStart := l.Manager.Status(ctx)
+	runtimeWasRunning := statusBeforeStart.RunnerRunning || statusBeforeStart.ComposeRunning
 	l.clearAutoPublicURL()
 	if starter, ok := l.Manager.(runtimeProgressStarter); ok {
 		if err := starter.StartWithProgress(ctx, progress); err != nil {
@@ -49,9 +51,22 @@ func (l RuntimeLifecycle) Start(ctx context.Context, progress func(string)) erro
 		return err
 	}
 	if err := l.waitReady(ctx); err != nil {
-		return err
+		return l.rollbackFailedStart(ctx, runtimeWasRunning, err)
 	}
-	return l.Register(ctx)
+	if err := l.Register(ctx); err != nil {
+		return l.rollbackFailedStart(ctx, runtimeWasRunning, err)
+	}
+	return nil
+}
+
+func (l RuntimeLifecycle) rollbackFailedStart(ctx context.Context, runtimeWasRunning bool, startErr error) error {
+	if runtimeWasRunning {
+		return startErr
+	}
+	if err := l.Stop(context.WithoutCancel(ctx)); err != nil {
+		return fmt.Errorf("%w; additionally, cleanup after the failed start did not complete: %v", startErr, err)
+	}
+	return startErr
 }
 
 func (l RuntimeLifecycle) Stop(ctx context.Context) error {
@@ -152,12 +167,50 @@ func (l RuntimeLifecycle) waitReady(ctx context.Context) error {
 		}
 		select {
 		case <-deadline.Done():
-			if lastErr != nil {
-				return fmt.Errorf("runner did not become ready on %s: %w", address, lastErr)
-			}
-			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
+			return ReadinessFailure(l.Values, address, lastErr, deadline.Err())
 		case <-ticker.C:
 		}
+	}
+}
+
+// ReadinessFailure retains the technical cause while adding the configured
+// target and the next diagnostic action. It is shared by dashboard startup and
+// direct CLI control so users receive the same actionable failure everywhere.
+func ReadinessFailure(values dashboardruntime.Values, address string, lastErr, deadlineErr error) error {
+	cause := lastErr
+	if cause == nil {
+		cause = deadlineErr
+	}
+	if cause == nil {
+		cause = errors.New("readiness deadline exceeded")
+	}
+	serial := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
+	switch {
+	case errors.Is(cause, ErrDeviceMissing):
+		return fmt.Errorf("runner did not become ready on %s: configured device %q is not available; connect it and verify it is authorized with `adb -s %s get-state`: %w", address, serial, serial, cause)
+	case errors.Is(cause, ErrDeviceOffline):
+		return fmt.Errorf("runner did not become ready on %s: configured device %q is offline; reconnect it and wait for `adb -s %s get-state` to report device: %w", address, serial, serial, cause)
+	case errors.Is(cause, ErrDeviceUnauthorized):
+		return fmt.Errorf("runner did not become ready on %s: configured device %q is unauthorized; unlock it and accept the USB debugging prompt: %w", address, serial, cause)
+	}
+
+	return fmt.Errorf("runner did not become ready on %s: the runner never opened its listener; %s: %w", address, readinessNextStep(values), cause)
+}
+
+func readinessNextStep(values dashboardruntime.Values) string {
+	serial := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
+	switch strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) {
+	case "android_phone":
+		if serial != "" {
+			return fmt.Sprintf("check that Android device %q is connected and authorized (`adb -s %s get-state`), then inspect runner logs", serial, serial)
+		}
+		return "check that an Android device is connected and authorized, then inspect runner logs"
+	case "android_emulator", "redroid":
+		return "check that the configured Android runtime is running, then inspect runner logs"
+	case "ios_simulator":
+		return "check that the configured iOS simulator is booted, then inspect runner logs"
+	default:
+		return "inspect runner logs"
 	}
 }
 

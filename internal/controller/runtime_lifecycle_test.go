@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,68 @@ import (
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
+
+func TestReadinessFailureExplainsUnreachableAndroidPhone(t *testing.T) {
+	cause := errors.New("dial tcp 127.0.0.1:8050: connect: connection refused")
+	err := ReadinessFailure(dashboardruntime.Values{
+		"CREDIMI_RUNNER_TYPE":   "android_phone",
+		"CREDIMI_RUNNER_SERIAL": "device-1",
+	}, "127.0.0.1:8050", cause, context.DeadlineExceeded)
+
+	message := err.Error()
+	for _, want := range []string{
+		"runner never opened its listener",
+		"device-1",
+		"adb -s device-1 get-state",
+		"connection refused",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("ReadinessFailure() = %q, want %q", message, want)
+		}
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("ReadinessFailure() does not retain cause %v", cause)
+	}
+}
+
+func TestReadinessFailureExplainsUnauthorizedDevice(t *testing.T) {
+	err := ReadinessFailure(dashboardruntime.Values{
+		"CREDIMI_RUNNER_TYPE":   "android_phone",
+		"CREDIMI_RUNNER_SERIAL": "device-1",
+	}, "127.0.0.1:8050", ErrDeviceUnauthorized, context.DeadlineExceeded)
+
+	if !strings.Contains(err.Error(), "accept the USB debugging prompt") {
+		t.Fatalf("ReadinessFailure() = %q", err)
+	}
+	if !errors.Is(err, ErrDeviceUnauthorized) {
+		t.Fatalf("ReadinessFailure() does not retain ErrDeviceUnauthorized")
+	}
+}
+
+func TestRuntimeLifecycleStartStopsRuntimeWhenReadinessFails(t *testing.T) {
+	manager := &lifecycleManager{}
+	lifecycle := RuntimeLifecycle{
+		Manager: manager,
+		Values: dashboardruntime.Values{
+			"CREDIMI_RUNNER_TYPE":    "android_phone",
+			"CREDIMI_SERVICE_MODE":   "manual",
+			"RUNNER_PUBLIC_URL":      "https://runner.example",
+			"CREDIMI_RUNNER_BACKEND": "container",
+		},
+		GOOS: "linux",
+		WaitReady: func(context.Context, dashboardruntime.Values) error {
+			return errors.New("runner listener did not open")
+		},
+	}
+
+	err := lifecycle.Start(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "runner listener did not open") {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if manager.starts != 1 || manager.stops != 1 || manager.status.RunnerRunning {
+		t.Fatalf("failed start left manager in state %#v", manager)
+	}
+}
 
 type lifecycleManager struct {
 	status dashboardruntime.RuntimeStatus
