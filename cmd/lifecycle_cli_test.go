@@ -68,6 +68,16 @@ func TestLifecycleCLIStatusAndRuntimeAction(t *testing.T) {
 	}
 }
 
+func TestLifecycleRunnerCommandIsTheUserFacingGroup(t *testing.T) {
+	command, _, err := rootCmd.Find([]string{"runner", "start"})
+	if err != nil || command == nil || command.Name() != "start" {
+		t.Fatalf("runner start command = %#v, err = %v", command, err)
+	}
+	if _, _, err := rootCmd.Find([]string{"runtime", "start"}); err == nil {
+		t.Fatal("obsolete runtime command is still available")
+	}
+}
+
 func TestLifecycleRuntimeActionReportsOperationFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {

@@ -21,9 +21,9 @@ import (
 )
 
 var lifecycleStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard and runner lifecycle status", RunE: runLifecycleStatus}
-var lifecycleRuntimeCmd = &cobra.Command{Use: "runtime", Short: "Control the configured runner runtime"}
-var lifecycleRuntimeActionCmd = func(name string) *cobra.Command {
-	return &cobra.Command{Use: name, Short: strings.Title(name) + " the runner runtime", RunE: func(cmd *cobra.Command, args []string) error {
+var lifecycleRunnerCmd = &cobra.Command{Use: "runner", Short: "Control the configured runner"}
+var lifecycleRunnerActionCmd = func(name string) *cobra.Command {
+	return &cobra.Command{Use: name, Short: strings.Title(name) + " the runner", RunE: func(cmd *cobra.Command, args []string) error {
 		return runLifecycleRuntimeAction(cmd, name)
 	}}
 }
@@ -31,7 +31,7 @@ var lifecycleDashboardCmd = &cobra.Command{Use: "dashboard", Short: "Control the
 var lifecycleDashboardStopCmd = &cobra.Command{Use: "stop", Short: "Stop the dashboard process", RunE: runLifecycleDashboardStop}
 var lifecycleDashboardStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard status", RunE: runLifecycleStatus}
 var lifecycleDashboardOpenCmd = &cobra.Command{Use: "open", Short: "Open the running dashboard when a local display is available", RunE: runLifecycleDashboardOpen}
-var lifecycleRuntimeStatusCmd = &cobra.Command{Use: "status", Short: "Show runtime status", RunE: runLifecycleStatus}
+var lifecycleRunnerStatusCmd = &cobra.Command{Use: "status", Short: "Show runner status", RunE: runLifecycleStatus}
 var lifecycleLogLines int
 var lifecycleLogOutput string
 var lifecycleOperationPollInterval = 250 * time.Millisecond
@@ -46,13 +46,13 @@ var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifec
 var lifecycleLogExportCmd = &cobra.Command{Use: "export", Short: "Export a sanitized Markdown diagnostic report", RunE: runLifecycleLogExport}
 
 func init() {
-	lifecycleRuntimeCmd.AddCommand(lifecycleRuntimeActionCmd("start"), lifecycleRuntimeActionCmd("stop"), lifecycleRuntimeActionCmd("restart"), lifecycleRuntimeStatusCmd)
+	lifecycleRunnerCmd.AddCommand(lifecycleRunnerActionCmd("start"), lifecycleRunnerActionCmd("stop"), lifecycleRunnerActionCmd("restart"), lifecycleRunnerStatusCmd)
 	lifecycleDashboardCmd.AddCommand(lifecycleDashboardStopCmd, lifecycleDashboardStatusCmd, lifecycleDashboardOpenCmd)
 	lifecycleLogTailCmd.Flags().IntVar(&lifecycleLogLines, "lines", 100, "Number of lifecycle events")
 	lifecycleLogExportCmd.Flags().IntVar(&lifecycleLogLines, "lines", 500, "Number of lifecycle events")
 	lifecycleLogExportCmd.Flags().StringVar(&lifecycleLogOutput, "output", "", "Write report to this path instead of stdout")
 	lifecycleLogCmd.AddCommand(lifecycleLogPathCmd, lifecycleLogTailCmd, lifecycleLogExportCmd)
-	rootCmd.AddCommand(lifecycleStatusCmd, lifecycleRuntimeCmd, lifecycleDashboardCmd, lifecycleLogCmd)
+	rootCmd.AddCommand(lifecycleStatusCmd, lifecycleRunnerCmd, lifecycleDashboardCmd, lifecycleLogCmd)
 }
 
 func lifecycleLogPath() string { return filepath.Join(lifecycleConfigDir(), "lifecycle.jsonl") }
