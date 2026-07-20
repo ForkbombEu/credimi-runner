@@ -908,7 +908,6 @@ func TestServerRuntimeActionVariants(t *testing.T) {
 	}{
 		{"/runtime/stop", s.runtimeStop},
 		{"/runtime/restart", s.runtimeRestart},
-		{"/runtime/update-image", s.runtimeUpdateImage},
 	} {
 		rec := httptest.NewRecorder()
 		target.fn(rec, httptest.NewRequest(http.MethodPost, target.path, nil))
@@ -1388,74 +1387,6 @@ func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
 	}
 }
 
-func TestResolveRegistrationEndpointBranches(t *testing.T) {
-	s := newTestServer(t)
-	s.manager = nil
-	if _, _, err := s.resolveRegistrationEndpoint(context.Background(), map[string]string{
-		"CREDIMI_SERVICE_MODE": "auto",
-	}); err == nil || !strings.Contains(err.Error(), "runtime manager unavailable") {
-		t.Fatalf("expected runtime manager unavailable, got %v", err)
-	}
-
-	manager := &fakeManager{logLines: []dashboardruntime.LogLine{
-		{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
-	}}
-	s.manager = manager
-	url, port, err := s.resolveRegistrationEndpoint(context.Background(), map[string]string{
-		"CREDIMI_SERVICE_MODE": "auto",
-	})
-	if err != nil || url != "https://runner.example.trycloudflare.com" || port != "" {
-		t.Fatalf("resolveRegistrationEndpoint auto = %q %q %v", url, port, err)
-	}
-	if manager.logTail != quickTunnelLogTail {
-		t.Fatalf("registration log tail = %d, want %d", manager.logTail, quickTunnelLogTail)
-	}
-
-	url, port, err = s.resolveRegistrationEndpoint(context.Background(), map[string]string{
-		"CREDIMI_SERVICE_MODE": "cloudflare-managed",
-		"RUNNER_DOMAIN":        "runner.example",
-	})
-	if err != nil || url != "https://runner.example" || port != "" {
-		t.Fatalf("resolveRegistrationEndpoint managed = %q %q %v", url, port, err)
-	}
-
-	s.manager = &fakeManager{
-		status: dashboardruntime.RuntimeStatus{PublicURL: "https://cached.example.trycloudflare.com"},
-		logLines: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://old.example.trycloudflare.com"},
-			{Message: "INF quick tunnel ready at https://new.example.trycloudflare.com"},
-		},
-	}
-	url, _, err = s.resolveRegistrationEndpoint(context.Background(), map[string]string{
-		"CREDIMI_SERVICE_MODE": "auto",
-	})
-	if err != nil || url != "https://cached.example.trycloudflare.com" {
-		t.Fatalf("resolveRegistrationEndpoint cached auto URL = %q %v", url, err)
-	}
-
-	manager = &fakeManager{
-		status: dashboardruntime.RuntimeStatus{
-			LastStartedAt: time.Now(),
-		},
-		logLines: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://old.example.trycloudflare.com"},
-		},
-		logLinesSince: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"},
-		},
-	}
-	s.manager = manager
-	url, _, err = s.resolveRegistrationEndpoint(context.Background(), map[string]string{
-		"CREDIMI_SERVICE_MODE": "auto",
-	})
-	if err != nil || url != "https://fresh.example.trycloudflare.com" {
-		t.Fatalf("resolveRegistrationEndpoint restarted auto URL = %q %v", url, err)
-	}
-	if manager.logTail <= 0 {
-		t.Fatalf("restarted auto URL should use current-start logs, tail = %d", manager.logTail)
-	}
-}
-
 func TestApplySavedConfigClearsCachedQuickTunnelURL(t *testing.T) {
 	s := newTestServer(t)
 	fm := &fakeManager{
@@ -1493,7 +1424,7 @@ func TestApplySavedConfigClearsCachedQuickTunnelURL(t *testing.T) {
 	defer api.Close()
 	values["CREDIMI_URL"] = api.URL
 
-	outcome, err := s.applySavedConfig(context.Background(), dashboardruntime.ConfigDiff{
+	outcome, err := s.applySavedConfig(dashboardruntime.ConfigDiff{
 		ChangedKeys: []string{"RUNNER_PORT"},
 		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
 	}, values)
@@ -1696,11 +1627,13 @@ func TestServerSaveConfigDescriptionUpdateUsesCompactToast(t *testing.T) {
 
 func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
 	s := newTestServer(t)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer api.Close()
 	fm := &fakeManager{
 		status: dashboardruntime.RuntimeStatus{RunnerRunning: true},
 	}
 	s.manager = fm
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_URL"] = api.URL
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
 	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
@@ -1724,8 +1657,8 @@ func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("saveConfig restart update = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if fm.restartCalls != 1 {
-		t.Fatalf("saveConfig restart calls = %d", fm.restartCalls)
+	if fm.stopCalls != 1 || fm.startCalls != 1 {
+		t.Fatalf("saveConfig lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
 	}
 	if strings.Contains(rec.Body.String(), "Runner restarted with the new configuration.") {
 		t.Fatalf("saveConfig should not render inline restart success: %s", rec.Body.String())
@@ -1793,8 +1726,8 @@ func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T
 	if got := s.cfg.Get("CREDIMI_RUNNER_NAME"); got != "Renamed Runner" {
 		t.Fatalf("stored runner name = %q", got)
 	}
-	if fm.restartCalls != 1 {
-		t.Fatalf("saveConfig name change restart calls = %d", fm.restartCalls)
+	if fm.stopCalls != 1 || fm.startCalls != 1 {
+		t.Fatalf("saveConfig name change lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
 	}
 	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Runner restarted with the new configuration.") {
 		t.Fatalf("saveConfig name change toast missing restart result: %s", rec.Header().Get("HX-Trigger"))
@@ -1835,12 +1768,12 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T)
 		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 	waitForCondition(t, func() bool {
-		return strings.Contains(s.startupSnapshot().Message, "Credimi registration failed")
+		return strings.Contains(s.startupSnapshot().Message, "runtime start failed")
 	})
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when registration fails")
 	}
-	if !strings.Contains(s.lastRegistrationStatus, "Credimi registration failed") {
+	if !strings.Contains(s.lastRegistrationStatus, "runtime start failed") {
 		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
 	}
 }
@@ -1873,12 +1806,12 @@ func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
 		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
 	waitForCondition(t, func() bool {
-		return strings.Contains(s.startupSnapshot().Message, "readiness was not confirmed")
+		return strings.Contains(s.startupSnapshot().Message, "runtime start failed")
 	})
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should keep the runtime start when readiness is not confirmed")
 	}
-	if !strings.Contains(s.lastRegistrationStatus, "readiness was not confirmed") {
+	if !strings.Contains(s.lastRegistrationStatus, "runtime start failed") {
 		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
 	}
 }
@@ -1923,110 +1856,6 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func TestServerRuntimeApply(t *testing.T) {
-	s := newTestServer(t)
-	s.pendingDiff = dashboardruntime.ConfigDiff{
-		Classes: []dashboardruntime.ApplyClass{
-			dashboardruntime.ApplyRestartRequired,
-			dashboardruntime.ApplyCredimiUpdateRequired,
-		},
-	}
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	s.cfg.values["CREDIMI_RUNNER_PUBLISHED"] = "true"
-
-	var payload dashboardruntime.RegisterRunnerRequest
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/mobile-runner" {
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatal(err)
-			}
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer api.Close()
-	s.cfg.values["CREDIMI_URL"] = api.URL
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runtime/apply", nil)
-	s.runtimeApply(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("runtimeApply = %d body=%s", rec.Code, rec.Body.String())
-	}
-	op := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
-		t.Fatalf("runtimeApply operation: %v", err)
-	}
-	fm := s.manager.(*fakeManager)
-	if fm.restartCalls == 0 {
-		t.Fatal("runtimeApply should restart when restart is pending")
-	}
-	if len(s.pendingDiff.Classes) != 0 {
-		t.Fatalf("pendingDiff not cleared: %#v", s.pendingDiff)
-	}
-}
-
-func TestServerRuntimeApplyAutoRestartRefreshesTunnelURL(t *testing.T) {
-	s := newTestServer(t)
-	s.manager = &fakeManager{
-		status: dashboardruntime.RuntimeStatus{
-			RunnerRunning: true,
-			PublicURL:     "https://old.example.trycloudflare.com",
-		},
-		logLines: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"},
-		},
-	}
-	s.pendingDiff = dashboardruntime.ConfigDiff{
-		ChangedKeys: []string{"RUNNER_IMAGE"},
-		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
-	}
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
-
-	var payload dashboardruntime.RegisterRunnerRequest
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/mobile-runner" {
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatal(err)
-			}
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer api.Close()
-	s.cfg.values["CREDIMI_URL"] = api.URL
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runtime/apply", nil)
-	s.runtimeApply(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("runtimeApply = %d body=%s", rec.Code, rec.Body.String())
-	}
-	op := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
-		t.Fatalf("runtimeApply operation: %v", err)
-	}
-	if payload.IP != "https://fresh.example.trycloudflare.com" {
-		t.Fatalf("registered IP = %q", payload.IP)
-	}
-	if got := s.manager.(*fakeManager).status.PublicURL; got != "https://fresh.example.trycloudflare.com" {
-		t.Fatalf("cached public URL = %q", got)
-	}
 }
 
 func TestValidateRuntimeRequirements(t *testing.T) {
@@ -2209,42 +2038,6 @@ func TestDashboardRuntimeStartUsesControllerLifecycleAndRefreshesAutoURL(t *test
 	if payload.IP != "https://replacement-url.trycloudflare.com" {
 		t.Fatalf("restart registered URL = %q", payload.IP)
 	}
-}
-
-func TestResolveRegistrationEndpointWaitsForTunnelURL(t *testing.T) {
-	s := newTestServer(t)
-	attempts := 0
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
-	s.manager = dashboardruntime.Manager(fakeLogManager(func(context.Context, int) ([]dashboardruntime.LogLine, error) {
-		attempts++
-		if attempts < 3 {
-			return nil, nil
-		}
-		return []dashboardruntime.LogLine{{Message: "tunnel ready https://runner.example.trycloudflare.com"}}, nil
-	}))
-
-	got, _, err := s.resolveRegistrationEndpoint(context.Background(), s.cfg.Snapshot())
-	if err != nil {
-		t.Fatalf("resolveRegistrationEndpoint error = %v", err)
-	}
-	if got != "https://runner.example.trycloudflare.com" {
-		t.Fatalf("resolveRegistrationEndpoint = %q", got)
-	}
-}
-
-type fakeLogManager func(context.Context, int) ([]dashboardruntime.LogLine, error)
-
-func (f fakeLogManager) Start(context.Context) error       { return nil }
-func (f fakeLogManager) Stop(context.Context) error        { return nil }
-func (f fakeLogManager) Restart(context.Context) error     { return nil }
-func (f fakeLogManager) UpdateImage(context.Context) error { return nil }
-func (f fakeLogManager) Configure(dashboardruntime.Values) {}
-func (f fakeLogManager) SetPublicURL(string)               {}
-func (f fakeLogManager) Status(context.Context) dashboardruntime.RuntimeStatus {
-	return dashboardruntime.RuntimeStatus{}
-}
-func (f fakeLogManager) Logs(ctx context.Context, tail int) ([]dashboardruntime.LogLine, error) {
-	return f(ctx, tail)
 }
 
 func TestServerSetupValidationHandlers(t *testing.T) {

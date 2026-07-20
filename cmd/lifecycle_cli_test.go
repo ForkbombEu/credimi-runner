@@ -251,31 +251,30 @@ func (f *lifecycleDirectFakeManager) Logs(context.Context, int) ([]dashboardrunt
 func TestLifecycleCLIDirectRuntimeControlWithoutDashboard(t *testing.T) {
 	dir := t.TempDir()
 	setLifecycleConfigDir(t, dir)
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=host\nCREDIMI_SERVICE_MODE=manual\nRUNNER_PUBLIC_URL=https://runner.example\n"), 0o600); err != nil {
+	registered := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { registered++; w.WriteHeader(http.StatusOK) }))
+	defer api.Close()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_URL="+api.URL+"\nCREDIMI_USER_API_KEY=test\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=host\nCREDIMI_SERVICE_MODE=manual\nRUNNER_PUBLIC_URL=https://runner.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manager := &lifecycleDirectFakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true}}
 	originalExecutable, originalFactory := lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory
-	originalReady, originalRegister := lifecycleRuntimeReady, lifecycleRuntimeRegister
+	originalReady := lifecycleRuntimeWaitReady
 	lifecycleRuntimeExecutable = func() (string, error) { return "credimi-runner", nil }
 	lifecycleRuntimeManagerFactory = func(string, string, dashboardruntime.Values) dashboardruntime.Manager { return manager }
-	readyCalls, registerCalls := 0, 0
-	lifecycleRuntimeReady = func(context.Context, dashboardruntime.Values) error { readyCalls++; return nil }
-	lifecycleRuntimeRegister = func(context.Context, dashboardruntime.Manager, dashboardruntime.Values) error {
-		registerCalls++
-		return nil
-	}
+	readyCalls := 0
+	lifecycleRuntimeWaitReady = func(context.Context, dashboardruntime.Values) error { readyCalls++; return nil }
 	t.Cleanup(func() {
 		lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory = originalExecutable, originalFactory
-		lifecycleRuntimeReady, lifecycleRuntimeRegister = originalReady, originalRegister
+		lifecycleRuntimeWaitReady = originalReady
 	})
 
 	command, output := lifecycleTestCommand()
 	if err := runLifecycleRuntimeAction(command, "start"); err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != "Runner started successfully.\n" || manager.starts != 1 || readyCalls != 1 || registerCalls != 1 {
-		t.Fatalf("start output=%q starts=%d ready=%d register=%d", output.String(), manager.starts, readyCalls, registerCalls)
+	if output.String() != "Runner started successfully.\n" || manager.starts != 1 || readyCalls != 1 || registered != 1 {
+		t.Fatalf("start output=%q starts=%d ready=%d register=%d", output.String(), manager.starts, readyCalls, registered)
 	}
 	output.Reset()
 	if err := runLifecycleRuntimeAction(command, "stop"); err != nil {

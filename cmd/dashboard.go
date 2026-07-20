@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	stdlog "log"
@@ -11,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,12 +29,6 @@ var (
 	dashboardConfigDir string
 	dashboardOpen      bool
 )
-
-const quickTunnelLogTail = 1000
-
-type dashboardTunnelLogger interface {
-	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
-}
 
 var openDashboardBrowserFunc = openDashboardBrowser
 
@@ -263,174 +255,9 @@ func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.V
 	return host, parsedPort
 }
 
-func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Values) error {
-	if !dashboardruntime.RunnerReadinessRequiredBeforeRegistration(values, currentDashboardGOOS()) {
-		return nil
-	}
-	host := strings.TrimSpace(values["RUNNER_HOST"])
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	port := strings.TrimSpace(values["RUNNER_PORT"])
-	if port == "" {
-		port = dashboardruntime.DefaultRunnerPort
-	}
-	address := net.JoinHostPort(host, port)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	var lastErr error
-	for {
-		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
-		if err == nil {
-			_ = conn.Close()
-			if healthErr := waitForDashboardRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
-				_, readinessErr := controller.ValidateReadiness(deadline, http.DefaultClient, "http://"+address, values)
-				if readinessErr == nil {
-					return nil
-				}
-				lastErr = readinessErr
-			} else {
-				lastErr = healthErr
-			}
-		} else {
-			lastErr = err
-		}
-		select {
-		case <-deadline.Done():
-			if lastErr != nil {
-				return fmt.Errorf("runner did not become ready on %s: %w", address, lastErr)
-			}
-			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitForDashboardRunnerHealth(ctx context.Context, host, port, serial string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
-	if err != nil {
-		return err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("runner health returned %s", response.Status)
-	}
-	if serial == "" {
-		return nil
-	}
-	var payload struct {
-		Devices []struct {
-			Serial string `json:"serial"`
-			State  string `json:"state"`
-		} `json:"devices"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return fmt.Errorf("decode runner health: %w", err)
-	}
-	for _, device := range payload.Devices {
-		if strings.TrimSpace(device.Serial) == serial && strings.TrimSpace(device.State) == "device" {
-			return nil
-		}
-	}
-	return fmt.Errorf("configured device %q is not ready", serial)
-}
-
 func currentDashboardGOOS() string {
 	if override := strings.ToLower(strings.TrimSpace(os.Getenv("GOOS_OVERRIDE"))); override != "" {
 		return override
 	}
 	return runtime.GOOS
-}
-
-func registerDashboardRunner(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {
-	apiKey := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
-	}
-	if apiKey == "" {
-		return errors.New("missing Credimi API key")
-	}
-	publicURL, publicPort, err := resolveDashboardRegistrationEndpoint(ctx, manager, values)
-	if err != nil {
-		return err
-	}
-	manager.SetPublicURL(publicURL)
-	client := &dashboardruntime.CredimiClient{
-		BaseURL:    strings.TrimSpace(values["CREDIMI_URL"]),
-		APIKey:     apiKey,
-		HTTPClient: http.DefaultClient,
-	}
-	err = client.RegisterMobileRunnerResolvingName(ctx, dashboardruntime.RegisterRunnerRequest{
-		RunnerID:     strings.TrimSpace(values["CREDIMI_RUNNER_ID"]),
-		Name:         strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]),
-		IP:           publicURL,
-		Description:  strings.TrimSpace(values["CREDIMI_RUNNER_DESCRIPTION"]),
-		Type:         strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]),
-		Port:         publicPort,
-		Serial:       strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]),
-		Organization: strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]),
-	})
-	return err
-}
-
-func resolveDashboardRegistrationEndpoint(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) (string, string, error) {
-	switch strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) {
-	case "manual":
-		publicURL := strings.TrimSpace(values["RUNNER_PUBLIC_URL"])
-		if publicURL == "" {
-			return "", "", errors.New("RUNNER_PUBLIC_URL is required for manual service mode")
-		}
-		return publicURL, strings.TrimSpace(values["RUNNER_PUBLIC_PORT"]), nil
-	case "cloudflare-managed":
-		domain := strings.TrimSpace(values["RUNNER_DOMAIN"])
-		if domain == "" {
-			return "", "", errors.New("RUNNER_DOMAIN is required for managed tunnel mode")
-		}
-		if !strings.Contains(domain, "://") {
-			domain = "https://" + domain
-		}
-		return domain, "", nil
-	default:
-		status := manager.Status(ctx)
-		if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
-			return publicURL, "", nil
-		}
-		re := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		var lastErr error
-		for {
-			logs, err := dashboardQuickTunnelLogs(deadline, manager, quickTunnelLogTail)
-			if err != nil {
-				lastErr = err
-			} else {
-				for i := len(logs) - 1; i >= 0; i-- {
-					if found := re.FindString(logs[i].Message); found != "" {
-						return found, "", nil
-					}
-				}
-				lastErr = errors.New("no trycloudflare URL found in runtime logs")
-			}
-			select {
-			case <-deadline.Done():
-				return "", "", lastErr
-			case <-ticker.C:
-			}
-		}
-	}
-}
-
-func dashboardQuickTunnelLogs(ctx context.Context, manager dashboardruntime.Manager, tail int) ([]dashboardruntime.LogLine, error) {
-	if logger, ok := manager.(dashboardTunnelLogger); ok {
-		return logger.TunnelLogs(ctx, tail)
-	}
-	return manager.Logs(ctx, tail)
 }

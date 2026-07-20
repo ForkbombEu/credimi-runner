@@ -36,11 +36,10 @@ var lifecycleLogLines int
 var lifecycleLogOutput string
 var lifecycleOperationPollInterval = 250 * time.Millisecond
 var lifecycleRuntimeExecutable = os.Executable
+var lifecycleRuntimeWaitReady func(context.Context, dashboardruntime.Values) error
 var lifecycleRuntimeManagerFactory = func(binaryPath, configDir string, values dashboardruntime.Values) dashboardruntime.Manager {
 	return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 }
-var lifecycleRuntimeReady = waitForDashboardRunnerReady
-var lifecycleRuntimeRegister = registerDashboardRunner
 var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log"}
 var lifecycleLogPathCmd = &cobra.Command{Use: "path", Short: "Print the lifecycle log path", RunE: func(cmd *cobra.Command, args []string) error { cmd.Println(lifecycleLogPath()); return nil }}
 var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifecycle events", RunE: runLifecycleLogTail}
@@ -182,26 +181,20 @@ func runLifecycleDirectAction(ctx context.Context, cmd *cobra.Command, action st
 		return err
 	}
 	defer closeManager()
+	lifecycle := controller.RuntimeLifecycle{Manager: manager, Values: values, GOOS: runtime.GOOS, WaitReady: lifecycleRuntimeWaitReady}
+	progress := func(message string) { cmd.Println(message) }
 
 	switch action {
 	case "start":
-		if err := manager.Start(ctx); err != nil {
-			return fmt.Errorf("runner start failed: %w", err)
-		}
-		if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(values, runtime.GOOS) {
-			if err := lifecycleRuntimeReady(ctx, values); err != nil {
-				return fmt.Errorf("runner start failed: %w", err)
-			}
-		}
-		if err := lifecycleRuntimeRegister(ctx, manager, values); err != nil {
+		if err := lifecycle.Start(ctx, progress); err != nil {
 			return fmt.Errorf("runner start failed: %w", err)
 		}
 	case "stop":
-		if err := manager.Stop(ctx); err != nil {
+		if err := lifecycle.Stop(ctx); err != nil {
 			return fmt.Errorf("runner stop failed: %w", err)
 		}
 	case "restart":
-		if err := manager.Restart(ctx); err != nil {
+		if err := lifecycle.Restart(ctx, progress); err != nil {
 			return fmt.Errorf("runner restart failed: %w", err)
 		}
 	default:
