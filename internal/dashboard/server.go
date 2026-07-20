@@ -1132,31 +1132,20 @@ func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
-	if s.operations != nil {
-		current := s.operations.Current()
-		if current.Phase == controller.PhaseQueued || current.Phase == controller.PhaseRunning {
-			s.renderRuntimeActionError(w, "overview", &controller.ConflictError{Active: current})
-			return
-		}
-	}
-	s.mu.Lock()
 	done := make(chan struct{})
-	s.startup = startupState{
-		Phase:     StartupUpgrading,
-		Message:   "Upgrading runner Docker image.",
-		LogBase:   1,
-		LogNextID: 1,
-		running:   true,
-		done:      done,
-	}
-	s.appendStartupLogLocked("Starting runner image upgrade.")
-	s.mu.Unlock()
+	ready := make(chan struct{})
 	values := s.cfg.Snapshot()
 
 	if s.operations == nil {
 		s.operations = controller.NewCoordinator(s.ctx)
 	}
 	snapshot, submitErr := s.operations.Submit(controller.OperationRuntimeRestart, func(ctx context.Context, _ func(controller.Progress)) error {
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 		s.mu.RLock()
 		available := s.maintenance
 		s.mu.RUnlock()
@@ -1198,16 +1187,21 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 	if submitErr != nil {
-		s.setStartupState(StartupNeedsAttention, "Runtime operation could not start: "+submitErr.Error())
-		s.mu.Lock()
-		if s.startup.done == done {
-			s.startup.running = false
-		}
-		s.mu.Unlock()
-		close(done)
 		s.renderRuntimeActionError(w, "overview", submitErr)
 		return
 	}
+	s.mu.Lock()
+	s.startup = startupState{
+		Phase:     StartupUpgrading,
+		Message:   "Upgrading runner Docker image.",
+		LogBase:   1,
+		LogNextID: 1,
+		running:   true,
+		done:      done,
+	}
+	s.appendStartupLogLocked("Starting runner image upgrade.")
+	s.mu.Unlock()
+	close(ready)
 	go func() {
 		defer close(done)
 		_, _ = s.operations.Wait(context.Background(), snapshot.ID)

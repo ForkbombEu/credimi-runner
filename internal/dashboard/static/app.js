@@ -1704,7 +1704,7 @@
   }
   document.body.addEventListener('htmx:afterSwap', (e) => {
     if (e.detail.target && e.detail.target.tagName === 'MAIN') {
-      hideBusy();
+      if (!runtimeOperationActive) hideBusy();
       syncNav();
       initSetupWizard(e.detail.target);
       initNetMode();

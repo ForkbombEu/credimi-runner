@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 type fakeManager struct {
+	mu               sync.Mutex
 	startCalls       int
 	stopCalls        int
 	restartCalls     int
@@ -43,6 +45,8 @@ type fakeManager struct {
 }
 
 func (f *fakeManager) Start(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.startCalls++
 	if f.startErr != nil {
 		return f.startErr
@@ -58,6 +62,8 @@ func (f *fakeManager) StartWithProgress(ctx context.Context, progress func(strin
 	return f.Start(ctx)
 }
 func (f *fakeManager) Stop(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.stopCalls++
 	if f.stopErr != nil {
 		return f.stopErr
@@ -67,6 +73,8 @@ func (f *fakeManager) Stop(context.Context) error {
 	return nil
 }
 func (f *fakeManager) Restart(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.restartCalls++
 	if f.restartErr == nil {
 		f.status.LastStartedAt = time.Now()
@@ -74,26 +82,44 @@ func (f *fakeManager) Restart(context.Context) error {
 	return f.restartErr
 }
 func (f *fakeManager) UpdateImage(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.updateImageCalls++
 	return f.updateImageErr
 }
 func (f *fakeManager) UpgradeRunnerImage(_ context.Context, progress func(string)) error {
+	f.mu.Lock()
 	f.updateImageCalls++
+	block := f.upgradeBlock
+	err := f.updateImageErr
+	f.mu.Unlock()
 	if progress != nil {
 		progress("Stopping the runner and Docker services.")
 		progress("Downloading the latest runner image.")
 	}
-	if f.upgradeBlock != nil {
-		<-f.upgradeBlock
+	if block != nil {
+		<-block
 	}
-	return f.updateImageErr
+	return err
 }
 func (f *fakeManager) Configure(values dashboardruntime.Values) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.status.Configured = strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != ""
 }
-func (f *fakeManager) SetPublicURL(publicURL string)                         { f.status.PublicURL = publicURL }
-func (f *fakeManager) Status(context.Context) dashboardruntime.RuntimeStatus { return f.status }
+func (f *fakeManager) SetPublicURL(publicURL string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status.PublicURL = publicURL
+}
+func (f *fakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status
+}
 func (f *fakeManager) Logs(_ context.Context, tail int) ([]dashboardruntime.LogLine, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.logTail = tail
 	if tail > 0 && f.logLinesSince != nil {
 		return f.logLinesSince, nil
@@ -1097,9 +1123,9 @@ func TestServerMaintenanceUpgradeStagesBinaryAndSchedulesRestart(t *testing.T) {
 	s.restartDashboard = func(staged string) error { restarted = staged; return nil }
 	recorder := httptest.NewRecorder()
 	s.maintenanceUpgrade(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
-	deadline := time.Now().Add(time.Second)
-	for restarted == "" && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	op := s.operations.Current()
+	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+		t.Fatalf("maintenance upgrade operation: %v", err)
 	}
 	if downloaded != "/installed/credimi-runner.upgrade" || restarted != downloaded {
 		t.Fatalf("downloaded=%q restarted=%q startup=%#v", downloaded, restarted, s.startupSnapshot())
@@ -1600,9 +1626,10 @@ func TestServerSaveAndFinishSetup(t *testing.T) {
 	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
 		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	waitForCondition(t, func() bool {
-		return s.manager.(*fakeManager).startCalls > 0
-	})
+	op := s.operations.Current()
+	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+		t.Fatalf("setup operation: %v", err)
+	}
 	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
 		t.Fatal("finishSetup should start runtime")
 	}
