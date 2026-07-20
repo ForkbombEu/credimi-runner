@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +20,8 @@ import (
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
+	"github.com/forkbombeu/credimi-runner/internal/controller"
+	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
@@ -51,26 +52,31 @@ var (
 )
 
 type Server struct {
-	cfg                    *Config
-	hub                    *Hub
-	render                 *Renderer
-	composeDir             string
-	ctx                    context.Context
-	authToken              string
-	manager                dashboardruntime.Manager
-	runnerReady            func(context.Context, map[string]string) error
-	lookupPath             func(string) (string, error)
-	statPath               func(string) (os.FileInfo, error)
-	lastRegistrationStatus string
-	pendingDiff            dashboardruntime.ConfigDiff
-	startup                startupState
-	maintenance            maintenance.Status
-	maintenanceChecked     bool
-	maintenanceChecker     func(context.Context, string, time.Time, string) maintenance.Status
-	binaryPath             string
-	downloadBinary         func(context.Context, *http.Client, string, func(string)) error
-	restartDashboard       func(string) error
-	mu                     sync.RWMutex
+	cfg                     *Config
+	hub                     *Hub
+	render                  *Renderer
+	composeDir              string
+	ctx                     context.Context
+	authToken               string
+	controllerID            string
+	controllerIdentityToken string
+	controllerFingerprint   string
+	manager                 dashboardruntime.Manager
+	operations              *controller.Coordinator
+	runnerReady             func(context.Context, map[string]string) error
+	lookupPath              func(string) (string, error)
+	statPath                func(string) (os.FileInfo, error)
+	lastRegistrationStatus  string
+	pendingDiff             dashboardruntime.ConfigDiff
+	startup                 startupState
+	maintenance             maintenance.Status
+	maintenanceChecked      bool
+	maintenanceChecker      func(context.Context, string, time.Time, string) maintenance.Status
+	binaryPath              string
+	downloadBinary          func(context.Context, *http.Client, string, func(string)) error
+	restartDashboard        func(string) error
+	startupProgress         func(string)
+	mu                      sync.RWMutex
 }
 
 type StartupPhase string
@@ -101,16 +107,8 @@ type startupState struct {
 	done      chan struct{}
 }
 
-type managerProgressStarter interface {
-	StartWithProgress(context.Context, func(string)) error
-}
-
 type managerImageUpgrader interface {
 	UpgradeRunnerImage(context.Context, func(string)) error
-}
-
-type managerTunnelLogger interface {
-	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
 }
 
 // NewHandler creates the dashboard HTTP handler for mounting into an existing
@@ -125,6 +123,34 @@ func NewHandlerWithManager(composeDir string, manager dashboardruntime.Manager) 
 }
 
 func NewHandlerWithManagerContext(parent context.Context, composeDir string, manager dashboardruntime.Manager) (http.Handler, context.CancelFunc, error) {
+	return NewHandlerWithManagerContextAndIdentity(parent, composeDir, manager, "", "", "")
+}
+
+func NewHandlerWithManagerContextAndIdentity(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string) (http.Handler, context.CancelFunc, error) {
+	return NewHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, nil)
+}
+
+// NewHandlerWithManagerContextAndIdentityAndCoordinator makes all dashboard
+// actions and non-HTTP entrypoints share one operation owner.
+func NewHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, false, nil)
+}
+
+// NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap starts a
+// configured runtime through the dashboard lifecycle controller after the
+// handler is ready. It is used only by the plain credimi-runner command.
+func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, nil)
+}
+
+// NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress
+// additionally mirrors controller bootstrap progress to the process that
+// launched the dashboard.
+func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, progress func(string)) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, progress)
+}
+
+func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool, progress func(string)) (http.Handler, context.CancelFunc, error) {
 	cfg, err := LoadConfig(composeDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -133,11 +159,14 @@ func NewHandlerWithManagerContext(parent context.Context, composeDir string, man
 	if err != nil {
 		return nil, nil, fmt.Errorf("templates: %w", err)
 	}
-	hub := NewHub(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
+	observer := controller.Observer{Drivers: []driver.Driver{driver.Compose{}, driver.Host{}}}
+	hub := NewHubWithObservation(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
 		if manager == nil {
 			return dashboardruntime.RuntimeStatus{}
 		}
 		return manager.Status(context.Background())
+	}, func(ctx context.Context, values dashboardruntime.Values) controller.ObservedRuntime {
+		return observer.Observe(ctx, composeDir, values)
 	})
 	executable, err := os.Executable()
 	if err != nil {
@@ -157,18 +186,26 @@ func NewHandlerWithManagerContext(parent context.Context, composeDir string, man
 	}
 
 	srv := &Server{
-		cfg:        cfg,
-		hub:        hub,
-		render:     render,
-		composeDir: composeDir,
-		ctx:        parent,
-		authToken:  strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
-		manager:    manager,
-		lookupPath: lookupPath,
-		statPath:   statPath,
+		cfg:                     cfg,
+		hub:                     hub,
+		render:                  render,
+		composeDir:              composeDir,
+		ctx:                     parent,
+		authToken:               strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
+		controllerID:            controllerID,
+		controllerIdentityToken: identityToken,
+		controllerFingerprint:   fingerprint,
+		manager:                 manager,
+		operations:              operations,
+		lookupPath:              lookupPath,
+		statPath:                statPath,
 		startup: startupState{
 			Phase: StartupIdle,
 		},
+		startupProgress: progress,
+	}
+	if srv.operations == nil {
+		srv.operations = controller.NewCoordinator(parent)
 	}
 	srv.runnerReady = srv.waitForRunnerReady
 	srv.binaryPath = executable
@@ -182,6 +219,9 @@ func NewHandlerWithManagerContext(parent context.Context, composeDir string, man
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
+	if bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
+		srv.bootstrapConfiguredRuntime()
+	}
 	return srv.auth(mux), cancel, nil
 }
 
@@ -215,12 +255,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/start", s.runtimeStart)
 	mux.HandleFunc("POST /runtime/stop", s.runtimeStop)
 	mux.HandleFunc("POST /runtime/restart", s.runtimeRestart)
-	mux.HandleFunc("POST /runtime/down", s.runtimeDown)
-	mux.HandleFunc("POST /runtime/update-image", s.runtimeUpdateImage)
 	mux.HandleFunc("POST /maintenance/upgrade", s.maintenanceUpgrade)
 	mux.HandleFunc("POST /maintenance/check", s.maintenanceCheck)
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
-	mux.HandleFunc("POST /runtime/apply", s.runtimeApply)
 	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
 	mux.HandleFunc("GET /startup/status", s.startupStatus)
 
@@ -241,6 +278,15 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /events/runtime", s.sse("runtime"))
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /internal/controller/identity", s.controllerIdentity)
+	// Machine-readable lifecycle API. These endpoints return immediately and
+	// can be polled safely by remote CLI clients without tying an operation to
+	// the HTTP request lifetime.
+	mux.HandleFunc("GET /api/controller/status", s.controllerStatus)
+	mux.HandleFunc("GET /api/controller/operations/current", s.controllerOperationCurrent)
+	mux.HandleFunc("GET /api/controller/operations/{id}", s.controllerOperation)
+	mux.HandleFunc("POST /api/controller/runtime/{action}", s.controllerRuntimeAction)
+	mux.HandleFunc("POST /api/controller/maintenance/upgrade-image", s.controllerUpgradeImage)
 }
 
 // staticHTTPHandler returns a handler for the embedded static directory.
@@ -255,7 +301,7 @@ func staticHTTPHandler() (http.Handler, error) {
 // auth wraps the mux with optional bearer/basic protection.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authToken == "" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" {
+		if s.authToken == "" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" || r.URL.Path == "/internal/controller/identity" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -273,6 +319,14 @@ func (s *Server) auth(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) controllerIdentity(w http.ResponseWriter, r *http.Request) {
+	if s.controllerIdentityToken == "" || r.Header.Get("X-Credimi-Controller-Token") != s.controllerIdentityToken {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, map[string]string{"controller_id": s.controllerID, "config_fingerprint": s.controllerFingerprint})
+}
+
 // ── page rendering ───────────────────────────────────────────────────────────
 
 func (s *Server) pageData(active string, payload any) PageData {
@@ -285,7 +339,6 @@ func (s *Server) pageData(active string, payload any) PageData {
 	runtimeStatus.PendingRestart = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRestartRequired)
 	runtimeStatus.PendingRecreate = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyComposeRecreate)
 	runtimeStatus.PendingCredimiUpdate = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired)
-	flash := s.lastRegistrationStatus
 	maintenanceStatus := s.maintenance
 	s.mu.RUnlock()
 	payloadMap := map[string]any{
@@ -293,9 +346,6 @@ func (s *Server) pageData(active string, payload any) PageData {
 		"Startup":       s.startupSnapshot(),
 		"RunnerVersion": buildinfo.String(),
 		"Maintenance":   maintenanceStatus,
-	}
-	if flash != "" {
-		payloadMap["Flash"] = flash
 	}
 	if p, ok := payload.(map[string]any); ok {
 		for key, value := range p {
@@ -454,9 +504,7 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 	message := "Configuration updated."
 	appliedCleanly := true
 	if s.manager != nil {
-		applyCtx, applyCancel := context.WithTimeout(r.Context(), 90*time.Second)
-		defer applyCancel()
-		if outcome, err := s.applySavedConfig(applyCtx, diff, newSnapshot); err != nil {
+		if outcome, err := s.applySavedConfig(diff, newSnapshot); err != nil {
 			message = "Configuration update failed: " + err.Error()
 			appliedCleanly = false
 		} else if outcome.Restarted {
@@ -525,29 +573,62 @@ type applyOutcome struct {
 	CredimiUpdated bool
 }
 
-func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) (applyOutcome, error) {
+func (s *Server) applySavedConfig(diff dashboardruntime.ConfigDiff, values map[string]string) (applyOutcome, error) {
 	var outcome applyOutcome
 	if len(diff.ChangedKeys) == 0 || hasApplyClass(diff, dashboardruntime.ApplySavedOnly) {
 		return outcome, nil
 	}
-	status := s.manager.Status(ctx)
+	status := s.manager.Status(context.Background())
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
-	if runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)) {
-		if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
-			s.manager.SetPublicURL("")
-		}
-		if err := s.manager.Restart(ctx); err != nil {
-			return outcome, err
-		}
-		outcome.Restarted = true
+	restartRequired := runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate))
+	registerRequired := shouldRegisterAfterApply(diff, values, restartRequired)
+	if !restartRequired && !registerRequired {
+		return outcome, nil
 	}
-	if shouldRegisterAfterApply(diff, values, outcome.Restarted) {
+	kind := controller.OperationRegistration
+	if restartRequired {
+		kind = controller.OperationRuntimeRestart
+	}
+	err := s.runLifecycleOperation(kind, func(ctx context.Context) error {
+		if restartRequired {
+			if err := s.runtimeLifecycle(values).Restart(ctx, nil); err != nil {
+				return err
+			}
+			outcome.Restarted = true
+			// Restart performs registration itself. Do not register a second time.
+			outcome.CredimiUpdated = true
+			return nil
+		}
 		if err := s.registerCurrent(ctx, values); err != nil {
-			return outcome, err
+			return err
 		}
 		outcome.CredimiUpdated = true
+		return nil
+	})
+	return outcome, err
+}
+
+func (s *Server) runLifecycleOperation(kind controller.OperationKind, action func(context.Context) error) error {
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
 	}
-	return outcome, nil
+	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, _ func(controller.Progress)) error {
+		return action(ctx)
+	})
+	if err != nil {
+		return err
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil {
+		return err
+	}
+	if completed.Phase != controller.PhaseSucceeded {
+		if completed.Error != "" {
+			return errors.New(completed.Error)
+		}
+		return errors.New(completed.Message)
+	}
+	return nil
 }
 
 func shouldRegisterAfterApply(diff dashboardruntime.ConfigDiff, values map[string]string, restarted bool) bool {
@@ -628,85 +709,101 @@ func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startStartupJob(values map[string]string) {
-	s.mu.Lock()
-	if s.startup.running && s.startup.cancel != nil {
-		s.startup.cancel()
-	}
-	parent := s.ctx
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithCancel(parent)
-	done := make(chan struct{})
-	s.startup = startupState{
+	s.startTrackedStartupOperation(controller.OperationRuntimeStart, startupState{
 		Phase:     StartupStarting,
 		Message:   "Setup saved. Starting runtime.",
 		LogBase:   1,
 		LogNextID: 1,
-		running:   true,
-		cancel:    cancel,
-		done:      done,
+	}, func(ctx context.Context) error {
+		s.appendStartupLog("Starting runtime services.")
+		if err := s.runtimeLifecycle(cloneStringMap(values)).Start(ctx, s.appendStartupLog); err != nil {
+			s.setStartupState(StartupNeedsAttention, "Setup saved, but runtime start failed: "+err.Error())
+			return err
+		}
+		s.hub.poll(context.Background())
+		s.mu.Lock()
+		s.pendingDiff = dashboardruntime.ConfigDiff{}
+		s.mu.Unlock()
+		s.setStartupState(StartupReady, "Setup complete. Runner started and registered with Credimi.")
+		return nil
+	})
+}
+
+func (s *Server) bootstrapConfiguredRuntime() {
+	if s.manager == nil {
+		return
 	}
-	s.appendStartupLogLocked("Setup saved. Starting runtime.")
+	values := s.cfg.Snapshot()
+	status := s.manager.Status(context.Background())
+	if !status.RunnerRunning && !status.ComposeRunning {
+		s.startStartupJob(values)
+		return
+	}
+	if follower, ok := s.manager.(interface{ StartLogFollower() }); ok {
+		follower.StartLogFollower()
+	}
+	s.startExistingRuntimeJob(values)
+}
+
+func (s *Server) startExistingRuntimeJob(values map[string]string) {
+	s.startTrackedStartupOperation(controller.OperationRegistration, startupState{
+		Phase:     StartupWaitingRunner,
+		Message:   "Runner already running. Verifying runtime and registration.",
+		LogBase:   1,
+		LogNextID: 1,
+	}, func(ctx context.Context) error {
+		s.setStartupState(StartupRegistering, "Runner already running. Updating Credimi registration.")
+		if err := s.runtimeLifecycle(cloneStringMap(values)).RegisterRunning(ctx); err != nil {
+			s.mu.Lock()
+			s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
+			s.mu.Unlock()
+			s.setStartupState(StartupNeedsAttention, "Runner is already running, but Credimi registration failed: "+err.Error())
+			return err
+		}
+		s.mu.Lock()
+		s.pendingDiff = dashboardruntime.ConfigDiff{}
+		s.mu.Unlock()
+		s.setStartupState(StartupReady, "Runner already running and registered with Credimi.")
+		return nil
+	})
+}
+
+func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, state startupState, action func(context.Context) error) {
+	s.mu.Lock()
+	done := make(chan struct{})
+	state.running = true
+	state.done = done
+	s.startup = state
+	s.appendStartupLogLocked(s.startup.Message)
 	s.lastRegistrationStatus = s.startup.Message
 	s.mu.Unlock()
 
 	s.hub.poll(context.Background())
-	go func() {
-		defer cancel()
-		defer close(done)
-		s.runStartupJob(ctx, cloneStringMap(values))
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
+	}
+	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, _ func(controller.Progress)) error {
+		return action(ctx)
+	})
+	if err != nil {
+		s.setStartupState(StartupNeedsAttention, "Runtime operation could not start: "+err.Error())
 		s.mu.Lock()
 		if s.startup.done == done {
 			s.startup.running = false
-			s.startup.cancel = nil
+		}
+		s.mu.Unlock()
+		close(done)
+		return
+	}
+	go func() {
+		defer close(done)
+		_, _ = s.operations.Wait(context.Background(), snapshot.ID)
+		s.mu.Lock()
+		if s.startup.done == done {
+			s.startup.running = false
 		}
 		s.mu.Unlock()
 	}()
-}
-
-func (s *Server) runStartupJob(ctx context.Context, values map[string]string) {
-	if s.manager == nil {
-		s.setStartupState(StartupReady, "Setup saved.")
-		return
-	}
-	s.appendStartupLog("Starting runtime services.")
-	var err error
-	if starter, ok := s.manager.(managerProgressStarter); ok {
-		err = starter.StartWithProgress(ctx, s.appendStartupLog)
-	} else {
-		err = s.manager.Start(ctx)
-	}
-	if err != nil {
-		s.setStartupState(StartupNeedsAttention, "Setup saved, but runtime start failed: "+err.Error())
-		return
-	}
-	s.hub.poll(context.Background())
-	if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
-		s.setStartupState(StartupWaitingRunner, "Runtime started. Waiting for runner readiness.")
-		readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err := s.runnerReady(readyCtx, values)
-		cancel()
-		if err != nil {
-			s.setStartupState(StartupNeedsAttention, "Setup saved, but runner readiness was not confirmed: "+s.runtimeStartupError(context.Background(), err).Error())
-			return
-		}
-	}
-	s.setStartupState(StartupRegistering, "Runtime started. Updating Credimi registration.")
-	registerCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err = s.registerCurrent(registerCtx, values)
-	cancel()
-	if err != nil {
-		s.mu.Lock()
-		s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
-		s.mu.Unlock()
-		s.setStartupState(StartupNeedsAttention, "Setup saved, but Credimi registration failed: "+err.Error())
-		return
-	}
-	s.mu.Lock()
-	s.pendingDiff = dashboardruntime.ConfigDiff{}
-	s.mu.Unlock()
-	s.setStartupState(StartupReady, "Setup complete. Runner started and registered with Credimi.")
 }
 
 func (s *Server) setStartupState(phase StartupPhase, message string) {
@@ -743,6 +840,9 @@ func (s *Server) appendStartupLogLocked(message string) {
 	}
 	s.startup.Logs = append(s.startup.Logs, message)
 	s.startup.LogNextID++
+	if s.startupProgress != nil {
+		s.startupProgress(message)
+	}
 	if extra := len(s.startup.Logs) - startupLogRetain; extra > 0 {
 		s.startup.Logs = append([]string(nil), s.startup.Logs[extra:]...)
 		s.startup.LogBase += int64(extra)
@@ -932,88 +1032,154 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
+	s.queueDashboardRuntimeAction(w, r, "start")
+}
+
+func (s *Server) controllerStatus(w http.ResponseWriter, r *http.Request) {
+	status := dashboardruntime.RuntimeStatus{}
+	if s.manager != nil {
+		status = s.manager.Status(r.Context())
+	}
+	writeJSON(w, map[string]any{"runtime": status, "operation": s.operations.Current()})
+}
+
+func (s *Server) controllerOperationCurrent(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.operations.Current())
+}
+
+func (s *Server) controllerOperation(w http.ResponseWriter, r *http.Request) {
+	snapshot, ok := s.operations.Get(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, snapshot)
+}
+
+func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.submitRuntimeAction(r.PathValue("action"))
+	if err != nil {
+		if errors.Is(err, controller.ErrOperationConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
-		values := s.cfg.Snapshot()
-		if err := s.manager.Start(ctx); err != nil {
+		if errors.Is(err, errRuntimeManagerUnavailable) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, snapshot)
+}
+
+func (s *Server) controllerUpgradeImage(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.submitImageUpgrade()
+	if err != nil {
+		if errors.Is(err, controller.ErrOperationConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, snapshot)
+}
+
+var errRuntimeManagerUnavailable = errors.New("runtime manager unavailable")
+
+func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error) {
+	if s.manager == nil {
+		return controller.Snapshot{}, errRuntimeManagerUnavailable
+	}
+	var kind controller.OperationKind
+	switch action {
+	case "start":
+		kind = controller.OperationRuntimeStart
+	case "stop":
+		kind = controller.OperationRuntimeStop
+	case "restart":
+		kind = controller.OperationRuntimeRestart
+	default:
+		return controller.Snapshot{}, fmt.Errorf("unsupported runtime action %q", action)
+	}
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
+	}
+	values := s.cfg.Snapshot()
+	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, progress func(controller.Progress)) error {
+		lifecycle := s.runtimeLifecycle(values)
+		progressFn := func(message string) { progress(controller.Progress{Message: message}) }
+		switch kind {
+		case controller.OperationRuntimeStart:
+			return lifecycle.Start(ctx, progressFn)
+		case controller.OperationRuntimeStop:
+			return lifecycle.Stop(ctx)
+		case controller.OperationRuntimeRestart:
+			return lifecycle.Restart(ctx, progressFn)
+		default:
+			return fmt.Errorf("unsupported runtime operation %q", kind)
+		}
+	})
+	return snapshot, err
+}
+
+func (s *Server) submitImageUpgrade() (controller.Snapshot, error) {
+	upgrader, ok := s.manager.(managerImageUpgrader)
+	if !ok {
+		return controller.Snapshot{}, errors.New("runner image upgrade is unavailable")
+	}
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
+	}
+	values := s.cfg.Snapshot()
+	return s.operations.Submit(controller.OperationRuntimeRestart, func(ctx context.Context, progress func(controller.Progress)) error {
+		progressFn := func(message string) { progress(controller.Progress{Message: message}) }
+		if err := upgrader.UpgradeRunnerImage(ctx, progressFn); err != nil {
 			return err
 		}
-		if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
-			if err := s.runnerReady(ctx, values); err != nil {
-				return s.runtimeStartupError(ctx, err)
-			}
-		}
-		return s.registerCurrent(ctx, values)
-	}, "Runtime started.")
+		return s.runtimeLifecycle(values).RegisterRunning(ctx)
+	})
+}
+
+func (s *Server) runtimeLifecycle(values map[string]string) controller.RuntimeLifecycle {
+	return controller.RuntimeLifecycle{
+		Manager: s.manager,
+		Values:  dashboardruntime.Values(values),
+		GOOS:    runtimeGOOS(),
+		WaitReady: func(ctx context.Context, values dashboardruntime.Values) error {
+			return s.runnerReady(ctx, values)
+		},
+	}
 }
 
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		return s.manager.Stop(ctx)
-	}, "Runtime stopped.")
+	s.queueDashboardRuntimeAction(w, r, "stop")
 }
 
 func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		return s.manager.Restart(ctx)
-	}, "Runtime restarted.")
-}
-
-func (s *Server) runtimeDown(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		return s.manager.Down(ctx)
-	}, "Runtime brought down.")
-}
-
-func (s *Server) runtimeUpdateImage(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
-		if s.manager == nil {
-			return nil
-		}
-		return s.manager.UpdateImage(ctx)
-	}, "Runner image updated.")
+	s.queueDashboardRuntimeAction(w, r, "restart")
 }
 
 func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	if s.startup.running {
-		s.mu.Unlock()
-		http.Error(w, "another runtime operation is already running", http.StatusConflict)
-		return
-	}
-	parent := s.ctx
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithCancel(parent)
 	done := make(chan struct{})
-	s.startup = startupState{
-		Phase:     StartupUpgrading,
-		Message:   "Upgrading runner Docker image.",
-		LogBase:   1,
-		LogNextID: 1,
-		running:   true,
-		cancel:    cancel,
-		done:      done,
-	}
-	s.appendStartupLogLocked("Starting runner image upgrade.")
-	s.mu.Unlock()
+	ready := make(chan struct{})
 	values := s.cfg.Snapshot()
 
-	go func() {
-		defer cancel()
-		defer close(done)
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
+	}
+	snapshot, submitErr := s.operations.Submit(controller.OperationRuntimeRestart, func(ctx context.Context, _ func(controller.Progress)) error {
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 		s.mu.RLock()
 		available := s.maintenance
 		s.mu.RUnlock()
@@ -1041,19 +1207,41 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			s.setStartupState(StartupNeedsAttention, "Runner upgrade failed: "+err.Error())
+			return err
 		} else {
 			s.setStartupState(StartupReady, "Runner upgrade complete.")
 			if stagedBinary != "" {
 				s.appendStartupLog("Restarting the Dashboard with the new Runner binary.")
 				if restartErr := s.restartDashboard(stagedBinary); restartErr != nil {
 					s.setStartupState(StartupNeedsAttention, "Dashboard restart failed: "+restartErr.Error())
+					return restartErr
 				}
 			}
 		}
+		return nil
+	})
+	if submitErr != nil {
+		s.renderRuntimeActionError(w, "overview", submitErr)
+		return
+	}
+	s.mu.Lock()
+	s.startup = startupState{
+		Phase:     StartupUpgrading,
+		Message:   "Upgrading runner Docker image.",
+		LogBase:   1,
+		LogNextID: 1,
+		running:   true,
+		done:      done,
+	}
+	s.appendStartupLogLocked("Starting runner image upgrade.")
+	s.mu.Unlock()
+	close(ready)
+	go func() {
+		defer close(done)
+		_, _ = s.operations.Wait(context.Background(), snapshot.ID)
 		s.mu.Lock()
-		if s.startup.done == done && stagedBinary == "" {
+		if s.startup.done == done {
 			s.startup.running = false
-			s.startup.cancel = nil
 		}
 		s.mu.Unlock()
 	}()
@@ -1064,7 +1252,7 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeRegister(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
+	s.queueRuntimeAction(w, r, "overview", controller.OperationRegistration, func(ctx context.Context) error {
 		return s.registerCurrent(ctx, s.cfg.Snapshot())
 	}, "Credimi runner registration updated.")
 }
@@ -1093,6 +1281,22 @@ func (s *Server) runtimeLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	startup := s.startupSnapshot()
+	if s.operations != nil {
+		op := s.operations.Current()
+		if op.Phase == controller.PhaseQueued || op.Phase == controller.PhaseRunning {
+			startup.Phase = StartupStarting
+			startup.Message = op.Message
+			startup.running = true
+		}
+		if op.Phase == controller.PhaseFailed || op.Phase == controller.PhaseCancelled {
+			startup.Phase = StartupNeedsAttention
+			startup.Message = op.Error
+			if startup.Message == "" {
+				startup.Message = op.Message
+			}
+			startup.running = false
+		}
+	}
 	lines := startup.Logs
 	if since, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("since")), 10, 64); err == nil && since > 0 {
 		start := 0
@@ -1113,82 +1317,63 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) runtimeApply(w http.ResponseWriter, r *http.Request) {
-	s.runtimeAction(w, r, "overview", func(ctx context.Context) error {
-		s.mu.RLock()
-		diff := s.pendingDiff
-		s.mu.RUnlock()
-		values := s.cfg.Snapshot()
-		if s.manager != nil {
-			s.manager.Configure(dashboardruntime.Values(values))
-		}
-		restarted := false
-		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) {
-			if err := WriteComposeFile(s.composeDir, values); err != nil {
-				return err
-			}
-			if s.manager != nil {
-				if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
-					s.manager.SetPublicURL("")
-				}
-				if err := s.manager.Down(ctx); err != nil {
-					return err
-				}
-				if err := s.manager.Start(ctx); err != nil {
-					return err
-				}
-				restarted = true
-			}
-		} else if hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
-			if s.manager != nil {
-				if normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" {
-					s.manager.SetPublicURL("")
-				}
-				if err := s.manager.Restart(ctx); err != nil {
-					return err
-				}
-				restarted = true
-			}
-		}
-		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
-			if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
-				if err := s.runnerReady(ctx, values); err != nil {
-					return err
-				}
-			}
-		}
-		if shouldRegisterAfterApply(diff, values, restarted) {
-			if err := s.registerCurrent(ctx, values); err != nil {
-				return err
-			}
-		}
-		s.mu.Lock()
-		s.pendingDiff = dashboardruntime.ConfigDiff{}
-		s.mu.Unlock()
-		return nil
-	}, "Pending changes applied.")
-}
-
-func (s *Server) runtimeAction(w http.ResponseWriter, r *http.Request, page string, action func(context.Context) error, success string) {
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	if err := action(ctx); err != nil {
-		d := s.pageData(page, map[string]any{"Flash": err.Error()})
-		html, _ := s.render.FragmentPage(page, d)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(html))
+func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, r *http.Request, action string) {
+	snapshot, err := s.submitRuntimeAction(action)
+	if err != nil {
+		s.renderRuntimeActionError(w, "overview", err)
 		return
 	}
-	s.mu.Lock()
-	s.lastRegistrationStatus = success
-	s.mu.Unlock()
-	s.hub.poll(ctx)
-	d := s.pageData(page, map[string]any{"Flash": success})
+	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action))
+}
+
+func (s *Server) queueRuntimeAction(w http.ResponseWriter, r *http.Request, page string, kind controller.OperationKind, action func(context.Context) error, success string) {
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
+	}
+	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, _ func(controller.Progress)) error {
+		return action(ctx)
+	})
+	if err != nil {
+		s.renderRuntimeActionError(w, page, err)
+		return
+	}
+	s.writeQueuedRuntimeAction(w, snapshot, success)
+}
+
+func (s *Server) renderRuntimeActionError(w http.ResponseWriter, page string, err error) {
+	d := s.pageData(page, map[string]any{"Flash": err.Error()})
 	html, _ := s.render.FragmentPage(page, d)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, success))
-	w.Write([]byte(html))
+	if errors.Is(err, controller.ErrOperationConflict) {
+		w.WriteHeader(http.StatusConflict)
+	} else {
+		w.WriteHeader(http.StatusBadRequest)
+	}
+	_, _ = w.Write([]byte(html))
+}
+
+func (s *Server) writeQueuedRuntimeAction(w http.ResponseWriter, snapshot controller.Snapshot, success string) {
+	trigger, _ := json.Marshal(map[string]any{"runtimeOperation": map[string]string{
+		"id":      snapshot.ID,
+		"success": success,
+	}})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("HX-Reswap", "none")
+	w.Header().Set("HX-Trigger", string(trigger))
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func runtimeActionSuccessMessage(action string) string {
+	switch action {
+	case "start":
+		return "Runner started successfully."
+	case "stop":
+		return "Runner stopped successfully."
+	case "restart":
+		return "Runner restarted successfully."
+	default:
+		return "Runner operation completed successfully."
+	}
 }
 
 func (s *Server) rawConfig(w http.ResponseWriter, r *http.Request) {
@@ -1344,38 +1529,7 @@ func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]str
 }
 
 func (s *Server) registerCurrent(ctx context.Context, values map[string]string) error {
-	apiKey := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
-	}
-	if apiKey == "" {
-		return errors.New("missing Credimi API key")
-	}
-
-	publicURL, publicPort, err := s.resolveRegistrationEndpoint(ctx, values)
-	if err != nil {
-		return err
-	}
-	if s.manager != nil {
-		s.manager.SetPublicURL(publicURL)
-	}
-	client := &dashboardruntime.CredimiClient{
-		BaseURL:    strings.TrimSpace(values["CREDIMI_URL"]),
-		APIKey:     apiKey,
-		HTTPClient: http.DefaultClient,
-	}
-	req := dashboardruntime.RegisterRunnerRequest{
-		RunnerID:     strings.TrimSpace(values["CREDIMI_RUNNER_ID"]),
-		Name:         strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]),
-		IP:           publicURL,
-		Description:  strings.TrimSpace(values["CREDIMI_RUNNER_DESCRIPTION"]),
-		Type:         strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]),
-		Port:         publicPort,
-		Serial:       strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]),
-		Organization: strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]),
-		Published:    boolPtr(isTruthyFormValue(values["CREDIMI_RUNNER_PUBLISHED"])),
-	}
-	if err := client.RegisterMobileRunnerResolvingName(ctx, req); err != nil {
+	if err := s.runtimeLifecycle(values).Register(ctx); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -1401,108 +1555,62 @@ func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]strin
 	defer ticker.Stop()
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	var lastErr error
 	for {
 		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = conn.Close()
-			return nil
+			if healthErr := waitForRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
+				_, readinessErr := controller.ValidateReadiness(deadline, http.DefaultClient, "http://"+address, dashboardruntime.Values(values))
+				if readinessErr == nil {
+					return nil
+				}
+				lastErr = readinessErr
+			} else {
+				lastErr = healthErr
+			}
+		} else {
+			lastErr = err
 		}
 		select {
 		case <-deadline.Done():
-			return fmt.Errorf("runner did not become ready on %s: %w", address, deadline.Err())
+			return controller.ReadinessFailure(dashboardruntime.Values(values), address, lastErr, deadline.Err())
 		case <-ticker.C:
 		}
 	}
 }
 
-func (s *Server) runtimeStartupError(ctx context.Context, cause error) error {
-	if s.manager == nil {
-		return cause
+func waitForRunnerHealth(ctx context.Context, host, port, serial string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
+	if err != nil {
+		return err
 	}
-	status := s.manager.Status(ctx)
-	var details []string
-	if status.LastError != "" {
-		details = append(details, "last runtime error: "+status.LastError)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
 	}
-	logs, err := s.manager.Logs(ctx, 40)
-	if err == nil && len(logs) > 0 {
-		start := 0
-		if len(logs) > 8 {
-			start = len(logs) - 8
-		}
-		var tail []string
-		for _, line := range logs[start:] {
-			tail = append(tail, strings.TrimSpace(line.Message))
-		}
-		details = append(details, "recent runtime logs: "+strings.Join(tail, " | "))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("runner health returned %s", response.Status)
 	}
-	if len(details) == 0 {
-		return cause
+	if serial == "" {
+		return nil
 	}
-	return fmt.Errorf("%w (%s)", cause, strings.Join(details, " ; "))
-}
-
-func (s *Server) resolveRegistrationEndpoint(ctx context.Context, values map[string]string) (string, string, error) {
-	switch strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) {
-	case "manual":
-		url := strings.TrimSpace(values["RUNNER_PUBLIC_URL"])
-		if url == "" {
-			return "", "", errors.New("RUNNER_PUBLIC_URL is required for manual service mode")
-		}
-		return url, strings.TrimSpace(values["RUNNER_PUBLIC_PORT"]), nil
-	case "cloudflare-managed":
-		domain := strings.TrimSpace(values["RUNNER_DOMAIN"])
-		if domain == "" {
-			return "", "", errors.New("RUNNER_DOMAIN is required for managed tunnel mode")
-		}
-		if !strings.Contains(domain, "://") {
-			domain = "https://" + domain
-		}
-		return domain, "", nil
-	default:
-		if s.manager == nil {
-			return "", "", errors.New("runtime manager unavailable")
-		}
-		status := s.manager.Status(ctx)
-		if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
-			return publicURL, "", nil
-		}
-		re := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
-		logTail := quickTunnelLogTail
-		if !status.LastStartedAt.IsZero() {
-			logTail = -quickTunnelLogTail
-		}
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-		var lastErr error
-		for {
-			logs, err := managerQuickTunnelLogs(deadline, s.manager, logTail)
-			if err != nil {
-				lastErr = err
-			} else {
-				for i := len(logs) - 1; i >= 0; i-- {
-					if found := re.FindString(logs[i].Message); found != "" {
-						return found, "", nil
-					}
-				}
-				lastErr = errors.New("no trycloudflare URL found in runtime logs")
-			}
-			select {
-			case <-deadline.Done():
-				return "", "", lastErr
-			case <-ticker.C:
-			}
+	var payload struct {
+		Devices []struct {
+			Serial string `json:"serial"`
+			State  string `json:"state"`
+		} `json:"devices"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return fmt.Errorf("decode runner health: %w", err)
+	}
+	for _, device := range payload.Devices {
+		if strings.TrimSpace(device.Serial) == serial && strings.TrimSpace(device.State) == "device" {
+			return nil
 		}
 	}
-}
-
-func managerQuickTunnelLogs(ctx context.Context, manager dashboardruntime.Manager, tail int) ([]dashboardruntime.LogLine, error) {
-	if logger, ok := manager.(managerTunnelLogger); ok {
-		return logger.TunnelLogs(ctx, tail)
-	}
-	return manager.Logs(ctx, tail)
+	return fmt.Errorf("configured device %q is not ready", serial)
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {

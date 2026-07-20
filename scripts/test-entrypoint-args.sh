@@ -15,12 +15,19 @@ cat > "${adb_stub}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "adb $*" >> "${ADB_CALLS_FILE}"
+if [[ "${1:-}" == "-s" ]]; then
+  shift 2
+fi
 case "${1:-}" in
   start-server) exit 0 ;;
   kill-server) exit 0 ;;
   connect) exit 0 ;;
   wait-for-device) exit 0 ;;
   devices) exit 0 ;;
+  get-state)
+    echo "device"
+    exit 0
+    ;;
   shell)
     # emulate: adb shell getprop sys.boot_completed -> "1"
     if [[ "${2:-}" == "getprop" && "${3:-}" == "sys.boot_completed" ]]; then
@@ -131,6 +138,16 @@ reset_calls
 run_ok --host-adb --usb --no-wait
 if find_in_calls "adb start-server"; then
   echo "FAIL: adb start-server should not be called in host ADB mode" >&2
+  exit 1
+fi
+
+echo "Testing: --serial waits for the exact configured device"
+reset_calls
+run_ok --host-adb --usb --serial usb-device
+if find_in_calls "adb -s usb-device get-state"; then
+  echo "PASS: exact serial readiness check invoked"
+else
+  echo "FAIL: exact serial readiness check not invoked" >&2
   exit 1
 fi
 

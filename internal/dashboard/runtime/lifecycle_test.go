@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 )
 
 type fakeRunner struct {
@@ -127,8 +131,34 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(manager.configDir, "docker-compose.yaml")); err != nil {
 		t.Fatalf("Start should write docker-compose.yaml: %v", err)
 	}
-	if err := manager.Down(context.Background()); err != nil {
+	lifecycle, err := os.ReadFile(filepath.Join(manager.configDir, "lifecycle.jsonl"))
+	if err != nil {
+		t.Fatalf("Start should write lifecycle.jsonl: %v", err)
+	}
+	if !strings.Contains(string(lifecycle), `"event":"operation.started"`) || !strings.Contains(string(lifecycle), `"event":"operation.succeeded"`) {
+		t.Fatalf("lifecycle log missing start events: %s", lifecycle)
+	}
+	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLifecycleManagerLifecycleLogCanBeEmittedAndClosed(t *testing.T) {
+	if (*LifecycleManager)(nil).Close() != nil {
+		t.Fatal("nil manager close should succeed")
+	}
+	(*LifecycleManager)(nil).EmitLifecycle(lifecyclelog.Event{Event: "ignored"})
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{}, &fakeRunner{})
+	manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.observed", Message: "observed"})
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := os.ReadFile(filepath.Join(manager.configDir, "lifecycle.jsonl"))
+	if err != nil || !strings.Contains(string(lifecycle), "controller.observed") {
+		t.Fatalf("lifecycle=%q err=%v", lifecycle, err)
 	}
 }
 
@@ -154,14 +184,17 @@ func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) 
 }
 
 func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/readyz" {
+			http.NotFound(w, request)
+			return
+		}
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
+	}))
+	defer listener.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(listener.URL, "http://"))
 	if err != nil {
 		t.Fatal(err)
-	}
-	defer listener.Close()
-	host, port, ok := strings.Cut(listener.Addr().String(), ":")
-	if !ok {
-		t.Fatalf("listener address = %q", listener.Addr().String())
 	}
 
 	runner := &fakeRunner{}
@@ -180,6 +213,133 @@ func TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
 	}
 	if status := manager.Status(context.Background()); !status.RunnerRunning {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestLifecycleManagerStartRejectsForeignReachableHostListener(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"service":"other-service","boot_id":"test-boot"}`))
+	}))
+	defer listener.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(listener.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "host",
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_HOST":            host,
+		"RUNNER_PORT":            port,
+	}, runner)
+	err = manager.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cannot adopt existing host runner") {
+		t.Fatalf("Start error = %v", err)
+	}
+	if len(runner.starts) != 0 {
+		t.Fatalf("foreign listener must not start or adopt a runner, starts = %#v", runner.starts)
+	}
+}
+
+func TestValidateReachableHostRunnerRejectsMismatchedReadiness(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  int
+		body    string
+		values  Values
+		message string
+	}{
+		{name: "not ready", status: http.StatusServiceUnavailable, body: `{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"boot"}`, values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}, message: "HTTP 503"},
+		{name: "runner mismatch", status: http.StatusOK, body: `{"service":"credimi-runner","runner_id":"other","boot_id":"boot"}`, values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}, message: "does not match"},
+		{name: "serial mismatch", status: http.StatusOK, body: `{"service":"credimi-runner","boot_id":"boot","device_serial":"other"}`, values: Values{"CREDIMI_RUNNER_SERIAL": "device-1"}, message: "does not match"},
+		{name: "offline device", status: http.StatusOK, body: `{"service":"credimi-runner","boot_id":"boot","device_state":"offline"}`, values: Values{}, message: "offline"},
+		{name: "invalid JSON", status: http.StatusOK, body: `not JSON`, values: Values{}, message: "decode"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/readyz" {
+					http.NotFound(w, request)
+					return
+				}
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.values["RUNNER_HOST"] = host
+			test.values["RUNNER_PORT"] = port
+			err = validateReachableHostRunner(context.Background(), test.values)
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("validateReachableHostRunner error = %v", err)
+			}
+		})
+	}
+}
+
+func TestObserveRuntimeReportsHostAndComposeFailures(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := observeRuntime(context.Background(), &fakeRunner{}, t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": DefaultHostBackend,
+		"CREDIMI_SERVICE_MODE":   "manual",
+		"RUNNER_HOST":            "127.0.0.1",
+		"RUNNER_PORT":            port,
+	})
+	if !host.runnerRunning || host.err != nil || !host.deviceReady {
+		t.Fatalf("host observation = %#v", host)
+	}
+	composeFailure := observeRuntime(context.Background(), &fakeRunner{runErr: errors.New("docker unavailable")}, t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": DefaultContainerBackend,
+		"CREDIMI_SERVICE_MODE":   "manual",
+	})
+	if composeFailure.err == nil || !strings.Contains(composeFailure.err.Error(), "docker unavailable") {
+		t.Fatalf("compose failure = %#v", composeFailure)
+	}
+}
+
+func TestConfiguredDeviceReadyUsesADBState(t *testing.T) {
+	dir := t.TempDir()
+	adb := filepath.Join(dir, "adb")
+	if err := os.WriteFile(adb, []byte("#!/bin/sh\nprintf 'device\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if !configuredDeviceReady(context.Background(), Values{"CREDIMI_RUNNER_SERIAL": "device-1"}) {
+		t.Fatal("expected connected device")
+	}
+	if err := os.Remove(adb); err != nil {
+		t.Fatal(err)
+	}
+	if configuredDeviceReady(context.Background(), Values{"CREDIMI_RUNNER_SERIAL": "device-1"}) {
+		t.Fatal("missing adb should not be ready")
+	}
+}
+
+func TestObserveRuntimeUsesComposeProjectAndRunnerService(t *testing.T) {
+	runner := &fakeRunner{runOutput: []byte(`{"Service":"runner","State":"running"}` + "\n")}
+	values := Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}
+	observed := observeRuntime(context.Background(), runner, t.TempDir(), values)
+	if !observed.composeRunning || !observed.runnerRunning || observed.err != nil {
+		t.Fatalf("observed=%#v", observed)
+	}
+	if len(runner.runs) != 1 || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "--project-name credimi-runner-") {
+		t.Fatalf("compose observation args=%#v", runner.runs)
 	}
 }
 
@@ -523,8 +683,19 @@ func TestLifecycleManagerStopUsesBackendSourceOfTruth(t *testing.T) {
 	if err := containerManager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(containerRunner.runs) != 1 || !strings.Contains(strings.Join(containerRunner.runs[0].Args, " "), "stop runner") {
+	if len(containerRunner.runs) != 2 || !strings.Contains(strings.Join(containerRunner.runs[0].Args, " "), "down --remove-orphans") || !strings.Contains(strings.Join(containerRunner.runs[1].Args, " "), "ps -q") {
 		t.Fatalf("container stop runs = %#v", containerRunner.runs)
+	}
+}
+
+func TestVerifyComposeStoppedRejectsRemainingContainer(t *testing.T) {
+	runner := &fakeRunner{runOutput: []byte("0123456789abcdef\n")}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": DefaultContainerBackend,
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, runner)
+	if err := manager.Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("Stop error = %v", err)
 	}
 }
 
@@ -611,6 +782,24 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	}
 }
 
+func TestMergeObservedRuntimeStatusPreservesRegisteredURL(t *testing.T) {
+	observedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	status := mergeObservedRuntimeStatus(RuntimeStatus{
+		PublicURL: "https://fresh.trycloudflare.com",
+		LastError: "previous error",
+	}, observedRuntime{
+		runnerRunning:  true,
+		composeRunning: true,
+		deviceReady:    true,
+	}, observedAt)
+	if status.PublicURL != "https://fresh.trycloudflare.com" {
+		t.Fatalf("PublicURL = %q", status.PublicURL)
+	}
+	if !status.Observed || !status.ObservedAt.Equal(observedAt) || !status.RunnerRunning || !status.ComposeRunning || !status.DeviceReady {
+		t.Fatalf("observed status = %#v", status)
+	}
+}
+
 func commandArgs(specs []CommandSpec) string {
 	var commands []string
 	for _, spec := range specs {
@@ -619,7 +808,7 @@ func commandArgs(specs []CommandSpec) string {
 	return strings.Join(commands, "\n")
 }
 
-func TestLifecycleManagerRestartAndDownWithoutCompose(t *testing.T) {
+func TestLifecycleManagerRestartAndStopWithoutCompose(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":      "acme/runner",
@@ -634,11 +823,11 @@ func TestLifecycleManagerRestartAndDownWithoutCompose(t *testing.T) {
 		t.Fatalf("starts = %#v", runner.starts)
 	}
 	runner.runs = nil
-	if err := manager.Down(context.Background()); err != nil {
+	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(runner.runs) != 0 {
-		t.Fatalf("down should skip docker compose for no-compose plan: %#v", runner.runs)
+		t.Fatalf("stop should skip docker compose for no-compose plan: %#v", runner.runs)
 	}
 }
 

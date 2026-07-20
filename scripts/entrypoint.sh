@@ -4,7 +4,7 @@ set -euo pipefail
 print_help() {
   cat <<'USAGE'
 Usage:
-  phone-connect [--emulator] [--no-device] [--no-wait] [--usb] [--host-adb] [--help|-h] PHONE_IP[:PORT] [PORT]
+  phone-connect [--emulator] [--no-device] [--no-wait] [--usb] [--host-adb] [--serial SERIAL] [--help|-h] PHONE_IP[:PORT] [PORT]
 
 Modes:
   --emulator          Validate KVM, cleanup emulator leftovers, start adb, then run credimi-runner.
@@ -12,6 +12,7 @@ Modes:
   Wi-Fi (default)     adb connect to PHONE_IP[:PORT]
   --usb               Use USB passthrough (no adb connect)
   --host-adb          Do not start adb server; use host adb via ADB_SERVER_SOCKET
+  --serial SERIAL     Require this exact ADB serial before starting the runner.
 
 Options:
   --no-wait           Exit after attempting the connection (device modes only, no server start)
@@ -140,6 +141,7 @@ usb_mode=false
 host_adb=false
 emulator_mode=false
 no_device=false
+serial="${ANDROID_SERIAL:-}"
 service_port="${PORT:-8050}"
 
 if ! [[ "$service_port" =~ ^[0-9]+$ ]]; then
@@ -164,6 +166,14 @@ while [[ $# -gt 0 ]]; do
     --host-adb)
       host_adb=true
       shift
+      ;;
+    --serial)
+      if [[ $# -lt 2 || -z "${2:-}" ]]; then
+        echo "Error: --serial requires a value." >&2
+        exit 1
+      fi
+      serial="$2"
+      shift 2
       ;;
     --emulator)
       emulator_mode=true
@@ -296,6 +306,10 @@ if [[ "$usb_mode" == false ]]; then
 
   target="${ip}:${port}"
 
+  if [[ -z "$serial" ]]; then
+    serial="$target"
+  fi
+
   echo "Connecting to ${target}..."
   set +e
   connect_output=$(adb connect "${target}" 2>&1)
@@ -322,10 +336,18 @@ fi
 max_wait_seconds=30
 elapsed_seconds=0
 
-echo "Waiting for an adb device to be listed (timeout: ${max_wait_seconds}s)..."
+if [[ -n "$serial" ]]; then
+  echo "Waiting for the configured adb device ${serial} (timeout: ${max_wait_seconds}s)..."
+else
+  echo "Waiting for an adb device to be listed (timeout: ${max_wait_seconds}s)..."
+fi
 while true; do
-  if adb devices | awk 'NR>1 && $2=="device" {found=1} END {exit !found}'; then
-    break
+  if [[ -n "$serial" ]]; then
+    if adb -s "$serial" get-state 2>/dev/null | grep -qx "device"; then
+      break
+    fi
+  elif adb devices | awk 'NR>1 && $2=="device" {found=1} END {exit !found}'; then
+      break
   fi
   sleep 1
   elapsed_seconds=$((elapsed_seconds + 1))

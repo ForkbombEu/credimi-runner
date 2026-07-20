@@ -24,6 +24,10 @@ import (
 )
 
 func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handler {
+	return NewHTTPHandlerWithReadiness(ctx, rs, dbg, NewReadinessService())
+}
+
+func NewHTTPHandlerWithReadiness(ctx context.Context, rs *runnerService, dbg bool, readiness http.Handler) http.Handler {
 	healthService := NewHealthService()
 
 	workerEndpoints := worker.NewEndpoints(rs)
@@ -124,7 +128,16 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 		cluelog.Printf(ctx, "HTTP %q mounted on %s %s", m.Method, m.Verb, m.Pattern)
 	}
 
-	return handler
+	if readiness == nil {
+		return handler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			readiness.ServeHTTP(w, r)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 func (s *runnerService) ProcessStart(ctx context.Context, payload *worker.ProcessStartPayload) (*worker.Processstartresult, error) {

@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,13 +19,15 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
+	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
 )
 
 type Manager interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 	Restart(context.Context) error
-	Down(context.Context) error
 	UpdateImage(context.Context) error
 	Configure(Values)
 	SetPublicURL(string)
@@ -34,6 +39,9 @@ type RuntimeStatus struct {
 	Configured           bool
 	RunnerRunning        bool
 	ComposeRunning       bool
+	ObservedAt           time.Time
+	Observed             bool
+	DeviceReady          bool
 	PublicURL            string
 	LastStartedAt        time.Time
 	LastError            string
@@ -168,21 +176,53 @@ type LifecycleManager struct {
 	logCmd    *exec.Cmd
 	logDone   chan struct{}
 	status    RuntimeStatus
+	lifecycle *lifecyclelog.Logger
 }
 
 func NewLifecycleManager(binary, configDir string, values Values, runner Runner) *LifecycleManager {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
+	var lifecycle *lifecyclelog.Logger
+	if strings.TrimSpace(configDir) != "" {
+		lifecycle, _ = lifecyclelog.New(filepath.Join(configDir, "lifecycle.jsonl"), lifecyclelog.Options{})
+	}
 	return &LifecycleManager{
 		binary:    binary,
 		configDir: configDir,
 		values:    cloneValues(values),
 		runner:    runner,
+		lifecycle: lifecycle,
 		status: RuntimeStatus{
 			Configured: strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != "",
 		},
 	}
+}
+
+// Close releases the lifecycle log file. It is safe to call more than once.
+func (m *LifecycleManager) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lifecycle == nil {
+		return nil
+	}
+	err := m.lifecycle.Close()
+	m.lifecycle = nil
+	return err
+}
+
+// EmitLifecycle records a controller/dashboard event in the bounded lifecycle
+// log without exposing the runner's verbose process logs.
+func (m *LifecycleManager) EmitLifecycle(event lifecyclelog.Event) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.emitLifecycleLocked(event)
 }
 
 func (m *LifecycleManager) Start(ctx context.Context) error {
@@ -193,13 +233,36 @@ func (m *LifecycleManager) StartWithProgress(ctx context.Context, progress func(
 	return m.start(ctx, progress)
 }
 
-func (m *LifecycleManager) start(ctx context.Context, progress func(string)) error {
+func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (result error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	plan := BuildRuntimePlan(m.configDir, m.values)
+	m.emitLifecycleLocked(lifecyclelog.Event{
+		Level: lifecyclelog.LevelInfo, Event: "operation.started",
+		Message: "runtime start requested", Component: "runtime", Phase: "starting",
+		Fields: map[string]any{"backend": plan.Backend, "service_mode": plan.ServiceMode, "runner_type": plan.RunnerType},
+	})
+	defer func() {
+		if result != nil {
+			m.emitLifecycleLocked(lifecyclelog.Event{
+				Level: lifecyclelog.LevelError, Event: "operation.failed",
+				Message: "runtime start failed", Component: "runtime", Phase: "failed",
+				Error: result.Error(),
+			})
+			return
+		}
+		m.emitLifecycleLocked(lifecyclelog.Event{
+			Level: lifecyclelog.LevelInfo, Event: "operation.succeeded",
+			Message: "runtime start completed", Component: "runtime", Phase: "running",
+		})
+	}()
 	if plan.Backend == DefaultHostBackend {
 		if runnerAddressReachable(m.values, 500*time.Millisecond) {
+			if err := validateReachableHostRunner(ctx, m.values); err != nil {
+				m.status.LastError = err.Error()
+				return fmt.Errorf("cannot adopt existing host runner: %w", err)
+			}
 			emitProgress(progress, "Existing host runner is already reachable.")
 			m.status.RunnerRunning = true
 			m.status.LastStartedAt = time.Now()
@@ -244,7 +307,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) err
 		}
 		if len(pullServices) > 0 {
 			emitProgress(progress, "Pulling Docker images. Large runner images can take several minutes.")
-			pullArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "pull"}
+			pullArgs := composeArgs(plan, "pull")
 			pullArgs = append(pullArgs, pullServices...)
 			if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: progress}); err != nil {
 				m.status.LastError = err.Error()
@@ -253,7 +316,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) err
 		}
 		emitProgress(progress, "Starting Docker services.")
 		composeStartedAt := time.Now()
-		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "up", "-d", "--pull", "never"}
+		args := composeArgs(plan, "up", "-d", "--pull", "never")
 		args = append(args, plan.ComposeServices...)
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: progress}); err != nil {
 			m.status.LastError = err.Error()
@@ -291,7 +354,7 @@ func composePullServices(services []string, runnerPullPolicy string) []string {
 }
 
 func (m *LifecycleManager) composeServiceStartedAtLocked(ctx context.Context, plan RuntimePlan, service string) (time.Time, error) {
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "ps", "-q", service}
+	args := composeArgs(plan, "ps", "-q", service)
 	output, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args})
 	if err != nil {
 		return time.Time{}, fmt.Errorf("resolve %s container: %w", service, err)
@@ -329,7 +392,7 @@ func (m *LifecycleManager) stopStaleComposeServicesLocked(ctx context.Context, p
 	if len(staleServices) == 0 {
 		return nil
 	}
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "rm", "-f", "-s"}
+	args := composeArgs(plan, "rm", "-f", "-s")
 	args = append(args, staleServices...)
 	_, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args})
 	return err
@@ -349,13 +412,37 @@ func staleComposeServices(active []string) []string {
 	return stale
 }
 
-func (m *LifecycleManager) Stop(ctx context.Context) error {
+func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	plan := BuildRuntimePlan(m.configDir, m.values)
+	m.emitLifecycleLocked(lifecyclelog.Event{
+		Level: lifecyclelog.LevelInfo, Event: "operation.started",
+		Message: "runtime stop requested", Component: "runtime", Phase: "stopping",
+		Fields: map[string]any{"backend": plan.Backend, "service_mode": plan.ServiceMode},
+	})
+	defer func() {
+		if result != nil {
+			m.emitLifecycleLocked(lifecyclelog.Event{
+				Level: lifecyclelog.LevelError, Event: "operation.failed",
+				Message: "runtime stop failed", Component: "runtime", Phase: "failed",
+				Error: result.Error(),
+			})
+			return
+		}
+		m.emitLifecycleLocked(lifecyclelog.Event{
+			Level: lifecyclelog.LevelInfo, Event: "operation.succeeded",
+			Message: "runtime stop completed", Component: "runtime", Phase: "stopped",
+		})
+	}()
 	if plan.Backend == DefaultHostBackend {
 		if err := m.stopHostRunnerLocked(ctx); err != nil {
+			m.status.LastError = err.Error()
+			return err
+		}
+		if runnerAddressReachable(m.values, 500*time.Millisecond) {
+			err := errors.New("host runner listener is still reachable after stop")
 			m.status.LastError = err.Error()
 			return err
 		}
@@ -363,9 +450,12 @@ func (m *LifecycleManager) Stop(ctx context.Context) error {
 
 	if len(plan.ComposeServices) > 0 {
 		m.stopComposeLogFollowerLocked()
-		args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop"}
-		args = append(args, plan.ComposeServices...)
+		args := composeArgs(plan, "down", "--remove-orphans")
 		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args}); err != nil {
+			m.status.LastError = err.Error()
+			return err
+		}
+		if err := m.verifyComposeStoppedLocked(ctx, plan); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
@@ -375,6 +465,31 @@ func (m *LifecycleManager) Stop(ctx context.Context) error {
 	m.status.ComposeRunning = false
 	m.status.PublicURL = ""
 	return nil
+}
+
+func (m *LifecycleManager) verifyComposeStoppedLocked(ctx context.Context, plan RuntimePlan) error {
+	output, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: composeArgs(plan, "ps", "-q")})
+	if err != nil {
+		return fmt.Errorf("verify managed Compose services stopped: %w", err)
+	}
+	for _, line := range strings.Fields(string(output)) {
+		if looksLikeContainerID(line) {
+			return fmt.Errorf("managed Compose service %s is still running after stop", line)
+		}
+	}
+	return nil
+}
+
+func looksLikeContainerID(value string) bool {
+	if len(value) < 12 || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f') || (character >= 'A' && character <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *LifecycleManager) stopHostRunnerLocked(ctx context.Context) error {
@@ -469,6 +584,58 @@ func runnerAddressReachable(values Values, timeout time.Duration) bool {
 	}
 	_ = conn.Close()
 	return true
+}
+
+// validateReachableHostRunner proves that the process already listening on the
+// configured host port is the configured credimi-runner. A TCP connection is
+// intentionally insufficient: the port can belong to a stale or unrelated
+// process, and adopting it would make later dashboard operations unsafe.
+func validateReachableHostRunner(ctx context.Context, values Values) error {
+	host, port := runnerListenTarget(values)
+	endpoint := "http://" + net.JoinHostPort(host, port) + "/readyz"
+	requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create readiness request: %w", err)
+	}
+	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
+	if err != nil {
+		return fmt.Errorf("request runner readiness: %w", err)
+	}
+	defer response.Body.Close()
+
+	var ready struct {
+		Service      string `json:"service"`
+		RunnerID     string `json:"runner_id"`
+		BootID       string `json:"boot_id"`
+		DeviceSerial string `json:"device_serial"`
+		DeviceState  string `json:"device_state"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&ready); err != nil {
+		return fmt.Errorf("decode runner readiness: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("runner readiness returned HTTP %d", response.StatusCode)
+	}
+	if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
+		return errors.New("listener is not an identified credimi-runner")
+	}
+	if expected := strings.TrimSpace(values["CREDIMI_RUNNER_ID"]); expected != "" && ready.RunnerID != expected {
+		return fmt.Errorf("runner ID %q does not match configured runner %q", ready.RunnerID, expected)
+	}
+	if expected := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]); expected != "" && ready.DeviceSerial != expected {
+		return fmt.Errorf("device serial %q does not match configured device %q", ready.DeviceSerial, expected)
+	}
+	switch strings.TrimSpace(ready.DeviceState) {
+	case "", "device":
+		return nil
+	case "offline", "unauthorized", "missing":
+		return fmt.Errorf("configured device is %s", ready.DeviceState)
+	default:
+		return fmt.Errorf("runner reports unknown device state %q", ready.DeviceState)
+	}
 }
 
 func runnerListenTarget(values Values) (string, string) {
@@ -633,32 +800,19 @@ func (m *LifecycleManager) Restart(ctx context.Context) error {
 	return m.Start(ctx)
 }
 
-func (m *LifecycleManager) Down(ctx context.Context) error {
-	plan := BuildRuntimePlan(m.configDir, m.values)
-	if err := m.Stop(ctx); err != nil {
-		return err
-	}
-	if len(plan.ComposeServices) == 0 {
-		return nil
-	}
+// StartLogFollower attaches the owning dashboard process to managed runtime
+// logs without starting or recreating any service.
+func (m *LifecycleManager) StartLogFollower() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, err := m.runner.Run(ctx, CommandSpec{
-		Name: "docker",
-		Args: []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "down"},
-	}); err != nil {
-		m.status.LastError = err.Error()
-		return err
-	}
-	m.status.PublicURL = ""
-	return nil
+	m.startComposeLogFollowerLocked(BuildRuntimePlan(m.configDir, m.values))
 }
 
 func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {
 	if m.logCmd != nil || len(plan.ComposeServices) == 0 {
 		return
 	}
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs", "-f", "--tail", "80"}
+	args := composeArgs(plan, "logs", "-f", "--tail", "80")
 	args = append(args, plan.ComposeServices...)
 	cmd, err := m.runner.Start(context.Background(), CommandSpec{Name: "docker", Args: args})
 	if err != nil {
@@ -745,7 +899,7 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 		stopMessage = "Stopping the runner and quick tunnel while keeping the reverse proxy online."
 	}
 	emitProgress(progress, stopMessage)
-	stopArgs := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "stop"}
+	stopArgs := composeArgs(plan, "stop")
 	stopArgs = append(stopArgs, stopServices...)
 	if _, err := m.runner.Run(ctx, CommandSpec{
 		Name:   "docker",
@@ -759,7 +913,7 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	emitProgress(progress, "Removing the stopped runner container.")
 	if _, err := m.runner.Run(ctx, CommandSpec{
 		Name:   "docker",
-		Args:   []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "rm", "-f", "-s", "runner"},
+		Args:   composeArgs(plan, "rm", "-f", "-s", "runner"),
 		Env:    composeProgressEnv(),
 		Stream: progress,
 	}); err != nil {
@@ -825,10 +979,109 @@ func (m *LifecycleManager) SetPublicURL(publicURL string) {
 	m.status.PublicURL = strings.TrimSpace(publicURL)
 }
 
-func (m *LifecycleManager) Status(context.Context) RuntimeStatus {
+func (m *LifecycleManager) emitLifecycleLocked(event lifecyclelog.Event) {
+	if m.lifecycle == nil {
+		return
+	}
+	if err := m.lifecycle.Emit(event); err != nil {
+		m.status.LastError = "lifecycle log: " + err.Error()
+	}
+}
+
+func (m *LifecycleManager) Status(ctx context.Context) RuntimeStatus {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.status
+	status := m.status
+	values := cloneValues(m.values)
+	runner := m.runner
+	configDir := m.configDir
+	m.mu.Unlock()
+
+	// Test/embedded runners are command fakes; their in-memory status remains
+	// authoritative. The production ExecRunner always observes the host before
+	// rendering state so a restarted dashboard can adopt an existing runtime.
+	if _, ok := runner.(ExecRunner); !ok {
+		return status
+	}
+	observed := observeRuntime(ctx, runner, configDir, values)
+	status.Observed = true
+	status.ObservedAt = time.Now().UTC()
+	status.RunnerRunning = observed.runnerRunning
+	status.ComposeRunning = observed.composeRunning
+	status.DeviceReady = observed.deviceReady
+	if observed.err != nil {
+		status.LastError = observed.err.Error()
+	}
+	m.mu.Lock()
+	m.status = mergeObservedRuntimeStatus(m.status, observed, status.ObservedAt)
+	status = m.status
+	m.mu.Unlock()
+	return status
+}
+
+// mergeObservedRuntimeStatus applies only values owned by Docker observation.
+// Registration can set PublicURL while observation runs, so that field must
+// remain owned by the lifecycle operation rather than a stale status snapshot.
+func mergeObservedRuntimeStatus(current RuntimeStatus, observed observedRuntime, at time.Time) RuntimeStatus {
+	current.Observed = true
+	current.ObservedAt = at
+	current.RunnerRunning = observed.runnerRunning
+	current.ComposeRunning = observed.composeRunning
+	current.DeviceReady = observed.deviceReady
+	if observed.err != nil {
+		current.LastError = observed.err.Error()
+	}
+	return current
+}
+
+type observedRuntime struct {
+	runnerRunning  bool
+	composeRunning bool
+	deviceReady    bool
+	err            error
+}
+
+func observeRuntime(ctx context.Context, runner Runner, configDir string, values Values) observedRuntime {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	plan := BuildRuntimePlan(configDir, values)
+	result := observedRuntime{deviceReady: configuredDeviceReady(ctx, values)}
+	if plan.Backend == DefaultHostBackend {
+		result.runnerRunning = runnerAddressReachable(values, 500*time.Millisecond)
+	}
+	if len(plan.ComposeServices) == 0 {
+		return result
+	}
+	output, err := runner.Run(ctx, CommandSpec{Name: "docker", Args: composeArgs(plan, "ps", "--format", "json")})
+	if err != nil {
+		result.err = fmt.Errorf("observe compose runtime: %w", err)
+		return result
+	}
+	rows, err := driver.ParseComposePS(output)
+	if err != nil {
+		result.err = fmt.Errorf("parse compose runtime: %w", err)
+		return result
+	}
+	for _, row := range rows {
+		if strings.EqualFold(row.State, "running") {
+			result.composeRunning = true
+			if row.Service == "runner" || row.Service == "runner_host" {
+				result.runnerRunning = true
+			}
+		}
+	}
+	return result
+}
+
+func configuredDeviceReady(ctx context.Context, values Values) bool {
+	serial := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
+	if serial == "" {
+		return true
+	}
+	output, err := exec.CommandContext(ctx, "adb", "-s", serial, "get-state").Output()
+	return err == nil && strings.TrimSpace(string(output)) == "device"
 }
 
 func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error) {
@@ -866,7 +1119,7 @@ func (m *LifecycleManager) logs(ctx context.Context, tail int, services []string
 }
 
 func composeLogArgs(plan RuntimePlan, tail int, since time.Time) []string {
-	args := []string{"compose", "--env-file", plan.EnvPath, "-f", plan.ComposePath, "logs"}
+	args := composeArgs(plan, "logs")
 	includeHistory := tail < 0
 	if includeHistory {
 		tail = -tail

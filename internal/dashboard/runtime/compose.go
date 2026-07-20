@@ -9,6 +9,10 @@ import (
 )
 
 func WriteComposeFile(dir string, values Values) error {
+	values = cloneValues(values)
+	plan := BuildRuntimePlan(dir, values)
+	values["CREDIMI_COMPOSE_PROJECT"] = plan.ComposeProject
+	values["CREDIMI_CONFIG_FINGERPRINT"] = plan.ConfigFingerprint
 	content, err := ComposeYAML(values, runtime.GOOS)
 	if err != nil {
 		return err
@@ -54,7 +58,7 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 	image := defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
 	pullPolicy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
 	networkMode := runnerNetworkMode(values, runtime.GOOS)
-	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: unless-stopped\n", image, pullPolicy)
+	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", image, pullPolicy)
 	switch mode {
 	case "wifi":
 		fmt.Fprintf(builder, "    command:\n      - \"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-%s}\"\n", DefaultWiFiPort)
@@ -66,7 +70,7 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 		builder.WriteString("    command:\n      - --host-adb\n      - --usb\n")
 	}
 	builder.WriteString("    env_file:\n      - .env\n")
-	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n      ANDROID_SERIAL: \"${CREDIMI_RUNNER_SERIAL:-}\"\n", DefaultRunnerPort)
 	switch mode {
 	case "emulator":
 		builder.WriteString("      BASE_NAME: \"${BASE_NAME:-credimi}\"\n")
@@ -88,6 +92,7 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 		fmt.Fprintf(builder, "      - \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	}
 	builder.WriteString("    labels:\n      caddy: \"${RUNNER_CADDY_SITE:-:80}\"\n")
+	writeControllerLabels(builder)
 	if networkMode == "host" {
 		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"127.0.0.1:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	} else {
@@ -113,7 +118,7 @@ func writeRunnerHostService(builder *strings.Builder) {
 	builder.WriteString(`
   runner_host:
     image: alpine:3.21
-    restart: unless-stopped
+    restart: "no"
     command:
       - /bin/sh
       - -c
@@ -123,6 +128,9 @@ func writeRunnerHostService(builder *strings.Builder) {
     labels:
       caddy: "${RUNNER_CADDY_SITE:-:80}"
       caddy.reverse_proxy: "host.docker.internal:${RUNNER_PORT:-` + DefaultRunnerPort + `}"
+      io.credimi.runner.managed: "true"
+      io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
+      io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
     networks:
       - ingress
 `)
@@ -132,13 +140,17 @@ func writeCaddyService(builder *strings.Builder, values Values, goos string) {
 	builder.WriteString(`
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine
-    restart: unless-stopped
+    restart: "no"
     environment:
       CADDY_INGRESS_NETWORKS: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - caddy_data:/data
       - caddy_config:/config
+    labels:
+      io.credimi.runner.managed: "true"
+      io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
+      io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
 `)
 	if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" && runnerNetworkMode(values, goos) == "host" {
 		builder.WriteString("    network_mode: host\n")
@@ -151,7 +163,7 @@ func writeTunnelService(builder *strings.Builder, values Values, goos string) {
 	builder.WriteString(`
   tunnel:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: "no"
     command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-`)
 	if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" && runnerNetworkMode(values, goos) == "host" {
 		builder.WriteString("http://127.0.0.1:80")
@@ -159,6 +171,7 @@ func writeTunnelService(builder *strings.Builder, values Values, goos string) {
 		builder.WriteString("http://caddy:80")
 	}
 	builder.WriteString("}\n")
+	builder.WriteString("    labels:\n      io.credimi.runner.managed: \"true\"\n      io.credimi.runner.project: \"${CREDIMI_COMPOSE_PROJECT:-credimi-runner}\"\n      io.credimi.runner.config-fingerprint: \"${CREDIMI_CONFIG_FINGERPRINT:-unknown}\"\n")
 	if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" && runnerNetworkMode(values, goos) == "host" {
 		builder.WriteString("    network_mode: host\n")
 		return
@@ -170,13 +183,21 @@ func writeNamedTunnelService(builder *strings.Builder) {
 	builder.WriteString(`
   tunnel_named:
     image: cloudflare/cloudflared:latest
-    restart: unless-stopped
+    restart: "no"
     command: tunnel --no-autoupdate run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    labels:
+      io.credimi.runner.managed: "true"
+      io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
+      io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
     depends_on:
       - caddy
     networks:
       - ingress
 `)
+}
+
+func writeControllerLabels(builder *strings.Builder) {
+	builder.WriteString("      io.credimi.runner.managed: \"true\"\n      io.credimi.runner.project: \"${CREDIMI_COMPOSE_PROJECT:-credimi-runner}\"\n      io.credimi.runner.config-fingerprint: \"${CREDIMI_CONFIG_FINGERPRINT:-unknown}\"\n")
 }

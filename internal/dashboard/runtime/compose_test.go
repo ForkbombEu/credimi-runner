@@ -84,6 +84,9 @@ func TestComposeParityCases(t *testing.T) {
 					t.Fatalf("compose missing %q:\n%s", want, content)
 				}
 			}
+			if strings.Contains(content, "restart: unless-stopped") || !strings.Contains(content, "restart: \"no\"") {
+				t.Fatalf("managed services must not restart after host reboot:\n%s", content)
+			}
 			if tt.name == "emulator" && strings.Contains(content, "command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://127.0.0.1:80}") {
 				t.Fatalf("emulator tunnel should use caddy network URL, got:\n%s", content)
 			}
@@ -120,13 +123,13 @@ func TestRunnerReadinessRequiredBeforeRegistration(t *testing.T) {
 		goos string
 		want bool
 	}{
-		{"host backend auto", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "auto", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", false},
-		{"host backend managed", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "cloudflare-managed", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", false},
+		{"host backend auto", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "auto", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
+		{"host backend managed", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "cloudflare-managed", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
 		{"host backend manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
-		{"linux phone container auto", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", false},
-		{"linux phone container manual", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"}, "linux", false},
+		{"linux phone container auto", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
+		{"linux phone container manual", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"}, "linux", true},
 		{"linux emulator container auto", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", false},
-		{"darwin default host auto", Values{}, "darwin", false},
+		{"darwin default host auto", Values{}, "darwin", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

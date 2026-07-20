@@ -47,6 +47,63 @@
   document.body.addEventListener('toast', (e) => toast(typeof e.detail === 'string' ? e.detail : e.detail && e.detail.value));
   document.body.addEventListener('closeModal', () => closeModals());
 
+  // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
+  let runtimeOperationTimer = null;
+  let runtimeOperationActive = false;
+  let runtimeBusyVisibleUntil = 0;
+  function dashboardURL(path) {
+    const url = new URL(path, window.location.origin);
+    const token = new URLSearchParams(window.location.search).get('token');
+    if (token) url.searchParams.set('token', token);
+    return `${url.pathname}${url.search}`;
+  }
+  function refreshOverview() {
+    htmx.ajax('GET', dashboardURL('/'), { target: 'main', select: 'main', swap: 'outerHTML' });
+  }
+  function runtimeOperationFailure(snapshot) {
+    const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
+    return `Runner operation failed: ${message}`;
+  }
+  async function pollRuntimeOperation(operation) {
+    try {
+      const response = await fetch(dashboardURL(`/api/controller/operations/${encodeURIComponent(operation.id)}`), { headers: { Accept: 'application/json' } });
+      if (!response.ok) return;
+      const snapshot = await response.json();
+      const phase = String(snapshot.phase || snapshot.Phase || '');
+      const message = String(snapshot.message || snapshot.Message || '').trim();
+      if (message) {
+        const overlay = busyOverlay();
+        const messageNode = overlay && $('[data-busy-message]', overlay);
+        if (messageNode) messageNode.textContent = message;
+        appendBusyLog(message);
+      }
+      if (phase === 'queued' || phase === 'running') return;
+      clearInterval(runtimeOperationTimer);
+      runtimeOperationTimer = null;
+      const finish = () => {
+        runtimeOperationActive = false;
+        hideBusy();
+        if (phase === 'succeeded') {
+          toast(operation.success || 'Runner operation completed successfully.');
+        } else {
+          toast(runtimeOperationFailure(snapshot));
+        }
+        refreshOverview();
+      };
+      setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
+    } catch (_) {}
+  }
+  document.body.addEventListener('runtimeOperation', (e) => {
+    const operation = e.detail && (e.detail.value || e.detail);
+    if (!operation || !operation.id) return;
+    runtimeOperationActive = true;
+    clearInterval(runtimeOperationTimer);
+    runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
+    appendBusyLog('Runtime operation accepted. Waiting for completion.');
+    pollRuntimeOperation(operation);
+    runtimeOperationTimer = setInterval(() => pollRuntimeOperation(operation), 500);
+  });
+
   // ── Global busy overlay for runtime-changing requests ───────────────────
   const setupBusyKey = 'credimi-runner:setup-startup-busy';
   let busyLogTimer = null;
@@ -139,7 +196,7 @@
     document.body.classList.remove('busy-lock');
   }
   function showSetupBusy(message) {
-    showBusy(message || 'Writing runner config and starting services. Keep this page open.', { runtimeLogs: false });
+    showBusy(message || 'Writing runner config and starting services. You may close this page safely.', { runtimeLogs: false });
     clearInterval(busyStartupTimer);
     pollBusyStartupStatus();
     busyStartupTimer = setInterval(pollBusyStartupStatus, 1500);
@@ -164,7 +221,8 @@
   document.body.addEventListener('htmx:beforeRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
     if (!trigger) return;
-    const message = trigger.dataset.busyMessage || 'Applying runtime change. Keep this page open.';
+    if (trigger.matches('[data-runtime-action]')) runtimeOperationActive = true;
+    const message = trigger.dataset.busyMessage || 'Applying runtime change in the background.';
     if (trigger.matches('[data-setup-form]')) {
       sessionStorage.setItem(setupBusyKey, message);
       showSetupBusy(message);
@@ -182,13 +240,16 @@
       if (e.detail.successful !== false) return;
       sessionStorage.removeItem(setupBusyKey);
     }
+    if (runtimeOperationActive || (trigger && trigger.matches('[data-runtime-action]') && e.detail.successful !== false)) return;
     if (wasBusy) hideBusy();
   });
   document.body.addEventListener('htmx:responseError', () => {
+    runtimeOperationActive = false;
     sessionStorage.removeItem(setupBusyKey);
     hideBusy();
   });
   document.body.addEventListener('htmx:sendError', () => {
+    runtimeOperationActive = false;
     sessionStorage.removeItem(setupBusyKey);
     hideBusy();
   });
@@ -1643,7 +1704,7 @@
   }
   document.body.addEventListener('htmx:afterSwap', (e) => {
     if (e.detail.target && e.detail.target.tagName === 'MAIN') {
-      hideBusy();
+      if (!runtimeOperationActive) hideBusy();
       syncNav();
       initSetupWizard(e.detail.target);
       initNetMode();

@@ -8,8 +8,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
+
+func TestServicesFromObservationMapsLifecycleStates(t *testing.T) {
+	services := servicesFromObservation(controller.ObservedRuntime{Services: []controller.ObservedService{
+		{ID: "running", State: controller.StateRunning, Critical: true},
+		{ID: "degraded", State: controller.StateDegraded},
+		{ID: "foreign", State: controller.StateForeign},
+		{ID: "unknown", State: controller.StateUnknown},
+		{ID: "stopped", State: controller.StateStopped},
+	}})
+	want := []Status{Online, Degraded, Degraded, Degraded, Offline}
+	for index, service := range services {
+		if service.Status != want[index] || !service.Expected {
+			t.Fatalf("service %d = %#v", index, service)
+		}
+	}
+}
 
 func TestProbeAndroid_ParseOutput(t *testing.T) {
 	// Simulated output from "adb devices -l"

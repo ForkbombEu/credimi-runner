@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
@@ -53,9 +54,26 @@ type Service struct {
 }
 
 type Snapshot struct {
-	Services []Service
-	Devices  []Device
-	Time     time.Time
+	Services         []Service
+	Devices          []Device
+	Time             time.Time
+	Observation      controller.ObservedRuntime
+	ObservationStale bool
+}
+
+func servicesFromObservation(observed controller.ObservedRuntime) []Service {
+	services := make([]Service, 0, len(observed.Services))
+	for _, service := range observed.Services {
+		status := Offline
+		switch service.State {
+		case controller.StateRunning:
+			status = Online
+		case controller.StateDegraded, controller.StateForeign, controller.StateUnknown:
+			status = Degraded
+		}
+		services = append(services, Service{ID: service.ID, Name: service.Name, Role: service.Role, Image: service.Image, Status: status, Uptime: service.Detail, Expected: true, Critical: service.Critical, Reason: service.Detail})
+	}
+	return services
 }
 
 func has(bin string) bool { _, err := exec.LookPath(bin); return err == nil }

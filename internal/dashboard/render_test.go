@@ -400,6 +400,16 @@ func TestStaticCSS_HiddenBeatsModalDisplay(t *testing.T) {
 	}
 }
 
+func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "if (!runtimeOperationActive) hideBusy();") {
+		t.Fatal("main swaps must not dismiss an active runtime operation overlay")
+	}
+}
+
 func TestRenderer_FullPage(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {

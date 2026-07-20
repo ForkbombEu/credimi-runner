@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	stdlog "log"
 	"net/http"
@@ -40,6 +42,9 @@ var serverCmd = &cobra.Command{
 			stdlog.Println("No .env file found in current directory or config directory, using environment variables")
 		}
 		if err := validateRequiredRuntimeEnv(); err != nil {
+			return err
+		}
+		if err := setRunnerBootID(); err != nil {
 			return err
 		}
 
@@ -189,6 +194,14 @@ var serverCmd = &cobra.Command{
 		)
 		return nil
 	},
+}
+
+func setRunnerBootID() error {
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Errorf("generate runner boot ID: %w", err)
+	}
+	return os.Setenv("CREDIMI_RUNNER_BOOT_ID", hex.EncodeToString(bytes))
 }
 
 func init() {
