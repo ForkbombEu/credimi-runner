@@ -3,9 +3,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"errors"
-	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -93,16 +90,6 @@ func TestDashboardHandlerStartsWithoutRunnerIDOnFirstRun(t *testing.T) {
 	}
 	if body := rec.Body.String(); body == "" || !strings.Contains(body, "Set up Credimi Runner") {
 		t.Fatalf("unexpected body: %s", body)
-	}
-}
-
-func TestDashboardConfigDirEnvPath(t *testing.T) {
-	dir := t.TempDir()
-	if got := dashboardEnvPath(dir); got != filepath.Join(dir, ".env") {
-		t.Fatalf("dashboardEnvPath = %q", got)
-	}
-	if configFileExists(dir) {
-		t.Fatal("configFileExists should be false before file creation")
 	}
 }
 
@@ -337,113 +324,6 @@ func TestOpenDashboardBrowserStartsPlatformCommand(t *testing.T) {
 	}
 }
 
-func TestStartDashboardRuntimeDoesNotFailWhenRunnerIsStillBooting(t *testing.T) {
-	var registered bool
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/mobile-runner" {
-			registered = true
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer api.Close()
-	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/readyz" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
-			return
-		}
-		if r.URL.Path == "/health" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer runner.Close()
-	runnerHost, runnerPort, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	manager := &dashboardFakeManager{
-		logs: []dashboardruntime.LogLine{{Message: "tunnel ready https://runner.example.trycloudflare.com"}},
-	}
-	values := dashboardruntime.Values{
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_RUNNER_TYPE":    "android_phone",
-		"CREDIMI_SERVICE_MODE":   "auto",
-		"CREDIMI_RUNNER_ID":      "acme/runner",
-		"CREDIMI_RUNNER_NAME":    "runner",
-		"CREDIMI_URL":            api.URL,
-		"CREDIMI_USER_API_KEY":   "secret",
-		"RUNNER_HOST":            runnerHost,
-		"RUNNER_PORT":            runnerPort,
-	}
-	if err := startDashboardRuntime(context.Background(), manager, values); err != nil {
-		t.Fatalf("startDashboardRuntime = %v", err)
-	}
-	if manager.startCalls != 1 {
-		t.Fatalf("startCalls = %d", manager.startCalls)
-	}
-	if !registered {
-		t.Fatal("startDashboardRuntime should register container runners after runner readiness")
-	}
-}
-
-func TestStartDashboardRuntimeHostAutoRegistersFreshTunnelURL(t *testing.T) {
-	oldTimeout := dashboardRegistrationTimeout
-	dashboardRegistrationTimeout = 30 * time.Second
-	t.Cleanup(func() {
-		dashboardRegistrationTimeout = oldTimeout
-	})
-
-	var registeredBody string
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/mobile-runner" {
-			body, _ := io.ReadAll(r.Body)
-			registeredBody = string(body)
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer api.Close()
-
-	manager := &dashboardFakeManager{
-		status: dashboardruntime.RuntimeStatus{PublicURL: "https://stale-runner.trycloudflare.com"},
-		logs:   []dashboardruntime.LogLine{{Message: "tunnel ready https://fresh-runner.trycloudflare.com"}},
-	}
-	values := dashboardruntime.Values{
-		"CREDIMI_RUNNER_BACKEND":      "host",
-		"CREDIMI_RUNNER_TYPE":         "ios_simulator",
-		"CREDIMI_SERVICE_MODE":        "auto",
-		"CREDIMI_RUNNER_ID":           "acme/runner",
-		"CREDIMI_RUNNER_NAME":         "runner",
-		"CREDIMI_RUNNER_ORGANIZATION": "acme",
-		"CREDIMI_URL":                 api.URL,
-		"CREDIMI_USER_API_KEY":        "secret",
-		"RUNNER_HOST":                 "127.0.0.1",
-		"RUNNER_PORT":                 "1",
-	}
-	if err := startDashboardRuntime(context.Background(), manager, values); err != nil {
-		t.Fatalf("startDashboardRuntime = %v", err)
-	}
-	if !strings.Contains(registeredBody, "https://fresh-runner.trycloudflare.com") {
-		t.Fatalf("registration body did not include fresh tunnel URL: %s", registeredBody)
-	}
-	if strings.Contains(registeredBody, "https://stale-runner.trycloudflare.com") {
-		t.Fatalf("registration body reused stale tunnel URL: %s", registeredBody)
-	}
-	if manager.logDeadline.IsZero() || time.Until(manager.logDeadline) < 20*time.Second {
-		t.Fatalf("registration log scan deadline = %v, want startup window near %s", manager.logDeadline, dashboardRegistrationTimeout)
-	}
-	if manager.logTail != quickTunnelLogTail {
-		t.Fatalf("registration log tail = %d, want %d", manager.logTail, quickTunnelLogTail)
-	}
-}
-
 func TestResolveDashboardRegistrationEndpointPrefersRuntimePublicURL(t *testing.T) {
 	manager := &dashboardFakeManager{
 		status: dashboardruntime.RuntimeStatus{PublicURL: "https://cached.trycloudflare.com"},
@@ -460,53 +340,7 @@ func TestResolveDashboardRegistrationEndpointPrefersRuntimePublicURL(t *testing.
 	}
 }
 
-func TestStartDashboardRuntimeBranches(t *testing.T) {
-	manager := &dashboardFakeManager{startErr: errors.New("boom")}
-	if err := startDashboardRuntime(context.Background(), manager, dashboardruntime.Values{}); err == nil || !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("startDashboardRuntime start error = %v", err)
-	}
-
-	manager = &dashboardFakeManager{}
-	if err := startDashboardRuntime(context.Background(), manager, dashboardruntime.Values{}); err != nil {
-		t.Fatalf("startDashboardRuntime without runner id = %v", err)
-	}
-	if manager.startCalls != 1 {
-		t.Fatalf("startCalls = %d", manager.startCalls)
-	}
-	if len(manager.progress) != 1 {
-		t.Fatalf("startup progress = %v", manager.progress)
-	}
-}
-
-func TestStartDashboardRuntimeWritesProgressToProvidedTerminalStream(t *testing.T) {
-	manager := &dashboardFakeManager{}
-	var terminal bytes.Buffer
-	progress := func(line string) {
-		_, _ = fmt.Fprintf(&terminal, "runner startup: %s\n", line)
-	}
-
-	if err := startDashboardRuntimeWithProgress(context.Background(), manager, dashboardruntime.Values{}, progress); err != nil {
-		t.Fatalf("startDashboardRuntimeWithProgress = %v", err)
-	}
-	if got := terminal.String(); !strings.Contains(got, "runner startup: Pulling Docker images.") {
-		t.Fatalf("terminal progress = %q", got)
-	}
-}
-
 func TestDashboardRuntimeHelpers(t *testing.T) {
-	manager := &dashboardFakeManager{logs: []dashboardruntime.LogLine{
-		{Message: "line-1"},
-		{Message: "line-2"},
-	}, status: dashboardruntime.RuntimeStatus{LastError: "boom"}}
-	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
-	values := dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_RUNNER_TYPE": "android_emulator"}
-	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "last runtime error: boom") || !strings.Contains(got, "recent runtime logs") {
-		t.Fatalf("runtimeStartupDiagnostics = %q", got)
-	}
-	values = dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual"}
-	if got := runtimeStartupDiagnostics(context.Background(), manager, values); !strings.Contains(got, "diagnostics:") {
-		t.Fatalf("host runtimeStartupDiagnostics = %q", got)
-	}
 	if err := waitForDashboardRunnerReady(context.Background(), dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_RUNNER_TYPE": "android_emulator"}); err != nil {
 		t.Fatalf("waitForDashboardRunnerReady should skip when readiness not required: %v", err)
 	}

@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -27,21 +26,16 @@ import (
 )
 
 var (
-	dashboardHost                string
-	dashboardPort                int
-	dashboardConfigDir           string
-	dashboardOpen                bool
-	dashboardRegistrationTimeout = 30 * time.Second
+	dashboardHost      string
+	dashboardPort      int
+	dashboardConfigDir string
+	dashboardOpen      bool
 )
 
 const quickTunnelLogTail = 1000
 
 type dashboardTunnelLogger interface {
 	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
-}
-
-type dashboardProgressStarter interface {
-	StartWithProgress(context.Context, func(string)) error
 }
 
 var openDashboardBrowserFunc = openDashboardBrowser
@@ -93,7 +87,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
 	defer cancelDashboard()
 	operations := controller.NewCoordinator(dashboardCtx)
-	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinator(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations)
+	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations)
 	if err != nil {
 		return err
 	}
@@ -124,19 +118,6 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		stdlog.Printf("Credimi Runner dashboard available at http://%s:%d", listenHost, listenPort)
 		errc <- server.Serve(listener)
 	}()
-	if configFileExists(configDir) {
-		progress := func(line string) {
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "runner startup: %s\n", line)
-		}
-		if _, err := operations.Submit(controller.OperationRuntimeStart, func(ctx context.Context, report func(controller.Progress)) error {
-			return startDashboardRuntimeWithProgress(ctx, manager, values, func(line string) {
-				report(controller.Progress{Message: line})
-				progress(line)
-			})
-		}); err != nil {
-			stdlog.Printf("dashboard runtime startup was not queued: %v", err)
-		}
-	}
 	if dashboardOpen && dashboardCanOpenBrowser() {
 		go func() {
 			time.Sleep(250 * time.Millisecond)
@@ -257,15 +238,6 @@ func openDashboardBrowser(url string) error {
 	return cmd.Start()
 }
 
-func dashboardEnvPath(configDir string) string {
-	return filepath.Join(configDir, ".env")
-}
-
-func configFileExists(configDir string) bool {
-	_, err := os.Stat(dashboardEnvPath(configDir))
-	return err == nil
-}
-
 func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.Values) (string, int) {
 	host := strings.TrimSpace(values["DASHBOARD_HOST"])
 	if host == "" {
@@ -287,42 +259,6 @@ func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.V
 		return host, dashboardPort
 	}
 	return host, parsedPort
-}
-
-func startDashboardRuntime(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {
-	return startDashboardRuntimeWithProgress(ctx, manager, values, func(line string) {
-		stdlog.Printf("runner startup: %s", line)
-	})
-}
-
-func startDashboardRuntimeWithProgress(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values, progress func(string)) error {
-	if strings.EqualFold(strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]), "auto") {
-		manager.SetPublicURL("")
-	}
-	var err error
-	if starter, ok := manager.(dashboardProgressStarter); ok {
-		err = starter.StartWithProgress(ctx, progress)
-	} else {
-		err = manager.Start(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
-		return nil
-	}
-	readyCtx, readyCancel := context.WithTimeout(ctx, 2*time.Second)
-	defer readyCancel()
-	if err := waitForDashboardRunnerReady(readyCtx, values); err != nil {
-		stdlog.Printf("dashboard runtime start pending: %v\n%s", err, runtimeStartupDiagnostics(ctx, manager, values))
-		return nil
-	}
-	registerCtx, registerCancel := context.WithTimeout(ctx, dashboardRegistrationTimeout)
-	defer registerCancel()
-	if err := registerDashboardRunner(registerCtx, manager, values); err != nil {
-		stdlog.Printf("dashboard runtime registration pending: %v", err)
-	}
-	return nil
 }
 
 func waitForDashboardRunnerReady(ctx context.Context, values dashboardruntime.Values) error {
@@ -408,39 +344,6 @@ func currentDashboardGOOS() string {
 		return override
 	}
 	return runtime.GOOS
-}
-
-func runtimeStartupDiagnostics(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) string {
-	status := manager.Status(ctx)
-	var parts []string
-	if status.LastError != "" {
-		parts = append(parts, "last runtime error: "+status.LastError)
-	}
-	plan := dashboardruntime.BuildRuntimePlan(strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")), values)
-	if len(plan.ComposeServices) == 0 {
-		if len(parts) == 0 {
-			return "diagnostics: host runner did not bind the expected port; check the runner logs above."
-		}
-		return "diagnostics: " + strings.Join(parts, " | ")
-	}
-	logs, err := manager.Logs(ctx, 40)
-	if err != nil {
-		parts = append(parts, "compose logs unavailable: "+err.Error())
-	} else if len(logs) > 0 {
-		start := 0
-		if len(logs) > 8 {
-			start = len(logs) - 8
-		}
-		var tail []string
-		for _, line := range logs[start:] {
-			tail = append(tail, strings.TrimSpace(line.Message))
-		}
-		parts = append(parts, "recent runtime logs:\n"+strings.Join(tail, "\n"))
-	}
-	if len(parts) == 0 {
-		return "diagnostics: runtime did not expose the runner port and no compose logs were available."
-	}
-	return "diagnostics: " + strings.Join(parts, "\n")
 }
 
 func registerDashboardRunner(ctx context.Context, manager dashboardruntime.Manager, values dashboardruntime.Values) error {

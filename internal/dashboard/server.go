@@ -141,6 +141,17 @@ func NewHandlerWithManagerContextAndIdentity(parent context.Context, composeDir 
 // NewHandlerWithManagerContextAndIdentityAndCoordinator makes all dashboard
 // actions and non-HTTP entrypoints share one operation owner.
 func NewHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, false)
+}
+
+// NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap starts a
+// configured runtime through the dashboard lifecycle controller after the
+// handler is ready. It is used only by the plain credimi-runner command.
+func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true)
+}
+
+func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool) (http.Handler, context.CancelFunc, error) {
 	cfg, err := LoadConfig(composeDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -208,6 +219,9 @@ func NewHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
+	if bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
+		srv.bootstrapConfiguredRuntime()
+	}
 	return srv.auth(mux), cancel, nil
 }
 
@@ -699,6 +713,65 @@ func (s *Server) startStartupJob(values map[string]string) {
 			s.startup.cancel = nil
 		}
 		s.mu.Unlock()
+	}()
+}
+
+func (s *Server) bootstrapConfiguredRuntime() {
+	if s.manager == nil {
+		return
+	}
+	values := s.cfg.Snapshot()
+	status := s.manager.Status(context.Background())
+	if !status.RunnerRunning && !status.ComposeRunning {
+		s.startStartupJob(values)
+		return
+	}
+	s.startExistingRuntimeJob(values)
+}
+
+func (s *Server) startExistingRuntimeJob(values map[string]string) {
+	s.mu.Lock()
+	if s.startup.running && s.startup.cancel != nil {
+		s.startup.cancel()
+	}
+	parent := s.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	s.startup = startupState{Phase: StartupWaitingRunner, Message: "Runner already running. Verifying runtime and registration.", LogBase: 1, LogNextID: 1, running: true, cancel: cancel, done: done}
+	s.appendStartupLogLocked(s.startup.Message)
+	s.mu.Unlock()
+
+	s.hub.poll(context.Background())
+	go func() {
+		defer cancel()
+		defer close(done)
+		if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
+			readyCtx, readyCancel := context.WithTimeout(ctx, 30*time.Second)
+			err := s.runnerReady(readyCtx, values)
+			readyCancel()
+			if err != nil {
+				s.setStartupState(StartupNeedsAttention, "Runner is already running, but readiness was not confirmed: "+s.runtimeStartupError(context.Background(), err).Error())
+				return
+			}
+		}
+		s.setStartupState(StartupRegistering, "Runner already running. Updating Credimi registration.")
+		registerCtx, registerCancel := context.WithTimeout(ctx, 30*time.Second)
+		err := s.registerCurrent(registerCtx, values)
+		registerCancel()
+		if err != nil {
+			s.mu.Lock()
+			s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
+			s.mu.Unlock()
+			s.setStartupState(StartupNeedsAttention, "Runner is already running, but Credimi registration failed: "+err.Error())
+			return
+		}
+		s.mu.Lock()
+		s.pendingDiff = dashboardruntime.ConfigDiff{}
+		s.mu.Unlock()
+		s.setStartupState(StartupReady, "Runner already running and registered with Credimi.")
 	}()
 }
 

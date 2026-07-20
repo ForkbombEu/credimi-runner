@@ -149,6 +149,41 @@ func TestNewHandlerWithManagerWrapper(t *testing.T) {
 	}
 }
 
+func TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime(t *testing.T) {
+	dir := t.TempDir()
+	registered := make(chan struct{}, 1)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile-runner" {
+			http.NotFound(w, r)
+			return
+		}
+		registered <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true, PublicURL: "https://runner.example"}}
+	_, cancel, err := NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(context.Background(), dir, manager, "controller-1", "token", "fingerprint", controller.NewCoordinator(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	select {
+	case <-registered:
+	case <-time.After(time.Second):
+		t.Fatal("configured runtime was not registered")
+	}
+	if manager.startCalls != 0 {
+		t.Fatalf("running runtime should not be started again: %d", manager.startCalls)
+	}
+	if manager.status.PublicURL != "https://runner.example" {
+		t.Fatalf("public URL = %q", manager.status.PublicURL)
+	}
+}
+
 func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
