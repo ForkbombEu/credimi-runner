@@ -1012,9 +1012,25 @@ func (m *LifecycleManager) Status(ctx context.Context) RuntimeStatus {
 		status.LastError = observed.err.Error()
 	}
 	m.mu.Lock()
-	m.status = status
+	m.status = mergeObservedRuntimeStatus(m.status, observed, status.ObservedAt)
+	status = m.status
 	m.mu.Unlock()
 	return status
+}
+
+// mergeObservedRuntimeStatus applies only values owned by Docker observation.
+// Registration can set PublicURL while observation runs, so that field must
+// remain owned by the lifecycle operation rather than a stale status snapshot.
+func mergeObservedRuntimeStatus(current RuntimeStatus, observed observedRuntime, at time.Time) RuntimeStatus {
+	current.Observed = true
+	current.ObservedAt = at
+	current.RunnerRunning = observed.runnerRunning
+	current.ComposeRunning = observed.composeRunning
+	current.DeviceReady = observed.deviceReady
+	if observed.err != nil {
+		current.LastError = observed.err.Error()
+	}
+	return current
 }
 
 type observedRuntime struct {

@@ -782,6 +782,24 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	}
 }
 
+func TestMergeObservedRuntimeStatusPreservesRegisteredURL(t *testing.T) {
+	observedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	status := mergeObservedRuntimeStatus(RuntimeStatus{
+		PublicURL: "https://fresh.trycloudflare.com",
+		LastError: "previous error",
+	}, observedRuntime{
+		runnerRunning:  true,
+		composeRunning: true,
+		deviceReady:    true,
+	}, observedAt)
+	if status.PublicURL != "https://fresh.trycloudflare.com" {
+		t.Fatalf("PublicURL = %q", status.PublicURL)
+	}
+	if !status.Observed || !status.ObservedAt.Equal(observedAt) || !status.RunnerRunning || !status.ComposeRunning || !status.DeviceReady {
+		t.Fatalf("observed status = %#v", status)
+	}
+}
+
 func commandArgs(specs []CommandSpec) string {
 	var commands []string
 	for _, spec := range specs {

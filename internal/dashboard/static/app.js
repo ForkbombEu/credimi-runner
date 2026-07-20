@@ -49,6 +49,7 @@
 
   // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
   let runtimeOperationTimer = null;
+  let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
   function dashboardURL(path) {
     const url = new URL(path, window.location.origin);
@@ -80,6 +81,7 @@
       clearInterval(runtimeOperationTimer);
       runtimeOperationTimer = null;
       const finish = () => {
+        runtimeOperationActive = false;
         hideBusy();
         if (phase === 'succeeded') {
           toast(operation.success || 'Runner operation completed successfully.');
@@ -94,6 +96,7 @@
   document.body.addEventListener('runtimeOperation', (e) => {
     const operation = e.detail && (e.detail.value || e.detail);
     if (!operation || !operation.id) return;
+    runtimeOperationActive = true;
     clearInterval(runtimeOperationTimer);
     runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
     appendBusyLog('Runtime operation accepted. Waiting for completion.');
@@ -218,6 +221,7 @@
   document.body.addEventListener('htmx:beforeRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
     if (!trigger) return;
+    if (trigger.matches('[data-runtime-action]')) runtimeOperationActive = true;
     const message = trigger.dataset.busyMessage || 'Applying runtime change in the background.';
     if (trigger.matches('[data-setup-form]')) {
       sessionStorage.setItem(setupBusyKey, message);
@@ -236,14 +240,16 @@
       if (e.detail.successful !== false) return;
       sessionStorage.removeItem(setupBusyKey);
     }
-    if (trigger && trigger.matches('[data-runtime-action]') && e.detail.successful !== false) return;
+    if (runtimeOperationActive || (trigger && trigger.matches('[data-runtime-action]') && e.detail.successful !== false)) return;
     if (wasBusy) hideBusy();
   });
   document.body.addEventListener('htmx:responseError', () => {
+    runtimeOperationActive = false;
     sessionStorage.removeItem(setupBusyKey);
     hideBusy();
   });
   document.body.addEventListener('htmx:sendError', () => {
+    runtimeOperationActive = false;
     sessionStorage.removeItem(setupBusyKey);
     hideBusy();
   });
