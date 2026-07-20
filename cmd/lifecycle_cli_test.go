@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -239,14 +240,22 @@ func TestLifecycleCLIReportsMissingAndStaleControllers(t *testing.T) {
 }
 
 type lifecycleDirectFakeManager struct {
-	starts, stops, restarts int
-	status                  dashboardruntime.RuntimeStatus
+	starts, stops, restarts, upgrades int
+	status                            dashboardruntime.RuntimeStatus
 }
 
 func (f *lifecycleDirectFakeManager) Start(context.Context) error   { f.starts++; return nil }
 func (f *lifecycleDirectFakeManager) Stop(context.Context) error    { f.stops++; return nil }
 func (f *lifecycleDirectFakeManager) Restart(context.Context) error { f.restarts++; return nil }
 func (f *lifecycleDirectFakeManager) UpdateImage(context.Context) error {
+	return nil
+}
+func (f *lifecycleDirectFakeManager) UpgradeRunnerImage(_ context.Context, progress func(string)) error {
+	f.upgrades++
+	f.status.RunnerRunning = true
+	if progress != nil {
+		progress("runner image downloaded")
+	}
 	return nil
 }
 func (f *lifecycleDirectFakeManager) Configure(dashboardruntime.Values) {}
@@ -299,6 +308,146 @@ func TestLifecycleCLIDirectRuntimeControlWithoutDashboard(t *testing.T) {
 	}
 	if output.String() != "Dashboard: stopped\nRunner: running\n" {
 		t.Fatalf("status output = %q", output.String())
+	}
+}
+
+func TestUpgradeImageCommandUsesDirectLifecycleWhenDashboardIsStopped(t *testing.T) {
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer api.Close()
+	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_USER_API_KEY=test\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=container\nCREDIMI_RUNNER_TYPE=android_phone\nCREDIMI_SERVICE_MODE=manual\nRUNNER_PUBLIC_URL=https://runner.example\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &lifecycleDirectFakeManager{}
+	originalExecutable, originalFactory, originalReady := lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory, lifecycleRuntimeWaitReady
+	lifecycleRuntimeExecutable = func() (string, error) { return "credimi-runner", nil }
+	lifecycleRuntimeManagerFactory = func(string, string, dashboardruntime.Values) dashboardruntime.Manager { return manager }
+	lifecycleRuntimeWaitReady = func(context.Context, dashboardruntime.Values) error { return nil }
+	t.Cleanup(func() {
+		lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory, lifecycleRuntimeWaitReady = originalExecutable, originalFactory, originalReady
+	})
+
+	command, output := lifecycleTestCommand()
+	if err := runUpgradeImage(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if manager.upgrades != 1 || !strings.Contains(output.String(), "Runner image upgraded successfully.") {
+		t.Fatalf("upgrades=%d output=%q", manager.upgrades, output.String())
+	}
+}
+
+func TestUpgradeImageCommandUsesDashboardController(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/internal/controller/identity":
+			if request.Header.Get("X-Credimi-Controller-Token") != "test-token" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			_, _ = w.Write([]byte(`{"controller_id":"controller-1","config_fingerprint":"fingerprint"}`))
+		case "/api/controller/maintenance/upgrade-image":
+			_, _ = w.Write([]byte(`{"id":"op-image"}`))
+		case "/api/controller/operations/op-image":
+			_, _ = w.Write([]byte(`{"id":"op-image","phase":"succeeded"}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	writeLifecycleMetadata(t, dir, server.URL+"/internal/controller/identity", 42)
+
+	command, output := lifecycleTestCommand()
+	if err := runUpgradeImage(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != runnerCLIHeader+"Runner image upgraded successfully.\n" {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestUpgradeCommandsAreTopLevel(t *testing.T) {
+	for _, name := range []string{"upgrade-image", "upgrade-binary"} {
+		command, _, err := rootCmd.Find([]string{name})
+		if err != nil || command == nil || command.Name() != name {
+			t.Fatalf("%s command = %#v, err = %v", name, command, err)
+		}
+	}
+}
+
+func TestUpgradeBinaryStopsRuntimeBeforeReplacingExecutable(t *testing.T) {
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	runnerPort := availableLifecycleTestPort(t)
+	dashboardPort := availableLifecycleTestPort(t)
+	config := "CREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=host\nCREDIMI_RUNNER_TYPE=android_phone\nRUNNER_HOST=127.0.0.1\nRUNNER_PORT=" + runnerPort + "\nDASHBOARD_HOST=127.0.0.1\nDASHBOARD_PORT=" + dashboardPort + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &lifecycleDirectFakeManager{}
+	originalExecutable, originalDownload, originalFactory := upgradeBinaryExecutable, upgradeBinaryDownload, lifecycleRuntimeManagerFactory
+	t.Cleanup(func() {
+		upgradeBinaryExecutable, upgradeBinaryDownload, lifecycleRuntimeManagerFactory = originalExecutable, originalDownload, originalFactory
+	})
+	target := filepath.Join(t.TempDir(), "credimi-runner")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	upgradeBinaryExecutable = func() (string, error) { return target, nil }
+	lifecycleRuntimeManagerFactory = func(string, string, dashboardruntime.Values) dashboardruntime.Manager { return manager }
+	var downloaded string
+	upgradeBinaryDownload = func(_ context.Context, _ *http.Client, path string, progress func(string)) error {
+		downloaded = path
+		progress("binary downloaded")
+		return nil
+	}
+
+	command, output := lifecycleTestCommand()
+	if err := runUpgradeBinary(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if manager.stops != 1 || downloaded != target || !strings.Contains(output.String(), "Runner binary upgraded successfully") {
+		t.Fatalf("stops=%d downloaded=%q output=%q", manager.stops, downloaded, output.String())
+	}
+}
+
+func availableLifecycleTestPort(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	return strings.TrimPrefix(listener.Addr().String(), "127.0.0.1:")
+}
+
+func TestUpgradeAddressHelpers(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := verifyUpgradeAddressFree(listener.Addr().String()); err == nil {
+		t.Fatal("verifyUpgradeAddressFree() succeeded for an occupied address")
+	}
+	freeAddress := "127.0.0.1:" + availableLifecycleTestPort(t)
+	if err := verifyUpgradeAddressFree(freeAddress); err != nil {
+		t.Fatalf("verifyUpgradeAddressFree(%q) = %v", freeAddress, err)
+	}
+	if got := normalizeUpgradeListenHost(""); got != "0.0.0.0" {
+		t.Fatalf("empty host = %q", got)
+	}
+	if got := normalizeUpgradeListenHost("[::1]"); got != "::1" {
+		t.Fatalf("IPv6 host = %q", got)
+	}
+	if got := defaultUpgradeString("", "fallback"); got != "fallback" {
+		t.Fatalf("empty value = %q", got)
+	}
+	if got := defaultUpgradeString(" value ", "fallback"); got != "value" {
+		t.Fatalf("value = %q", got)
 	}
 }
 

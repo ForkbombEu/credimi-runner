@@ -1213,6 +1213,41 @@ func TestServerRuntimeRegisterAndActionError(t *testing.T) {
 	}
 }
 
+func TestControllerImageUpgradeUsesLifecycleRegistration(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile-runner" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	s := newTestServer(t)
+	manager := s.manager.(*fakeManager)
+	s.runnerReady = func(context.Context, map[string]string) error { return nil }
+	s.cfg.values["CREDIMI_URL"] = api.URL
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+
+	rec := httptest.NewRecorder()
+	s.controllerUpgradeImage(rec, httptest.NewRequest(http.MethodPost, "/api/controller/maintenance/upgrade-image", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("controllerUpgradeImage = %d %s", rec.Code, rec.Body.String())
+	}
+	op := s.operations.Current()
+	if completed, err := s.operations.Wait(context.Background(), op.ID); err != nil || completed.Phase != controller.PhaseSucceeded || manager.updateImageCalls != 1 {
+		t.Fatalf("upgrade operation=%#v err=%v updates=%d", completed, err, manager.updateImageCalls)
+	}
+	s.manager = nil
+	rec = httptest.NewRecorder()
+	s.controllerUpgradeImage(rec, httptest.NewRequest(http.MethodPost, "/api/controller/maintenance/upgrade-image", nil))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unavailable") {
+		t.Fatalf("unavailable upgrade = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestResolveSetupIdentityBranches(t *testing.T) {
 	originalClient := http.DefaultClient
 	t.Cleanup(func() { http.DefaultClient = originalClient })

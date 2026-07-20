@@ -286,6 +286,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/controller/operations/current", s.controllerOperationCurrent)
 	mux.HandleFunc("GET /api/controller/operations/{id}", s.controllerOperation)
 	mux.HandleFunc("POST /api/controller/runtime/{action}", s.controllerRuntimeAction)
+	mux.HandleFunc("POST /api/controller/maintenance/upgrade-image", s.controllerUpgradeImage)
 }
 
 // staticHTTPHandler returns a handler for the embedded static directory.
@@ -1074,6 +1075,21 @@ func (s *Server) controllerRuntimeAction(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, snapshot)
 }
 
+func (s *Server) controllerUpgradeImage(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := s.submitImageUpgrade()
+	if err != nil {
+		if errors.Is(err, controller.ErrOperationConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	writeJSON(w, snapshot)
+}
+
 var errRuntimeManagerUnavailable = errors.New("runtime manager unavailable")
 
 func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error) {
@@ -1110,6 +1126,24 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 		}
 	})
 	return snapshot, err
+}
+
+func (s *Server) submitImageUpgrade() (controller.Snapshot, error) {
+	upgrader, ok := s.manager.(managerImageUpgrader)
+	if !ok {
+		return controller.Snapshot{}, errors.New("runner image upgrade is unavailable")
+	}
+	if s.operations == nil {
+		s.operations = controller.NewCoordinator(s.ctx)
+	}
+	values := s.cfg.Snapshot()
+	return s.operations.Submit(controller.OperationRuntimeRestart, func(ctx context.Context, progress func(controller.Progress)) error {
+		progressFn := func(message string) { progress(controller.Progress{Message: message}) }
+		if err := upgrader.UpgradeRunnerImage(ctx, progressFn); err != nil {
+			return err
+		}
+		return s.runtimeLifecycle(values).RegisterRunning(ctx)
+	})
 }
 
 func (s *Server) runtimeLifecycle(values map[string]string) controller.RuntimeLifecycle {

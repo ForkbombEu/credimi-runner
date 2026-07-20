@@ -115,13 +115,17 @@ func runLifecycleRuntimeAction(cmd *cobra.Command, action string) error {
 }
 
 func runLifecycleDashboardAction(ctx context.Context, cmd *cobra.Command, baseURL, action string) error {
+	return runLifecycleDashboardEndpointAction(ctx, cmd, baseURL, baseURL+"/api/controller/runtime/"+action, "Runner "+lifecycleActionPastTense(action), "runner "+action)
+}
+
+func runLifecycleDashboardEndpointAction(ctx context.Context, cmd *cobra.Command, baseURL, endpoint, successLabel, failureLabel string) error {
 	var snapshot controller.Snapshot
-	if err := postLifecycleJSON(ctx, baseURL+"/api/controller/runtime/"+action, &snapshot); err != nil {
+	if err := postLifecycleJSON(ctx, endpoint, &snapshot); err != nil {
 		return err
 	}
 	completed, err := waitForLifecycleOperation(ctx, baseURL, snapshot.ID)
 	if err != nil {
-		return fmt.Errorf("runner %s did not complete: %w", action, err)
+		return fmt.Errorf("%s did not complete: %w", failureLabel, err)
 	}
 	if completed.Phase != controller.PhaseSucceeded {
 		message := strings.TrimSpace(completed.Error)
@@ -131,9 +135,9 @@ func runLifecycleDashboardAction(ctx context.Context, cmd *cobra.Command, baseUR
 		if message == "" {
 			message = "operation did not succeed"
 		}
-		return fmt.Errorf("runner %s failed: %s", action, message)
+		return fmt.Errorf("%s failed: %s", failureLabel, message)
 	}
-	cmd.Printf("Runner %s successfully.\n", lifecycleActionPastTense(action))
+	cmd.Printf("%s successfully.\n", successLabel)
 	return nil
 }
 
