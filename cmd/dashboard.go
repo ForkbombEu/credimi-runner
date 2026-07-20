@@ -87,7 +87,9 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
 	defer cancelDashboard()
 	operations := controller.NewCoordinator(dashboardCtx)
-	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations)
+	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations, func(message string) {
+		cmd.Println(message)
+	})
 	if err != nil {
 		return err
 	}

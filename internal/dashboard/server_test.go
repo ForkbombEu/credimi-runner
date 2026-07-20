@@ -166,7 +166,10 @@ func TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime
 		t.Fatal(err)
 	}
 	manager := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true, PublicURL: "https://runner.example"}}
-	_, cancel, err := NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(context.Background(), dir, manager, "controller-1", "token", "fingerprint", controller.NewCoordinator(context.Background()))
+	progress := make(chan string, 8)
+	_, cancel, err := NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(context.Background(), dir, manager, "controller-1", "token", "fingerprint", controller.NewCoordinator(context.Background()), func(message string) {
+		progress <- message
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +184,14 @@ func TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime
 	}
 	if manager.status.PublicURL != "https://runner.example" {
 		t.Fatalf("public URL = %q", manager.status.PublicURL)
+	}
+	select {
+	case message := <-progress:
+		if !strings.Contains(message, "Runner already running") {
+			t.Fatalf("bootstrap progress = %q", message)
+		}
+	default:
+		t.Fatal("bootstrap did not publish terminal progress")
 	}
 }
 
@@ -879,7 +890,9 @@ func TestServerSaveOverviewPublishedConfig(t *testing.T) {
 
 func TestServerRuntimeActionVariants(t *testing.T) {
 	s := newTestServer(t)
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer api.Close()
+	s.cfg.values["CREDIMI_URL"] = api.URL
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
 	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
@@ -887,6 +900,7 @@ func TestServerRuntimeActionVariants(t *testing.T) {
 	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
 	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
 	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
+	s.runnerReady = func(context.Context, map[string]string) error { return nil }
 
 	for _, target := range []struct {
 		path string
@@ -2167,6 +2181,33 @@ func TestDashboardRuntimeStartUsesControllerLifecycleAndRefreshesAutoURL(t *test
 	}
 	if got := s.manager.Status(context.Background()).PublicURL; got != payload.IP {
 		t.Fatalf("dashboard public URL = %q, want %q", got, payload.IP)
+	}
+
+	rec = httptest.NewRecorder()
+	s.runtimeStop(rec, httptest.NewRequest(http.MethodPost, "/runtime/stop", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("runtime stop response = %d", rec.Code)
+	}
+	op = s.operations.Current()
+	if completed, err = s.operations.Wait(context.Background(), op.ID); err != nil || completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("runtime stop completed=%#v err=%v", completed, err)
+	}
+	if got := s.manager.Status(context.Background()).PublicURL; got != "" {
+		t.Fatalf("stopped runtime retained quick tunnel URL %q", got)
+	}
+
+	s.manager.(*fakeManager).logLines = []dashboardruntime.LogLine{{Message: "tunnel ready https://replacement-url.trycloudflare.com"}}
+	rec = httptest.NewRecorder()
+	s.runtimeRestart(rec, httptest.NewRequest(http.MethodPost, "/runtime/restart", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("runtime restart response = %d", rec.Code)
+	}
+	op = s.operations.Current()
+	if completed, err = s.operations.Wait(context.Background(), op.ID); err != nil || completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("runtime restart completed=%#v err=%v", completed, err)
+	}
+	if payload.IP != "https://replacement-url.trycloudflare.com" {
+		t.Fatalf("restart registered URL = %q", payload.IP)
 	}
 }
 

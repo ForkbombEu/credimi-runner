@@ -800,6 +800,14 @@ func (m *LifecycleManager) Restart(ctx context.Context) error {
 	return m.Start(ctx)
 }
 
+// StartLogFollower attaches the owning dashboard process to managed runtime
+// logs without starting or recreating any service.
+func (m *LifecycleManager) StartLogFollower() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.startComposeLogFollowerLocked(BuildRuntimePlan(m.configDir, m.values))
+}
+
 func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {
 	if m.logCmd != nil || len(plan.ComposeServices) == 0 {
 		return

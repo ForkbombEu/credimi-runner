@@ -76,6 +76,7 @@ type Server struct {
 	binaryPath              string
 	downloadBinary          func(context.Context, *http.Client, string, func(string)) error
 	restartDashboard        func(string) error
+	startupProgress         func(string)
 	mu                      sync.RWMutex
 }
 
@@ -141,17 +142,24 @@ func NewHandlerWithManagerContextAndIdentity(parent context.Context, composeDir 
 // NewHandlerWithManagerContextAndIdentityAndCoordinator makes all dashboard
 // actions and non-HTTP entrypoints share one operation owner.
 func NewHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
-	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, false)
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, false, nil)
 }
 
 // NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap starts a
 // configured runtime through the dashboard lifecycle controller after the
 // handler is ready. It is used only by the plain credimi-runner command.
 func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
-	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true)
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, nil)
 }
 
-func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool) (http.Handler, context.CancelFunc, error) {
+// NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress
+// additionally mirrors controller bootstrap progress to the process that
+// launched the dashboard.
+func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, progress func(string)) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, progress)
+}
+
+func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool, progress func(string)) (http.Handler, context.CancelFunc, error) {
 	cfg, err := LoadConfig(composeDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -203,6 +211,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 		startup: startupState{
 			Phase: StartupIdle,
 		},
+		startupProgress: progress,
 	}
 	if srv.operations == nil {
 		srv.operations = controller.NewCoordinator(parent)
@@ -726,6 +735,9 @@ func (s *Server) bootstrapConfiguredRuntime() {
 		s.startStartupJob(values)
 		return
 	}
+	if follower, ok := s.manager.(interface{ StartLogFollower() }); ok {
+		follower.StartLogFollower()
+	}
 	s.startExistingRuntimeJob(values)
 }
 
@@ -853,6 +865,9 @@ func (s *Server) appendStartupLogLocked(message string) {
 	}
 	s.startup.Logs = append(s.startup.Logs, message)
 	s.startup.LogNextID++
+	if s.startupProgress != nil {
+		s.startupProgress(message)
+	}
 	if extra := len(s.startup.Logs) - startupLogRetain; extra > 0 {
 		s.startup.Logs = append([]string(nil), s.startup.Logs[extra:]...)
 		s.startup.LogBase += int64(extra)
@@ -1107,7 +1122,16 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 	}
 	values := s.cfg.Snapshot()
 	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, progress func(controller.Progress)) error {
-		if kind == controller.OperationRuntimeStart {
+		if kind == controller.OperationRuntimeRestart {
+			progress(controller.Progress{Message: "Stopping runtime before restart."})
+			if err := s.manager.Stop(ctx); err != nil {
+				return err
+			}
+		}
+		if kind == controller.OperationRuntimeStart || kind == controller.OperationRuntimeRestart {
+			s.clearAutoPublicURL(values)
+		}
+		if kind == controller.OperationRuntimeStart || kind == controller.OperationRuntimeRestart {
 			if starter, ok := s.manager.(managerProgressStarter); ok {
 				err := starter.StartWithProgress(ctx, func(message string) { progress(controller.Progress{Message: message}) })
 				if err != nil {
@@ -1121,14 +1145,13 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 			switch kind {
 			case controller.OperationRuntimeStop:
 				err = s.manager.Stop(ctx)
-			case controller.OperationRuntimeRestart:
-				err = s.manager.Restart(ctx)
 			}
 			if err != nil {
 				return err
 			}
+			s.clearAutoPublicURL(values)
 		}
-		if kind == controller.OperationRuntimeStart {
+		if kind == controller.OperationRuntimeStart || kind == controller.OperationRuntimeRestart {
 			if dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
 				if err := s.runnerReady(ctx, values); err != nil {
 					return s.runtimeStartupError(ctx, err)
@@ -1139,6 +1162,14 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 		return nil
 	})
 	return snapshot, err
+}
+
+func (s *Server) clearAutoPublicURL(values map[string]string) {
+	if s.manager == nil || normalizedApplyServiceMode(values["CREDIMI_SERVICE_MODE"]) != "auto" {
+		return
+	}
+	s.manager.SetPublicURL("")
+	s.hub.poll(context.Background())
 }
 
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {

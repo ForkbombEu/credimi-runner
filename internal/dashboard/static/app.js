@@ -49,6 +49,7 @@
 
   // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
   let runtimeOperationTimer = null;
+  let runtimeBusyVisibleUntil = 0;
   function dashboardURL(path) {
     const url = new URL(path, window.location.origin);
     const token = new URLSearchParams(window.location.search).get('token');
@@ -68,22 +69,34 @@
       if (!response.ok) return;
       const snapshot = await response.json();
       const phase = String(snapshot.phase || snapshot.Phase || '');
+      const message = String(snapshot.message || snapshot.Message || '').trim();
+      if (message) {
+        const overlay = busyOverlay();
+        const messageNode = overlay && $('[data-busy-message]', overlay);
+        if (messageNode) messageNode.textContent = message;
+        appendBusyLog(message);
+      }
       if (phase === 'queued' || phase === 'running') return;
       clearInterval(runtimeOperationTimer);
       runtimeOperationTimer = null;
-      hideBusy();
-      if (phase === 'succeeded') {
-        toast(operation.success || 'Runner operation completed successfully.');
-      } else {
-        toast(runtimeOperationFailure(snapshot));
-      }
-      refreshOverview();
+      const finish = () => {
+        hideBusy();
+        if (phase === 'succeeded') {
+          toast(operation.success || 'Runner operation completed successfully.');
+        } else {
+          toast(runtimeOperationFailure(snapshot));
+        }
+        refreshOverview();
+      };
+      setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
     } catch (_) {}
   }
   document.body.addEventListener('runtimeOperation', (e) => {
     const operation = e.detail && (e.detail.value || e.detail);
     if (!operation || !operation.id) return;
     clearInterval(runtimeOperationTimer);
+    runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
+    appendBusyLog('Runtime operation accepted. Waiting for completion.');
     pollRuntimeOperation(operation);
     runtimeOperationTimer = setInterval(() => pollRuntimeOperation(operation), 500);
   });
