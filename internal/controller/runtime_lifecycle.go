@@ -16,7 +16,7 @@ import (
 
 const (
 	quickTunnelLogTail     = 1000
-	RunnerReadinessTimeout = time.Minute
+	RunnerReadinessTimeout = 2 * time.Minute
 )
 
 type runtimeProgressStarter interface {
