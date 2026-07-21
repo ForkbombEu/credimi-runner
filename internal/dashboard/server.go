@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -207,7 +206,9 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	if srv.operations == nil {
 		srv.operations = controller.NewCoordinator(parent)
 	}
-	srv.runnerReady = srv.waitForRunnerReady
+	srv.runnerReady = func(ctx context.Context, values map[string]string) error {
+		return controller.WaitForRunnerReady(ctx, dashboardruntime.Values(values))
+	}
 	srv.binaryPath = executable
 	srv.downloadBinary = maintenance.DownloadLatestBinary
 	srv.restartDashboard = scheduleDashboardRestart
@@ -1536,81 +1537,6 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 	s.lastRegistrationStatus = "Credimi runner registration updated."
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]string) error {
-	if !dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
-		return nil
-	}
-	host := strings.TrimSpace(values["RUNNER_HOST"])
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	port := strings.TrimSpace(values["RUNNER_PORT"])
-	if port == "" {
-		port = dashboardruntime.DefaultRunnerPort
-	}
-	address := net.JoinHostPort(host, port)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	deadline, cancel := context.WithTimeout(ctx, controller.RunnerReadinessTimeout)
-	defer cancel()
-	var lastErr error
-	for {
-		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
-		if err == nil {
-			_ = conn.Close()
-			if healthErr := waitForRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
-				_, readinessErr := controller.ValidateReadiness(deadline, http.DefaultClient, "http://"+address, dashboardruntime.Values(values))
-				if readinessErr == nil {
-					return nil
-				}
-				lastErr = readinessErr
-			} else {
-				lastErr = healthErr
-			}
-		} else {
-			lastErr = err
-		}
-		select {
-		case <-deadline.Done():
-			return controller.ReadinessFailure(dashboardruntime.Values(values), address, lastErr, deadline.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitForRunnerHealth(ctx context.Context, host, port, serial string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
-	if err != nil {
-		return err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("runner health returned %s", response.Status)
-	}
-	if serial == "" {
-		return nil
-	}
-	var payload struct {
-		Devices []struct {
-			Serial string `json:"serial"`
-			State  string `json:"state"`
-		} `json:"devices"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return fmt.Errorf("decode runner health: %w", err)
-	}
-	for _, device := range payload.Devices {
-		if strings.TrimSpace(device.Serial) == serial && strings.TrimSpace(device.State) == "device" {
-			return nil
-		}
-	}
-	return fmt.Errorf("configured device %q is not ready", serial)
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {
