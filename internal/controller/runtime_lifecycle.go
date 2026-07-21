@@ -14,7 +14,10 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
-const quickTunnelLogTail = 1000
+const (
+	quickTunnelLogTail     = 1000
+	RunnerReadinessTimeout = time.Minute
+)
 
 type runtimeProgressStarter interface {
 	StartWithProgress(context.Context, func(string)) error
@@ -144,7 +147,7 @@ func (l RuntimeLifecycle) waitReady(ctx context.Context) error {
 		port = dashboardruntime.DefaultRunnerPort
 	}
 	address := net.JoinHostPort(host, port)
-	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	deadline, cancel := context.WithTimeout(ctx, RunnerReadinessTimeout)
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
