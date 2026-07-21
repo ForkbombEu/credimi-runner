@@ -467,8 +467,6 @@
             if (runnerType === 'redroid') {
               const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
               return !valueMissing('CREDIMI_RUNNER_WIFI_IP') &&
-                !valueMissing('REDROID_DATA_DIR') &&
-                !valueMissing('REDROID_DATA_TAR') &&
                 (!sshEnabled || !sshEnabled.checked || !valueMissing('AVDCTL_SSH_TARGET'));
             }
             return !!runnerType;
@@ -516,8 +514,6 @@
             if (runnerType === 'ios_simulator' && valueMissing('BASE_NAME')) return 'Simulator name is required.';
             if (runnerType === 'ios_simulator') return 'Create or select the named simulator before continuing.';
             if (runnerType === 'redroid' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) return 'Redroid requires an Android Wi-Fi IP.';
-            if (runnerType === 'redroid' && valueMissing('REDROID_DATA_DIR')) return 'Redroid data directory is required.';
-            if (runnerType === 'redroid' && valueMissing('REDROID_DATA_TAR')) return 'Redroid data archive is required.';
             if (runnerType === 'redroid') {
               const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
               if (sshEnabled && sshEnabled.checked && valueMissing('AVDCTL_SSH_TARGET')) return 'Remote avdctl requires an SSH target.';
@@ -1242,6 +1238,9 @@
       const parent = el.closest('[data-dev-type]');
       const parentHidden = parent && parent.style.display === 'none';
       setPanelVisible(el, !parentHidden && modes.includes(mode));
+    });
+    root.querySelectorAll('[data-runner-wifi-fields]').forEach(el => {
+      setPanelVisible(el, type === 'redroid' || (type === 'android_phone' && mode === 'wifi'));
     });
     root.querySelectorAll('[data-dev-pick]').forEach(p => {
       p.classList.toggle('on', p.dataset.devPick === type);

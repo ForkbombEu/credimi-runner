@@ -155,10 +155,9 @@
                   {{end}}
                 </div>
               </div>
-              <div data-dev-mode="wifi" style="grid-column:1/-1">
-                {{template "field" $.Field "CREDIMI_RUNNER_WIFI_IP"}}
-                {{template "field" $.Field "CREDIMI_RUNNER_WIFI_PORT"}}
-              </div>
+            </div>
+            <div data-runner-wifi-fields style="grid-column:1/-1">
+              <div class="field-row">{{template "field" $.Field "CREDIMI_RUNNER_WIFI_IP"}}{{template "field" $.Field "CREDIMI_RUNNER_WIFI_PORT"}}</div>
             </div>
             <div data-dev-type="android_phone android_emulator redroid" style="grid-column:1/-1">
               <details class="gear-panel">
@@ -225,7 +224,6 @@
             </div>
             <div data-dev-type="redroid" style="grid-column:1/-1">
               <div class="divline"></div>
-              <div class="field-row">{{template "field" $.Field "CREDIMI_RUNNER_WIFI_IP"}}{{template "field" $.Field "CREDIMI_RUNNER_WIFI_PORT"}}</div>
               <details class="gear-panel">
                 <summary>{{icon "gear"}} Redroid and avdctl defaults</summary>
                 <div class="subhead">Redroid volumes</div>
