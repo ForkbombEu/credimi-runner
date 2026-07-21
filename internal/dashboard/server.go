@@ -1553,7 +1553,7 @@ func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]strin
 	address := net.JoinHostPort(host, port)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	deadline, cancel := context.WithTimeout(ctx, controller.RunnerReadinessTimeout)
 	defer cancel()
 	var lastErr error
 	for {
