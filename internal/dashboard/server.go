@@ -56,6 +56,8 @@ type Server struct {
 	render                  *Renderer
 	composeDir              string
 	ctx                     context.Context
+	hubCtx                  context.Context
+	hubStartOnce            sync.Once
 	authToken               string
 	controllerID            string
 	controllerIdentityToken string
@@ -215,15 +217,28 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	checker := maintenance.Checker{}
 	srv.maintenanceChecker = checker.Check
 
-	ctx, cancel := context.WithCancel(parent)
-	go hub.Run(ctx, 2*time.Second)
+	hubCtx, cancel := context.WithCancel(parent)
+	srv.hubCtx = hubCtx
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	if bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
-		srv.bootstrapConfiguredRuntime()
+		if !srv.bootstrapConfiguredRuntime() {
+			srv.startHub()
+		}
+	} else {
+		srv.startHub()
 	}
 	return srv.auth(mux), cancel, nil
+}
+
+func (s *Server) startHub() {
+	if s.hub == nil || s.hubCtx == nil {
+		return
+	}
+	s.hubStartOnce.Do(func() {
+		go s.hub.Run(s.hubCtx, 2*time.Second)
+	})
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -721,7 +736,6 @@ func (s *Server) startStartupJob(values map[string]string) {
 			s.setStartupState(StartupNeedsAttention, "Setup saved, but runtime start failed: "+err.Error())
 			return err
 		}
-		s.hub.poll(context.Background())
 		s.mu.Lock()
 		s.pendingDiff = dashboardruntime.ConfigDiff{}
 		s.mu.Unlock()
@@ -730,20 +744,21 @@ func (s *Server) startStartupJob(values map[string]string) {
 	})
 }
 
-func (s *Server) bootstrapConfiguredRuntime() {
+func (s *Server) bootstrapConfiguredRuntime() bool {
 	if s.manager == nil {
-		return
+		return false
 	}
 	values := s.cfg.Snapshot()
 	status := s.manager.Status(context.Background())
 	if !status.RunnerRunning && !status.ComposeRunning {
 		s.startStartupJob(values)
-		return
+		return true
 	}
 	if follower, ok := s.manager.(interface{ StartLogFollower() }); ok {
 		follower.StartLogFollower()
 	}
 	s.startExistingRuntimeJob(values)
+	return true
 }
 
 func (s *Server) startExistingRuntimeJob(values map[string]string) {
@@ -779,7 +794,6 @@ func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, sta
 	s.lastRegistrationStatus = s.startup.Message
 	s.mu.Unlock()
 
-	s.hub.poll(context.Background())
 	if s.operations == nil {
 		s.operations = controller.NewCoordinator(s.ctx)
 	}
@@ -794,6 +808,7 @@ func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, sta
 		}
 		s.mu.Unlock()
 		close(done)
+		s.startHub()
 		return
 	}
 	go func() {
@@ -804,6 +819,7 @@ func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, sta
 			s.startup.running = false
 		}
 		s.mu.Unlock()
+		s.startHub()
 	}()
 }
 
@@ -816,7 +832,6 @@ func (s *Server) setStartupState(phase StartupPhase, message string) {
 	}
 	s.lastRegistrationStatus = message
 	s.mu.Unlock()
-	s.hub.poll(context.Background())
 }
 
 func (s *Server) appendStartupLog(message string) {
