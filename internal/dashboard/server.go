@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -57,6 +56,8 @@ type Server struct {
 	render                  *Renderer
 	composeDir              string
 	ctx                     context.Context
+	hubCtx                  context.Context
+	hubStartOnce            sync.Once
 	authToken               string
 	controllerID            string
 	controllerIdentityToken string
@@ -207,22 +208,37 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	if srv.operations == nil {
 		srv.operations = controller.NewCoordinator(parent)
 	}
-	srv.runnerReady = srv.waitForRunnerReady
+	srv.runnerReady = func(ctx context.Context, values map[string]string) error {
+		return controller.WaitForRunnerReady(ctx, dashboardruntime.Values(values))
+	}
 	srv.binaryPath = executable
 	srv.downloadBinary = maintenance.DownloadLatestBinary
 	srv.restartDashboard = scheduleDashboardRestart
 	checker := maintenance.Checker{}
 	srv.maintenanceChecker = checker.Check
 
-	ctx, cancel := context.WithCancel(parent)
-	go hub.Run(ctx, 2*time.Second)
+	hubCtx, cancel := context.WithCancel(parent)
+	srv.hubCtx = hubCtx
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	if bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
-		srv.bootstrapConfiguredRuntime()
+		if !srv.bootstrapConfiguredRuntime() {
+			srv.startHub()
+		}
+	} else {
+		srv.startHub()
 	}
 	return srv.auth(mux), cancel, nil
+}
+
+func (s *Server) startHub() {
+	if s.hub == nil || s.hubCtx == nil {
+		return
+	}
+	s.hubStartOnce.Do(func() {
+		go s.hub.Run(s.hubCtx, 2*time.Second)
+	})
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -720,7 +736,6 @@ func (s *Server) startStartupJob(values map[string]string) {
 			s.setStartupState(StartupNeedsAttention, "Setup saved, but runtime start failed: "+err.Error())
 			return err
 		}
-		s.hub.poll(context.Background())
 		s.mu.Lock()
 		s.pendingDiff = dashboardruntime.ConfigDiff{}
 		s.mu.Unlock()
@@ -729,20 +744,21 @@ func (s *Server) startStartupJob(values map[string]string) {
 	})
 }
 
-func (s *Server) bootstrapConfiguredRuntime() {
+func (s *Server) bootstrapConfiguredRuntime() bool {
 	if s.manager == nil {
-		return
+		return false
 	}
 	values := s.cfg.Snapshot()
 	status := s.manager.Status(context.Background())
 	if !status.RunnerRunning && !status.ComposeRunning {
 		s.startStartupJob(values)
-		return
+		return true
 	}
 	if follower, ok := s.manager.(interface{ StartLogFollower() }); ok {
 		follower.StartLogFollower()
 	}
 	s.startExistingRuntimeJob(values)
+	return true
 }
 
 func (s *Server) startExistingRuntimeJob(values map[string]string) {
@@ -778,7 +794,6 @@ func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, sta
 	s.lastRegistrationStatus = s.startup.Message
 	s.mu.Unlock()
 
-	s.hub.poll(context.Background())
 	if s.operations == nil {
 		s.operations = controller.NewCoordinator(s.ctx)
 	}
@@ -793,6 +808,7 @@ func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, sta
 		}
 		s.mu.Unlock()
 		close(done)
+		s.startHub()
 		return
 	}
 	go func() {
@@ -803,6 +819,7 @@ func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, sta
 			s.startup.running = false
 		}
 		s.mu.Unlock()
+		s.startHub()
 	}()
 }
 
@@ -815,7 +832,6 @@ func (s *Server) setStartupState(phase StartupPhase, message string) {
 	}
 	s.lastRegistrationStatus = message
 	s.mu.Unlock()
-	s.hub.poll(context.Background())
 }
 
 func (s *Server) appendStartupLog(message string) {
@@ -1536,81 +1552,6 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 	s.lastRegistrationStatus = "Credimi runner registration updated."
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *Server) waitForRunnerReady(ctx context.Context, values map[string]string) error {
-	if !dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
-		return nil
-	}
-	host := strings.TrimSpace(values["RUNNER_HOST"])
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	port := strings.TrimSpace(values["RUNNER_PORT"])
-	if port == "" {
-		port = dashboardruntime.DefaultRunnerPort
-	}
-	address := net.JoinHostPort(host, port)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	deadline, cancel := context.WithTimeout(ctx, controller.RunnerReadinessTimeout)
-	defer cancel()
-	var lastErr error
-	for {
-		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
-		if err == nil {
-			_ = conn.Close()
-			if healthErr := waitForRunnerHealth(deadline, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
-				_, readinessErr := controller.ValidateReadiness(deadline, http.DefaultClient, "http://"+address, dashboardruntime.Values(values))
-				if readinessErr == nil {
-					return nil
-				}
-				lastErr = readinessErr
-			} else {
-				lastErr = healthErr
-			}
-		} else {
-			lastErr = err
-		}
-		select {
-		case <-deadline.Done():
-			return controller.ReadinessFailure(dashboardruntime.Values(values), address, lastErr, deadline.Err())
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitForRunnerHealth(ctx context.Context, host, port, serial string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
-	if err != nil {
-		return err
-	}
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("runner health returned %s", response.Status)
-	}
-	if serial == "" {
-		return nil
-	}
-	var payload struct {
-		Devices []struct {
-			Serial string `json:"serial"`
-			State  string `json:"state"`
-		} `json:"devices"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return fmt.Errorf("decode runner health: %w", err)
-	}
-	for _, device := range payload.Devices {
-		if strings.TrimSpace(device.Serial) == serial && strings.TrimSpace(device.State) == "device" {
-			return nil
-		}
-	}
-	return fmt.Errorf("configured device %q is not ready", serial)
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {

@@ -16,7 +16,7 @@ import (
 
 const (
 	quickTunnelLogTail     = 1000
-	RunnerReadinessTimeout = time.Minute
+	RunnerReadinessTimeout = 2 * time.Minute
 )
 
 type runtimeProgressStarter interface {
@@ -138,11 +138,21 @@ func (l RuntimeLifecycle) waitReady(ctx context.Context) error {
 	if l.WaitReady != nil {
 		return l.WaitReady(ctx, l.Values)
 	}
-	host := strings.TrimSpace(l.Values["RUNNER_HOST"])
+	return waitForRunnerReady(ctx, l.httpClient(), l.Values)
+}
+
+// WaitForRunnerReady verifies the runner listener, health endpoint, and
+// readiness identity. It is shared by dashboard and direct CLI control.
+func WaitForRunnerReady(ctx context.Context, values dashboardruntime.Values) error {
+	return waitForRunnerReady(ctx, http.DefaultClient, values)
+}
+
+func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboardruntime.Values) error {
+	host := strings.TrimSpace(values["RUNNER_HOST"])
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
-	port := strings.TrimSpace(l.Values["RUNNER_PORT"])
+	port := strings.TrimSpace(values["RUNNER_PORT"])
 	if port == "" {
 		port = dashboardruntime.DefaultRunnerPort
 	}
@@ -156,8 +166,8 @@ func (l RuntimeLifecycle) waitReady(ctx context.Context) error {
 		connection, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = connection.Close()
-			if healthErr := runnerHealth(deadline, l.httpClient(), host, port, strings.TrimSpace(l.Values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
-				if _, readyErr := ValidateReadiness(deadline, l.httpClient(), "http://"+address, l.Values); readyErr == nil {
+			if healthErr := runnerHealth(deadline, client, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
+				if _, readyErr := ValidateReadiness(deadline, client, "http://"+address, values); readyErr == nil {
 					return nil
 				} else {
 					lastErr = readyErr
@@ -170,7 +180,7 @@ func (l RuntimeLifecycle) waitReady(ctx context.Context) error {
 		}
 		select {
 		case <-deadline.Done():
-			return ReadinessFailure(l.Values, address, lastErr, deadline.Err())
+			return ReadinessFailure(values, address, lastErr, deadline.Err())
 		case <-ticker.C:
 		}
 	}
