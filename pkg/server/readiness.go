@@ -31,16 +31,13 @@ func NewReadinessService() *ReadinessService {
 }
 
 func (s *ReadinessService) Check() Readiness {
-	env := s.Environment
-	if env == nil {
-		env = os.Getenv
-	}
+	env := s.environment
 	serial := strings.TrimSpace(env("ANDROID_SERIAL"))
 	if serial == "" {
 		serial = strings.TrimSpace(env("CREDIMI_RUNNER_SERIAL"))
 	}
 	state := ""
-	if serial != "" && s.DeviceState != nil {
+	if s.deviceReadinessRequired() && serial != "" && s.DeviceState != nil {
 		state = s.DeviceState(serial)
 	}
 	return Readiness{Service: "credimi-runner", RunnerID: strings.TrimSpace(env("CREDIMI_RUNNER_ID")), BootID: strings.TrimSpace(env("CREDIMI_RUNNER_BOOT_ID")), Version: defaultReadinessVersion(env("CREDIMI_RUNNER_VERSION")), DeviceSerial: serial, DeviceState: state}
@@ -49,10 +46,21 @@ func (s *ReadinessService) Check() Readiness {
 func (s *ReadinessService) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	ready := s.Check()
 	w.Header().Set("Content-Type", "application/json")
-	if ready.RunnerID == "" || ready.BootID == "" || (ready.DeviceSerial != "" && ready.DeviceState != "device") {
+	if ready.RunnerID == "" || ready.BootID == "" || (s.deviceReadinessRequired() && ready.DeviceSerial != "" && ready.DeviceState != "device") {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(w).Encode(ready)
+}
+
+func (s *ReadinessService) deviceReadinessRequired() bool {
+	return strings.TrimSpace(s.environment("CREDIMI_CONTAINER_MODE")) != "no_device"
+}
+
+func (s *ReadinessService) environment(key string) string {
+	if s.Environment != nil {
+		return s.Environment(key)
+	}
+	return os.Getenv(key)
 }
 
 func adbDeviceState(serial string) string {

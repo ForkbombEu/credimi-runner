@@ -48,6 +48,21 @@ func TestValidateReadinessClassifiesDeviceFailures(t *testing.T) {
 	}
 }
 
+func TestValidateReadinessIgnoresDeferredManagedDevice(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","device_serial":"192.168.0.241:5555","device_state":"missing"}`))
+	}))
+	defer server.Close()
+	_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":     "runner-1",
+		"CREDIMI_RUNNER_SERIAL": "192.168.0.241:5555",
+		"CREDIMI_RUNNER_TYPE":   "redroid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestValidateReadinessRejectsMismatchedOrUnavailableRunner(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

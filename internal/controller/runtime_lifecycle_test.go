@@ -274,3 +274,30 @@ func TestRunnerHealthValidatesConfiguredDevice(t *testing.T) {
 		t.Fatal("runnerHealth() accepted a missing configured device")
 	}
 }
+
+func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+		case "/readyz":
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","device_serial":"192.168.0.241:5555","device_state":"missing"}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer runner.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForRunnerReady(context.Background(), runner.Client(), dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":     "runner-1",
+		"CREDIMI_RUNNER_SERIAL": "192.168.0.241:5555",
+		"CREDIMI_RUNNER_TYPE":   "redroid",
+		"RUNNER_HOST":           host,
+		"RUNNER_PORT":           port,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

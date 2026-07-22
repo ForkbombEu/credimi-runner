@@ -205,14 +205,23 @@ func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool 
 	if err != nil {
 		return false
 	}
-	plan := BuildRuntimePlan("", normalized)
-	if plan.Backend == DefaultHostBackend && plan.ServiceMode == "manual" {
-		return true
-	}
-	// Manual container runners publish their API on the local host. Registration
-	// must wait for that API instead of treating `docker compose up -d` as
-	// readiness.
+	// Container runners publish their API on the local host. Registration must
+	// wait for that API instead of treating `docker compose up -d` as readiness.
 	return RunnerAPIReachableFromHost(normalized, goos)
+}
+
+// DeviceReadinessRequired reports whether startup may require an ADB device to
+// exist now. Managed runtimes such as Redroid create their Android container
+// per workflow, after the runner process has started.
+func DeviceReadinessRequired(values Values, goos string) bool {
+	if strings.TrimSpace(goos) == "" {
+		goos = goruntime.GOOS
+	}
+	normalized, err := NormalizeValues(values, goos)
+	if err != nil {
+		return false
+	}
+	return normalized["CREDIMI_CONTAINER_MODE"] != "no_device"
 }
 
 func DiffValues(oldValues, newValues Values) ConfigDiff {

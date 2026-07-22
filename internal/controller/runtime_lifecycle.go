@@ -153,6 +153,11 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		port = dashboardruntime.DefaultRunnerPort
 	}
 	address := net.JoinHostPort(host, port)
+	deviceRequired := dashboardruntime.DeviceReadinessRequired(values, "")
+	serial := ""
+	if deviceRequired {
+		serial = strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
+	}
 	deadline, cancel := context.WithTimeout(ctx, RunnerReadinessTimeout)
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -162,7 +167,7 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		connection, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = connection.Close()
-			if healthErr := runnerHealth(deadline, client, host, port, strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])); healthErr == nil {
+			if healthErr := runnerHealth(deadline, client, host, port, serial); healthErr == nil {
 				if _, readyErr := ValidateReadiness(deadline, client, "http://"+address, values); readyErr == nil {
 					return nil
 				} else {
