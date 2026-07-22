@@ -282,6 +282,14 @@ if [[ "$host_adb" == true ]]; then
     echo "Warning: --host-adb is set but ADB_SERVER_SOCKET is not. The client may still use the container server." >&2
   fi
   echo "Host ADB mode enabled. Skipping adb start-server."
+
+  # The host ADB server is an external dependency. Do not let an unavailable
+  # or wedged server prevent the runner HTTP listener from starting: /health
+  # and /readyz report the real device state after the service is available.
+  if [[ "$no_wait" == false ]]; then
+    echo "Starting credimi-runner; device readiness will be checked by its health endpoint."
+    exec credimi-runner serve --host 0.0.0.0 --port "$service_port"
+  fi
 else
   echo "Starting adb server..."
   adb start-server

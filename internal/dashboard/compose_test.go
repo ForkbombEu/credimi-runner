@@ -127,9 +127,9 @@ func TestWriteComposeFile(t *testing.T) {
 			contains: []string{"--no-device", "runner_host:", "tunnel_named:"},
 		},
 		{
-			name:     "usb runner uses host adb",
+			name:     "usb runner uses the host adb namespace",
 			vals:     map[string]string{"CREDIMI_RUNNER_TYPE": "android_phone"},
-			contains: []string{"--host-adb", "--usb", `ADB_SERVER_SOCKET: "${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}"`},
+			contains: []string{"--host-adb", "--usb", "network_mode: host"},
 		},
 	}
 

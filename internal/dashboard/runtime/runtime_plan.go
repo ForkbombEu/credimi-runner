@@ -194,10 +194,7 @@ func RunnerAPIReachableFromHost(values Values, goos string) bool {
 	if plan.Backend == DefaultHostBackend {
 		return true
 	}
-	if plan.Backend != DefaultContainerBackend || goos != "linux" {
-		return false
-	}
-	return plan.ServiceMode == "manual"
+	return plan.Backend == DefaultContainerBackend
 }
 
 func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool {
