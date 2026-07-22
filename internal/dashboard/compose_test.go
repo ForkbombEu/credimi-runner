@@ -207,8 +207,12 @@ func TestComposeNetworkHelpers(t *testing.T) {
 
 	manual := map[string]string{"CREDIMI_SERVICE_MODE": "manual"}
 	block := runnerConnectivityBlock(manual)
-	if !strings.Contains(block, "ports:") || !strings.Contains(block, "127.0.0.1") {
+	if !strings.Contains(block, "ports:") || strings.Contains(block, "127.0.0.1") {
 		t.Fatalf("expected published bridge connectivity block, got %q", block)
+	}
+	auto := runnerConnectivityBlock(map[string]string{})
+	if !strings.Contains(auto, "127.0.0.1") {
+		t.Fatalf("expected loopback-only automatic connectivity block, got %q", auto)
 	}
 
 	managed := map[string]string{"CREDIMI_SERVICE_MODE": "cloudflare-managed"}

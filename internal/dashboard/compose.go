@@ -41,9 +41,12 @@ func runnerConnectivityBlock(vals map[string]string) string {
 	if valDefault(vals, "CREDIMI_SERVICE_MODE", "auto") == "manual" {
 		block += `
     ports:
-      - "127.0.0.1:${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}:${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}"`
+	      - "${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}:${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}"`
+		return block
 	}
-	return block
+	return block + `
+    ports:
+      - "127.0.0.1:${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}:${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}"`
 }
 
 func caddyNetworkBlock(vals map[string]string) string {

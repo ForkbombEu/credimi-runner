@@ -63,9 +63,29 @@ func TestComposeParityCases(t *testing.T) {
 			contains: []string{"--no-device", "${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
-			name:     "redroid publishes local runner API",
+			name:     "redroid auto publishes local runner API",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid"},
 			contains: []string{"--no-device", `- "127.0.0.1:${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
+		},
+		{
+			name:     "manual redroid publishes runner API on all host interfaces",
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_SERVICE_MODE": "manual"},
+			contains: []string{"--no-device", `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
+		},
+		{
+			name:     "manual emulator publishes runner API on all host interfaces",
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "CREDIMI_SERVICE_MODE": "manual"},
+			contains: []string{"--emulator", `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
+		},
+		{
+			name:     "manual wifi publishes runner API on all host interfaces",
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10", "CREDIMI_SERVICE_MODE": "manual"},
+			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
+		},
+		{
+			name:     "manual usb uses host network",
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"},
+			contains: []string{"--host-adb", "--usb", "network_mode: host"},
 		},
 		{
 			name:     "emulator custom runner port",
