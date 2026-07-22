@@ -51,7 +51,7 @@ func TestReadinessFailureExplainsUnauthorizedDevice(t *testing.T) {
 	}
 }
 
-func TestRuntimeLifecycleStartStopsRuntimeWhenReadinessFails(t *testing.T) {
+func TestRuntimeLifecycleStartKeepsRuntimeWhenReadinessFails(t *testing.T) {
 	manager := &lifecycleManager{}
 	lifecycle := RuntimeLifecycle{
 		Manager: manager,
@@ -71,8 +71,11 @@ func TestRuntimeLifecycleStartStopsRuntimeWhenReadinessFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "runner listener did not open") {
 		t.Fatalf("Start() error = %v", err)
 	}
-	if manager.starts != 1 || manager.stops != 1 || manager.status.RunnerRunning {
-		t.Fatalf("failed start left manager in state %#v", manager)
+	if manager.starts != 1 || manager.stops != 0 || !manager.status.RunnerRunning {
+		t.Fatalf("failed start should retain manager runtime state %#v", manager)
+	}
+	if !strings.Contains(err.Error(), "runtime remains running for inspection") {
+		t.Fatalf("Start() error = %v", err)
 	}
 }
 

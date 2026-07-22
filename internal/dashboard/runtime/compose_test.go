@@ -38,9 +38,9 @@ func TestComposeParityCases(t *testing.T) {
 		contains []string
 	}{
 		{
-			name:     "usb container",
+			name:     "linux usb container uses host adb namespace",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone"},
-			contains: []string{"pull_policy: always", "--host-adb", "--usb", `ADB_SERVER_SOCKET: "${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}"`, "network_mode: host", `command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://127.0.0.1:80}`},
+			contains: []string{"pull_policy: always", "--host-adb", "--usb", "network_mode: host", `caddy.reverse_proxy: "host.docker.internal:${RUNNER_PORT:-8050}"`},
 		},
 		{
 			name:     "local runner image",
@@ -50,7 +50,7 @@ func TestComposeParityCases(t *testing.T) {
 		{
 			name:     "wifi container",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10"},
-			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, "network_mode: host"},
+			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
 			name:     "emulator",
@@ -61,6 +61,11 @@ func TestComposeParityCases(t *testing.T) {
 			name:     "redroid known hosts",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid", "AVDCTL_SSH_TARGET": "box", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "/tmp/known_hosts"},
 			contains: []string{"--no-device", "${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
+		},
+		{
+			name:     "redroid publishes local runner API",
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid"},
+			contains: []string{"--no-device", `- "127.0.0.1:${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
 		},
 		{
 			name:     "emulator custom runner port",
@@ -102,10 +107,10 @@ func TestRunnerAPIReachableFromHost(t *testing.T) {
 		want bool
 	}{
 		{"host backend", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
-		{"linux phone auto host network", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
-		{"linux emulator bridge", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", false},
-		{"linux manual container host network", Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "CREDIMI_SERVICE_MODE": "manual"}, "linux", true},
-		{"darwin container not host reachable", Values{"CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_RUNNER_TYPE": "android_phone"}, "darwin", false},
+		{"linux phone host adb", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
+		{"linux emulator bridge", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", true},
+		{"linux manual container", Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "CREDIMI_SERVICE_MODE": "manual"}, "linux", true},
+		{"darwin container published locally", Values{"CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_RUNNER_TYPE": "android_phone"}, "darwin", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -128,7 +133,7 @@ func TestRunnerReadinessRequiredBeforeRegistration(t *testing.T) {
 		{"host backend manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual", "CREDIMI_RUNNER_TYPE": "ios_simulator"}, "darwin", true},
 		{"linux phone container auto", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
 		{"linux phone container manual", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"}, "linux", true},
-		{"linux emulator container auto", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", false},
+		{"linux emulator container auto", Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}, "linux", true},
 		{"darwin default host auto", Values{}, "darwin", true},
 	}
 	for _, tt := range tests {

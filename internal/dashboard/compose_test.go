@@ -108,13 +108,13 @@ func TestWriteComposeFile(t *testing.T) {
 		contains []string
 	}{
 		{
-			name: "wifi runner uses host network and wifi command",
+			name: "wifi runner uses bridge network and wifi command",
 			vals: map[string]string{
 				"CREDIMI_RUNNER_TYPE":        "android_phone",
 				"CREDIMI_RUNNER_DEVICE_MODE": "wifi",
 				"CREDIMI_RUNNER_WIFI_IP":     "192.168.1.20",
 			},
-			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, "network_mode: host"},
+			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
 			name:     "emulator runner mounts avd paths",
@@ -127,9 +127,9 @@ func TestWriteComposeFile(t *testing.T) {
 			contains: []string{"--no-device", "runner_host:", "tunnel_named:"},
 		},
 		{
-			name:     "usb runner uses host adb",
+			name:     "usb runner uses the host adb namespace",
 			vals:     map[string]string{"CREDIMI_RUNNER_TYPE": "android_phone"},
-			contains: []string{"--host-adb", "--usb", `ADB_SERVER_SOCKET: "${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}"`},
+			contains: []string{"--host-adb", "--usb", "network_mode: host"},
 		},
 	}
 
@@ -195,28 +195,20 @@ func TestComposeServices(t *testing.T) {
 
 func TestComposeNetworkHelpers(t *testing.T) {
 	autoUSB := map[string]string{"CREDIMI_CONTAINER_MODE": "usb"}
-	if runtime.GOOS == "linux" {
-		if !hostNetworkForTunnel(autoUSB) {
-			t.Fatal("expected host network for linux container auto usb")
-		}
-		if got := tunnelURL(autoUSB); got != "http://127.0.0.1:80" {
-			t.Fatalf("tunnelURL = %q", got)
-		}
-		if !strings.Contains(caddyNetworkBlock(autoUSB), "network_mode: host") {
-			t.Fatal("expected caddy host network block")
-		}
-	} else if hostNetworkForTunnel(autoUSB) {
-		t.Fatal("did not expect host network off linux")
+	if hostNetworkForTunnel(autoUSB) {
+		t.Fatal("container tunnel should not use host networking")
+	}
+	if got := tunnelURL(autoUSB); got != "http://caddy:80" {
+		t.Fatalf("tunnelURL = %q", got)
+	}
+	if !strings.Contains(caddyNetworkBlock(autoUSB), "networks:") {
+		t.Fatal("expected caddy bridge network block")
 	}
 
 	manual := map[string]string{"CREDIMI_SERVICE_MODE": "manual"}
 	block := runnerConnectivityBlock(manual)
-	if runtime.GOOS == "linux" {
-		if block != "    network_mode: host" {
-			t.Fatalf("runnerConnectivityBlock = %q", block)
-		}
-	} else if !strings.Contains(block, "networks:") {
-		t.Fatalf("expected bridged connectivity block, got %q", block)
+	if !strings.Contains(block, "ports:") || !strings.Contains(block, "127.0.0.1") {
+		t.Fatalf("expected published bridge connectivity block, got %q", block)
 	}
 
 	managed := map[string]string{"CREDIMI_SERVICE_MODE": "cloudflare-managed"}

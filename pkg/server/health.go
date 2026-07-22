@@ -5,26 +5,29 @@ import (
 	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 
 	genhealth "github.com/forkbombeu/credimi-runner/pkg/gen/health"
 )
 
 type HealthService struct {
 	adbPath string
-	runADB  func(cmd string, args ...string) ([]byte, error)
+	runADB  func(context.Context, string, ...string) ([]byte, error)
 }
 
 func NewHealthService() *HealthService {
 	return &HealthService{
 		adbPath: "adb",
-		runADB: func(cmd string, args ...string) ([]byte, error) {
-			return exec.Command(cmd, args...).Output()
+		runADB: func(ctx context.Context, cmd string, args ...string) ([]byte, error) {
+			return exec.CommandContext(ctx, cmd, args...).Output()
 		},
 	}
 }
 
 func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, error) {
-	devices, err := s.getDevicesWithDetails()
+	adbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	devices, err := s.getDevicesWithDetails(adbCtx)
 	if err != nil {
 		return nil, &genhealth.APIError{
 			Name:    "service_unavailable",
@@ -41,8 +44,8 @@ func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, erro
 	}, nil
 }
 
-func (s *HealthService) getDevicesWithDetails() ([]*genhealth.DeviceInfo, error) {
-	output, err := s.runADB(s.adbPath, "devices", "-l")
+func (s *HealthService) getDevicesWithDetails(ctx context.Context) ([]*genhealth.DeviceInfo, error) {
+	output, err := s.runADB(ctx, s.adbPath, "devices", "-l")
 	if err != nil {
 		return nil, err
 	}

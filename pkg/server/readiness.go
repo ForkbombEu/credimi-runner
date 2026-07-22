@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Readiness describes this particular runner process. Unlike /health, this
@@ -54,7 +56,9 @@ func (s *ReadinessService) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 }
 
 func adbDeviceState(serial string) string {
-	out, err := exec.Command("adb", "-s", serial, "get-state").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "adb", "-s", serial, "get-state").Output()
 	if err != nil {
 		return "missing"
 	}

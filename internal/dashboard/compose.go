@@ -36,11 +36,14 @@ func ComposeServices(vals map[string]string) []string {
 }
 
 func runnerConnectivityBlock(vals map[string]string) string {
-	if valDefault(vals, "CREDIMI_SERVICE_MODE", "auto") == "manual" && currentGOOS() == "linux" {
-		return "    network_mode: host"
-	}
-	return `    expose:
+	block := `    expose:
       - "${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}"`
+	if valDefault(vals, "CREDIMI_SERVICE_MODE", "auto") == "manual" {
+		block += `
+    ports:
+      - "127.0.0.1:${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}:${RUNNER_PORT:-` + dashboardruntime.DefaultRunnerPort + `}"`
+	}
+	return block
 }
 
 func caddyNetworkBlock(vals map[string]string) string {
@@ -65,9 +68,7 @@ func tunnelURL(vals map[string]string) string {
 }
 
 func hostNetworkForTunnel(vals map[string]string) bool {
-	return currentGOOS() == "linux" &&
-		valDefault(vals, "CREDIMI_RUNNER_BACKEND", dashboardruntime.DefaultContainerBackend) == dashboardruntime.DefaultContainerBackend &&
-		valDefault(vals, "CREDIMI_SERVICE_MODE", "auto") == "auto"
+	return false
 }
 
 func val(vals map[string]string, key string) string {

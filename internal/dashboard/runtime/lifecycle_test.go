@@ -162,6 +162,67 @@ func TestLifecycleManagerLifecycleLogCanBeEmittedAndClosed(t *testing.T) {
 	}
 }
 
+func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "123-verbose.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(verboseLogPathEnv, path)
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, runner)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(raw)
+	for _, want := range []string{"runtime start requested", "docker: ok"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("verbose log missing %q:\n%s", want, output)
+		}
+	}
+	if len(runner.starts) == 0 || runner.starts[len(runner.starts)-1].Output == nil {
+		t.Fatalf("container log follower should write verbose output: %#v", runner.starts)
+	}
+	if got := strings.Join(runner.starts[len(runner.starts)-1].Args, " "); !strings.Contains(got, "--timestamps") {
+		t.Fatalf("verbose container log follower should request timestamps: %s", got)
+	}
+}
+
+func TestLifecycleManagerStartLogFollower(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, runner)
+	manager.StartLogFollower()
+	if len(runner.starts) != 1 {
+		t.Fatalf("log follower starts = %#v", runner.starts)
+	}
+	if got := strings.Join(runner.starts[0].Args, " "); !strings.Contains(got, "logs -f --tail 80 runner") {
+		t.Fatalf("log follower args = %s", got)
+	}
+}
+
+func TestLifecycleManagerStopLogFollowerWithoutProcess(t *testing.T) {
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{}, &fakeRunner{})
+	manager.logCmd = &exec.Cmd{}
+	manager.logDone = make(chan struct{})
+	manager.stopComposeLogFollowerLocked()
+	if manager.logCmd != nil || manager.logDone != nil {
+		t.Fatalf("log follower was not cleared: %#v", manager)
+	}
+}
+
 func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{

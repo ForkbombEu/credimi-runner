@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	stdlog "log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -100,6 +101,37 @@ var serverCmd = &cobra.Command{
 		store := server.NewProcessStore()
 		instance := utils.LoadInstance()
 		srv := server.NewRunnerService(store, instance)
+		lifecycleCfg := server.LoadRunnerLifecycleConfig(instance)
+		lifecycleClient := server.NewRunnerLifecycleClient(lifecycleCfg, http.DefaultClient, store)
+
+		// Bind before performing remote startup work. Worker recovery and the
+		// lifecycle resume request depend on external services and must not
+		// prevent the local runner API from becoming reachable.
+		handler := observability.WrapHandler(server.NewHTTPHandler(serveCtx, srv, debug), "credimi-runner.http")
+		addr := fmt.Sprintf("%s:%d", host, port)
+		httpSrv := &http.Server{
+			Addr:              addr,
+			Handler:           handler,
+			ReadHeaderTimeout: 60 * time.Second,
+		}
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			serveSpan.RecordError(err)
+			serveSpan.SetStatus(codes.Error, "http server failed")
+			return err
+		}
+		errc := make(chan error, 1)
+		go func() {
+			cluelog.Printf(serveCtx, "HTTP server listening on %q", addr)
+			observability.Info(serveCtx, "credimi-runner.lifecycle", "http server listening",
+				observability.String("address", addr),
+			)
+			err := httpSrv.Serve(listener)
+			if err != nil && err != http.ErrServerClosed {
+				errc <- err
+			}
+		}()
+		serverSignalReadyHook()
 
 		if err := srv.StartExistingWorkers(serveCtx); err != nil {
 			serveSpan.RecordError(err)
@@ -108,8 +140,6 @@ var serverCmd = &cobra.Command{
 			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
 		}
 
-		lifecycleCfg := server.LoadRunnerLifecycleConfig(instance)
-		lifecycleClient := server.NewRunnerLifecycleClient(lifecycleCfg, http.DefaultClient, store)
 		if err := lifecycleClient.Resume(serveCtx, "runner_startup"); err != nil {
 			cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
 			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
@@ -120,30 +150,9 @@ var serverCmd = &cobra.Command{
 		stopHeartbeatLoop := lifecycleClient.StartHeartbeatLoop(heartbeatCtx)
 		defer stopHeartbeatLoop()
 
-		// Build HTTP handler (Goa mux + middleware + debug endpoints)
-		handler := observability.WrapHandler(server.NewHTTPHandler(serveCtx, srv, debug), "credimi-runner.http")
-
-		addr := fmt.Sprintf("%s:%d", host, port)
-		httpSrv := &http.Server{
-			Addr:              addr,
-			Handler:           handler,
-			ReadHeaderTimeout: 60 * time.Second,
-		}
-
-		// Run server
-		errc := make(chan error, 1)
-		go func() {
-			cluelog.Printf(serveCtx, "HTTP server listening on %q", addr)
-			observability.Info(serveCtx, "credimi-runner.lifecycle", "http server listening",
-				observability.String("address", addr),
-			)
-			errc <- httpSrv.ListenAndServe()
-		}()
-
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigc)
-		serverSignalReadyHook()
 
 		select {
 		case sig := <-sigc:

@@ -141,13 +141,13 @@ if find_in_calls "adb start-server"; then
   exit 1
 fi
 
-echo "Testing: --serial waits for the exact configured device"
+echo "Testing: host ADB starts the runner before device verification"
 reset_calls
 run_ok --host-adb --usb --serial usb-device
-if find_in_calls "adb -s usb-device get-state"; then
-  echo "PASS: exact serial readiness check invoked"
+if find_in_calls "credimi-runner serve"; then
+  echo "PASS: credimi-runner starts with host ADB"
 else
-  echo "FAIL: exact serial readiness check not invoked" >&2
+  echo "FAIL: credimi-runner did not start with host ADB" >&2
   exit 1
 fi
 

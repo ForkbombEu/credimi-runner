@@ -35,7 +35,7 @@ func ComposeYAML(values Values, goos string) (string, error) {
 
 	var builder strings.Builder
 	builder.WriteString("services:\n")
-	writeRunnerService(&builder, normalized)
+	writeRunnerService(&builder, normalized, goos)
 	writeRunnerHostService(&builder)
 	writeCaddyService(&builder, normalized, goos)
 	writeTunnelService(&builder, normalized, goos)
@@ -53,11 +53,11 @@ volumes:
 	return builder.String(), nil
 }
 
-func writeRunnerService(builder *strings.Builder, values Values) {
+func writeRunnerService(builder *strings.Builder, values Values, goos string) {
 	mode := values["CREDIMI_CONTAINER_MODE"]
 	image := defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
 	pullPolicy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
-	networkMode := runnerNetworkMode(values, runtime.GOOS)
+	networkMode := runnerNetworkMode(values, goos)
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", image, pullPolicy)
 	switch mode {
 	case "wifi":
@@ -71,6 +71,9 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 	}
 	builder.WriteString("    env_file:\n      - .env\n")
 	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n      ANDROID_SERIAL: \"${CREDIMI_RUNNER_SERIAL:-}\"\n", DefaultRunnerPort)
+	if mode == "usb" && networkMode != "host" {
+		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
+	}
 	switch mode {
 	case "emulator":
 		builder.WriteString("      BASE_NAME: \"${BASE_NAME:-credimi}\"\n")
@@ -82,19 +85,23 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 			builder.WriteString("    volumes:\n      - ${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro\n")
 		}
 	case "usb":
-		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}\"\n")
 		builder.WriteString("    volumes:\n      - adbkeys:/root/.android\n")
+		if goos == "linux" && networkMode != "host" {
+			builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n")
+		}
 	}
 	if networkMode == "host" {
 		builder.WriteString("    network_mode: host\n")
 	} else {
 		builder.WriteString("    expose:\n")
 		fmt.Fprintf(builder, "      - \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+		builder.WriteString("    ports:\n")
+		fmt.Fprintf(builder, "      - \"127.0.0.1:${RUNNER_PORT:-%s}:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort, DefaultRunnerPort)
 	}
 	builder.WriteString("    labels:\n      caddy: \"${RUNNER_CADDY_SITE:-:80}\"\n")
 	writeControllerLabels(builder)
 	if networkMode == "host" {
-		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"127.0.0.1:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"host.docker.internal:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	} else {
 		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"{{upstreams ${RUNNER_PORT:-%s}}}\"\n", DefaultRunnerPort)
 	}
@@ -104,12 +111,12 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 }
 
 func runnerNetworkMode(values Values, goos string) string {
-	if goos == "linux" && values["CREDIMI_RUNNER_BACKEND"] == DefaultContainerBackend {
-		serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
-		mode := strings.TrimSpace(values["CREDIMI_CONTAINER_MODE"])
-		if serviceMode == "manual" || (serviceMode == "auto" && (mode == "usb" || mode == "wifi")) {
-			return "host"
-		}
+	// A host ADB server normally listens only on 127.0.0.1. On Linux, a
+	// bridge-network container reaches the host through its gateway instead,
+	// where that loopback-only server is unavailable. Keep USB host-ADB in the
+	// host network namespace so it uses the same local ADB socket as the host.
+	if goos == "linux" && values["CREDIMI_CONTAINER_MODE"] == "usb" {
+		return "host"
 	}
 	return "bridge"
 }
@@ -152,10 +159,6 @@ func writeCaddyService(builder *strings.Builder, values Values, goos string) {
       io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
       io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
 `)
-	if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" && runnerNetworkMode(values, goos) == "host" {
-		builder.WriteString("    network_mode: host\n")
-		return
-	}
 	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n")
 }
 
@@ -165,17 +168,9 @@ func writeTunnelService(builder *strings.Builder, values Values, goos string) {
     image: cloudflare/cloudflared:latest
     restart: "no"
     command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-`)
-	if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" && runnerNetworkMode(values, goos) == "host" {
-		builder.WriteString("http://127.0.0.1:80")
-	} else {
-		builder.WriteString("http://caddy:80")
-	}
+	builder.WriteString("http://caddy:80")
 	builder.WriteString("}\n")
 	builder.WriteString("    labels:\n      io.credimi.runner.managed: \"true\"\n      io.credimi.runner.project: \"${CREDIMI_COMPOSE_PROJECT:-credimi-runner}\"\n      io.credimi.runner.config-fingerprint: \"${CREDIMI_CONFIG_FINGERPRINT:-unknown}\"\n")
-	if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "auto" && runnerNetworkMode(values, goos) == "host" {
-		builder.WriteString("    network_mode: host\n")
-		return
-	}
 	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    depends_on:\n      - caddy\n    networks:\n      - ingress\n")
 }
 

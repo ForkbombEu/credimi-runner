@@ -7,6 +7,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var debugVerbose bool
+
 var rootCmd = &cobra.Command{
 	Use:           "credimi-runner",
 	Short:         "Credimi mobile runner",
@@ -20,4 +22,8 @@ func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		stdlog.Fatal(err)
 	}
+}
+
+func init() {
+	rootCmd.PersistentFlags().BoolVar(&debugVerbose, "debug-verbose", false, "Write detailed dashboard, runtime, and container diagnostics to a private log file")
 }

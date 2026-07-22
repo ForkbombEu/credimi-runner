@@ -175,8 +175,29 @@ func TestNewHandlerWithManagerWrapper(t *testing.T) {
 	}
 }
 
+func bootstrapReadyRunner(t *testing.T) (string, string) {
+	t.Helper()
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+		case "/readyz":
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	t.Cleanup(runner.Close)
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return host, port
+}
+
 func TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime(t *testing.T) {
 	dir := t.TempDir()
+	runnerHost, runnerPort := bootstrapReadyRunner(t)
 	registered := make(chan struct{}, 1)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/mobile-runner" {
@@ -187,7 +208,7 @@ func TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer api.Close()
-	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\n"
+	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\nRUNNER_HOST=" + runnerHost + "\nRUNNER_PORT=" + runnerPort + "\n"
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +244,7 @@ func TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime
 
 func TestBootstrapConfiguredRuntimeRestoresAutoTunnelURL(t *testing.T) {
 	dir := t.TempDir()
+	runnerHost, runnerPort := bootstrapReadyRunner(t)
 	registered := make(chan dashboardruntime.RegisterRunnerRequest, 1)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/mobile-runner" {
@@ -237,7 +259,7 @@ func TestBootstrapConfiguredRuntimeRestoresAutoTunnelURL(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer api.Close()
-	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\n"
+	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\nRUNNER_HOST=" + runnerHost + "\nRUNNER_PORT=" + runnerPort + "\n"
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}

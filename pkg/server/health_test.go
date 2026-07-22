@@ -13,7 +13,7 @@ import (
 
 func newTestHealthService(output string, err error) *HealthService {
 	svc := &HealthService{
-		runADB: func(cmd string, args ...string) ([]byte, error) {
+		runADB: func(_ context.Context, cmd string, args ...string) ([]byte, error) {
 			return []byte(output), err
 		},
 	}
@@ -25,7 +25,7 @@ func TestNewHealthServiceDefaults(t *testing.T) {
 	if service.adbPath != "adb" || service.runADB == nil {
 		t.Fatalf("service = %#v", service)
 	}
-	if _, err := service.runADB(os.Args[0], "-test.run=^$"); err != nil {
+	if _, err := service.runADB(context.Background(), os.Args[0], "-test.run=^$"); err != nil {
 		t.Fatalf("default command runner: %v", err)
 	}
 }
