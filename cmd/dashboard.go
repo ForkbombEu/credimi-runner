@@ -37,6 +37,11 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	if configDir == "" {
 		configDir = dashboard.ConfigDir()
 	}
+	closeVerboseLog, err := enableVerboseLog(cmd, configDir)
+	if err != nil {
+		return err
+	}
+	defer closeVerboseLog()
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
 	}

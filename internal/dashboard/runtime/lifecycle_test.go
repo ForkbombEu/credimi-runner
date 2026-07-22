@@ -162,6 +162,39 @@ func TestLifecycleManagerLifecycleLogCanBeEmittedAndClosed(t *testing.T) {
 	}
 }
 
+func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "123-verbose.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(verboseLogPathEnv, path)
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, runner)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(raw)
+	for _, want := range []string{"runtime start requested", "docker: ok"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("verbose log missing %q:\n%s", want, output)
+		}
+	}
+	if len(runner.starts) == 0 || runner.starts[len(runner.starts)-1].Output == nil {
+		t.Fatalf("container log follower should write verbose output: %#v", runner.starts)
+	}
+}
+
 func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{

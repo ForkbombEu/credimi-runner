@@ -171,6 +171,11 @@ func lifecycleDirectManager() (dashboardruntime.Manager, dashboardruntime.Values
 }
 
 func runLifecycleDirectAction(ctx context.Context, cmd *cobra.Command, action string) error {
+	closeVerboseLog, err := enableVerboseLog(cmd, lifecycleConfigDir())
+	if err != nil {
+		return err
+	}
+	defer closeVerboseLog()
 	lease, err := controller.Acquire(lifecycleConfigDir())
 	if err != nil {
 		if errors.Is(err, controller.ErrAlreadyRunning) {

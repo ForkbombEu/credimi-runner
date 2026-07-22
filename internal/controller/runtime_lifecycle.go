@@ -43,8 +43,6 @@ func (l RuntimeLifecycle) Start(ctx context.Context, progress func(string)) erro
 	if l.Manager == nil {
 		return errors.New("runtime manager unavailable")
 	}
-	statusBeforeStart := l.Manager.Status(ctx)
-	runtimeWasRunning := statusBeforeStart.RunnerRunning || statusBeforeStart.ComposeRunning
 	l.clearAutoPublicURL()
 	if starter, ok := l.Manager.(runtimeProgressStarter); ok {
 		if err := starter.StartWithProgress(ctx, progress); err != nil {
@@ -54,22 +52,20 @@ func (l RuntimeLifecycle) Start(ctx context.Context, progress func(string)) erro
 		return err
 	}
 	if err := l.waitReady(ctx); err != nil {
-		return l.rollbackFailedStart(ctx, runtimeWasRunning, err)
+		return runtimeStartFailure(err)
 	}
 	if err := l.Register(ctx); err != nil {
-		return l.rollbackFailedStart(ctx, runtimeWasRunning, err)
+		return runtimeStartFailure(err)
 	}
 	return nil
 }
 
-func (l RuntimeLifecycle) rollbackFailedStart(ctx context.Context, runtimeWasRunning bool, startErr error) error {
-	if runtimeWasRunning {
-		return startErr
-	}
-	if err := l.Stop(context.WithoutCancel(ctx)); err != nil {
-		return fmt.Errorf("%w; additionally, cleanup after the failed start did not complete: %v", startErr, err)
-	}
-	return startErr
+// runtimeStartFailure leaves the started runtime available for diagnosis. In
+// particular, a listener that never becomes ready may still have useful
+// container logs; removing its Compose project would make that cause
+// impossible to inspect.
+func runtimeStartFailure(startErr error) error {
+	return fmt.Errorf("%w; runtime remains running for inspection (use `credimi-runner runner stop` when finished)", startErr)
 }
 
 func (l RuntimeLifecycle) Stop(ctx context.Context) error {

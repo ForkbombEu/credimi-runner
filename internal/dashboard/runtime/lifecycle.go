@@ -61,6 +61,7 @@ type CommandSpec struct {
 	Env      []string
 	Detached bool
 	LogPath  string
+	Output   io.Writer
 	Stream   func(string)
 }
 
@@ -152,9 +153,16 @@ func (ExecRunner) Start(ctx context.Context, spec CommandSpec) (*exec.Cmd, error
 				return nil, err
 			}
 			defer logFile.Close()
-			cmd.Stdout = logFile
-			cmd.Stderr = logFile
+			output := io.Writer(logFile)
+			if spec.Output != nil {
+				output = io.MultiWriter(logFile, spec.Output)
+			}
+			cmd.Stdout = output
+			cmd.Stderr = output
 		}
+	} else if spec.Output != nil {
+		cmd.Stdout = spec.Output
+		cmd.Stderr = spec.Output
 	} else {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -177,6 +185,7 @@ type LifecycleManager struct {
 	logDone   chan struct{}
 	status    RuntimeStatus
 	lifecycle *lifecyclelog.Logger
+	verbose   *verboseLog
 }
 
 func NewLifecycleManager(binary, configDir string, values Values, runner Runner) *LifecycleManager {
@@ -193,6 +202,7 @@ func NewLifecycleManager(binary, configDir string, values Values, runner Runner)
 		values:    cloneValues(values),
 		runner:    runner,
 		lifecycle: lifecycle,
+		verbose:   openVerboseLog(),
 		status: RuntimeStatus{
 			Configured: strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != "",
 		},
@@ -206,12 +216,12 @@ func (m *LifecycleManager) Close() error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.lifecycle == nil {
-		return nil
+	var err error
+	if m.lifecycle != nil {
+		err = m.lifecycle.Close()
+		m.lifecycle = nil
 	}
-	err := m.lifecycle.Close()
-	m.lifecycle = nil
-	return err
+	return errors.Join(err, m.verbose.Close())
 }
 
 // EmitLifecycle records a controller/dashboard event in the bounded lifecycle
@@ -243,6 +253,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 		Message: "runtime start requested", Component: "runtime", Phase: "starting",
 		Fields: map[string]any{"backend": plan.Backend, "service_mode": plan.ServiceMode, "runner_type": plan.RunnerType},
 	})
+	m.verbose.Printf("runtime start requested")
 	defer func() {
 		if result != nil {
 			m.emitLifecycleLocked(lifecyclelog.Event{
@@ -309,7 +320,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 			emitProgress(progress, "Pulling Docker images. Large runner images can take several minutes.")
 			pullArgs := composeArgs(plan, "pull")
 			pullArgs = append(pullArgs, pullServices...)
-			if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: progress}); err != nil {
+			if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: pullArgs, Env: composeProgressEnv(), Stream: m.verboseProgress(progress)}); err != nil {
 				m.status.LastError = err.Error()
 				return err
 			}
@@ -318,7 +329,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 		composeStartedAt := time.Now()
 		args := composeArgs(plan, "up", "-d", "--pull", "never")
 		args = append(args, plan.ComposeServices...)
-		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: progress}); err != nil {
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: args, Env: composeProgressEnv(), Stream: m.verboseProgress(progress)}); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
@@ -814,7 +825,12 @@ func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {
 	}
 	args := composeArgs(plan, "logs", "-f", "--tail", "80")
 	args = append(args, plan.ComposeServices...)
-	cmd, err := m.runner.Start(context.Background(), CommandSpec{Name: "docker", Args: args})
+	m.verbose.Printf("following container logs: docker %s", strings.Join(args, " "))
+	spec := CommandSpec{Name: "docker", Args: args}
+	if m.verbose != nil {
+		spec.Output = io.MultiWriter(os.Stdout, m.verbose)
+	}
+	cmd, err := m.runner.Start(context.Background(), spec)
 	if err != nil {
 		m.status.LastError = err.Error()
 		return
@@ -980,11 +996,19 @@ func (m *LifecycleManager) SetPublicURL(publicURL string) {
 }
 
 func (m *LifecycleManager) emitLifecycleLocked(event lifecyclelog.Event) {
+	m.verbose.Printf("lifecycle event=%s level=%s message=%s error=%s", event.Event, event.Level, event.Message, event.Error)
 	if m.lifecycle == nil {
 		return
 	}
 	if err := m.lifecycle.Emit(event); err != nil {
 		m.status.LastError = "lifecycle log: " + err.Error()
+	}
+}
+
+func (m *LifecycleManager) verboseProgress(progress func(string)) func(string) {
+	return func(message string) {
+		m.verbose.Printf("docker: %s", message)
+		emitProgress(progress, message)
 	}
 }
 
