@@ -35,7 +35,7 @@ func ComposeYAML(values Values, goos string) (string, error) {
 
 	var builder strings.Builder
 	builder.WriteString("services:\n")
-	writeRunnerService(&builder, normalized)
+	writeRunnerService(&builder, normalized, goos)
 	writeRunnerHostService(&builder)
 	writeCaddyService(&builder, normalized, goos)
 	writeTunnelService(&builder, normalized, goos)
@@ -53,11 +53,11 @@ volumes:
 	return builder.String(), nil
 }
 
-func writeRunnerService(builder *strings.Builder, values Values) {
+func writeRunnerService(builder *strings.Builder, values Values, goos string) {
 	mode := values["CREDIMI_CONTAINER_MODE"]
 	image := defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
 	pullPolicy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
-	networkMode := runnerNetworkMode(values, runtime.GOOS)
+	networkMode := runnerNetworkMode(values, goos)
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", image, pullPolicy)
 	switch mode {
 	case "wifi":
@@ -82,14 +82,21 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 			builder.WriteString("    volumes:\n      - ${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro\n")
 		}
 	case "usb":
-		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}\"\n")
+		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
 		builder.WriteString("    volumes:\n      - adbkeys:/root/.android\n")
+		if goos == "linux" {
+			builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n")
+		}
 	}
 	if networkMode == "host" {
 		builder.WriteString("    network_mode: host\n")
 	} else {
 		builder.WriteString("    expose:\n")
 		fmt.Fprintf(builder, "      - \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+		if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "manual" {
+			builder.WriteString("    ports:\n")
+			fmt.Fprintf(builder, "      - \"127.0.0.1:${RUNNER_PORT:-%s}:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort, DefaultRunnerPort)
+		}
 	}
 	builder.WriteString("    labels:\n      caddy: \"${RUNNER_CADDY_SITE:-:80}\"\n")
 	writeControllerLabels(builder)
@@ -104,13 +111,6 @@ func writeRunnerService(builder *strings.Builder, values Values) {
 }
 
 func runnerNetworkMode(values Values, goos string) string {
-	if goos == "linux" && values["CREDIMI_RUNNER_BACKEND"] == DefaultContainerBackend {
-		serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
-		mode := strings.TrimSpace(values["CREDIMI_CONTAINER_MODE"])
-		if serviceMode == "manual" || (serviceMode == "auto" && (mode == "usb" || mode == "wifi")) {
-			return "host"
-		}
-	}
 	return "bridge"
 }
 

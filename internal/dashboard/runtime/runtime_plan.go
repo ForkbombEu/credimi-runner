@@ -197,8 +197,7 @@ func RunnerAPIReachableFromHost(values Values, goos string) bool {
 	if plan.Backend != DefaultContainerBackend || goos != "linux" {
 		return false
 	}
-	return plan.ServiceMode == "manual" ||
-		(plan.ServiceMode == "auto" && (plan.ContainerMode == "usb" || plan.ContainerMode == "wifi"))
+	return plan.ServiceMode == "manual"
 }
 
 func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool {
@@ -213,9 +212,9 @@ func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool 
 	if plan.Backend == DefaultHostBackend && plan.ServiceMode == "manual" {
 		return true
 	}
-	// Linux phone containers use host networking so the controller can verify
-	// the runner API on the host. Registration must wait for that API instead
-	// of treating `docker compose up -d` as readiness.
+	// Manual container runners publish their API on the local host. Registration
+	// must wait for that API instead of treating `docker compose up -d` as
+	// readiness.
 	return RunnerAPIReachableFromHost(normalized, goos)
 }
 
