@@ -198,6 +198,31 @@ func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing
 	}
 }
 
+func TestLifecycleManagerStartLogFollower(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, runner)
+	manager.StartLogFollower()
+	if len(runner.starts) != 1 {
+		t.Fatalf("log follower starts = %#v", runner.starts)
+	}
+	if got := strings.Join(runner.starts[0].Args, " "); !strings.Contains(got, "logs -f --tail 80 runner") {
+		t.Fatalf("log follower args = %s", got)
+	}
+}
+
+func TestLifecycleManagerStopLogFollowerWithoutProcess(t *testing.T) {
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{}, &fakeRunner{})
+	manager.logCmd = &exec.Cmd{}
+	manager.logDone = make(chan struct{})
+	manager.stopComposeLogFollowerLocked()
+	if manager.logCmd != nil || manager.logDone != nil {
+		t.Fatalf("log follower was not cleared: %#v", manager)
+	}
+}
+
 func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{

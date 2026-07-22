@@ -41,3 +41,15 @@ func TestEnableVerboseLogCreatesPrivateTimestampedLog(t *testing.T) {
 		t.Fatalf("verbose log permissions = %o, want 600", info.Mode().Perm())
 	}
 }
+
+func TestEnableVerboseLogDisabledDoesNotCreateFile(t *testing.T) {
+	original := debugVerbose
+	debugVerbose = false
+	t.Cleanup(func() { debugVerbose = original })
+
+	closeLog, err := enableVerboseLog(&cobra.Command{}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeLog()
+}
