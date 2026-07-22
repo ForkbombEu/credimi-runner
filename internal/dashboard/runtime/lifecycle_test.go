@@ -193,6 +193,9 @@ func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing
 	if len(runner.starts) == 0 || runner.starts[len(runner.starts)-1].Output == nil {
 		t.Fatalf("container log follower should write verbose output: %#v", runner.starts)
 	}
+	if got := strings.Join(runner.starts[len(runner.starts)-1].Args, " "); !strings.Contains(got, "--timestamps") {
+		t.Fatalf("verbose container log follower should request timestamps: %s", got)
+	}
 }
 
 func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) {

@@ -824,6 +824,9 @@ func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {
 		return
 	}
 	args := composeArgs(plan, "logs", "-f", "--tail", "80")
+	if m.verbose != nil {
+		args = append(args, "--timestamps")
+	}
 	args = append(args, plan.ComposeServices...)
 	m.verbose.Printf("following container logs: docker %s", strings.Join(args, " "))
 	spec := CommandSpec{Name: "docker", Args: args}
