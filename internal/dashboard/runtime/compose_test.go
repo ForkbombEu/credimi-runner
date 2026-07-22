@@ -144,3 +144,23 @@ func TestRunnerReadinessRequiredBeforeRegistration(t *testing.T) {
 		})
 	}
 }
+
+func TestDeviceReadinessRequired(t *testing.T) {
+	tests := []struct {
+		name string
+		vals Values
+		goos string
+		want bool
+	}{
+		{"usb phone", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
+		{"wifi phone", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10"}, "linux", true},
+		{"redroid managed device", Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10"}, "linux", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DeviceReadinessRequired(tt.vals, tt.goos); got != tt.want {
+				t.Fatalf("DeviceReadinessRequired = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

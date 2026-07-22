@@ -58,6 +58,29 @@ func TestReadinessRejectsUnavailableConfiguredDevice(t *testing.T) {
 	}
 }
 
+func TestReadinessAcceptsDeferredManagedDevice(t *testing.T) {
+	deviceStateCalled := false
+	service := &ReadinessService{Environment: func(key string) string {
+		return map[string]string{
+			"CREDIMI_RUNNER_ID":      "runner-1",
+			"CREDIMI_RUNNER_BOOT_ID": "boot-1",
+			"CREDIMI_CONTAINER_MODE": "no_device",
+			"ANDROID_SERIAL":         "192.168.0.241:5555",
+		}[key]
+	}, DeviceState: func(string) string {
+		deviceStateCalled = true
+		return "missing"
+	}}
+	recorder := httptest.NewRecorder()
+	service.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+	if deviceStateCalled {
+		t.Fatal("no-device readiness must not query ADB")
+	}
+}
+
 func TestReadinessUsesConfiguredSerialAndReportsMissingIdentity(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
 		return map[string]string{"CREDIMI_RUNNER_SERIAL": "device-2"}[key]

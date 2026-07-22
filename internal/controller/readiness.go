@@ -43,6 +43,7 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 		return RunnerReadiness{}, fmt.Errorf("%w: %v", ErrListenerConflict, err)
 	}
 	defer response.Body.Close()
+	deviceRequired := dashboardruntime.DeviceReadinessRequired(values, "")
 	var ready RunnerReadiness
 	if err := json.NewDecoder(response.Body).Decode(&ready); err != nil {
 		return RunnerReadiness{}, fmt.Errorf("%w: response is not runner readiness JSON", ErrListenerConflict)
@@ -51,8 +52,10 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 		if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
 			return ready, ErrRunnerIdentityMismatch
 		}
-		if err := readinessStateError(ready.DeviceState); err != nil {
-			return ready, err
+		if deviceRequired {
+			if err := readinessStateError(ready.DeviceState); err != nil {
+				return ready, err
+			}
 		}
 		return ready, ErrRunnerNotReady
 	}
@@ -62,11 +65,13 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 	if want := strings.TrimSpace(values["CREDIMI_RUNNER_ID"]); want != "" && ready.RunnerID != want {
 		return ready, ErrRunnerIdentityMismatch
 	}
-	if want := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]); want != "" && ready.DeviceSerial != want {
-		return ready, ErrDeviceMismatch
-	}
-	if err := readinessStateError(ready.DeviceState); err != nil {
-		return ready, err
+	if deviceRequired {
+		if want := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]); want != "" && ready.DeviceSerial != want {
+			return ready, ErrDeviceMismatch
+		}
+		if err := readinessStateError(ready.DeviceState); err != nil {
+			return ready, err
+		}
 	}
 	return ready, nil
 }
