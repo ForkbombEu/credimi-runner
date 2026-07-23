@@ -77,6 +77,13 @@ func LoadStore(configDir string) (*Store, error) {
 			store.Values[key] = value
 			continue
 		}
+		// Keep all device-prefixed keys in Values so RuntimeConfig can report
+		// malformed indexes and unsupported suffixes instead of silently
+		// treating them as user-managed lines.
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") {
+			store.Values[key] = value
+			continue
+		}
 		store.UnknownLines = append(store.UnknownLines, key+"="+quote(value))
 	}
 
