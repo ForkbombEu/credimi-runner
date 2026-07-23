@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/joho/godotenv"
 )
 
@@ -55,17 +56,12 @@ func runtimeConfigEnvPathFromConfigHome(configDir string) string {
 }
 
 func validateRequiredRuntimeEnv() error {
-	if strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_ID")) != "" {
-		return nil
-	}
-
 	configPath, err := runtimeConfigEnvPath()
 	if err != nil {
-		return fmt.Errorf("CREDIMI_RUNNER_ID is required")
+		configPath = ".env"
 	}
-
-	return fmt.Errorf(
-		"CREDIMI_RUNNER_ID is required; set it in .env, %s, or the process environment",
-		configPath,
-	)
+	if _, err := dashboardruntime.RuntimeConfigFromEnvironment(); err != nil {
+		return fmt.Errorf("invalid runner device inventory (set it in .env, %s, or the process environment): %w", configPath, err)
+	}
+	return nil
 }

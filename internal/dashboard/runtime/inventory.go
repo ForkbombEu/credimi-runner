@@ -163,6 +163,23 @@ func (s *Store) RuntimeConfig() (RunnerRuntimeConfig, error) {
 	return parseRunnerRuntimeConfig(s.Values)
 }
 
+// RuntimeConfigFromEnvironment validates the one root dotenv file after it has
+// been loaded into the process environment (or an equivalent deployment
+// environment has injected it).
+func RuntimeConfigFromEnvironment() (RunnerRuntimeConfig, error) {
+	values := Values{}
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, known := RunnerKeys[key]; known || strings.HasPrefix(key, "CREDIMI_DEVICE_") {
+			values[key] = value
+		}
+	}
+	return parseRunnerRuntimeConfig(values)
+}
+
 // SaveRuntimeConfig atomically writes host keys followed by deterministic device
 // blocks. Unknown runner-level lines are retained; generated device lines are
 // always replaced.

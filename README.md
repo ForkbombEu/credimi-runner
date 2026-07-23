@@ -25,6 +25,11 @@ The dashboard writes and manages the runtime configuration under
 `~/.config/credimi/runner/`. The installer only installs the binary into
 `~/.local/bin` by default and launches the dashboard.
 
+The runner is one host with an indexed device inventory in its single root
+`.env`. `CREDIMI_RUNNER_ID` identifies that host; every target is a canonical
+child `CREDIMI_DEVICE_<n>_ID`. Direct `serve` and container deployments load
+that same root file—there is no per-device dotenv directory.
+
 See [One-command install](#one-command-install) and [Run API server locally](#run-api-server-locally-serve) for configuration details and alternate workflows.
 
 ## One-command install

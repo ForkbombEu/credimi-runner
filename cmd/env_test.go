@@ -119,7 +119,12 @@ func TestLoadDotEnv_NoFileAvailable(t *testing.T) {
 }
 
 func TestValidateRequiredRuntimeEnv_WithRunnerID(t *testing.T) {
-	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
+	t.Setenv("CREDIMI_RUNNER_ID", "acme/runner-1")
+	t.Setenv("CREDIMI_DEVICE_COUNT", "1")
+	t.Setenv("CREDIMI_DEVICE_1_ID", "acme/runner-1/pixel")
+	t.Setenv("CREDIMI_DEVICE_1_NAME", "Pixel")
+	t.Setenv("CREDIMI_DEVICE_1_TYPE", "android_phone")
+	t.Setenv("CREDIMI_DEVICE_1_MODE", "usb")
 
 	require.NoError(t, validateRequiredRuntimeEnv())
 }
@@ -130,5 +135,5 @@ func TestValidateRequiredRuntimeEnv_MissingRunnerID(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_ID", "")
 
 	err := validateRequiredRuntimeEnv()
-	require.EqualError(t, err, "CREDIMI_RUNNER_ID is required; set it in .env, "+filepath.Join(tmpDir, "credimi", "runner", ".env")+", or the process environment")
+	require.EqualError(t, err, "invalid runner device inventory (set it in .env, "+filepath.Join(tmpDir, "credimi", "runner", ".env")+", or the process environment): CREDIMI_DEVICE_COUNT is required")
 }
