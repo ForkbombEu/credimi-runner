@@ -57,12 +57,30 @@ func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
+		return runTemporalWorker(namespace, runnerID)(ctx)
+	}
+}
+
+// RunTemporalWorkerWithInventory starts the one namespace worker for the
+// supplied host inventory. The inventory is captured once and never resolved
+// by mutating environment variables during activity execution.
+func RunTemporalWorkerWithInventory(namespace string, inventory RunnerRuntimeConfig) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		if err := inventory.Validate(); err != nil {
+			return fmt.Errorf("invalid runner device inventory: %w", err)
+		}
+		return runTemporalWorker(namespace, inventory.RunnerID)(ctx)
+	}
+}
+
+func runTemporalWorker(namespace, configuredRunnerID string) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
 		temporalInterceptor, err := observability.NewTemporalInterceptor()
 		if err != nil {
 			return fmt.Errorf("unable to create temporal tracing interceptor: %w", err)
 		}
-		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
-		runnerID = strings.TrimLeft(strings.TrimSpace(runnerID), "/")
+		runnerID := strings.TrimLeft(strings.TrimSpace(configuredRunnerID), "/")
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
 		ctx, span := observability.Tracer("credimi-runner.temporal").Start(ctx, "temporal_worker.run", trace.WithAttributes(temporalWorkerTraceAttrs(namespace, taskqueue, runnerID)...))
 		defer span.End()

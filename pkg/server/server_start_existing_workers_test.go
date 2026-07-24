@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
+	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 	"github.com/stretchr/testify/require"
 	otelapi "go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -138,6 +140,34 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 	require.True(t, ok)
 	require.True(t, proc.Running)
 	proc.Stop()
+}
+
+func TestStartExistingWorkersPassesWholeInventoryToEachNamespaceWorker(t *testing.T) {
+	store := NewProcessStore()
+	client := &startWorkersHTTPClient{responder: func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+		return httpResp(http.StatusOK, `{"namespaces":["ns-1","ns-2"]}`), nil
+	}}
+	inventories := make(chan workermanager.RunnerRuntimeConfig, 2)
+	deps := Deps{
+		HTTPClient:    client,
+		RuntimeConfig: &dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/lab"}, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/lab/a", Type: "android_phone"}, {ID: "acme/lab/b", Type: "android_emulator"}}},
+		InventoryWorkerRunnerFactory: func(namespace string, inventory workermanager.RunnerRuntimeConfig) func(context.Context) error {
+			return func(ctx context.Context) error { inventories <- inventory; <-ctx.Done(); return nil }
+		},
+	}
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local"}, deps)
+	require.NoError(t, srv.StartExistingWorkers(context.Background()))
+	for range 2 {
+		inventory := <-inventories
+		require.Equal(t, "acme/lab", inventory.RunnerID)
+		require.Len(t, inventory.Devices, 2)
+	}
+	for _, namespace := range []string{"ns-1", "ns-2"} {
+		proc, ok := store.Get(namespace)
+		require.True(t, ok)
+		proc.Stop()
+	}
 }
 
 func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {

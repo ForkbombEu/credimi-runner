@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 )
@@ -36,14 +37,17 @@ type CommandRunner interface {
 }
 
 type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
+type InventoryWorkerRunnerFactory func(namespace string, inventory workermanager.RunnerRuntimeConfig) func(ctx context.Context) error
 
 type Deps struct {
-	HTTPClient          HTTPClient
-	FileStore           FileStore
-	CommandRunner       CommandRunner
-	WorkerRunnerFactory WorkerRunnerFactory
-	Sleeper             func(time.Duration)
-	ManagedWorkflowRoot string
+	HTTPClient                   HTTPClient
+	FileStore                    FileStore
+	CommandRunner                CommandRunner
+	WorkerRunnerFactory          WorkerRunnerFactory
+	InventoryWorkerRunnerFactory InventoryWorkerRunnerFactory
+	RuntimeConfig                *dashboardruntime.RunnerRuntimeConfig
+	Sleeper                      func(time.Duration)
+	ManagedWorkflowRoot          string
 }
 
 func (d *Deps) WithDefaults() {
@@ -58,6 +62,9 @@ func (d *Deps) WithDefaults() {
 	}
 	if d.WorkerRunnerFactory == nil {
 		d.WorkerRunnerFactory = workermanager.RunTemporalWorker
+	}
+	if d.InventoryWorkerRunnerFactory == nil {
+		d.InventoryWorkerRunnerFactory = workermanager.RunTemporalWorkerWithInventory
 	}
 	if d.Sleeper == nil {
 		d.Sleeper = time.Sleep
