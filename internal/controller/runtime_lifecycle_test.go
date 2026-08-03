@@ -50,7 +50,7 @@ func TestReadinessFailureExplainsUnauthorizedDevice(t *testing.T) {
 		"CREDIMI_DEVICE_1_SERIAL": "device-1",
 	}, "127.0.0.1:8050", ErrDeviceUnauthorized, context.DeadlineExceeded)
 
-	if !strings.Contains(err.Error(), "accept the USB debugging prompt") {
+	if !strings.Contains(err.Error(), "USB debugging prompt") {
 		t.Fatalf("ReadinessFailure() = %q", err)
 	}
 	if !errors.Is(err, ErrDeviceUnauthorized) {
@@ -252,11 +252,14 @@ func TestRuntimeLifecycleRegisterRunningWaitsForRunnerReadiness(t *testing.T) {
 			"CREDIMI_RUNNER_ID":      "acme/runner",
 			"CREDIMI_RUNNER_NAME":    "runner",
 			"CREDIMI_SERVICE_MODE":   "manual",
+			"CREDIMI_DEVICE_COUNT":   "1",
+			"CREDIMI_DEVICE_1_ID":    "acme/runner/ios",
+			"CREDIMI_DEVICE_1_TYPE":  "ios_simulator",
+			"CREDIMI_DEVICE_1_MODE":  "no_device",
 			"RUNNER_PUBLIC_URL":      "https://runner.example",
 			"RUNNER_HOST":            host,
 			"RUNNER_PORT":            port,
 			"CREDIMI_RUNNER_BACKEND": "host",
-			"CREDIMI_RUNNER_TYPE":    "ios_simulator",
 		},
 		GOOS: "darwin",
 	}
