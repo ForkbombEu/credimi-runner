@@ -315,11 +315,20 @@ func TestOpenDashboardBrowserStartsPlatformCommand(t *testing.T) {
 	}
 	dir := t.TempDir()
 	opener := filepath.Join(dir, "xdg-open")
-	if err := os.WriteFile(opener, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	done := filepath.Join(dir, "opened")
+	if err := os.WriteFile(opener, []byte("#!/bin/sh\n: > '"+done+"'\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
 	if err := openDashboardBrowser("http://127.0.0.1:8051"); err != nil {
 		t.Fatal(err)
 	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(done); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("xdg-open did not start")
 }

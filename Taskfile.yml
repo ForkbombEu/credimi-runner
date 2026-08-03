@@ -104,7 +104,7 @@ tasks:
       TEST_PKGS:
         sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
     cmds:
-      - go test {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
+      - go test -p=1 -timeout=30s {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
       - >-
         go tool cover -func={{.COVERAGE_FILE}} |
         awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
