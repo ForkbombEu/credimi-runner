@@ -56,3 +56,20 @@ func TestDeviceGateSerializesOnlyMatchingDevice(t *testing.T) {
 		t.Fatal("same device did not resume after release")
 	}
 }
+
+func TestDeviceDispatcherBindsOneConfiguredDevice(t *testing.T) {
+	dispatcher, err := NewDeviceDispatcher(RunnerRuntimeConfig{RunnerID: "acme/runner", Devices: []DeviceRuntimeConfig{{ID: "acme/runner/a", Serial: "serial-a", Enabled: true}, {ID: "acme/runner/b", Serial: "serial-b", Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := dispatcher.Execute(context.Background(), "acme/runner/b", func(_ context.Context, device DeviceRuntimeConfig) error { got = device.Serial; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got != "serial-b" {
+		t.Fatalf("bound serial = %q", got)
+	}
+	if err := dispatcher.Execute(context.Background(), "acme/runner/unknown", func(context.Context, DeviceRuntimeConfig) error { t.Fatal("unknown device executed"); return nil }); err == nil {
+		t.Fatal("unknown device was accepted")
+	}
+}

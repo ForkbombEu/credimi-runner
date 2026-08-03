@@ -70,11 +70,11 @@ func RunTemporalWorkerWithInventory(namespace string, inventory RunnerRuntimeCon
 		if err := inventory.Validate(); err != nil {
 			return fmt.Errorf("invalid runner device inventory: %w", err)
 		}
-		return runTemporalWorker(namespace, inventory.RunnerID)(ctx)
+		return runTemporalWorker(namespace, inventory.RunnerID, inventory)(ctx)
 	}
 }
 
-func runTemporalWorker(namespace, configuredRunnerID string) func(ctx context.Context) error {
+func runTemporalWorker(namespace, configuredRunnerID string, inventories ...RunnerRuntimeConfig) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		temporalInterceptor, err := observability.NewTemporalInterceptor()
 		if err != nil {
@@ -119,8 +119,16 @@ func runTemporalWorker(namespace, configuredRunnerID string) func(ctx context.Co
 				continue
 			}
 
+			maxActivities := 1
+			if len(inventories) > 0 {
+				maxActivities = len(inventories[0].Devices)
+				if maxActivities < 1 {
+					maxActivities = 1
+				}
+			}
 			w := temporalWorkerFactory(c, taskqueue, worker.Options{
-				Interceptors: []interceptor.WorkerInterceptor{temporalInterceptor},
+				Interceptors:                       []interceptor.WorkerInterceptor{temporalInterceptor},
+				MaxConcurrentActivityExecutionSize: maxActivities,
 			})
 
 			// Register activities

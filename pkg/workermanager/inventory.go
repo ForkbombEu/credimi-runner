@@ -10,10 +10,11 @@ import (
 // DeviceRuntimeConfig is the immutable execution-target data handed to a
 // namespace worker. It intentionally contains no mutable process environment.
 type DeviceRuntimeConfig struct {
-	ID     string
-	Type   string
-	Serial string
-	Values map[string]string
+	ID      string
+	Type    string
+	Serial  string
+	Enabled bool
+	Values  map[string]string
 }
 
 // RunnerRuntimeConfig is shared by every namespace worker for one local host.
@@ -44,11 +45,53 @@ func (c RunnerRuntimeConfig) Validate() error {
 	return nil
 }
 
+func (c RunnerRuntimeConfig) Device(deviceID string) (DeviceRuntimeConfig, error) {
+	deviceID = strings.TrimPrefix(strings.TrimSpace(deviceID), "/")
+	for _, device := range c.Devices {
+		if strings.TrimPrefix(strings.TrimSpace(device.ID), "/") != deviceID {
+			continue
+		}
+		if !device.Enabled {
+			return DeviceRuntimeConfig{}, fmt.Errorf("device %q is disabled", deviceID)
+		}
+		return device, nil
+	}
+	return DeviceRuntimeConfig{}, fmt.Errorf("unknown device %q", deviceID)
+}
+
 // DeviceGate serializes target-touching work per device without preventing
 // different devices from executing concurrently.
 type DeviceGate struct {
 	mu    sync.Mutex
 	locks map[string]chan struct{}
+}
+
+type DeviceDispatcher struct {
+	Inventory RunnerRuntimeConfig
+	Gate      *DeviceGate
+}
+
+func NewDeviceDispatcher(inventory RunnerRuntimeConfig) (*DeviceDispatcher, error) {
+	if err := inventory.Validate(); err != nil {
+		return nil, err
+	}
+	return &DeviceDispatcher{Inventory: inventory, Gate: NewDeviceGate()}, nil
+}
+
+func (d *DeviceDispatcher) Execute(ctx context.Context, deviceID string, operation func(context.Context, DeviceRuntimeConfig) error) error {
+	if d == nil || operation == nil {
+		return fmt.Errorf("device dispatcher is not configured")
+	}
+	device, err := d.Inventory.Device(deviceID)
+	if err != nil {
+		return err
+	}
+	unlock, err := d.Gate.Acquire(ctx, device.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return operation(ctx, device)
 }
 
 func NewDeviceGate() *DeviceGate { return &DeviceGate{locks: make(map[string]chan struct{})} }
