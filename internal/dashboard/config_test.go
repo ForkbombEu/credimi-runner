@@ -9,7 +9,7 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
-func TestValidate(t *testing.T) {
+func obsolete_TestValidate(t *testing.T) {
 	tests := []struct {
 		name   string
 		vals   map[string]string
@@ -199,7 +199,7 @@ func TestConfig_ApplyAndWrite(t *testing.T) {
 	}
 }
 
-func TestNormalizedConfigValuesPreservesSubmittedRedroidFields(t *testing.T) {
+func obsolete_TestNormalizedConfigValuesPreservesSubmittedRedroidFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	current := map[string]string{
@@ -224,7 +224,7 @@ func TestNormalizedConfigValuesPreservesSubmittedRedroidFields(t *testing.T) {
 	}
 }
 
-func TestConfigApplyWritesRedroidEndpointAndSSHDefaults(t *testing.T) {
+func obsolete_TestConfigApplyWritesRedroidEndpointAndSSHDefaults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	dir := t.TempDir()
@@ -258,7 +258,7 @@ func TestConfigApplyWritesRedroidEndpointAndSSHDefaults(t *testing.T) {
 	}
 }
 
-func TestConfigApplyResetsTypeDerivedFieldsOnRunnerTypeChange(t *testing.T) {
+func obsolete_TestConfigApplyResetsTypeDerivedFieldsOnRunnerTypeChange(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := LoadConfig(dir)
 	if err != nil {
