@@ -932,11 +932,6 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		s.renderSetupError(w, incoming, "identity resolution failed: "+err.Error())
 		return
 	}
-	normalizeWizardValues(incoming)
-	if err := s.validateRuntimeRequirements(incoming); err != nil {
-		s.renderSetupError(w, incoming, "runtime requirement check failed: "+err.Error())
-		return
-	}
 	if errs, err := s.cfg.Apply(incoming); err != nil {
 		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Configuration validation failed."})
 		html, _ := s.render.FragmentPage("setup", d)
@@ -945,19 +940,12 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(html))
 		return
 	}
-	values := s.cfg.Snapshot()
-	if s.manager != nil {
-		s.manager.Configure(dashboardruntime.Values(values))
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", "/devices")
+		w.WriteHeader(http.StatusAccepted)
+		return
 	}
-	plan := dashboardruntime.BuildRuntimePlan(s.composeDir, dashboardruntime.Values(values))
-	if len(plan.ComposeServices) > 0 {
-		if err := WriteComposeFile(s.composeDir, values); err != nil {
-			s.renderSetupError(w, values, "compose generation failed: "+err.Error())
-			return
-		}
-	}
-	s.startStartupJob(values)
-	s.renderSetupComplete(w, r)
+	http.Redirect(w, r, "/devices", http.StatusSeeOther)
 }
 
 func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {

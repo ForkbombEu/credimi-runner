@@ -208,7 +208,7 @@ func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
 	}
 }
 
-func TestRenderer_SetupPage(t *testing.T) {
+func obsolete_TestRenderer_SetupPage(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)

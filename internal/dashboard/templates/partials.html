@@ -94,9 +94,9 @@
     <div class="meta">{{.Runner.Get "CREDIMI_SERVICE_MODE"}} exposure</div>
   </div>
   <div class="stat">
-    <div class="k">{{icon "phone"}} Target</div>
-    <div class="v">{{.ConfiguredTargetTitle}}</div>
-    <div class="meta">{{.ConfiguredTargetDetail}}</div>
+    <div class="k">{{icon "phone"}} Devices</div>
+    <div class="v">{{len .ConfiguredDevices}}</div>
+    <div class="meta">independently selectable targets</div>
   </div>
 </div>
 {{- end}}

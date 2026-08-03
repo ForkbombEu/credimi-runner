@@ -33,7 +33,7 @@
   </form>
 
   <section class="card">
-    <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">docker compose · {{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
+    <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">runner host and device runtimes</div></div>
       <div class="right" style="display:flex;align-items:center;gap:10px">
         <button class="btn {{if .RuntimeRunning}}btn-danger{{else}}btn-pri{{end}} runtime-cta"
                 hx-post="{{.RuntimeTogglePath}}"
