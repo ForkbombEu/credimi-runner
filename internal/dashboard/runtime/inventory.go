@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +21,7 @@ type DeviceRuntimeConfig struct {
 	Description string
 	Type        string
 	Mode        string
+	Enabled     bool
 	Serial      string
 	WiFiIP      string
 	WiFiPort    string
@@ -41,7 +41,7 @@ var deviceEnvKey = regexp.MustCompile(`^CREDIMI_DEVICE_([1-9][0-9]*)_([A-Z][A-Z0
 // DeviceKeys defines the suffixes allowed in an indexed device block. Local
 // target settings are deliberately scoped here rather than being runner keys.
 var DeviceKeys = map[string]struct{}{
-	"ID": {}, "NAME": {}, "DESCRIPTION": {}, "TYPE": {}, "MODE": {}, "SERIAL": {}, "WIFI_IP": {}, "WIFI_PORT": {},
+	"ID": {}, "NAME": {}, "DESCRIPTION": {}, "TYPE": {}, "MODE": {}, "ENABLED": {}, "SERIAL": {}, "WIFI_IP": {}, "WIFI_PORT": {},
 	"BASE_NAME": {}, "GOLDEN_PATH": {}, "HOST_AVD_HOME_PATH": {}, "HOST_AVD_GOLDEN_PATH": {},
 	"ANDROID_KEYS_DIR": {}, "REDROID_DATA_DIR": {}, "REDROID_DATA_TAR": {},
 	"AVD_NAME": {}, "AVDCTL_SSH_TARGET": {}, "AVDCTL_SSH_PASSWORD": {}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {}, "AVDCTL_SUDO": {}, "AVDCTL_SUDO_PASSWORD": {},
@@ -113,7 +113,11 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 		if block == nil {
 			return RunnerRuntimeConfig{Host: host}, fmt.Errorf("device index %d is missing", index)
 		}
-		for _, required := range []string{"ID", "NAME", "TYPE", "MODE"} {
+		// The serve process is deliberately configured only with its execution
+		// inventory. A device ID establishes that inventory; display and setup
+		// metadata belongs to the dashboard registration flow and is validated
+		// there immediately before it is sent to Credimi.
+		for _, required := range []string{"ID"} {
 			if strings.TrimSpace(block[required]) == "" {
 				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("CREDIMI_DEVICE_%d_%s is required", index, required)
 			}
@@ -152,9 +156,41 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 			}
 			seen[value] = index
 		}
-		devices = append(devices, DeviceRuntimeConfig{Index: index, ID: id, Name: block["NAME"], Description: block["DESCRIPTION"], Type: block["TYPE"], Mode: block["MODE"], Serial: block["SERIAL"], WiFiIP: block["WIFI_IP"], WiFiPort: block["WIFI_PORT"], Values: cloneValues(block)})
+		enabled := true
+		if raw := strings.TrimSpace(block["ENABLED"]); raw != "" {
+			enabled, err = strconv.ParseBool(raw)
+			if err != nil {
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("CREDIMI_DEVICE_%d_ENABLED must be boolean", index)
+			}
+		}
+		devices = append(devices, DeviceRuntimeConfig{Index: index, ID: id, Name: block["NAME"], Description: block["DESCRIPTION"], Type: block["TYPE"], Mode: block["MODE"], Enabled: enabled, Serial: block["SERIAL"], WiFiIP: block["WIFI_IP"], WiFiPort: block["WIFI_PORT"], Values: cloneValues(block)})
 	}
 	return RunnerRuntimeConfig{Host: host, Devices: devices}, nil
+}
+
+// ParseRuntimeConfig validates an in-memory root environment without loading
+// or writing files. Dashboard state uses this to render indexed blocks.
+func ParseRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
+	return parseRunnerRuntimeConfig(values)
+}
+
+// ValidateDeviceRegistration validates the metadata the dashboard must send
+// when registering a device with Credimi. It intentionally is not part of the
+// direct-serve environment validation.
+func ValidateDeviceRegistration(device DeviceRuntimeConfig) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"name", device.Name},
+		{"type", device.Type},
+		{"mode", device.Mode},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("device %s is required for dashboard registration", field.name)
+		}
+	}
+	return nil
 }
 
 func canonicalID(value string) string { return strings.TrimPrefix(strings.TrimSpace(value), "/") }
@@ -199,6 +235,7 @@ func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 		values[devicePrefix(index+1)+"DESCRIPTION"] = device.Description
 		values[devicePrefix(index+1)+"TYPE"] = device.Type
 		values[devicePrefix(index+1)+"MODE"] = device.Mode
+		values[devicePrefix(index+1)+"ENABLED"] = strconv.FormatBool(device.Enabled)
 	}
 	config, err := parseRunnerRuntimeConfig(values)
 	if err != nil {
@@ -207,6 +244,9 @@ func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 	var lines []string
 	lines = append(lines, "# --- Runner host (managed by Credimi Runner) ---")
 	for _, key := range SortedRunnerKeys() {
+		if key == "CREDIMI_DEVICE_COUNT" {
+			continue
+		}
 		lines = append(lines, key+"="+quote(config.Host[key]))
 	}
 	lines = append(lines, "", "# --- Device inventory (managed by Credimi Runner; do not edit generated keys) ---", "CREDIMI_DEVICE_COUNT="+strconv.Itoa(len(config.Devices)))
@@ -317,131 +357,4 @@ func (s *Store) RuntimeConfigDevice(index int) DeviceRuntimeConfig {
 		return DeviceRuntimeConfig{}
 	}
 	return config.Devices[index-1]
-}
-
-// MigrateLegacyDeviceFiles imports the pre-inventory devices/*.env layout. The
-// caller must pass removeLegacy=true only after an operator has confirmed that
-// the generated root inventory is correct. A failed or unconfirmed migration
-// never deletes the old directory.
-func (s *Store) MigrateLegacyDeviceFiles(removeLegacy bool) ([]DeviceRuntimeConfig, bool, error) {
-	if _, configured := s.Values["CREDIMI_DEVICE_COUNT"]; configured {
-		return nil, false, nil
-	}
-	legacyDir := filepath.Join(filepath.Dir(s.Path), "devices")
-	entries, err := os.ReadDir(legacyDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
-		return nil, false, err
-	}
-	runnerID := canonicalID(s.Values["CREDIMI_RUNNER_ID"])
-	if runnerID == "" {
-		return nil, false, fmt.Errorf("cannot import legacy devices without CREDIMI_RUNNER_ID")
-	}
-	files := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".env") {
-			files = append(files, entry.Name())
-		}
-	}
-	sort.Strings(files)
-	if len(files) == 0 {
-		return nil, false, nil
-	}
-	devices := make([]DeviceRuntimeConfig, 0, len(files))
-	for _, name := range files {
-		values, err := readDotEnvValues(filepath.Join(legacyDir, name))
-		if err != nil {
-			return nil, false, fmt.Errorf("read legacy device %q: %w", name, err)
-		}
-		device, err := legacyDeviceConfig(runnerID, strings.TrimSuffix(name, ".env"), values)
-		if err != nil {
-			return nil, false, fmt.Errorf("import legacy device %q: %w", name, err)
-		}
-		devices = append(devices, device)
-	}
-	if s.exists {
-		content, err := os.ReadFile(s.Path)
-		if err != nil {
-			return nil, false, err
-		}
-		backup := s.Path + ".before-multi-device-" + time.Now().UTC().Format("20060102T150405Z")
-		if err := os.WriteFile(backup, content, 0o600); err != nil {
-			return nil, false, fmt.Errorf("write migration backup: %w", err)
-		}
-	}
-	if err := s.SaveRuntimeConfig(RunnerRuntimeConfig{Host: cloneValues(s.Values), Devices: devices}); err != nil {
-		return nil, false, err
-	}
-	if removeLegacy {
-		if err := os.RemoveAll(legacyDir); err != nil {
-			return nil, false, fmt.Errorf("remove confirmed legacy devices directory: %w", err)
-		}
-	}
-	return devices, true, nil
-}
-
-// RemoveLegacyDeviceFiles performs the destructive half of an already
-// successful import. Keeping it separate makes the dashboard confirmation
-// explicit and prevents an ordinary migration retry from deleting data.
-func (s *Store) RemoveLegacyDeviceFiles() error {
-	if _, err := s.RuntimeConfig(); err != nil {
-		return fmt.Errorf("cannot remove legacy devices before a valid inventory is saved: %w", err)
-	}
-	legacyDir := filepath.Join(filepath.Dir(s.Path), "devices")
-	if err := os.RemoveAll(legacyDir); err != nil {
-		return fmt.Errorf("remove confirmed legacy devices directory: %w", err)
-	}
-	return nil
-}
-
-func readDotEnvValues(path string) (Values, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	values := Values{}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, raw, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		values[strings.TrimSpace(key)] = unquote(strings.TrimSpace(raw))
-	}
-	return values, scanner.Err()
-}
-
-func legacyDeviceConfig(runnerID, fallbackName string, legacy Values) (DeviceRuntimeConfig, error) {
-	deviceValues := Values{}
-	legacyToDevice := map[string]string{
-		"CREDIMI_RUNNER_SERIAL": "SERIAL", "CREDIMI_RUNNER_WIFI_IP": "WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT": "WIFI_PORT",
-		"BASE_NAME": "BASE_NAME", "GOLDEN_PATH": "GOLDEN_PATH", "HOST_AVD_HOME_PATH": "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH": "HOST_AVD_GOLDEN_PATH",
-		"ANDROID_KEYS_DIR": "ANDROID_KEYS_DIR", "REDROID_DATA_DIR": "REDROID_DATA_DIR", "REDROID_DATA_TAR": "REDROID_DATA_TAR",
-		"AVDCTL_SSH_TARGET": "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD": "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO": "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD": "AVDCTL_SUDO_PASSWORD",
-		"RUNNER_IMAGE": "RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY": "RUNNER_IMAGE_PULL_POLICY", "CREDIMI_RUNNER_BACKEND": "BACKEND", "CREDIMI_CONTAINER_MODE": "CONTAINER_MODE",
-	}
-	for oldKey, newKey := range legacyToDevice {
-		deviceValues[newKey] = legacy[oldKey]
-	}
-	name := strings.TrimSpace(legacy["CREDIMI_RUNNER_NAME"])
-	if name == "" {
-		name = fallbackName
-	}
-	deviceType := strings.TrimSpace(legacy["CREDIMI_RUNNER_TYPE"])
-	if deviceType == "" {
-		return DeviceRuntimeConfig{}, fmt.Errorf("CREDIMI_RUNNER_TYPE is required")
-	}
-	mode := strings.TrimSpace(legacy["CREDIMI_RUNNER_DEVICE_MODE"])
-	if mode == "" {
-		mode = "no_device"
-	}
-	return DeviceRuntimeConfig{ID: runnerID + "/" + canonifyPlain(name), Name: name, Type: deviceType, Mode: mode, Values: deviceValues}, nil
 }

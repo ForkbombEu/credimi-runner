@@ -114,12 +114,12 @@ func TestWriteComposeFile(t *testing.T) {
 				"CREDIMI_RUNNER_DEVICE_MODE": "wifi",
 				"CREDIMI_RUNNER_WIFI_IP":     "192.168.1.20",
 			},
-			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
+			contains: []string{`"${CREDIMI_DEVICE_1_WIFI_IP}:${CREDIMI_DEVICE_1_WIFI_PORT:-5555}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
 			name:     "emulator runner mounts avd paths",
 			vals:     map[string]string{"CREDIMI_RUNNER_TYPE": "android_emulator"},
-			contains: []string{"--emulator", "/dev/kvm:/dev/kvm", "${HOST_AVD_HOME_PATH}:/avd-home"},
+			contains: []string{"--emulator", "/dev/kvm:/dev/kvm", "${CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH}:/avd-home"},
 		},
 		{
 			name:     "no device runner uses no device flag",

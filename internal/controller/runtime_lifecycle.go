@@ -114,17 +114,44 @@ func (l RuntimeLifecycle) Register(ctx context.Context) error {
 		APIKey:     apiKey,
 		HTTPClient: l.httpClient(),
 	}
-	return client.RegisterMobileRunnerResolvingName(ctx, dashboardruntime.RegisterRunnerRequest{
+	if err := client.RegisterMobileRunnerResolvingName(ctx, dashboardruntime.RegisterRunnerRequest{
 		RunnerID:     strings.TrimSpace(l.Values["CREDIMI_RUNNER_ID"]),
 		Name:         strings.TrimSpace(l.Values["CREDIMI_RUNNER_NAME"]),
 		IP:           publicURL,
 		Description:  strings.TrimSpace(l.Values["CREDIMI_RUNNER_DESCRIPTION"]),
-		Type:         strings.TrimSpace(l.Values["CREDIMI_RUNNER_TYPE"]),
 		Port:         publicPort,
-		Serial:       strings.TrimSpace(l.Values["CREDIMI_RUNNER_SERIAL"]),
 		Organization: strings.TrimSpace(l.Values["CREDIMI_RUNNER_ORGANIZATION"]),
 		Published:    boolPointer(isTruthy(l.Values["CREDIMI_RUNNER_PUBLISHED"])),
-	})
+	}); err != nil {
+		return err
+	}
+	inventory, err := dashboardruntime.ParseRuntimeConfig(l.Values)
+	if err != nil {
+		if strings.TrimSpace(l.Values["CREDIMI_DEVICE_COUNT"]) == "" {
+			// Host setup may be registered before the first device is added.
+			// serve itself rejects this state before workers start.
+			return nil
+		}
+		return fmt.Errorf("load device inventory for registration: %w", err)
+	}
+	var deviceErrors []error
+	for _, device := range inventory.Devices {
+		if strings.TrimSpace(device.ID) == "" {
+			deviceErrors = append(deviceErrors, fmt.Errorf("device %d has no canonical ID; preview it from the dashboard before starting", device.Index))
+			continue
+		}
+		if err := client.RegisterMobileDevice(ctx, dashboardruntime.RegisterDeviceRequest{
+			Organization: strings.TrimSpace(l.Values["CREDIMI_RUNNER_ORGANIZATION"]),
+			DeviceID:     device.ID, RunnerID: inventory.Host["CREDIMI_RUNNER_ID"], Name: device.Name,
+			Description: device.Description, Type: device.Type, Serial: device.Serial,
+		}); err != nil {
+			deviceErrors = append(deviceErrors, fmt.Errorf("register device %q: %w", device.ID, err))
+		}
+	}
+	if len(deviceErrors) > 0 {
+		return errors.Join(deviceErrors...)
+	}
+	return nil
 }
 
 func (l RuntimeLifecycle) waitReady(ctx context.Context) error {
@@ -154,9 +181,9 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 	}
 	address := net.JoinHostPort(host, port)
 	deviceRequired := dashboardruntime.DeviceReadinessRequired(values, "")
-	serial := ""
+	_, serial, _ := primaryDevice(values)
 	if deviceRequired {
-		serial = strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
+		_, serial, _ = primaryDevice(values)
 	}
 	deadline, cancel := context.WithTimeout(ctx, RunnerReadinessTimeout)
 	defer cancel()
@@ -198,7 +225,7 @@ func ReadinessFailure(values dashboardruntime.Values, address string, lastErr, d
 	if cause == nil {
 		cause = errors.New("readiness deadline exceeded")
 	}
-	serial := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
+	_, serial, _ := primaryDevice(values)
 	switch {
 	case errors.Is(cause, ErrDeviceMissing):
 		return fmt.Errorf("runner did not become ready on %s: configured device %q is not available; connect it and verify it is authorized with `adb -s %s get-state`: %w", address, serial, serial, cause)
@@ -212,8 +239,8 @@ func ReadinessFailure(values dashboardruntime.Values, address string, lastErr, d
 }
 
 func readinessNextStep(values dashboardruntime.Values) string {
-	serial := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
-	switch strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) {
+	runnerType, serial, _ := primaryDevice(values)
+	switch runnerType {
 	case "android_phone":
 		if serial != "" {
 			return fmt.Sprintf("check that Android device %q is connected and authorized (`adb -s %s get-state`), then inspect runner logs", serial, serial)
@@ -226,6 +253,14 @@ func readinessNextStep(values dashboardruntime.Values) string {
 	default:
 		return "inspect runner logs"
 	}
+}
+
+func primaryDevice(values dashboardruntime.Values) (deviceType, serial, mode string) {
+	if inventory, err := dashboardruntime.ParseRuntimeConfig(values); err == nil && len(inventory.Devices) > 0 {
+		device := inventory.Devices[0]
+		return device.Type, device.Serial, device.Mode
+	}
+	return strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]), strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]), strings.TrimSpace(values["CREDIMI_RUNNER_DEVICE_MODE"])
 }
 
 func (l RuntimeLifecycle) registrationEndpoint(ctx context.Context) (string, string, error) {

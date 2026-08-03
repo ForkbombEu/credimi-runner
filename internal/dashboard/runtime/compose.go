@@ -54,14 +54,17 @@ volumes:
 }
 
 func writeRunnerService(builder *strings.Builder, values Values, goos string) {
-	mode := values["CREDIMI_CONTAINER_MODE"]
+	mode := values["CREDIMI_DEVICE_1_MODE"]
+	if mode == "" {
+		mode = values["CREDIMI_CONTAINER_MODE"]
+	}
 	image := defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
 	pullPolicy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
 	networkMode := runnerNetworkMode(values, goos)
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", image, pullPolicy)
 	switch mode {
 	case "wifi":
-		fmt.Fprintf(builder, "    command:\n      - \"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-%s}\"\n", DefaultWiFiPort)
+		fmt.Fprintf(builder, "    command:\n      - \"${CREDIMI_DEVICE_1_WIFI_IP}:${CREDIMI_DEVICE_1_WIFI_PORT:-%s}\"\n", DefaultWiFiPort)
 	case "emulator":
 		builder.WriteString("    command:\n      - --emulator\n")
 	case "no_device":
@@ -70,16 +73,15 @@ func writeRunnerService(builder *strings.Builder, values Values, goos string) {
 		builder.WriteString("    command:\n      - --host-adb\n      - --usb\n")
 	}
 	builder.WriteString("    env_file:\n      - .env\n")
-	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n      ANDROID_SERIAL: \"${CREDIMI_RUNNER_SERIAL:-}\"\n", DefaultRunnerPort)
+	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	if mode == "usb" && networkMode != "host" {
 		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
 	}
 	switch mode {
 	case "emulator":
-		builder.WriteString("      BASE_NAME: \"${BASE_NAME:-credimi}\"\n")
-		builder.WriteString("      GOLDEN_PATH: \"${GOLDEN_PATH:-/avd-golden/credimi-golden}\"\n")
+		builder.WriteString("      CREDIMI_RUNNER_CONFIG_DIR: /app\n")
 		builder.WriteString("    devices:\n      - /dev/kvm:/dev/kvm\n")
-		builder.WriteString("    volumes:\n      - ${ANDROID_KEYS_DIR}:/root/.android\n      - ${HOST_AVD_HOME_PATH}:/avd-home\n      - ${HOST_AVD_GOLDEN_PATH}:/avd-golden\n")
+		builder.WriteString("    volumes:\n      - ${CREDIMI_DEVICE_1_ANDROID_KEYS_DIR}:/root/.android\n      - ${CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH}:/avd-home\n      - ${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden\n")
 	case "no_device":
 		if values["AVDCTL_SSH_TARGET"] != "" && values["AVDCTL_SSH_KNOWN_HOSTS_PATH"] != "" {
 			builder.WriteString("    volumes:\n      - ${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro\n")

@@ -219,6 +219,23 @@ func TestRuntimeConfigRejectsInvalidInventory(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigRequiresOnlyDeviceIDForDirectServe(t *testing.T) {
+	config, err := ParseRuntimeConfig(Values{
+		"CREDIMI_RUNNER_ID":    "acme/lab",
+		"CREDIMI_DEVICE_COUNT": "1",
+		"CREDIMI_DEVICE_1_ID":  "acme/lab/device",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Devices) != 1 || config.Devices[0].ID != "acme/lab/device" {
+		t.Fatalf("runtime config = %#v", config)
+	}
+	if err := ValidateDeviceRegistration(config.Devices[0]); err == nil || !strings.Contains(err.Error(), "device name") {
+		t.Fatalf("registration error = %v, want missing name", err)
+	}
+}
+
 func TestMigrateLegacySingleTargetMakesBackupAndRequiresRegistration(t *testing.T) {
 	dir := t.TempDir()
 	legacy := "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_RUNNER_NAME=Pixel USB\nCREDIMI_RUNNER_TYPE=android_phone\nCREDIMI_RUNNER_DEVICE_MODE=usb\nCREDIMI_RUNNER_SERIAL=serial-1\n"
@@ -242,44 +259,5 @@ func TestMigrateLegacySingleTargetMakesBackupAndRequiresRegistration(t *testing.
 	}
 	if _, migrated, err := store.MigrateLegacySingleTarget(); err != nil || migrated {
 		t.Fatalf("idempotent migration = %t, %v", migrated, err)
-	}
-}
-
-func TestMigrateLegacyDeviceFilesUsesStableNamesAndOnlyRemovesAfterConfirmation(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "devices"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	root := "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_URL=https://credimi.example\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(root), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for name, content := range map[string]string{
-		"zeta.env":  "CREDIMI_RUNNER_NAME=Zeta Phone\nCREDIMI_RUNNER_TYPE=android_phone\nCREDIMI_RUNNER_DEVICE_MODE=usb\nCREDIMI_RUNNER_SERIAL=zeta\n",
-		"alpha.env": "CREDIMI_RUNNER_NAME=Alpha Emulator\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_RUNNER_DEVICE_MODE=no_device\nBASE_NAME=alpha-avd\n",
-	} {
-		if err := os.WriteFile(filepath.Join(dir, "devices", name), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	store, err := LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	devices, migrated, err := store.MigrateLegacyDeviceFiles(false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !migrated || len(devices) != 2 || devices[0].ID != "acme/lab/alpha-emulator" || devices[1].Values["SERIAL"] != "zeta" {
-		t.Fatalf("migration = %#v, %t", devices, migrated)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "devices")); err != nil {
-		t.Fatalf("unconfirmed migration removed legacy directory: %v", err)
-	}
-	if err := store.RemoveLegacyDeviceFiles(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "devices")); !os.IsNotExist(err) {
-		t.Fatalf("confirmed migration did not remove legacy directory: %v", err)
 	}
 }

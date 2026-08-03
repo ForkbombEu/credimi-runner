@@ -152,7 +152,7 @@ These examples are useful for debugging or direct device access without Caddy/Tu
 >   -e CREDIMI_URL=https://credimi.io \
 >   -e CREDIMI_USER_API_KEY=your-user-api-key \
 >   -e CREDIMI_RUNNER_ID=/owner-org-id/runner-emulator-01 \
->   -e GOLDEN_PATH=/avd-golden/credimi-golden \
+>   -e CREDIMI_DEVICE_1_GOLDEN_PATH=/avd-golden/credimi-golden \
 >   -v /srv/credimi/avd-home:/avd-home \
 >   -v /srv/credimi/avd-golden:/avd-golden \
 >   -v /path/to/.android:/root/.android \
@@ -179,8 +179,8 @@ Defaulted/optional environment variables (all modes):
 
 Emulator-only optional environment variables:
 
-- `BASE_NAME` (default: `credimi`)
-- `GOLDEN_PATH` (default: `/avd-golden/<BASE_NAME>-golden`)
+- `CREDIMI_DEVICE_1_BASE_NAME` (default: `credimi`)
+- `CREDIMI_DEVICE_1_GOLDEN_PATH` (default: `/avd-golden/<CREDIMI_DEVICE_1_BASE_NAME>-golden`)
 - `ADB_PRIVATE_KEY` and `ADB_PUBLIC_KEY` (provide to inject ADB keys; otherwise the container uses mounted keys if present, or disables ADB auth keys)
 
 <details>
@@ -361,8 +361,8 @@ Defaulted/optional:
 - `CREDIMI_RUNNER_LIFECYCLE_REQUEST_TIMEOUT` (default: `5s`)
 - `TEMPORAL_ADDRESS` (default: `temporal.credimi.io:7233`)
 - `CREDIMI_INTERNAL_ADMIN_KEY` (forwarded as `Credimi-Api-Key` on internal Credimi API requests)
-- `BASE_NAME` (emulator only, default: `credimi`)
-- `GOLDEN_PATH` (emulator only, default: `/avd-golden/<BASE_NAME>-golden`)
+- `CREDIMI_DEVICE_1_BASE_NAME` (emulator only, default: `credimi`)
+- `CREDIMI_DEVICE_1_GOLDEN_PATH` (emulator only, default: `/avd-golden/<CREDIMI_DEVICE_1_BASE_NAME>-golden`)
 - `ADB_PRIVATE_KEY` and `ADB_PUBLIC_KEY` (emulator only, provide to inject ADB keys; otherwise the container uses mounted keys if present, or disables ADB auth keys)
 
 Example `.env` for local serve:
@@ -412,7 +412,7 @@ CREDIMI_INTERNAL_ADMIN_KEY=
 Notes:
 
 - `CREDIMI_USER_API_KEY` is for user-scoped workers; `CREDIMI_INTERNAL_ADMIN_KEY` is for admin workers.
-- `BASE_NAME` is only used by the Android emulator flow. It is not required for local iOS usage.
+- `CREDIMI_DEVICE_1_BASE_NAME` is only used by the Android emulator flow. It is not required for local iOS usage.
 - `CREDIMI_TEMP_DIR` is set in the Docker image, but the local `serve` command does not currently read it.
 
 </details>
@@ -512,16 +512,16 @@ task -a build:emulator
 Run the emulator locally with preloaded assets mounted from the host:
 
 ```bash
-HOST_AVD_HOME_PATH=/srv/credimi/avd-home
-HOST_AVD_GOLDEN_PATH=/srv/credimi/avd-golden
-GOLDEN_PATH=/avd-golden/credimi-golden
+CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH=/srv/credimi/avd-home
+CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH=/srv/credimi/avd-golden
+CREDIMI_DEVICE_1_GOLDEN_PATH=/avd-golden/credimi-golden
 task run:service:emulator
 ```
 
-`HOST_AVD_HOME_PATH` and `HOST_AVD_GOLDEN_PATH` are host folders. `GOLDEN_PATH` is the
+`CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH` and `CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH` are host folders. `CREDIMI_DEVICE_1_GOLDEN_PATH` is the
 path inside the container and must stay under `/avd-golden`.
 If your bind already points at the extracted `credimi-golden` directory itself, use
-`GOLDEN_PATH=/avd-golden` instead of the nested default.
+`CREDIMI_DEVICE_1_GOLDEN_PATH=/avd-golden` instead of the nested default.
 
 Run a locally built image:
 

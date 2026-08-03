@@ -32,12 +32,11 @@ services:
       CREDIMI_URL: ${CREDIMI_URL:-https://credimi.io}
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal.credimi.io:7233}
       ADB_VENDOR_KEYS: /root/.android
-      BASE_NAME: ${BASE_NAME:-credimi}
-      GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
+      CREDIMI_RUNNER_CONFIG_DIR: /app
     volumes:
-      - ${ANDROID_KEYS_DIR:-/home/puria/.android}:/root/.android
-      - ${HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}:/avd-home
-      - ${HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}:/avd-golden
+      - ${CREDIMI_DEVICE_1_ANDROID_KEYS_DIR:-/home/puria/.android}:/root/.android
+      - ${CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}:/avd-home
+      - ${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}:/avd-golden
       - ./pkg/server/docs:/src/pkg/server/docs:ro
       - ./pkg/gen/http:/src/pkg/gen/http:ro
     network_mode: host

@@ -102,15 +102,15 @@ resolve_golden_path() {
 ensure_emulator_assets() {
   local avd_home="${ANDROID_AVD_HOME:-/avd-home}"
   local golden_root="${AVDCTL_GOLDEN_DIR:-/avd-golden}"
-  local base_name="${BASE_NAME:-credimi}"
-  local configured_golden_path="${GOLDEN_PATH:-${golden_root}/${base_name}-golden}"
+  local base_name="${CREDIMI_DEVICE_1_BASE_NAME:-credimi}"
+  local configured_golden_path="${CREDIMI_DEVICE_1_GOLDEN_PATH:-${golden_root}/${base_name}-golden}"
   local golden_path="${configured_golden_path}"
   local base_avd_dir="${avd_home}/${base_name}.avd"
   local base_ini="${avd_home}/${base_name}.ini"
 
   mkdir -p "$avd_home" "$golden_root"
   golden_path="$(resolve_golden_path "$golden_root" "$configured_golden_path")"
-  export GOLDEN_PATH="$golden_path"
+  export CREDIMI_DEVICE_1_GOLDEN_PATH="$golden_path"
 
   if [[ ! -d "$base_avd_dir" || ! -f "$base_ini" ]]; then
     echo "ERROR: base AVD assets are missing at ${base_avd_dir} and ${base_ini}. Mount preloaded assets into ${avd_home}." >&2
@@ -119,7 +119,7 @@ ensure_emulator_assets() {
   fi
 
   if [[ ! -d "$golden_path" ]]; then
-    echo "ERROR: golden assets are missing at ${configured_golden_path}. Mount preloaded assets into ${golden_root}, or set GOLDEN_PATH=${golden_root} if the bind already points at the extracted golden directory." >&2
+    echo "ERROR: golden assets are missing at ${configured_golden_path}. Mount preloaded assets into ${golden_root}, or set CREDIMI_DEVICE_1_GOLDEN_PATH=${golden_root} if the bind already points at the extracted golden directory." >&2
   else
     echo "Golden assets already present at ${golden_path}."
   fi

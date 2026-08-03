@@ -96,6 +96,11 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	backend := defaultIfEmpty(values["CREDIMI_RUNNER_BACKEND"], DefaultContainerBackend)
 	runnerType := defaultIfEmpty(values["CREDIMI_RUNNER_TYPE"], "android_phone")
 	containerMode := strings.TrimSpace(values["CREDIMI_CONTAINER_MODE"])
+	if inventory, err := ParseRuntimeConfig(values); err == nil && len(inventory.Devices) > 0 {
+		runnerType = inventory.Devices[0].Type
+		containerMode = inventory.Devices[0].Mode
+		backend = defaultIfEmpty(inventory.Devices[0].Values["BACKEND"], backend)
+	}
 
 	canonicalDir, err := filepath.Abs(configDir)
 	if err != nil {
@@ -221,6 +226,14 @@ func DeviceReadinessRequired(values Values, goos string) bool {
 	if err != nil {
 		return false
 	}
+	if inventory, err := ParseRuntimeConfig(normalized); err == nil {
+		for _, device := range inventory.Devices {
+			if device.Enabled && device.Mode != "no_device" {
+				return true
+			}
+		}
+		return false
+	}
 	return normalized["CREDIMI_CONTAINER_MODE"] != "no_device"
 }
 
@@ -242,6 +255,16 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 		if impact.CredimiUpdate {
 			classSet[ApplyCredimiUpdateRequired] = struct{}{}
 		}
+	}
+	for key, oldValue := range oldValues {
+		if !strings.HasPrefix(key, "CREDIMI_DEVICE_") || strings.HasSuffix(key, "_COUNT") {
+			continue
+		}
+		if oldValue == newValues[key] {
+			continue
+		}
+		diff.ChangedKeys = append(diff.ChangedKeys, key)
+		classSet[ApplyRestartRequired] = struct{}{}
 	}
 
 	if len(diff.ChangedKeys) == 0 {

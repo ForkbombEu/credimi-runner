@@ -32,15 +32,29 @@ type MobileRunnerListResponse struct {
 }
 
 type RegisterRunnerRequest struct {
-	RunnerID     string `json:"runner_id"`
+	RunnerID     string `json:"runner_id,omitempty"`
 	Name         string `json:"name,omitempty"`
 	IP           string `json:"ip,omitempty"`
 	Description  string `json:"description,omitempty"`
-	Type         string `json:"type,omitempty"`
 	Port         string `json:"port,omitempty"`
-	Serial       string `json:"serial,omitempty"`
 	Organization string `json:"organization,omitempty"`
 	Published    *bool  `json:"published,omitempty"`
+}
+
+type DevicePreview struct {
+	RunnerID       string `json:"runner_id"`
+	DeviceID       string `json:"device_id"`
+	CanonifiedName string `json:"canonified_name"`
+}
+
+type RegisterDeviceRequest struct {
+	Organization string `json:"organization,omitempty"`
+	DeviceID     string `json:"device_id,omitempty"`
+	RunnerID     string `json:"runner_id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	Type         string `json:"type"`
+	Serial       string `json:"serial,omitempty"`
 }
 
 type CredimiClient struct {
@@ -146,6 +160,54 @@ func (c *CredimiClient) RegisterMobileRunner(ctx context.Context, request Regist
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return credimiResponseError("mobile runner registration failed", resp)
+	}
+	return nil
+}
+
+func (c *CredimiClient) PreviewDeviceID(ctx context.Context, runnerID, name, organization string) (DevicePreview, error) {
+	body, err := json.Marshal(map[string]string{"organization": strings.TrimSpace(organization), "runner_id": runnerID, "name": name})
+	if err != nil {
+		return DevicePreview{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-device", "preview-id"), bytes.NewReader(body))
+	if err != nil {
+		return DevicePreview{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return DevicePreview{}, fmt.Errorf("device ID preview failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return DevicePreview{}, credimiResponseError("device ID preview failed", resp)
+	}
+	var preview DevicePreview
+	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
+		return DevicePreview{}, fmt.Errorf("device ID preview returned invalid JSON: %w", err)
+	}
+	return preview, nil
+}
+
+func (c *CredimiClient) RegisterMobileDevice(ctx context.Context, request RegisterDeviceRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-device"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile device registration failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return credimiResponseError("mobile device registration failed", resp)
 	}
 	return nil
 }

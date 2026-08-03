@@ -122,9 +122,6 @@ func TestValidateRequiredRuntimeEnv_WithRunnerID(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_ID", "acme/runner-1")
 	t.Setenv("CREDIMI_DEVICE_COUNT", "1")
 	t.Setenv("CREDIMI_DEVICE_1_ID", "acme/runner-1/pixel")
-	t.Setenv("CREDIMI_DEVICE_1_NAME", "Pixel")
-	t.Setenv("CREDIMI_DEVICE_1_TYPE", "android_phone")
-	t.Setenv("CREDIMI_DEVICE_1_MODE", "usb")
 
 	require.NoError(t, validateRequiredRuntimeEnv())
 }

@@ -114,6 +114,17 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 	if strings.TrimSpace(goos) == "" {
 		goos = runtime.GOOS
 	}
+	if strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
+		return normalizeIndexedValues(values)
+	}
+	// Keep the legacy dashboard preview inputs usable while an indexed block is
+	// being assembled. A persisted indexed inventory never enters this path.
+	if values["CREDIMI_RUNNER_WIFI_IP"] == "" && values["CREDIMI_DEVICE_1_WIFI_IP"] != "" {
+		values["CREDIMI_RUNNER_WIFI_IP"] = values["CREDIMI_DEVICE_1_WIFI_IP"]
+	}
+	if values["CREDIMI_RUNNER_WIFI_PORT"] == "" && values["CREDIMI_DEVICE_1_WIFI_PORT"] != "" {
+		values["CREDIMI_RUNNER_WIFI_PORT"] = values["CREDIMI_DEVICE_1_WIFI_PORT"]
+	}
 
 	normalized := DefaultValues()
 	for key, value := range values {
@@ -150,6 +161,17 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 		normalized["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
 	}
 
+	return normalized, nil
+}
+
+func normalizeIndexedValues(values Values) (Values, error) {
+	normalized := DefaultValues()
+	for key, value := range values {
+		normalized[key] = strings.TrimSpace(value)
+	}
+	if _, err := ParseRuntimeConfig(normalized); err != nil {
+		return nil, err
+	}
 	return normalized, nil
 }
 

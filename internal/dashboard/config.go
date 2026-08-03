@@ -151,7 +151,7 @@ func LoadConfig(dir string) (*Config, error) {
 		}
 		k = strings.TrimSpace(k)
 		v = unquote(strings.TrimSpace(v))
-		if _, isKnown := known[k]; isKnown {
+		if _, isKnown := known[k]; isKnown || strings.HasPrefix(k, "CREDIMI_DEVICE_") {
 			c.values[k] = v
 		} else {
 			c.rawTail = append(c.rawTail, k+"="+v) // keep unknown keys
@@ -312,6 +312,7 @@ func (c *Config) write() error {
 		}
 		fmt.Fprintf(&b, "%s=%s\n", f.Key, quote(c.values[f.Key]))
 	}
+	writeIndexedDeviceBlocks(&b, c.values)
 	if len(c.rawTail) > 0 {
 		b.WriteString("\n# ── Preserved ──\n")
 		for _, l := range c.rawTail {
@@ -328,6 +329,25 @@ func (c *Config) write() error {
 		return err
 	}
 	return os.Rename(tmp, c.path) // atomic on same filesystem
+}
+
+func writeIndexedDeviceBlocks(b *strings.Builder, values map[string]string) {
+	config, err := dashboardruntime.ParseRuntimeConfig(dashboardruntime.Values(values))
+	if err != nil || len(config.Devices) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n# --- Device inventory (managed by Credimi Runner; do not edit generated keys) ---\nCREDIMI_DEVICE_COUNT=%d\n", len(config.Devices))
+	for _, device := range config.Devices {
+		fmt.Fprintf(b, "\n# --- Device %d: %s ---\n", device.Index, device.Name)
+		keys := make([]string, 0, len(device.Values))
+		for key := range device.Values {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(b, "CREDIMI_DEVICE_%d_%s=%s\n", device.Index, key, quote(device.Values[key]))
+		}
+	}
 }
 
 // RawEnv renders the .env text. When mask is true, secrets are partially hidden.

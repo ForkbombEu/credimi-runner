@@ -49,13 +49,13 @@ func TestComposeParityCases(t *testing.T) {
 		},
 		{
 			name:     "wifi container",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10"},
-			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"},
+			contains: []string{`"${CREDIMI_DEVICE_1_WIFI_IP}:${CREDIMI_DEVICE_1_WIFI_PORT:-5555}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
 			name:     "emulator",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_emulator"},
-			contains: []string{"--emulator", "/dev/kvm:/dev/kvm", "${HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`, "networks:\n      - ingress"},
+			contains: []string{"--emulator", "/dev/kvm:/dev/kvm", "${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`, "networks:\n      - ingress"},
 		},
 		{
 			name:     "redroid known hosts",
@@ -79,8 +79,8 @@ func TestComposeParityCases(t *testing.T) {
 		},
 		{
 			name:     "manual wifi publishes runner API on all host interfaces",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10", "CREDIMI_SERVICE_MODE": "manual"},
-			contains: []string{`"${CREDIMI_RUNNER_WIFI_IP}:${CREDIMI_RUNNER_WIFI_PORT:-5555}"`, `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
+			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10", "CREDIMI_SERVICE_MODE": "manual"},
+			contains: []string{`"${CREDIMI_DEVICE_1_WIFI_IP}:${CREDIMI_DEVICE_1_WIFI_PORT:-5555}"`, `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
 		},
 		{
 			name:     "manual usb uses host network",
@@ -173,8 +173,8 @@ func TestDeviceReadinessRequired(t *testing.T) {
 		want bool
 	}{
 		{"usb phone", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
-		{"wifi phone", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10"}, "linux", true},
-		{"redroid managed device", Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.10"}, "linux", false},
+		{"wifi phone", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"}, "linux", true},
+		{"redroid managed device", Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"}, "linux", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

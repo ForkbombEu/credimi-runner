@@ -206,8 +206,8 @@ if [[ -e /dev/kvm ]]; then
 
   export ANDROID_AVD_HOME="${test_avd_home}"
   export AVDCTL_GOLDEN_DIR="${test_golden_root}"
-  export BASE_NAME="credimi"
-  export GOLDEN_PATH="${test_golden_path}"
+  export CREDIMI_DEVICE_1_BASE_NAME="credimi"
+  export CREDIMI_DEVICE_1_GOLDEN_PATH="${test_golden_path}"
 
   run_ok --emulator
   if find_in_calls "killall -9 qemu-system-x86_64" && find_in_calls "killall -9 emulator"; then
