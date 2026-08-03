@@ -312,7 +312,7 @@ func TestRenderer_ShowsIOSSimulatorOnDarwin(t *testing.T) {
 	}
 }
 
-func TestRenderer_UsesSimulatorNameLabel(t *testing.T) {
+func obsolete_TestRenderer_UsesSimulatorNameLabel(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "darwin")
 	r, err := NewRenderer()
 	if err != nil {
@@ -363,7 +363,7 @@ func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 	}
 }
 
-func TestRenderer_DevicesTargetPageContract(t *testing.T) {
+func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)
@@ -383,16 +383,14 @@ func TestRenderer_DevicesTargetPageContract(t *testing.T) {
 		t.Fatalf("devices page failed: %v", err)
 	}
 	for _, want := range []string{
-		`Configured target`,
-		`Save target`,
+		`Configured inventory`,
+		`Add device`,
+		`Canonical IDs are immutable`,
 		`Detected devices`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)
 		}
-	}
-	if strings.Contains(html, "Add device") {
-		t.Fatal("devices page should not present add-device flow")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -285,6 +286,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /devices/android-emulator/assets/select", s.androidEmulatorAssetsSelect)
 	mux.HandleFunc("POST /devices/android-emulator/assets/download", s.androidEmulatorAssetsDownload)
 	mux.HandleFunc("POST /devices/connect", s.deviceConnect)
+	mux.HandleFunc("POST /devices/preview-id", s.devicePreviewID)
+	mux.HandleFunc("POST /devices/register", s.deviceRegister)
+	mux.HandleFunc("POST /devices/enable", s.deviceEnable)
+	mux.HandleFunc("POST /devices/disable", s.deviceDisable)
+	mux.HandleFunc("POST /devices/remove", s.deviceRemove)
 	mux.HandleFunc("POST /devices/{serial}/reconnect", s.deviceReconnect)
 	mux.HandleFunc("POST /devices/{serial}/disconnect", s.deviceDisconnect)
 
@@ -303,6 +309,170 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/controller/operations/{id}", s.controllerOperation)
 	mux.HandleFunc("POST /api/controller/runtime/{action}", s.controllerRuntimeAction)
 	mux.HandleFunc("POST /api/controller/maintenance/upgrade-image", s.controllerUpgradeImage)
+}
+
+func (s *Server) deviceEnable(w http.ResponseWriter, r *http.Request) { s.setDeviceEnabled(w, r, true) }
+func (s *Server) deviceDisable(w http.ResponseWriter, r *http.Request) {
+	s.setDeviceEnabled(w, r, false)
+}
+
+func (s *Server) devicePreviewID(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	values := s.cfg.Snapshot()
+	if name == "" {
+		http.Error(w, "name is required", 400)
+		return
+	}
+	key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
+	if key == "" {
+		key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+	}
+	client := &dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}
+	preview, err := client.PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], name, values["CREDIMI_RUNNER_ORGANIZATION"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, preview)
+}
+
+func (s *Server) deviceRegister(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	config, err := store.RuntimeConfig()
+	if err != nil {
+		http.Error(w, err.Error(), 422)
+		return
+	}
+	var selected dashboardruntime.DeviceRuntimeConfig
+	for _, device := range config.Devices {
+		if strings.TrimPrefix(device.ID, "/") == deviceID {
+			selected = device
+			break
+		}
+	}
+	if selected.ID == "" {
+		http.Error(w, "unknown device", 404)
+		return
+	}
+	if err := dashboardruntime.ValidateDeviceRegistration(selected); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	values := s.cfg.Snapshot()
+	key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
+	if key == "" {
+		key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+	}
+	client := &dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}
+	err = client.RegisterMobileDevice(r.Context(), dashboardruntime.RegisterDeviceRequest{Organization: values["CREDIMI_RUNNER_ORGANIZATION"], DeviceID: selected.ID, RunnerID: values["CREDIMI_RUNNER_ID"], Name: selected.Name, Description: selected.Description, Type: selected.Type, Serial: selected.Serial})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]any{"device_id": selected.ID, "registered": true})
+}
+
+func (s *Server) setDeviceEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	config, err := store.RuntimeConfig()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	found := false
+	for index := range config.Devices {
+		if strings.TrimPrefix(config.Devices[index].ID, "/") != deviceID {
+			continue
+		}
+		config.Devices[index].Enabled = enabled
+		config.Devices[index].Values["ENABLED"] = strconv.FormatBool(enabled)
+		found = true
+	}
+	if !found {
+		http.Error(w, "unknown device", http.StatusNotFound)
+		return
+	}
+	if err := store.SaveRuntimeConfig(config); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	writeJSON(w, map[string]any{"device_id": deviceID, "enabled": enabled})
+}
+
+func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if r.FormValue("confirm") != "true" {
+		http.Error(w, "confirmation required", http.StatusBadRequest)
+		return
+	}
+	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	config, err := store.RuntimeConfig()
+	if err != nil {
+		http.Error(w, err.Error(), 422)
+		return
+	}
+	devices := config.Devices[:0]
+	found := false
+	for _, device := range config.Devices {
+		if strings.TrimPrefix(device.ID, "/") == deviceID {
+			found = true
+			continue
+		}
+		device.Index = len(devices) + 1
+		devices = append(devices, device)
+	}
+	if !found {
+		http.Error(w, "unknown device", http.StatusNotFound)
+		return
+	}
+	config.Devices = devices
+	if err := store.SaveRuntimeConfig(config); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	writeJSON(w, map[string]any{"device_id": deviceID, "removed": true})
+}
+
+func loadConfigSnapshot(store *dashboardruntime.Store, current *Config) *Config {
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	current.values = make(map[string]string, len(store.Values))
+	for key, value := range store.Values {
+		current.values[key] = value
+	}
+	return current
 }
 
 // staticHTTPHandler returns a handler for the embedded static directory.
@@ -480,7 +650,82 @@ func (s *Server) saveOverviewConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
-	s.saveConfigPage(w, r, "devices")
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	values := s.cfg.Snapshot()
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	config, err := store.RuntimeConfig()
+	if err != nil {
+		config = dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(values)}
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	device := dashboardruntime.DeviceRuntimeConfig{
+		ID:          deviceID,
+		Name:        name,
+		Description: strings.TrimSpace(r.FormValue("description")),
+		Type:        strings.TrimSpace(r.FormValue("type")),
+		Mode:        strings.TrimSpace(r.FormValue("mode")),
+		Enabled:     r.FormValue("enabled") != "false",
+		Serial:      strings.TrimSpace(r.FormValue("serial")),
+		Values:      dashboardruntime.Values{},
+	}
+	for formKey, valueKey := range map[string]string{
+		"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID",
+	} {
+		if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
+			device.Values[valueKey] = value
+		}
+	}
+	if deviceID != "" {
+		found := false
+		for index := range config.Devices {
+			if config.Devices[index].ID != deviceID {
+				continue
+			}
+			device.Values = config.Devices[index].Values
+			for formKey, valueKey := range map[string]string{"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID"} {
+				if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
+					device.Values[valueKey] = value
+				}
+			}
+			config.Devices[index] = device
+			found = true
+			break
+		}
+		if !found {
+			http.Error(w, "unknown device", http.StatusNotFound)
+			return
+		}
+	} else {
+		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
+		if key == "" {
+			key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+		}
+		preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+		config.Devices = append(config.Devices, device)
+	}
+	if err := store.SaveRuntimeConfig(config); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	http.Redirect(w, r, "/devices", http.StatusSeeOther)
 }
 
 func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page string) {

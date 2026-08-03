@@ -33,6 +33,17 @@ func (d PageData) DevicesOnline() int {
 }
 func (d PageData) DevicesTotal() int { return len(d.Snapshot.Devices) }
 
+func (d PageData) ConfiguredDevices() []dashboardruntime.DeviceRuntimeConfig {
+	if d.Runner == nil {
+		return nil
+	}
+	config, err := dashboardruntime.ParseRuntimeConfig(d.Runner.Snapshot())
+	if err != nil {
+		return nil
+	}
+	return config.Devices
+}
+
 func (d PageData) AndroidDevices() []Device {
 	var devices []Device
 	for _, device := range d.Snapshot.Devices {
