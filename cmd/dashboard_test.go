@@ -88,7 +88,7 @@ func TestDashboardHandlerStartsWithoutRunnerIDOnFirstRun(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d", rec.Code)
 	}
-	if body := rec.Body.String(); body == "" || !strings.Contains(body, "Set up Credimi Runner") {
+	if body := rec.Body.String(); body == "" || !strings.Contains(body, "Configure the host") {
 		t.Fatalf("unexpected body: %s", body)
 	}
 }
