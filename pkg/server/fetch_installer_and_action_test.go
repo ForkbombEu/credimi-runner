@@ -295,6 +295,7 @@ func TestFetchInstallerAndAction_ValidateFailure(t *testing.T) {
 	}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v1",
 		ActionIdentifier:  "wallet/action",
 		Platform:          "android",
@@ -331,6 +332,7 @@ func TestFetchInstallerAndAction_ValidateFailureWrappedError(t *testing.T) {
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 
 	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v1",
 		ActionIdentifier:  "wallet/action",
 		Platform:          "android",
@@ -361,6 +363,7 @@ func TestFetchInstallerAndAction_GetInstallerFailure(t *testing.T) {
 	}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	}
@@ -396,6 +399,7 @@ func TestFetchInstallerAndAction_GetInstallerFailureWrappedError(t *testing.T) {
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 
 	result, err := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	})
@@ -429,6 +433,7 @@ func TestFetchInstallerAndAction_SkipInstallerStillValidatesAction(t *testing.T)
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "installed_from_external_source",
 		ActionIdentifier:  "wallet/action",
 		Platform:          "android",
@@ -472,6 +477,7 @@ func TestFetchInstallerAndAction_DownloadMissingAndCached(t *testing.T) {
 	}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{URL: baseURL, UserAPIKey: "user-key", InternalAdminKey: "internal-admin-key"}, deps)
 	payload := fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	}
@@ -517,6 +523,7 @@ func TestFetchInstallerAndAction_InternalAdminKeyDoesNotRequireUserAPIKey(t *tes
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v1",
 		Platform:          "android",
 	})
@@ -549,6 +556,7 @@ func TestFetchInstallerAndAction_IOSInstallerUsesIPAExtension(t *testing.T) {
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v2",
 		Platform:          "ios",
 	})
@@ -588,6 +596,7 @@ func TestFetchInstallerAndAction_IOSZipInstallerUnzipsAppAndCachesPath(t *testin
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v3",
 		Platform:          "ios",
 	})
@@ -604,6 +613,7 @@ func TestFetchInstallerAndAction_IOSZipInstallerUnzipsAppAndCachesPath(t *testin
 
 	client.calls = nil
 	result, apiErr = server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v3",
 		Platform:          "ios",
 	})
@@ -622,6 +632,7 @@ func TestFetchInstallerAndAction_InvalidPlatform(t *testing.T) {
 	})
 
 	result, apiErr := server.fetchInstallerAndActionLogic(fetchInstallerAndActionPayload{
+		DeviceIdentifier:  "device",
 		VersionIdentifier: "v1",
 		Platform:          "desktop",
 	})

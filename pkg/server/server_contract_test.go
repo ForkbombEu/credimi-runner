@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
@@ -379,7 +380,7 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 		})
 
 		server := newRunnerServiceForTest(instance, nil)
-		payload := `{"version_identifier":"v1","action_identifier":"wallet/action","platform":"android"}`
+		payload := `{"version_identifier":"v1","action_identifier":"wallet/action","platform":"android","device_identifier":"device"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
 		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
@@ -405,7 +406,7 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 		instance := &utils.Instance{URL: upstream.URL, UserAPIKey: "test-api-key"}
 
 		server := newRunnerServiceForTest(instance, nil)
-		payload := `{"version_identifier":"installed_from_external_source","action_identifier":"wallet/action","platform":"android","skip_installer":true}`
+		payload := `{"version_identifier":"installed_from_external_source","action_identifier":"wallet/action","platform":"android","skip_installer":true,"device_identifier":"device"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
 		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
@@ -428,7 +429,7 @@ func TestServerContract_FetchInstallerAndAction(t *testing.T) {
 func TestServerContract_StorePipelineResult(t *testing.T) {
 	t.Run("missing video path", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		payload := `{"video_path":"","last_frame_path":"","log_path":"","run_identifier":"run-1","runner_identifier":"runner-1","platform":"android"}`
+		payload := `{"video_path":"","last_frame_path":"","log_path":"","run_identifier":"run-1","device_identifier":"runner-1","platform":"android"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader(payload))
 		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
@@ -448,7 +449,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 
 	t.Run("rejects legacy instance url field", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		payload := `{"instance_url":"http://example.local","run_identifier":"run-1","platform":"android"}`
+		payload := `{"instance_url":"http://example.local","run_identifier":"run-1","platform":"android","device_identifier":"device"}`
 		req := httptest.NewRequest(http.MethodPost, "/credimi/pipeline-result", strings.NewReader(payload))
 		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
@@ -488,7 +489,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 			"log_path":          logPath,
 			"platform":          "android",
 			"run_identifier":    "run-1",
-			"runner_identifier": "runner-1",
+			"device_identifier": "runner-1",
 		}
 		buf := &bytes.Buffer{}
 		require.NoError(t, json.NewEncoder(buf).Encode(payload))
@@ -503,7 +504,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 
 		fields, files, err := capture.snapshot()
 		require.NoError(t, err)
-		require.Equal(t, "runner-1", fields["runner_identifier"])
+		require.Equal(t, "runner-1", fields["device_identifier"])
 		require.Equal(t, "run-1", fields["run_identifier"])
 		require.Equal(t, "android", fields["platform"])
 		require.Equal(t, []string{"video.mp4"}, files["result_video"])
@@ -516,7 +517,7 @@ func TestServerContract_StorePipelineResult(t *testing.T) {
 func TestServerContract_StoreExecutionScreenshots(t *testing.T) {
 	t.Run("empty paths", func(t *testing.T) {
 		server := newRunnerServiceForTest(nil, nil)
-		req := httptest.NewRequest(http.MethodPost, "/credimi/execution-screenshots", strings.NewReader(`{"run_identifier":"run","runner_identifier":"runner","step_id":"step","screenshot_paths":[]}`))
+		req := httptest.NewRequest(http.MethodPost, "/credimi/execution-screenshots", strings.NewReader(`{"run_identifier":"run","device_identifier":"runner","step_id":"step","screenshot_paths":[]}`))
 		addTestAPIKey(req)
 		resp := httptest.NewRecorder()
 		server.ServeHTTP(resp, req)
@@ -537,7 +538,7 @@ func TestServerContract_StoreExecutionScreenshots(t *testing.T) {
 
 		server := newRunnerServiceForTest(&utils.Instance{URL: upstream.URL, UserAPIKey: "test-api-key"}, nil)
 		body, err := json.Marshal(map[string]any{
-			"run_identifier": "run", "runner_identifier": "runner", "step_id": "scan", "screenshot_paths": []string{first, second},
+			"run_identifier": "run", "device_identifier": "runner", "step_id": "scan", "screenshot_paths": []string{first, second},
 		})
 		require.NoError(t, err)
 		req := httptest.NewRequest(http.MethodPost, "/credimi/execution-screenshots", bytes.NewReader(body))
@@ -550,7 +551,7 @@ func TestServerContract_StoreExecutionScreenshots(t *testing.T) {
 		fields, files, captureErr := capture.snapshot()
 		require.NoError(t, captureErr)
 		require.Equal(t, "run", fields["run_identifier"])
-		require.Equal(t, "runner", fields["runner_identifier"])
+		require.Equal(t, "runner", fields["device_identifier"])
 		require.Equal(t, "scan", fields["step_id"])
 		require.Equal(t, []string{"one.png", "two.png"}, files["screenshots"])
 	})
@@ -563,8 +564,16 @@ func TestServerContract_TouchFingerprint(t *testing.T) {
 	require.NoError(t, os.WriteFile(adbPath, []byte(adbContent), 0755))
 	t.Setenv("PATH", adbDir)
 
-	server := newRunnerServiceForTest(nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "/mobile/fingerprint/touch", nil)
+	service := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{UserAPIKey: "test-api-key"}, Deps{
+		Sleeper: func(time.Duration) {},
+		RuntimeConfig: &dashboardruntime.RunnerRuntimeConfig{
+			Host:    dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"},
+			Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/device", Enabled: true, Serial: "emulator-5554"}},
+		},
+	})
+	ctx := cluelog.Context(context.Background(), cluelog.WithFormat(cluelog.FormatJSON))
+	server := NewHTTPHandler(ctx, service, false)
+	req := httptest.NewRequest(http.MethodGet, "/mobile/fingerprint/touch?device_identifier=acme/runner/device", nil)
 	addTestAPIKey(req)
 	resp := httptest.NewRecorder()
 
@@ -602,7 +611,7 @@ func TestServerContract_FetchInstallerAndAction_OptionalCode(t *testing.T) {
 	})
 
 	server := newRunnerServiceForTest(instance, nil)
-	payload := `{"version_identifier":"v1","platform":"android"}`
+	payload := `{"version_identifier":"v1","platform":"android","device_identifier":"device"}`
 	req := httptest.NewRequest(http.MethodPost, "/credimi/installer-action", strings.NewReader(payload))
 	addTestAPIKey(req)
 	resp := httptest.NewRecorder()

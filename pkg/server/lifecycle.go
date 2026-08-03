@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 )
 
@@ -31,10 +32,18 @@ type RunnerLifecycleConfig struct {
 	APIKey            string
 	HeartbeatInterval time.Duration
 	RequestTimeout    time.Duration
+	Devices           []LifecycleDevice
 }
 
 type lifecyclePayload struct {
-	RunnerID string `json:"runner_id"`
+	RunnerID string            `json:"runner_id"`
+	Devices  []LifecycleDevice `json:"devices,omitempty"`
+	Reason   string            `json:"reason,omitempty"`
+}
+
+type LifecycleDevice struct {
+	DeviceID string `json:"device_id"`
+	Online   bool   `json:"online"`
 	Reason   string `json:"reason,omitempty"`
 }
 
@@ -61,6 +70,8 @@ type RunnerLifecycleClient struct {
 	store      *ProcessStore
 	newTicker  func(time.Duration) lifecycleTicker
 	warnf      func(string, ...any)
+	devices    []LifecycleDevice
+	readiness  func() Readiness
 }
 
 func LoadRunnerLifecycleConfig(instance utils.Instance) RunnerLifecycleConfig {
@@ -76,6 +87,11 @@ func LoadRunnerLifecycleConfig(instance utils.Instance) RunnerLifecycleConfig {
 		cfg.APIKey = strings.TrimSpace(instance.UserAPIKey)
 	} else {
 		cfg.APIKey = strings.TrimSpace(instance.InternalAdminKey)
+	}
+	if inventory, err := dashboardruntime.RuntimeConfigFromEnvironment(); err == nil {
+		for _, device := range inventory.Devices {
+			cfg.Devices = append(cfg.Devices, LifecycleDevice{DeviceID: device.ID, Online: device.Enabled})
+		}
 	}
 
 	return cfg
@@ -93,7 +109,11 @@ func NewRunnerLifecycleClient(cfg RunnerLifecycleConfig, httpClient HTTPClient, 
 		newTicker: func(interval time.Duration) lifecycleTicker {
 			return timeTicker{ticker: time.NewTicker(interval)}
 		},
-		warnf: log.Printf,
+		warnf:   log.Printf,
+		devices: append([]LifecycleDevice(nil), cfg.Devices...),
+		readiness: func() Readiness {
+			return NewReadinessService().Check()
+		},
 	}
 }
 
@@ -105,10 +125,54 @@ func (c *RunnerLifecycleClient) Resume(ctx context.Context, reason string) error
 }
 
 func (c *RunnerLifecycleClient) Heartbeat(ctx context.Context) error {
+	devices := c.currentDevices()
+	reason := ""
+	if len(devices) == 0 {
+		reason = "heartbeat"
+	}
 	return c.post(ctx, []string{"api", "mobile-runner", "lifecycle", "heartbeat"}, lifecyclePayload{
 		RunnerID: c.cfg.RunnerID,
-		Reason:   "heartbeat",
+		Devices:  devices,
+		Reason:   reason,
 	})
+}
+
+// currentDevices refreshes heartbeat state for every configured device. A
+// disabled or unavailable device stays in the inventory but is explicitly
+// reported offline, so it never hides healthy siblings behind a host pause.
+func (c *RunnerLifecycleClient) currentDevices() []LifecycleDevice {
+	devices := append([]LifecycleDevice(nil), c.devices...)
+	if c.readiness == nil {
+		return devices
+	}
+	ready := c.readiness()
+	for index := range devices {
+		state, ok := ready.Devices[devices[index].DeviceID]
+		if !devices[index].Online {
+			devices[index].Reason = "disabled"
+			continue
+		}
+		if !ok {
+			devices[index].Online = false
+			devices[index].Reason = "not reported by runner readiness"
+			continue
+		}
+		if !state.Ready {
+			devices[index].Online = false
+			devices[index].Reason = state.State
+			if devices[index].Reason == "" {
+				devices[index].Reason = "not ready"
+			}
+		}
+	}
+	return devices
+}
+
+func (c *RunnerLifecycleClient) SetDevices(devices []LifecycleDevice) {
+	if c == nil {
+		return
+	}
+	c.devices = append([]LifecycleDevice(nil), devices...)
 }
 
 func (c *RunnerLifecycleClient) Pause(ctx context.Context, reason string) error {

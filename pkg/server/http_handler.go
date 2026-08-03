@@ -172,6 +172,7 @@ func (s *runnerService) FetchInstallerAndAction(ctx context.Context, payload *cr
 	if payload.SkipInstaller != nil {
 		body.SkipInstaller = *payload.SkipInstaller
 	}
+	body.DeviceIdentifier = payload.DeviceIdentifier
 
 	result, apiErr := s.fetchInstallerAndActionLogic(body)
 	if apiErr != nil {
@@ -199,8 +200,8 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 	if payload.RunIdentifier != "" {
 		body.RunIdentifier = payload.RunIdentifier
 	}
-	if payload.RunnerIdentifier != nil {
-		body.RunnerIdentifier = *payload.RunnerIdentifier
+	if payload.DeviceIdentifier != nil {
+		body.DeviceIdentifier = *payload.DeviceIdentifier
 	}
 	if payload.Platform != "" {
 		body.Platform = payload.Platform
@@ -233,7 +234,7 @@ func (s *runnerService) StorePipelineResult(ctx context.Context, payload *credim
 func (s *runnerService) StoreExecutionScreenshots(ctx context.Context, payload *credimi.StoreExecutionScreenshotsPayload) (map[string]any, error) {
 	body := storeExecutionScreenshotsPayload{
 		RunIdentifier:    payload.RunIdentifier,
-		RunnerIdentifier: payload.RunnerIdentifier,
+		DeviceIdentifier: payload.DeviceIdentifier,
 		StepID:           payload.StepID,
 		ScreenshotPaths:  append([]string(nil), payload.ScreenshotPaths...),
 	}
@@ -282,6 +283,10 @@ func rejectLegacyInstanceURL(next http.Handler) http.Handler {
 			writeCredimiBadRequest(w, "instance_url_not_supported", "instance_url is not supported; configure CREDIMI_URL instead")
 			return
 		}
+		if _, exists := decoded["runner_identifier"]; exists {
+			writeCredimiBadRequest(w, "runner_identifier_not_supported", "runner_identifier is not supported; provide device_identifier")
+			return
+		}
 
 		next.ServeHTTP(w, r)
 	})
@@ -292,7 +297,7 @@ func isCredimiRequestBodyGuarded(r *http.Request) bool {
 		return false
 	}
 	switch r.URL.Path {
-	case "/credimi/installer-action", "/credimi/pipeline-result":
+	case "/credimi/installer-action", "/credimi/pipeline-result", "/credimi/execution-screenshots":
 		return true
 	default:
 		return false
@@ -312,7 +317,7 @@ func writeCredimiBadRequest(w http.ResponseWriter, reason, message string) {
 }
 
 func (s *runnerService) TouchFingerprint(ctx context.Context, payload *mobile.TouchFingerprintPayload) (*mobile.Touchfingerprintresult, error) {
-	result, apiErr := s.touchFingerprintLogic()
+	result, apiErr := s.touchFingerprintLogic(payload.DeviceIdentifier)
 	if apiErr != nil {
 		return nil, wrapMobileAPIError(apiErr)
 	}

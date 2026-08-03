@@ -22,12 +22,17 @@ var (
 )
 
 type RunnerReadiness struct {
-	Service      string `json:"service"`
-	RunnerID     string `json:"runner_id"`
-	BootID       string `json:"boot_id"`
-	Version      string `json:"version"`
-	DeviceSerial string `json:"device_serial"`
-	DeviceState  string `json:"device_state"`
+	Service  string                     `json:"service"`
+	RunnerID string                     `json:"runner_id"`
+	BootID   string                     `json:"boot_id"`
+	Version  string                     `json:"version"`
+	Devices  map[string]DeviceReadiness `json:"devices"`
+}
+
+type DeviceReadiness struct {
+	Serial string `json:"serial"`
+	State  string `json:"state"`
+	Ready  bool   `json:"ready"`
 }
 
 func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string, values dashboardruntime.Values) (RunnerReadiness, error) {
@@ -52,11 +57,6 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 		if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
 			return ready, ErrRunnerIdentityMismatch
 		}
-		if deviceRequired {
-			if err := readinessStateError(ready.DeviceState); err != nil {
-				return ready, err
-			}
-		}
 		return ready, ErrRunnerNotReady
 	}
 	if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
@@ -66,12 +66,25 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 		return ready, ErrRunnerIdentityMismatch
 	}
 	if deviceRequired {
-		if want := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]); want != "" && ready.DeviceSerial != want {
-			return ready, ErrDeviceMismatch
+		if inventory, inventoryErr := dashboardruntime.ParseRuntimeConfig(values); inventoryErr == nil {
+			for _, device := range inventory.Devices {
+				if !device.Enabled {
+					continue
+				}
+				state, ok := ready.Devices[device.ID]
+				if !ok {
+					return ready, ErrDeviceMissing
+				}
+				if device.Serial != "" && state.Serial != "" && device.Serial != state.Serial {
+					return ready, ErrDeviceMismatch
+				}
+				if err := readinessStateError(state.State); err != nil {
+					return ready, err
+				}
+			}
+			return ready, nil
 		}
-		if err := readinessStateError(ready.DeviceState); err != nil {
-			return ready, err
-		}
+		return ready, ErrDeviceMissing
 	}
 	return ready, nil
 }

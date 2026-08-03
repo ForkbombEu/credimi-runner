@@ -21,13 +21,16 @@ type storePipelineResultPayload struct {
 	LastFramePath    string `json:"last_frame_path"`
 	LogPath          string `json:"log_path"`
 	RunIdentifier    string `json:"run_identifier"`
-	RunnerIdentifier string `json:"runner_identifier"`
+	DeviceIdentifier string `json:"device_identifier"`
 	Platform         string `json:"platform"`
 }
 
 const maxMaestroScreenshots = 99
 
 func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayload) ([]byte, *runner.APIError) {
+	if _, apiErr := s.configuredDevice(payload.DeviceIdentifier); apiErr != nil {
+		return nil, apiErr
+	}
 	if payload.VideoPath == "" {
 		return nil, &runner.APIError{
 			Code:    http.StatusBadRequest,
@@ -36,10 +39,25 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 			Message: "result_path is required",
 		}
 	}
+	if payload.LastFramePath == "" {
+		return nil, &runner.APIError{Code: http.StatusBadRequest, Domain: "server", Reason: "missing field", Message: "last_frame_path is required"}
+	}
 
 	platform, apiErr := normalizeInstallerPlatform(payload.Platform)
 	if apiErr != nil {
 		return nil, apiErr
+	}
+	artifactRoot := s.Deps.ManagedWorkflowRoot
+	if s.Deps.RuntimeConfig != nil {
+		artifactRoot, err := deviceArtifactRoot(artifactRoot, payload.DeviceIdentifier, payload.RunIdentifier)
+		if err != nil {
+			return nil, badScreenshotPathError(err.Error())
+		}
+		for _, path := range []string{payload.VideoPath, payload.LastFramePath, payload.LogPath} {
+			if path != "" && !isPathWithinRoot(filepath.Clean(path), artifactRoot, false) {
+				return nil, badScreenshotPathError("artifact path must be within the selected device and run root")
+			}
+		}
 	}
 
 	var body bytes.Buffer
@@ -57,7 +75,7 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		return nil, apiErr
 	}
 
-	if err := writer.WriteField("runner_identifier", payload.RunnerIdentifier); err != nil {
+	if err := writer.WriteField("device_identifier", payload.DeviceIdentifier); err != nil {
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "server",
@@ -148,7 +166,7 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 	}
 
 	artifactPaths := []string{payload.VideoPath, payload.LastFramePath, payload.LogPath}
-	for _, resultDir := range managedArtifactDirectories(artifactPaths, s.Deps.ManagedWorkflowRoot) {
+	for _, resultDir := range managedArtifactDirectories(artifactPaths, artifactRoot) {
 		if err := s.Deps.FileStore.RemoveAll(resultDir); err != nil {
 			log.Printf("pipeline result cleanup failed for directory %q: %v", filepath.Base(resultDir), err)
 		}

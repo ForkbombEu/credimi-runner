@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,12 +15,19 @@ import (
 // Readiness describes this particular runner process. Unlike /health, this
 // endpoint is used by the local lifecycle controller to verify identity.
 type Readiness struct {
-	Service      string `json:"service"`
-	RunnerID     string `json:"runner_id"`
-	BootID       string `json:"boot_id"`
-	Version      string `json:"version"`
-	DeviceSerial string `json:"device_serial,omitempty"`
-	DeviceState  string `json:"device_state,omitempty"`
+	Service      string                 `json:"service"`
+	RunnerID     string                 `json:"runner_id"`
+	BootID       string                 `json:"boot_id"`
+	Version      string                 `json:"version"`
+	Devices      map[string]DeviceReady `json:"devices,omitempty"`
+	DeviceSerial string                 `json:"-"`
+	DeviceState  string                 `json:"-"`
+}
+
+type DeviceReady struct {
+	Serial string `json:"serial,omitempty"`
+	State  string `json:"state,omitempty"`
+	Ready  bool   `json:"ready"`
 }
 
 type ReadinessService struct {
@@ -32,24 +41,43 @@ func NewReadinessService() *ReadinessService {
 
 func (s *ReadinessService) Check() Readiness {
 	env := s.environment
-	serial := strings.TrimSpace(env("ANDROID_SERIAL"))
-	if serial == "" {
-		serial = strings.TrimSpace(env("CREDIMI_RUNNER_SERIAL"))
+	devices := make(map[string]DeviceReady)
+	count, _ := strconv.Atoi(strings.TrimSpace(env("CREDIMI_DEVICE_COUNT")))
+	for index := 1; index <= count; index++ {
+		prefix := fmt.Sprintf("CREDIMI_DEVICE_%d_", index)
+		id := strings.TrimPrefix(strings.TrimSpace(env(prefix+"ID")), "/")
+		if id == "" {
+			continue
+		}
+		serial := strings.TrimSpace(env(prefix + "SERIAL"))
+		state := ""
+		if s.deviceReadinessRequired() && serial != "" && s.DeviceState != nil {
+			state = s.DeviceState(serial)
+		}
+		devices[id] = DeviceReady{Serial: serial, State: state, Ready: !s.deviceReadinessRequired() || serial == "" || state == "device"}
 	}
-	state := ""
-	if s.deviceReadinessRequired() && serial != "" && s.DeviceState != nil {
-		state = s.DeviceState(serial)
-	}
-	return Readiness{Service: "credimi-runner", RunnerID: strings.TrimSpace(env("CREDIMI_RUNNER_ID")), BootID: strings.TrimSpace(env("CREDIMI_RUNNER_BOOT_ID")), Version: defaultReadinessVersion(env("CREDIMI_RUNNER_VERSION")), DeviceSerial: serial, DeviceState: state}
+	return Readiness{Service: "credimi-runner", RunnerID: strings.TrimSpace(env("CREDIMI_RUNNER_ID")), BootID: strings.TrimSpace(env("CREDIMI_RUNNER_BOOT_ID")), Version: defaultReadinessVersion(env("CREDIMI_RUNNER_VERSION")), Devices: devices}
 }
 
 func (s *ReadinessService) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	ready := s.Check()
 	w.Header().Set("Content-Type", "application/json")
-	if ready.RunnerID == "" || ready.BootID == "" || (s.deviceReadinessRequired() && ready.DeviceSerial != "" && ready.DeviceState != "device") {
+	if ready.RunnerID == "" || ready.BootID == "" || !allDevicesReady(ready.Devices, s.deviceReadinessRequired()) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(w).Encode(ready)
+}
+
+func allDevicesReady(devices map[string]DeviceReady, required bool) bool {
+	if !required {
+		return true
+	}
+	for _, device := range devices {
+		if !device.Ready {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *ReadinessService) deviceReadinessRequired() bool {

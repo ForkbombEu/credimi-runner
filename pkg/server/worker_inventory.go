@@ -12,7 +12,7 @@ func workerInventory(config runtime.RunnerRuntimeConfig) workermanager.RunnerRun
 		for key, value := range device.Values {
 			values[key] = value
 		}
-		devices = append(devices, workermanager.DeviceRuntimeConfig{ID: device.ID, Type: device.Type, Serial: device.Serial, Values: values})
+		devices = append(devices, workermanager.DeviceRuntimeConfig{ID: device.ID, Type: device.Type, Serial: device.Serial, Enabled: device.Enabled, Values: values})
 	}
 	return workermanager.RunnerRuntimeConfig{RunnerID: config.Host["CREDIMI_RUNNER_ID"], Devices: devices}
 }

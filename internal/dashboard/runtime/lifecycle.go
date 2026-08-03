@@ -618,11 +618,14 @@ func validateReachableHostRunner(ctx context.Context, values Values) error {
 	defer response.Body.Close()
 
 	var ready struct {
-		Service      string `json:"service"`
-		RunnerID     string `json:"runner_id"`
-		BootID       string `json:"boot_id"`
-		DeviceSerial string `json:"device_serial"`
-		DeviceState  string `json:"device_state"`
+		Service  string `json:"service"`
+		RunnerID string `json:"runner_id"`
+		BootID   string `json:"boot_id"`
+		Devices  map[string]struct {
+			Serial string `json:"serial"`
+			State  string `json:"state"`
+			Ready  bool   `json:"ready"`
+		} `json:"devices"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&ready); err != nil {
 		return fmt.Errorf("decode runner readiness: %w", err)
@@ -636,17 +639,26 @@ func validateReachableHostRunner(ctx context.Context, values Values) error {
 	if expected := strings.TrimSpace(values["CREDIMI_RUNNER_ID"]); expected != "" && ready.RunnerID != expected {
 		return fmt.Errorf("runner ID %q does not match configured runner %q", ready.RunnerID, expected)
 	}
-	if expected := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]); expected != "" && ready.DeviceSerial != expected {
-		return fmt.Errorf("device serial %q does not match configured device %q", ready.DeviceSerial, expected)
+	inventory, err := ParseRuntimeConfig(values)
+	if err != nil {
+		return err
 	}
-	switch strings.TrimSpace(ready.DeviceState) {
-	case "", "device":
-		return nil
-	case "offline", "unauthorized", "missing":
-		return fmt.Errorf("configured device is %s", ready.DeviceState)
-	default:
-		return fmt.Errorf("runner reports unknown device state %q", ready.DeviceState)
+	for _, device := range inventory.Devices {
+		if !device.Enabled {
+			continue
+		}
+		state, ok := ready.Devices[device.ID]
+		if !ok {
+			return fmt.Errorf("configured device %q is missing from readiness", device.ID)
+		}
+		if device.Serial != "" && state.Serial != "" && device.Serial != state.Serial {
+			return fmt.Errorf("device serial %q does not match configured device %q", state.Serial, device.Serial)
+		}
+		if !state.Ready {
+			return fmt.Errorf("configured device %q is %s", device.ID, state.State)
+		}
 	}
+	return nil
 }
 
 func runnerListenTarget(values Values) (string, string) {

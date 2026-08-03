@@ -21,6 +21,7 @@ type fetchInstallerAndActionPayload struct {
 	ActionIdentifier  string `json:"action_identifier"`
 	Platform          string `json:"platform"`
 	SkipInstaller     bool   `json:"skip_installer,omitempty"`
+	DeviceIdentifier  string `json:"device_identifier"`
 }
 
 type fetchInstallerAndActionResult struct {
@@ -30,6 +31,9 @@ type fetchInstallerAndActionResult struct {
 }
 
 func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndActionPayload) (*fetchInstallerAndActionResult, *runner.APIError) {
+	if _, apiErr := s.configuredDevice(payload.DeviceIdentifier); apiErr != nil {
+		return nil, apiErr
+	}
 	platform, apiErr := normalizeInstallerPlatform(payload.Platform)
 	if apiErr != nil {
 		return nil, apiErr
@@ -149,6 +153,13 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 	}
 
 	fileURL := utils.JoinURL(instance.URL, "api", "files", "wallet_versions", md5Resp.RecordID, md5Resp.InstallerName)
+	root := ""
+	if s.Deps.RuntimeConfig != nil {
+		root, err = deviceArtifactRoot(s.Deps.ManagedWorkflowRoot, payload.DeviceIdentifier, payload.VersionIdentifier)
+		if err != nil {
+			return nil, &runner.APIError{Code: http.StatusBadRequest, Domain: "device", Reason: "unsafe artifact path", Message: err.Error()}
+		}
+	}
 	path, err := downloadInstallerIfMissing(
 		fileURL,
 		apiKey,
@@ -157,6 +168,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 		platform,
 		s.Deps.HTTPClient,
 		s.Deps.FileStore,
+		root,
 	)
 	if err != nil {
 		return nil, &runner.APIError{
@@ -174,8 +186,8 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 	}, nil
 }
 
-func downloadInstallerIfMissing(fileURL, apiKey, localName, installerName, platform string, client HTTPClient, fileStore FileStore) (string, error) {
-	localPath, err := downloadFileIfMissing(fileURL, apiKey, localName, installerName, client, fileStore)
+func downloadInstallerIfMissing(fileURL, apiKey, localName, installerName, platform string, client HTTPClient, fileStore FileStore, roots ...string) (string, error) {
+	localPath, err := downloadFileIfMissing(fileURL, apiKey, localName, installerName, client, fileStore, roots...)
 	if err != nil {
 		return "", err
 	}
@@ -184,15 +196,19 @@ func downloadInstallerIfMissing(fileURL, apiKey, localName, installerName, platf
 		return localPath, nil
 	}
 
-	return unzipIOSAppIfNeeded(localPath, localName, fileStore)
+	return unzipIOSAppIfNeeded(localPath, localName, fileStore, roots...)
 }
 
-func downloadFileIfMissing(fileURL, apiKey, localName, installerName string, client HTTPClient, fileStore FileStore) (string, error) {
-	if err := fileStore.MkdirAll("apps", 0755); err != nil {
+func downloadFileIfMissing(fileURL, apiKey, localName, installerName string, client HTTPClient, fileStore FileStore, roots ...string) (string, error) {
+	root := "apps"
+	if len(roots) > 0 && roots[0] != "" {
+		root = roots[0]
+	}
+	if err := fileStore.MkdirAll(root, 0755); err != nil {
 		return "", fmt.Errorf("failed to create apps directory: %v", err)
 	}
 
-	localPath := filepath.Join("apps", localName+filepath.Ext(installerName))
+	localPath := filepath.Join(root, localName+filepath.Ext(installerName))
 
 	if _, err := fileStore.Stat(localPath); err == nil {
 		return localPath, nil
@@ -225,8 +241,12 @@ func downloadFileIfMissing(fileURL, apiKey, localName, installerName string, cli
 	return localPath, nil
 }
 
-func unzipIOSAppIfNeeded(archivePath, localName string, fileStore FileStore) (string, error) {
-	markerPath := filepath.Join("apps", localName+".app-path")
+func unzipIOSAppIfNeeded(archivePath, localName string, fileStore FileStore, roots ...string) (string, error) {
+	root := "apps"
+	if len(roots) > 0 && roots[0] != "" {
+		root = roots[0]
+	}
+	markerPath := filepath.Join(root, localName+".app-path")
 	if appPath, err := readStoredAppPath(markerPath, fileStore); err == nil {
 		if _, err := fileStore.Stat(appPath); err == nil {
 			return appPath, nil
@@ -243,7 +263,7 @@ func unzipIOSAppIfNeeded(archivePath, localName string, fileStore FileStore) (st
 		return "", fmt.Errorf("failed to open ios archive: %v", err)
 	}
 
-	extractRoot := filepath.Join("apps", localName)
+	extractRoot := filepath.Join(root, localName)
 	if err := fileStore.RemoveAll(extractRoot); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("failed to clear extracted ios app: %v", err)
 	}

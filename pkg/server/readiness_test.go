@@ -29,7 +29,7 @@ func TestADBDeviceState(t *testing.T) {
 
 func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
-		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_RUNNER_VERSION": "v1", "ANDROID_SERIAL": "device-1"}[key]
+		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_RUNNER_VERSION": "v1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
 	}, DeviceState: func(serial string) string {
 		if serial != "device-1" {
 			t.Fatalf("serial = %q", serial)
@@ -42,14 +42,14 @@ func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 		t.Fatalf("status = %d", recorder.Code)
 	}
 	var got Readiness
-	if err := json.NewDecoder(recorder.Body).Decode(&got); err != nil || got.RunnerID != "runner-1" || got.DeviceState != "device" {
+	if err := json.NewDecoder(recorder.Body).Decode(&got); err != nil || got.RunnerID != "runner-1" || got.Devices["runner-1/device-1"].State != "device" {
 		t.Fatalf("readiness = %#v err=%v", got, err)
 	}
 }
 
 func TestReadinessRejectsUnavailableConfiguredDevice(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
-		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "ANDROID_SERIAL": "device-1"}[key]
+		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
 	}, DeviceState: func(string) string { return "offline" }}
 	recorder := httptest.NewRecorder()
 	service.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -62,10 +62,12 @@ func TestReadinessAcceptsDeferredManagedDevice(t *testing.T) {
 	deviceStateCalled := false
 	service := &ReadinessService{Environment: func(key string) string {
 		return map[string]string{
-			"CREDIMI_RUNNER_ID":      "runner-1",
-			"CREDIMI_RUNNER_BOOT_ID": "boot-1",
-			"CREDIMI_CONTAINER_MODE": "no_device",
-			"ANDROID_SERIAL":         "192.168.0.241:5555",
+			"CREDIMI_RUNNER_ID":       "runner-1",
+			"CREDIMI_RUNNER_BOOT_ID":  "boot-1",
+			"CREDIMI_CONTAINER_MODE":  "no_device",
+			"CREDIMI_DEVICE_COUNT":    "1",
+			"CREDIMI_DEVICE_1_ID":     "runner-1/device-1",
+			"CREDIMI_DEVICE_1_SERIAL": "192.168.0.241:5555",
 		}[key]
 	}, DeviceState: func(string) string {
 		deviceStateCalled = true
@@ -81,9 +83,9 @@ func TestReadinessAcceptsDeferredManagedDevice(t *testing.T) {
 	}
 }
 
-func TestReadinessUsesConfiguredSerialAndReportsMissingIdentity(t *testing.T) {
+func TestReadinessUsesIndexedSerialAndReportsMissingIdentity(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
-		return map[string]string{"CREDIMI_RUNNER_SERIAL": "device-2"}[key]
+		return map[string]string{"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-2", "CREDIMI_DEVICE_1_SERIAL": "device-2"}[key]
 	}, DeviceState: func(serial string) string {
 		if serial != "device-2" {
 			t.Fatalf("serial = %q", serial)
@@ -91,7 +93,7 @@ func TestReadinessUsesConfiguredSerialAndReportsMissingIdentity(t *testing.T) {
 		return "missing"
 	}}
 	ready := service.Check()
-	if ready.Service != "credimi-runner" || ready.Version != "unknown" || ready.DeviceSerial != "device-2" || ready.DeviceState != "missing" {
+	if ready.Service != "credimi-runner" || ready.Version != "unknown" || ready.Devices["runner-1/device-2"].Serial != "device-2" || ready.Devices["runner-1/device-2"].State != "missing" {
 		t.Fatalf("readiness = %#v", ready)
 	}
 	recorder := httptest.NewRecorder()

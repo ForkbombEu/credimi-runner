@@ -55,6 +55,9 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	startDelay := startupWorkerDelay()
 	startAttempts := 0
 	runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")
+	if s.Deps.RuntimeConfig != nil {
+		runnerID = s.Deps.RuntimeConfig.Host["CREDIMI_RUNNER_ID"]
+	}
 	runnerPublished, _ := strconv.ParseBool(utils.GetEnvironmentVariable("CREDIMI_RUNNER_PUBLISHED"))
 
 	inst := s.Instance
