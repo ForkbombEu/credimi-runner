@@ -274,7 +274,7 @@ func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 		case "/health":
 			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
 		case "/readyz":
-			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","device_serial":"192.168.0.241:5555","device_state":"missing"}`))
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/redroid":{"serial":"192.168.0.241:5555","state":"missing","ready":false}}}`))
 		default:
 			http.NotFound(w, request)
 		}
@@ -285,11 +285,14 @@ func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := waitForRunnerReady(context.Background(), runner.Client(), dashboardruntime.Values{
-		"CREDIMI_RUNNER_ID":     "runner-1",
-		"CREDIMI_RUNNER_SERIAL": "192.168.0.241:5555",
-		"CREDIMI_RUNNER_TYPE":   "redroid",
-		"RUNNER_HOST":           host,
-		"RUNNER_PORT":           port,
+		"CREDIMI_RUNNER_ID":       "runner-1",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "runner-1/redroid",
+		"CREDIMI_DEVICE_1_TYPE":   "redroid",
+		"CREDIMI_DEVICE_1_MODE":   "no_device",
+		"CREDIMI_DEVICE_1_SERIAL": "192.168.0.241:5555",
+		"RUNNER_HOST":             host,
+		"RUNNER_PORT":             port,
 	}); err != nil {
 		t.Fatal(err)
 	}
