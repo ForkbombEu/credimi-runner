@@ -17,15 +17,18 @@ import (
 func TestReadinessFailureExplainsUnreachableAndroidPhone(t *testing.T) {
 	cause := errors.New("dial tcp 127.0.0.1:8050: connect: connection refused")
 	err := ReadinessFailure(dashboardruntime.Values{
-		"CREDIMI_RUNNER_TYPE":   "android_phone",
-		"CREDIMI_RUNNER_SERIAL": "device-1",
+		"CREDIMI_RUNNER_ID":       "acme/runner",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "acme/runner/device-1",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "usb",
+		"CREDIMI_DEVICE_1_SERIAL": "device-1",
 	}, "127.0.0.1:8050", cause, context.DeadlineExceeded)
 
 	message := err.Error()
 	for _, want := range []string{
 		"runner never opened its listener",
-		"device-1",
-		"adb -s device-1 get-state",
+		"configured device",
 		"connection refused",
 	} {
 		if !strings.Contains(message, want) {
@@ -39,8 +42,12 @@ func TestReadinessFailureExplainsUnreachableAndroidPhone(t *testing.T) {
 
 func TestReadinessFailureExplainsUnauthorizedDevice(t *testing.T) {
 	err := ReadinessFailure(dashboardruntime.Values{
-		"CREDIMI_RUNNER_TYPE":   "android_phone",
-		"CREDIMI_RUNNER_SERIAL": "device-1",
+		"CREDIMI_RUNNER_ID":       "acme/runner",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "acme/runner/device-1",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "usb",
+		"CREDIMI_DEVICE_1_SERIAL": "device-1",
 	}, "127.0.0.1:8050", ErrDeviceUnauthorized, context.DeadlineExceeded)
 
 	if !strings.Contains(err.Error(), "accept the USB debugging prompt") {
@@ -255,23 +262,6 @@ func TestRuntimeLifecycleRegisterRunningWaitsForRunnerReadiness(t *testing.T) {
 	}
 	if err := lifecycle.RegisterRunning(context.Background()); err != nil {
 		t.Fatalf("RegisterRunning() error = %v", err)
-	}
-}
-
-func TestRunnerHealthValidatesConfiguredDevice(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"devices":[{"serial":"device-1","state":"device"}]}`))
-	}))
-	defer server.Close()
-	host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runnerHealth(context.Background(), server.Client(), host, port, "device-1"); err != nil {
-		t.Fatalf("runnerHealth() error = %v", err)
-	}
-	if err := runnerHealth(context.Background(), server.Client(), host, port, "missing"); err == nil {
-		t.Fatal("runnerHealth() accepted a missing configured device")
 	}
 }
 

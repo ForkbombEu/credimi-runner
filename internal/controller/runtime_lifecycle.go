@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -180,11 +179,6 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		port = dashboardruntime.DefaultRunnerPort
 	}
 	address := net.JoinHostPort(host, port)
-	deviceRequired := dashboardruntime.DeviceReadinessRequired(values, "")
-	_, serial, _ := primaryDevice(values)
-	if deviceRequired {
-		_, serial, _ = primaryDevice(values)
-	}
 	deadline, cancel := context.WithTimeout(ctx, RunnerReadinessTimeout)
 	defer cancel()
 	ticker := time.NewTicker(500 * time.Millisecond)
@@ -194,7 +188,7 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		connection, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = connection.Close()
-			if healthErr := runnerHealth(deadline, client, host, port, serial); healthErr == nil {
+			if healthErr := runnerHealth(deadline, client, host, port); healthErr == nil {
 				if _, readyErr := ValidateReadiness(deadline, client, "http://"+address, values); readyErr == nil {
 					return nil
 				} else {
@@ -225,42 +219,23 @@ func ReadinessFailure(values dashboardruntime.Values, address string, lastErr, d
 	if cause == nil {
 		cause = errors.New("readiness deadline exceeded")
 	}
-	_, serial, _ := primaryDevice(values)
 	switch {
 	case errors.Is(cause, ErrDeviceMissing):
-		return fmt.Errorf("runner did not become ready on %s: configured device %q is not available; connect it and verify it is authorized with `adb -s %s get-state`: %w", address, serial, serial, cause)
+		return fmt.Errorf("runner did not become ready on %s: a configured device is not available; inspect its device readiness and connection: %w", address, cause)
 	case errors.Is(cause, ErrDeviceOffline):
-		return fmt.Errorf("runner did not become ready on %s: configured device %q is offline; reconnect it and wait for `adb -s %s get-state` to report device: %w", address, serial, serial, cause)
+		return fmt.Errorf("runner did not become ready on %s: a configured device is offline; reconnect it and inspect its device readiness: %w", address, cause)
 	case errors.Is(cause, ErrDeviceUnauthorized):
-		return fmt.Errorf("runner did not become ready on %s: configured device %q is unauthorized; unlock it and accept the USB debugging prompt: %w", address, serial, cause)
+		return fmt.Errorf("runner did not become ready on %s: a configured device is unauthorized; unlock it and accept its USB debugging prompt: %w", address, cause)
 	}
 
 	return fmt.Errorf("runner did not become ready on %s: the runner never opened its listener; %s: %w", address, readinessNextStep(values), cause)
 }
 
 func readinessNextStep(values dashboardruntime.Values) string {
-	runnerType, serial, _ := primaryDevice(values)
-	switch runnerType {
-	case "android_phone":
-		if serial != "" {
-			return fmt.Sprintf("check that Android device %q is connected and authorized (`adb -s %s get-state`), then inspect runner logs", serial, serial)
-		}
-		return "check that an Android device is connected and authorized, then inspect runner logs"
-	case "android_emulator", "redroid":
-		return "check that the configured Android runtime is running, then inspect runner logs"
-	case "ios_simulator":
-		return "check that the configured iOS simulator is booted, then inspect runner logs"
-	default:
-		return "inspect runner logs"
-	}
-}
-
-func primaryDevice(values dashboardruntime.Values) (deviceType, serial, mode string) {
 	if inventory, err := dashboardruntime.ParseRuntimeConfig(values); err == nil && len(inventory.Devices) > 0 {
-		device := inventory.Devices[0]
-		return device.Type, device.Serial, device.Mode
+		return "inspect each configured device's readiness and runner logs"
 	}
-	return strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]), strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]), strings.TrimSpace(values["CREDIMI_RUNNER_DEVICE_MODE"])
+	return "inspect runner logs"
 }
 
 func (l RuntimeLifecycle) registrationEndpoint(ctx context.Context) (string, string, error) {
@@ -336,7 +311,7 @@ func (l RuntimeLifecycle) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-func runnerHealth(ctx context.Context, client *http.Client, host, port, serial string) error {
+func runnerHealth(ctx context.Context, client *http.Client, host, port string) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
 	if err != nil {
 		return err
@@ -349,24 +324,7 @@ func runnerHealth(ctx context.Context, client *http.Client, host, port, serial s
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("runner health returned %s", response.Status)
 	}
-	if serial == "" {
-		return nil
-	}
-	var payload struct {
-		Devices []struct {
-			Serial string `json:"serial"`
-			State  string `json:"state"`
-		} `json:"devices"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return fmt.Errorf("decode runner health: %w", err)
-	}
-	for _, device := range payload.Devices {
-		if strings.TrimSpace(device.Serial) == serial && strings.TrimSpace(device.State) == "device" {
-			return nil
-		}
-	}
-	return fmt.Errorf("configured device %q is not ready", serial)
+	return nil
 }
 
 func boolPointer(value bool) *bool { return &value }

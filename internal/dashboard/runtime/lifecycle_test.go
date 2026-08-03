@@ -377,13 +377,14 @@ func TestConfiguredDeviceReadyUsesADBState(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	if !configuredDeviceReady(context.Background(), Values{"CREDIMI_RUNNER_SERIAL": "device-1"}) {
+	values := Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/device-1", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-1"}
+	if !configuredDeviceReady(context.Background(), values) {
 		t.Fatal("expected connected device")
 	}
 	if err := os.Remove(adb); err != nil {
 		t.Fatal(err)
 	}
-	if configuredDeviceReady(context.Background(), Values{"CREDIMI_RUNNER_SERIAL": "device-1"}) {
+	if configuredDeviceReady(context.Background(), values) {
 		t.Fatal("missing adb should not be ready")
 	}
 }

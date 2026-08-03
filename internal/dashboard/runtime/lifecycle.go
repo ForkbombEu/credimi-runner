@@ -1115,12 +1115,23 @@ func observeRuntime(ctx context.Context, runner Runner, configDir string, values
 }
 
 func configuredDeviceReady(ctx context.Context, values Values) bool {
-	serial := strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"])
-	if serial == "" {
+	inventory, err := ParseRuntimeConfig(values)
+	if err != nil {
 		return true
 	}
-	output, err := exec.CommandContext(ctx, "adb", "-s", serial, "get-state").Output()
-	return err == nil && strings.TrimSpace(string(output)) == "device"
+	for _, device := range inventory.Devices {
+		if !device.Enabled || device.Mode == "" || device.Mode == "no_device" || device.Type == "redroid" {
+			continue
+		}
+		if device.Serial == "" {
+			return false
+		}
+		output, err := exec.CommandContext(ctx, "adb", "-s", device.Serial, "get-state").Output()
+		if err != nil || strings.TrimSpace(string(output)) != "device" {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error) {

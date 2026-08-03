@@ -29,7 +29,7 @@ func TestADBDeviceState(t *testing.T) {
 
 func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
-		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_RUNNER_VERSION": "v1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
+		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_RUNNER_VERSION": "v1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
 	}, DeviceState: func(serial string) string {
 		if serial != "device-1" {
 			t.Fatalf("serial = %q", serial)
@@ -49,7 +49,7 @@ func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 
 func TestReadinessRejectsUnavailableConfiguredDevice(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
-		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
+		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
 	}, DeviceState: func(string) string { return "offline" }}
 	recorder := httptest.NewRecorder()
 	service.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -64,9 +64,10 @@ func TestReadinessAcceptsDeferredManagedDevice(t *testing.T) {
 		return map[string]string{
 			"CREDIMI_RUNNER_ID":       "runner-1",
 			"CREDIMI_RUNNER_BOOT_ID":  "boot-1",
-			"CREDIMI_CONTAINER_MODE":  "no_device",
 			"CREDIMI_DEVICE_COUNT":    "1",
 			"CREDIMI_DEVICE_1_ID":     "runner-1/device-1",
+			"CREDIMI_DEVICE_1_TYPE":   "redroid",
+			"CREDIMI_DEVICE_1_MODE":   "no_device",
 			"CREDIMI_DEVICE_1_SERIAL": "192.168.0.241:5555",
 		}[key]
 	}, DeviceState: func(string) string {
@@ -85,7 +86,7 @@ func TestReadinessAcceptsDeferredManagedDevice(t *testing.T) {
 
 func TestReadinessUsesIndexedSerialAndReportsMissingIdentity(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
-		return map[string]string{"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-2", "CREDIMI_DEVICE_1_SERIAL": "device-2"}[key]
+		return map[string]string{"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-2", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-2"}[key]
 	}, DeviceState: func(serial string) string {
 		if serial != "device-2" {
 			t.Fatalf("serial = %q", serial)

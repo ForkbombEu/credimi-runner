@@ -50,11 +50,15 @@ func (s *ReadinessService) Check() Readiness {
 			continue
 		}
 		serial := strings.TrimSpace(env(prefix + "SERIAL"))
+		required := deviceReadinessRequired(env(prefix+"TYPE"), env(prefix+"MODE"), env(prefix+"ENABLED"))
 		state := ""
-		if s.deviceReadinessRequired() && serial != "" && s.DeviceState != nil {
+		if required && serial != "" && s.DeviceState != nil {
 			state = s.DeviceState(serial)
 		}
-		devices[id] = DeviceReady{Serial: serial, State: state, Ready: !s.deviceReadinessRequired() || serial == "" || state == "device"}
+		if required && serial == "" {
+			state = "missing"
+		}
+		devices[id] = DeviceReady{Serial: serial, State: state, Ready: !required || state == "device"}
 	}
 	return Readiness{Service: "credimi-runner", RunnerID: strings.TrimSpace(env("CREDIMI_RUNNER_ID")), BootID: strings.TrimSpace(env("CREDIMI_RUNNER_BOOT_ID")), Version: defaultReadinessVersion(env("CREDIMI_RUNNER_VERSION")), Devices: devices}
 }
@@ -62,16 +66,13 @@ func (s *ReadinessService) Check() Readiness {
 func (s *ReadinessService) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	ready := s.Check()
 	w.Header().Set("Content-Type", "application/json")
-	if ready.RunnerID == "" || ready.BootID == "" || !allDevicesReady(ready.Devices, s.deviceReadinessRequired()) {
+	if ready.RunnerID == "" || ready.BootID == "" || !allDevicesReady(ready.Devices) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(w).Encode(ready)
 }
 
-func allDevicesReady(devices map[string]DeviceReady, required bool) bool {
-	if !required {
-		return true
-	}
+func allDevicesReady(devices map[string]DeviceReady) bool {
 	for _, device := range devices {
 		if !device.Ready {
 			return false
@@ -80,8 +81,12 @@ func allDevicesReady(devices map[string]DeviceReady, required bool) bool {
 	return true
 }
 
-func (s *ReadinessService) deviceReadinessRequired() bool {
-	return strings.TrimSpace(s.environment("CREDIMI_CONTAINER_MODE")) != "no_device"
+func deviceReadinessRequired(deviceType, mode, enabled string) bool {
+	if value, err := strconv.ParseBool(strings.TrimSpace(enabled)); err == nil && !value {
+		return false
+	}
+	mode = strings.TrimSpace(mode)
+	return mode != "" && mode != "no_device" && strings.TrimSpace(deviceType) != "redroid"
 }
 
 func (s *ReadinessService) environment(key string) string {
