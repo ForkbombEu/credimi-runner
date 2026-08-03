@@ -49,13 +49,6 @@ var Registry = []Field{
 	{Key: "CREDIMI_RUNNER_DESCRIPTION", Label: "Runner description", Group: "Identity", Type: TypeText, Hint: "Optional note shown to operators, for example the physical device or simulator version."},
 	{Key: "CREDIMI_RUNNER_ORGANIZATION", Label: "Organization", Group: "Identity", Type: TypeText},
 	{Key: "CREDIMI_RUNNER_PUBLISHED", Label: "Publish runner", Group: "Identity", Type: TypeBool, Hint: "Allow published Credimi organizations to schedule pipelines on this runner."},
-	{Key: "CREDIMI_RUNNER_TYPE", Label: "Runner type", Group: "Identity", Type: TypeSelect,
-		Options: []string{"android_phone", "android_emulator", "ios_simulator", "redroid"}},
-	{Key: "CREDIMI_RUNNER_SERIAL", Label: "Device serial", Group: "Identity", Type: TypeText, Hint: "Physical device serial or host:port for Wi-Fi ADB."},
-	{Key: "CREDIMI_RUNNER_DEVICE_MODE", Label: "Device connection", Group: "Identity", Type: TypeSelect,
-		Options: []string{"usb", "wifi", "no_device"}, Hint: "USB uses host ADB; Wi-Fi uses an IP and ADB port; no-device is used by managed runtimes."},
-	{Key: "CREDIMI_RUNNER_WIFI_IP", Label: "Android Wi-Fi IP", Group: "Identity", Type: TypeText},
-	{Key: "CREDIMI_RUNNER_WIFI_PORT", Label: "Android Wi-Fi port", Group: "Identity", Type: TypeText},
 	// Authentication
 	{Key: "CREDIMI_USER_API_KEY", Label: "User API key", Group: "Authentication", Type: TypeText, Secret: true, Hint: "Scoped to your Credimi organization. Treat as a secret."},
 	{Key: "CREDIMI_INTERNAL_ADMIN_KEY", Label: "Internal admin key", Group: "Authentication", Type: TypeText, Secret: true, Hint: "Forwarded as the Credimi-Api-Key header. Grants admin-scoped workers."},
@@ -66,8 +59,6 @@ var Registry = []Field{
 		Options: []string{"auto", "cloudflare-managed", "manual"}, Hint: "auto = quick tunnel · cloudflare-managed = named tunnel · manual = direct."},
 	{Key: "CREDIMI_RUNNER_BACKEND", Label: "Runner backend", Group: "Network", Type: TypeSelect,
 		Options: []string{"container", "host"}, Hint: "container runs the published image; host runs the downloaded binary and uses compose only for edge services."},
-	{Key: "CREDIMI_CONTAINER_MODE", Label: "Container mode", Group: "Network", Type: TypeSelect,
-		Options: []string{"usb", "wifi", "emulator", "no_device"}, Hint: "Derived from runner type and device connection. You can override it for advanced installs."},
 	{Key: "RUNNER_HOST", Label: "Bind host", Group: "Network", Type: TypeText},
 	{Key: "RUNNER_PORT", Label: "Runner port", Group: "Network", Type: TypeText, Hint: "Local runner API port. Default is 8050."},
 	{Key: "RUNNER_CADDY_SITE", Label: "Caddy site address", Group: "Network", Type: TypeText, Hint: "Keep :80 behind Cloudflare Tunnel."},
@@ -82,21 +73,6 @@ var Registry = []Field{
 	{Key: "OTEL_SERVICE_NAME", Label: "Service name", Group: "Observability", Type: TypeText},
 	// Advanced
 	{Key: "CREDIMI_TEMP_DIR", Label: "Temp directory", Group: "Advanced", Type: TypeText},
-	{Key: "RUNNER_IMAGE", Label: "Runner image", Group: "Advanced", Type: TypeText},
-	{Key: "RUNNER_IMAGE_PULL_POLICY", Label: "Runner image pull policy", Group: "Advanced", Type: TypeSelect,
-		Options: []string{"always", "never"}, Hint: "always pulls from the registry; never uses only an image already present on this machine."},
-	{Key: "ANDROID_KEYS_DIR", Label: "Android keys directory", Group: "Advanced", Type: TypeText},
-	{Key: "BASE_NAME", Label: "Emulator base name", Group: "Advanced", Type: TypeText},
-	{Key: "GOLDEN_PATH", Label: "Golden path", Group: "Advanced", Type: TypeText},
-	{Key: "HOST_AVD_HOME_PATH", Label: "Host AVD home", Group: "Advanced", Type: TypeText},
-	{Key: "HOST_AVD_GOLDEN_PATH", Label: "Host AVD golden directory", Group: "Advanced", Type: TypeText},
-	{Key: "AVDCTL_SSH_TARGET", Label: "avdctl SSH target", Group: "Advanced", Type: TypeText},
-	{Key: "AVDCTL_SSH_PASSWORD", Label: "avdctl SSH password", Group: "Advanced", Type: TypeText, Secret: true},
-	{Key: "AVDCTL_SSH_KNOWN_HOSTS_PATH", Label: "SSH known_hosts path", Group: "Advanced", Type: TypeText},
-	{Key: "AVDCTL_SUDO", Label: "avdctl uses sudo", Group: "Advanced", Type: TypeBool},
-	{Key: "AVDCTL_SUDO_PASSWORD", Label: "avdctl sudo password", Group: "Advanced", Type: TypeText, Secret: true},
-	{Key: "REDROID_DATA_DIR", Label: "Redroid data directory", Group: "Advanced", Type: TypeText},
-	{Key: "REDROID_DATA_TAR", Label: "Redroid data archive", Group: "Advanced", Type: TypeText},
 }
 
 var fieldByKey = func() map[string]Field {
@@ -227,9 +203,6 @@ func Validate(vals map[string]string) map[string]string {
 			}
 		}
 	}
-	if strings.TrimSpace(vals["CREDIMI_RUNNER_TYPE"]) == "redroid" && strings.TrimSpace(vals["CREDIMI_RUNNER_WIFI_IP"]) == "" {
-		errs["CREDIMI_RUNNER_WIFI_IP"] = "Required for Redroid."
-	}
 	return errs
 }
 
@@ -237,7 +210,7 @@ func Validate(vals map[string]string) map[string]string {
 func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
 	normalized, err := normalizedConfigValues(c.Snapshot(), incoming, currentGOOS())
 	if err != nil {
-		return map[string]string{"CREDIMI_RUNNER_TYPE": err.Error()}, fmt.Errorf("validation failed")
+		return map[string]string{"CREDIMI_RUNNER_ID": err.Error()}, fmt.Errorf("validation failed")
 	}
 	next := map[string]string(normalized)
 	if errs := Validate(next); len(errs) > 0 {
@@ -251,13 +224,6 @@ func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
 
 func normalizedConfigValues(current, incoming map[string]string, goos string) (dashboardruntime.Values, error) {
 	next := cloneStringMap(current)
-	incomingType := strings.TrimSpace(next["CREDIMI_RUNNER_TYPE"])
-	if value, ok := incoming["CREDIMI_RUNNER_TYPE"]; ok {
-		incomingType = strings.TrimSpace(value)
-	}
-	if strings.TrimSpace(current["CREDIMI_RUNNER_TYPE"]) != incomingType {
-		resetTypeDerivedFields(next)
-	}
 	for _, f := range Registry {
 		if f.Type == TypeBool {
 			if v, present := incoming[f.Key]; present {
@@ -270,31 +236,6 @@ func normalizedConfigValues(current, incoming map[string]string, goos string) (d
 		}
 	}
 	return dashboardruntime.NormalizeValues(dashboardruntime.Values(next), goos)
-}
-
-func resetTypeDerivedFields(values map[string]string) {
-	for _, key := range []string{
-		"ANDROID_KEYS_DIR",
-		"AVDCTL_SSH_KNOWN_HOSTS_PATH",
-		"AVDCTL_SSH_PASSWORD",
-		"AVDCTL_SSH_TARGET",
-		"AVDCTL_SUDO",
-		"AVDCTL_SUDO_PASSWORD",
-		"BASE_NAME",
-		"CREDIMI_CONTAINER_MODE",
-		"CREDIMI_RUNNER_DEVICE_MODE",
-		"CREDIMI_RUNNER_SERIAL",
-		"CREDIMI_RUNNER_WIFI_IP",
-		"CREDIMI_RUNNER_WIFI_PORT",
-		"GOLDEN_PATH",
-		"HOST_AVD_GOLDEN_PATH",
-		"HOST_AVD_HOME_PATH",
-		"REDROID_DATA_DIR",
-		"REDROID_DATA_TAR",
-		"RUNNER_IMAGE",
-	} {
-		values[key] = ""
-	}
 }
 
 // write serializes the config to .env atomically with 0600 perms.

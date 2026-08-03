@@ -1134,14 +1134,6 @@ func validateSetupInput(values map[string]string) map[string]string {
 	if strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]) == "" && strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
 		errs["CREDIMI_RUNNER_NAME"] = "Required."
 	}
-	if strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) == "android_phone" &&
-		strings.TrimSpace(values["CREDIMI_RUNNER_DEVICE_MODE"]) != "wifi" &&
-		strings.TrimSpace(values["CREDIMI_RUNNER_SERIAL"]) == "" {
-		errs["CREDIMI_RUNNER_SERIAL"] = "Select a connected Android device."
-	}
-	if strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]) == "redroid" && strings.TrimSpace(values["CREDIMI_RUNNER_WIFI_IP"]) == "" {
-		errs["CREDIMI_RUNNER_WIFI_IP"] = "Required."
-	}
 	if strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) == "manual" && strings.TrimSpace(values["RUNNER_PUBLIC_URL"]) == "" {
 		errs["RUNNER_PUBLIC_URL"] = "Required."
 	}
@@ -1172,30 +1164,38 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 			return errors.New("docker is required for this runner mode")
 		}
 	}
-	if normalized["CREDIMI_RUNNER_TYPE"] == "ios_simulator" {
-		if _, err := s.lookupPath("xcrun"); err != nil {
-			return errors.New("xcrun simctl is required for iOS simulator runners")
-		}
+	inventory, err := dashboardruntime.ParseRuntimeConfig(normalized)
+	if err != nil {
+		return err
 	}
-	if normalized["CREDIMI_RUNNER_TYPE"] == "android_phone" &&
-		normalized["CREDIMI_RUNNER_DEVICE_MODE"] == "usb" &&
-		!s.androidSerialConnected(normalized["CREDIMI_RUNNER_SERIAL"]) {
-		return errors.New("select a connected Android device")
-	}
-	if normalized["CREDIMI_RUNNER_TYPE"] == "android_emulator" && plan.Backend == dashboardruntime.DefaultContainerBackend {
-		if _, err := s.statPath("/dev/kvm"); err != nil {
-			return errors.New("/dev/kvm is required for Android emulator containers")
+	for _, device := range inventory.Devices {
+		if !device.Enabled {
+			continue
 		}
-		for _, path := range []string{
-			strings.TrimSpace(normalized["ANDROID_KEYS_DIR"]),
-			strings.TrimSpace(normalized["HOST_AVD_HOME_PATH"]),
-			strings.TrimSpace(normalized["HOST_AVD_GOLDEN_PATH"]),
-		} {
-			if path == "" {
-				return errors.New("android emulator assets are not configured")
+		switch device.Type {
+		case "ios_simulator":
+			if _, err := s.lookupPath("xcrun"); err != nil {
+				return errors.New("xcrun simctl is required for iOS simulator devices")
 			}
-			if _, err := s.statPath(path); err != nil {
-				return fmt.Errorf("required emulator asset path is missing: %s", path)
+		case "android_phone":
+			if device.Mode == "usb" && !s.androidSerialConnected(device.Serial) {
+				return fmt.Errorf("device %q is not connected", device.ID)
+			}
+		case "android_emulator":
+			if plan.Backend != dashboardruntime.DefaultContainerBackend {
+				continue
+			}
+			if _, err := s.statPath("/dev/kvm"); err != nil {
+				return errors.New("/dev/kvm is required for Android emulator containers")
+			}
+			for _, key := range []string{"ANDROID_KEYS_DIR", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH"} {
+				path := strings.TrimSpace(device.Values[key])
+				if path == "" {
+					return fmt.Errorf("android emulator device %q is missing %s", device.ID, key)
+				}
+				if _, err := s.statPath(path); err != nil {
+					return fmt.Errorf("required emulator asset path is missing: %s", path)
+				}
 			}
 		}
 	}

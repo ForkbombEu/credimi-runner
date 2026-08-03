@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -243,18 +242,6 @@ func TestNormalizeRunnerImagePullPolicy(t *testing.T) {
 func TestNormalizeHelperFunctions(t *testing.T) {
 	if got := defaultServiceBackend("darwin"); got != DefaultHostBackend {
 		t.Fatalf("defaultServiceBackend(darwin) = %q", got)
-	}
-	if got := defaultRunnerType(Values{"CREDIMI_CONTAINER_MODE": "emulator"}, "linux"); got != "android_emulator" {
-		t.Fatalf("defaultRunnerType(emulator) = %q", got)
-	}
-	if got := strings.Join(runnerTypeChoices("linux"), ","); got != "android_emulator,redroid,android_phone" {
-		t.Fatalf("runnerTypeChoices = %q", got)
-	}
-	if got := strings.Join(RunnerTypeChoices("darwin"), ","); got != "android_emulator,ios_simulator,redroid,android_phone" {
-		t.Fatalf("RunnerTypeChoices = %q", got)
-	}
-	if got := defaultAndroidDeviceMode(Values{"CREDIMI_CONTAINER_MODE": "wifi"}, "android_phone"); got != "wifi" {
-		t.Fatalf("defaultAndroidDeviceMode = %q", got)
 	}
 	if !defaultYesNoChoice("yes", false) || defaultYesNoChoice("no", true) {
 		t.Fatal("defaultYesNoChoice returned unexpected result")
