@@ -545,10 +545,14 @@ func TestServerConfigHandlers(t *testing.T) {
 func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 	transport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/mobile-device/preview-id" {
+		if req.URL.Path != "/api/mobile-device/preview-id" && req.URL.Path != "/api/mobile-device" {
 			return nil, errors.New("unexpected path: " + req.URL.Path)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/pixel"}`))}, nil
+		body := `{"device_id":"acme/runner/pixel"}`
+		if req.URL.Path == "/api/mobile-device" {
+			body = `{}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = transport })
 
@@ -1693,17 +1697,21 @@ func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
 
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Path != "/api/mobile-device/preview-id" {
+		if request.URL.Path != "/api/mobile-device/preview-id" && request.URL.Path != "/api/mobile-device" {
 			return nil, errors.New("unexpected Credimi path: " + request.URL.Path)
 		}
 		if request.Header.Get("Credimi-Api-Key") != "user-key" {
 			return nil, errors.New("missing Credimi API key")
 		}
+		body := `{"runner_id":"acme/runner","device_id":"/acme/runner/pixel"}`
+		if request.URL.Path == "/api/mobile-device" {
+			body = `{}`
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"runner_id":"acme/runner","device_id":"/acme/runner/pixel"}`)),
+			Body:       io.NopCloser(strings.NewReader(body)),
 		}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
@@ -1820,7 +1828,7 @@ func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/devices/disable", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.deviceDisable(enable, req)
-	if enable.Code != http.StatusOK || !strings.Contains(enable.Body.String(), `"enabled":false`) {
+	if enable.Code != http.StatusSeeOther {
 		t.Fatalf("disable = %d %s", enable.Code, enable.Body.String())
 	}
 	stored, err := dashboardruntime.LoadStore(dir)
@@ -1900,6 +1908,14 @@ func TestServerDeviceRegisterSendsStoredDeviceToCredimi(t *testing.T) {
 
 func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	s := newTestServer(t)
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/pixel"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
 	form := url.Values{
 		"CREDIMI_URL":                 {"https://credimi.example"},
 		"CREDIMI_USER_API_KEY":        {"user-key"},
@@ -1907,6 +1923,9 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
 		"CREDIMI_SERVICE_MODE":        {"manual"},
 		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+		"setup_device_name":           {"Pixel"},
+		"setup_device_type":           {"redroid"},
+		"setup_device_mode":           {"no_device"},
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
@@ -1914,7 +1933,7 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	request.Header.Set("HX-Request", "true")
 	s.finishSetup(recorder, request)
 
-	if recorder.Code != http.StatusAccepted || recorder.Header().Get("HX-Redirect") != "/devices" {
+	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("setup response = %d redirect=%q body=%s", recorder.Code, recorder.Header().Get("HX-Redirect"), recorder.Body.String())
 	}
 	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
@@ -2150,7 +2169,7 @@ func TestServerManagedDeviceActions(t *testing.T) {
 		handler(rec, req)
 		return rec
 	}
-	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusOK {
+	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusSeeOther {
 		t.Fatalf("disable = %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := post(s.deviceRegister, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusOK {

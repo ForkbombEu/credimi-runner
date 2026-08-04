@@ -899,29 +899,32 @@ func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
 // plain-text pull output.
 func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func(string)) error {
 	m.mu.Lock()
-	image := strings.TrimSpace(primaryDeviceValue(m.values, "RUNNER_IMAGE"))
-	pullPolicy := defaultIfEmpty(primaryDeviceValue(m.values, "RUNNER_IMAGE_PULL_POLICY"), DefaultRunnerImagePullPolicy)
+	images := configuredRuntimeImages(m.values)
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	m.mu.Unlock()
-	if image == "" {
-		return fmt.Errorf("CREDIMI_DEVICE_1_RUNNER_IMAGE is required")
+	if len(images) == 0 {
+		if strings.TrimSpace(primaryDeviceValue(m.values, "RUNNER_IMAGE")) != "" && defaultIfEmpty(primaryDeviceValue(m.values, "RUNNER_IMAGE_PULL_POLICY"), DefaultRunnerImagePullPolicy) == "never" {
+			return fmt.Errorf("runner image upgrade is disabled when CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY=never")
+		}
+		return fmt.Errorf("no configured device runtime image can be upgraded (CREDIMI_DEVICE_1_RUNNER_IMAGE is empty)")
 	}
 	if !containsService(plan.ComposeServices, "runner") {
 		return fmt.Errorf("runner image upgrade requires the container backend")
 	}
-	if pullPolicy == "never" {
-		return fmt.Errorf("runner image upgrade is disabled when CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY=never")
-	}
-	oldImageID, _ := m.runnerImageID(ctx, image)
-	emitProgress(progress, "Checking for a newer runner image: "+image)
-	if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
-		m.setLastError(err)
-		return err
-	}
-	newImageID, err := m.runnerImageID(ctx, image)
-	if err != nil {
-		m.setLastError(err)
-		return err
+	updated := make(map[string][2]string, len(images))
+	for _, image := range images {
+		oldID, _ := m.runnerImageID(ctx, image)
+		emitProgress(progress, "Checking for a newer device runtime image: "+image)
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"pull", image}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+			m.setLastError(err)
+			return err
+		}
+		newID, err := m.runnerImageID(ctx, image)
+		if err != nil {
+			m.setLastError(err)
+			return err
+		}
+		updated[image] = [2]string{oldID, newID}
 	}
 	stopServices := []string{"runner"}
 	stopMessage := "Stopping the runner container while keeping network services online."
@@ -951,21 +954,52 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 		m.setLastError(err)
 		return err
 	}
-	if oldImageID != "" && oldImageID != newImageID {
-		emitProgress(progress, "Deleting the superseded runner image: "+oldImageID)
-		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"image", "rm", "-f", oldImageID}, Env: composeProgressEnv(), Stream: progress}); err != nil {
+	for image, ids := range updated {
+		if ids[0] == "" || ids[0] == ids[1] {
+			emitProgress(progress, "Image already current: "+image)
+			continue
+		}
+		emitProgress(progress, "Deleting superseded image for "+image+": "+ids[0])
+		if _, err := m.runner.Run(ctx, CommandSpec{Name: "docker", Args: []string{"image", "rm", "-f", ids[0]}, Env: composeProgressEnv(), Stream: progress}); err != nil {
 			m.setLastError(err)
 			return err
 		}
-	} else {
-		emitProgress(progress, "The configured runner image is already current; keeping its cached layers.")
 	}
 	emitProgress(progress, "Restarting the runner and Docker services.")
 	if err := m.StartWithProgress(ctx, progress); err != nil {
 		return err
 	}
-	emitProgress(progress, "Runner image upgrade complete.")
+	emitProgress(progress, "Device runtime image upgrade complete.")
 	return nil
+}
+
+// configuredRuntimeImages returns each pullable device image once. A `never`
+// policy means the operator owns a local image and it must not be touched by
+// the common dashboard maintenance action.
+func configuredRuntimeImages(values Values) []string {
+	inventory, err := ParseRuntimeConfig(values)
+	if err != nil {
+		// Kept solely for manager unit tests and an in-memory dashboard that has
+		// not persisted its first inventory yet. Persisted runners always use
+		// indexed blocks.
+		image := strings.TrimSpace(primaryDeviceValue(values, "RUNNER_IMAGE"))
+		if image != "" && defaultIfEmpty(primaryDeviceValue(values, "RUNNER_IMAGE_PULL_POLICY"), DefaultRunnerImagePullPolicy) != "never" {
+			return []string{image}
+		}
+		return nil
+	}
+	seen := map[string]bool{}
+	var images []string
+	for _, device := range inventory.Devices {
+		image := strings.TrimSpace(device.Values["RUNNER_IMAGE"])
+		policy := defaultIfEmpty(device.Values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
+		if image == "" || policy == "never" || seen[image] {
+			continue
+		}
+		seen[image] = true
+		images = append(images, image)
+	}
+	return images
 }
 
 func primaryDeviceValue(values Values, key string) string {

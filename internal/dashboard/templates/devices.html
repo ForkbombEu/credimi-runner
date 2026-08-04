@@ -3,39 +3,35 @@
   <div class="page-head">
     <span class="eyebrow">Runner host / device inventory</span>
     <h1>Devices</h1>
-    <p>Each device is independently selected, registered, enabled, and reported. Stopping the runner remains host-wide.</p>
+    <p>Every target has its own immutable Credimi child ID, connection settings and runtime image. Workers and the runner server remain shared.</p>
   </div>
 
   <section class="card" style="margin-bottom:16px">
-    <header class="card-h">{{icon "phone"}}<div><h3>Configured inventory</h3><div class="sub">Canonical IDs are immutable after registration.</div></div></header>
+    <header class="card-h">{{icon "phone"}}<div><h3>Configured inventory</h3><div class="sub">IDs are created from the device name and cannot be edited afterwards.</div></div></header>
     <div class="card-b">
-      {{if .ConfiguredDevices}}
-      <div class="list">
-        {{range .ConfiguredDevices}}
-        <div class="list-row">
-          <div><b>{{.Name}}</b><div class="meta mono">{{.ID}}</div><div class="meta">{{.Type}} · {{.Mode}}{{if .Serial}} · {{.Serial}}{{end}}</div></div>
-          <div class="savebar" style="margin:0"><span class="badge">{{if .Enabled}}enabled{{else}}disabled{{end}}</span><div class="sp"></div>
-            <form method="post" action="{{if .Enabled}}/devices/disable{{else}}/devices/enable{{end}}"><input type="hidden" name="device_id" value="{{.ID}}"><button class="btn btn-out btn-sm" type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form>
-            <form method="post" action="/devices/register"><input type="hidden" name="device_id" value="{{.ID}}"><button class="btn btn-pri btn-sm" type="submit">Register</button></form>
-            <form method="post" action="/devices/remove" onsubmit="return confirm('Remove this device from this runner?')"><input type="hidden" name="device_id" value="{{.ID}}"><input type="hidden" name="confirm" value="true"><button class="btn btn-danger btn-sm" type="submit">Remove</button></form>
-          </div>
-        </div>
-        {{end}}
-      </div>
-      {{else}}<div class="callout info">{{icon "info"}}<div>No devices are configured yet. Add one before starting the runner.</div></div>{{end}}
+      {{if .ConfiguredDevices}}<div class="list">{{range .ConfiguredDevices}}
+      <div class="list-row"><div><b>{{.Name}}</b><div class="meta mono">{{.ID}}</div><div class="meta">{{.Type}} · {{.Mode}}{{if .Serial}} · {{.Serial}}{{end}}</div>{{if index .Values "RUNNER_IMAGE"}}<div class="meta mono">{{index .Values "RUNNER_IMAGE"}} · {{or (index .Values "RUNNER_IMAGE_PULL_POLICY") "always"}}</div>{{end}}</div>
+        <div class="savebar" style="margin:0"><span class="badge">{{if .Enabled}}enabled{{else}}disabled{{end}}</span><div class="sp"></div><form method="post" action="{{if .Enabled}}/devices/disable{{else}}/devices/enable{{end}}"><input type="hidden" name="device_id" value="{{.ID}}"><button class="btn btn-out btn-sm" type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form><form method="post" action="/devices/remove" onsubmit="return confirm('Remove this device from this runner?')"><input type="hidden" name="device_id" value="{{.ID}}"><input type="hidden" name="confirm" value="true"><button class="btn btn-danger btn-sm" type="submit">Remove</button></form></div>
+      </div>{{end}}</div>
+      {{else}}<div class="callout info">{{icon "info"}}<div>No devices are configured yet. Add at least one device before starting the runner.</div></div>{{end}}
     </div>
   </section>
 
-  <section class="card" style="margin-bottom:16px">
-    <header class="card-h">{{icon "plus"}}<div><h3>Add device</h3><div class="sub">The dashboard previews the canonical child ID with Credimi; it is never entered manually.</div></div></header>
-    <form class="card-b" method="post" action="/devices/config" autocomplete="off">
-      <div class="field-row"><div class="field"><label>Name</label><input class="inp" name="name" required></div><div class="field"><label>Type</label><select class="sel" name="type" required><option value="android_phone">Android phone</option><option value="android_emulator">Android emulator</option><option value="ios_simulator">iOS simulator</option><option value="redroid">Redroid</option></select></div><div class="field"><label>Mode</label><select class="sel" name="mode" required><option value="usb">USB</option><option value="wifi">Wi-Fi</option><option value="emulator">Emulator</option><option value="simulator">Simulator</option><option value="no_device">Managed</option></select></div></div>
-      <div class="field-row"><div class="field"><label>Serial / UDID</label><input class="inp" name="serial"></div><div class="field"><label>Wi-Fi IP</label><input class="inp" name="wifi_ip"></div><div class="field"><label>Wi-Fi port</label><input class="inp" name="wifi_port" value="5555"></div></div>
-      <div class="field"><label>Description</label><input class="inp" name="description"></div>
-      <div class="savebar"><span class="msg">Saving previews the canonical device ID and writes one indexed block to the root <b>.env</b>.</span><div class="sp"></div><button class="btn btn-pri" type="submit">{{icon "plus"}} Add device</button></div>
-    </form>
-  </section>
+  <form class="card" method="post" action="/devices/config" autocomplete="off" data-inventory-device-form>
+    <header class="card-h">{{icon "plus"}}<div><h3>Add device</h3><div class="sub">Registration happens automatically when this form is saved.</div></div></header>
+    <div class="card-b">
+      <div class="field-row"><div class="field"><label><span class="lbtx">Device name</span><span class="req">*</span></label><input class="inp" name="name" required placeholder="Pixel 9 lab"></div><div class="field"><label><span class="lbtx">Device type</span></label><select class="sel" name="type" data-inventory-type><option value="android_phone">Android phone</option><option value="android_emulator">Android emulator</option>{{if $.SupportsDeviceType "ios_simulator"}}<option value="ios_simulator">iOS simulator</option>{{end}}<option value="redroid">Redroid</option></select></div></div>
 
-  <section class="card"><header class="card-h">{{icon "shield"}}<div><h3>Detected devices</h3><div class="sub">Live target snapshot</div></div></header><div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div></section>
+      <div data-inventory-phone><div class="field"><label><span class="lbtx">Connection</span></label><div class="seg" data-inventory-mode><button type="button" class="on" data-value="usb">USB</button><button type="button" data-value="wifi">Wi-Fi</button></div><input type="hidden" name="mode" value="usb"></div><div class="field" data-inventory-usb><label><span class="lbtx">Connected Android device</span><span class="req">*</span></label><select class="sel mono" name="serial"><option value="">Select a connected Android device</option>{{range .AndroidPhoneDevices}}<option value="{{.Serial}}">{{.Name}} — {{.Serial}}</option>{{end}}</select><p class="hint">Only online ADB devices are listed.</p></div><div class="field-row" data-inventory-wifi hidden><div class="field"><label>Wi-Fi IP</label><input class="inp mono" name="wifi_ip" placeholder="192.168.1.10"></div><div class="field"><label>Port</label><input class="inp mono" name="wifi_port" value="5555"></div></div></div>
+      <div data-inventory-emulator hidden><input type="hidden" name="mode" value="emulator" disabled><div class="field"><label><span class="lbtx">Emulator base name</span></label><input class="inp mono" name="base_name" value="credimi"></div><div class="callout info">{{icon "info"}}<div>Emulator assets are selected or downloaded from the device card after creation. Docker images are pulled only when you start the runner from the final setup review.</div></div></div>
+      <div data-inventory-ios hidden><input type="hidden" name="mode" value="simulator" disabled><div class="field"><label><span class="lbtx">Simulator name</span></label><input class="inp mono" name="base_name" value="credimi"></div></div>
+      <div data-inventory-redroid hidden><input type="hidden" name="mode" value="no_device" disabled><div class="field-row"><div class="field"><label>Redroid IP</label><input class="inp mono" name="wifi_ip"></div><div class="field"><label>ADB port</label><input class="inp mono" name="wifi_port" value="5555"></div></div><div class="field-row"><div class="field"><label>Data directory</label><input class="inp mono" name="redroid_data_dir" value="/home/credimi/redroid-data"></div><div class="field"><label>Data archive</label><input class="inp mono" name="redroid_data_tar" value="/home/credimi/redroid-data.tar"></div></div></div>
+      <div class="field"><label>Description</label><input class="inp" name="description" placeholder="Optional note about this device"></div>
+      <details class="gear-panel" data-inventory-image hidden><summary>{{icon "gear"}} Runtime image override</summary><div class="field-row"><div class="field"><label>Image</label><input class="inp mono" name="runner_image" data-inventory-image-name></div><div class="field"><label>Pull policy</label><select class="sel" name="runner_image_pull_policy"><option value="always">Always update on runner start</option><option value="missing">Pull if missing</option><option value="never">Never — use local image</option></select></div></div></details>
+    </div>
+    <div class="savebar"><span class="msg">The canonical ID is resolved from the name by Credimi and stored in the root <b>.env</b>.</span><div class="sp"></div><button class="btn btn-pri" type="submit">{{icon "plus"}} Add and register device</button></div>
+  </form>
+
+  <section class="card" style="margin-top:16px"><header class="card-h">{{icon "shield"}}<div><h3>Detected devices</h3><div class="sub">Live target snapshot</div></div></header><div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div></section>
 </main>
 {{- end}}

@@ -59,6 +59,10 @@ func (d PageData) AndroidPhoneDevices() []Device {
 	return d.AndroidDevices()
 }
 
+func (d PageData) SupportsDeviceType(deviceType string) bool {
+	return deviceType != "ios_simulator" || currentGOOS() == "darwin"
+}
+
 func isAndroidADBDevice(device Device) bool {
 	return device.OS == "Android" || device.Type == "android_phone" || device.Type == "android_emulator"
 }
@@ -388,6 +392,11 @@ func (d PageData) SetupSteps() []SetupStep {
 			Title:   "Networking",
 			Summary: "How Credimi reaches this runner.",
 			Fields:  []string{"CREDIMI_SERVICE_MODE", "RUNNER_DOMAIN", "RUNNER_PUBLIC_URL", "RUNNER_PUBLIC_PORT", "CLOUDFLARE_TUNNEL_TOKEN"},
+		},
+		{
+			ID:      "devices",
+			Title:   "Devices",
+			Summary: "Add the execution targets this shared runner will serve.",
 		},
 		{
 			ID:      "advanced",

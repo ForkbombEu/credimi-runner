@@ -811,6 +811,22 @@
   }
   initSetupWizard();
 
+  document.addEventListener('click', (e) => {
+    const add = e.target.closest('[data-setup-device-add]');
+    if (add) {
+      const form = add.closest('form');
+      const template = form && form.querySelector('template[data-setup-device-template]');
+      const list = form && form.querySelector('[data-setup-devices]');
+      if (template && list) list.appendChild(template.content.cloneNode(true));
+      return;
+    }
+    const remove = e.target.closest('[data-setup-device-remove]');
+    if (remove) {
+      const card = remove.closest('[data-setup-device-card]');
+      if (card) card.remove();
+    }
+  });
+
   // ── Network step: radio cards + show/hide fields based on service mode ──
   const syncNetMode = (mode) => {
     document.querySelectorAll('[data-net-mode]').forEach(el => {
@@ -1490,6 +1506,48 @@
   });
   function typeOf(m) { return ($('input[name=type]', m) || {}).value || 'android_phone'; }
   function modeOf(m) { return ($('input[name=mode]', m) || {}).value || 'wifi'; }
+
+  // ── Inventory device form ────────────────────────────────────────────────
+  // This deliberately has its own scoped selectors. The former single-target
+  // handlers use global runner field names and would make cards affect each
+  // other once a host can own several devices.
+  function syncInventoryDeviceForm(form) {
+    if (!form) return;
+    const type = (form.querySelector('[data-inventory-type]') || {}).value || 'android_phone';
+    const phone = form.querySelector('[data-inventory-phone]');
+    const emulator = form.querySelector('[data-inventory-emulator]');
+    const ios = form.querySelector('[data-inventory-ios]');
+    const redroid = form.querySelector('[data-inventory-redroid]');
+    const image = form.querySelector('[data-inventory-image]');
+    if (phone) phone.hidden = type !== 'android_phone';
+    if (emulator) emulator.hidden = type !== 'android_emulator';
+    if (ios) ios.hidden = type !== 'ios_simulator';
+    if (redroid) redroid.hidden = type !== 'redroid';
+    if (image) image.hidden = !['android_phone', 'android_emulator', 'redroid'].includes(type);
+    form.querySelectorAll('input[name="mode"]').forEach(input => { input.disabled = input.closest('[hidden]') !== null; });
+    const img = form.querySelector('[data-inventory-image-name]');
+    if (img && !img.value) img.value = type === 'android_emulator' ? TYPE_DEFAULTS.emulatorImage : TYPE_DEFAULTS.phoneImage;
+    const mode = (form.querySelector('input[name="mode"]:not(:disabled)') || {}).value || 'usb';
+    const usb = form.querySelector('[data-inventory-usb]');
+    const wifi = form.querySelector('[data-inventory-wifi]');
+    if (usb) usb.hidden = mode !== 'usb';
+    if (wifi) wifi.hidden = mode !== 'wifi';
+  }
+  document.addEventListener('change', (e) => {
+    const form = e.target.closest('[data-inventory-device-form]');
+    if (form && e.target.matches('[data-inventory-type]')) syncInventoryDeviceForm(form);
+  });
+  document.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-inventory-mode] [data-value]');
+    if (!button) return;
+    const form = button.closest('[data-inventory-device-form]');
+    const group = button.closest('[data-inventory-mode]');
+    group.querySelectorAll('[data-value]').forEach(item => item.classList.toggle('on', item === button));
+    const mode = form.querySelector('input[name="mode"]:not(:disabled)');
+    if (mode) mode.value = button.dataset.value;
+    syncInventoryDeviceForm(form);
+  });
+  $$('[data-inventory-device-form]').forEach(syncInventoryDeviceForm);
 
   // ── Pick-card segmented control (network: service mode) ───────────────────
   document.addEventListener('click', (e) => {

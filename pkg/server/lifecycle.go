@@ -120,6 +120,7 @@ func NewRunnerLifecycleClient(cfg RunnerLifecycleConfig, httpClient HTTPClient, 
 func (c *RunnerLifecycleClient) Resume(ctx context.Context, reason string) error {
 	return c.post(ctx, []string{"api", "mobile-runner", "lifecycle", "resume"}, lifecyclePayload{
 		RunnerID: c.cfg.RunnerID,
+		Devices:  c.currentDevices(),
 		Reason:   reason,
 	})
 }

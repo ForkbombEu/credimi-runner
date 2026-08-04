@@ -144,6 +144,13 @@ var serverCmd = &cobra.Command{
 			cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
 			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
 		}
+		// Do not leave a newly started runner and its devices offline until the
+		// first periodic tick (normally 30 seconds). Resume records host state;
+		// this immediate heartbeat records the per-device readiness inventory.
+		if err := lifecycleClient.Heartbeat(serveCtx); err != nil {
+			cluelog.Printf(serveCtx, "Warning: failed to send initial runner heartbeat: %v", err)
+			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send initial runner heartbeat", err)
+		}
 
 		heartbeatCtx, stopHeartbeat := context.WithCancel(serveCtx)
 		defer stopHeartbeat()

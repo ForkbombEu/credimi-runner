@@ -337,7 +337,7 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 	for _, want := range []string{
 		`Configured inventory`,
 		`Add device`,
-		`Canonical IDs are immutable`,
+		`IDs are created from the device name and cannot be edited`,
 		`Detected devices`,
 	} {
 		if !strings.Contains(html, want) {
@@ -450,7 +450,7 @@ func TestPageData_ViewModels(t *testing.T) {
 	if got := d.DefaultSSHKnownHostsPath(); got == "" {
 		t.Fatal("DefaultSSHKnownHostsPath is empty")
 	}
-	if steps := d.SetupSteps(); len(steps) != 4 || steps[0].ID != "identity" {
+	if steps := d.SetupSteps(); len(steps) != 5 || steps[0].ID != "identity" {
 		t.Fatalf("SetupSteps = %#v", steps)
 	}
 	if got := d.Field("CREDIMI_USER_API_KEY").MaskedValue(); got != "" {

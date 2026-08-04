@@ -418,7 +418,14 @@ func (s *Server) setDeviceEnabled(w http.ResponseWriter, r *http.Request, enable
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
-	writeJSON(w, map[string]any{"device_id": deviceID, "enabled": enabled})
+	// These controls are ordinary dashboard forms as well as API endpoints.
+	// Returning JSON to a browser form produced a blank page, which made the
+	// enable/disable action look broken even though the file had changed.
+	if r.Header.Get("Accept") == "application/json" {
+		writeJSON(w, map[string]any{"device_id": deviceID, "enabled": enabled})
+		return
+	}
+	http.Redirect(w, r, "/devices", http.StatusSeeOther)
 }
 
 func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
@@ -677,19 +684,23 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	for formKey, valueKey := range map[string]string{
 		"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID",
+		"base_name": "BASE_NAME", "runner_image": "RUNNER_IMAGE", "runner_image_pull_policy": "RUNNER_IMAGE_PULL_POLICY",
+		"android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH",
+		"redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH",
 	} {
 		if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
 			device.Values[valueKey] = value
 		}
 	}
-	if deviceID != "" {
+	created := deviceID == ""
+	if !created {
 		found := false
 		for index := range config.Devices {
 			if config.Devices[index].ID != deviceID {
 				continue
 			}
 			device.Values = config.Devices[index].Values
-			for formKey, valueKey := range map[string]string{"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID"} {
+			for formKey, valueKey := range map[string]string{"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID", "base_name": "BASE_NAME", "runner_image": "RUNNER_IMAGE", "runner_image_pull_policy": "RUNNER_IMAGE_PULL_POLICY", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"} {
 				if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
 					device.Values[valueKey] = value
 				}
@@ -717,6 +728,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+		applyDeviceDefaults(&device)
 		config.Devices = append(config.Devices, device)
 	}
 	if err := store.SaveRuntimeConfig(config); err != nil {
@@ -724,7 +736,62 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
+	// A device is a usable Credimi execution target only once its child record
+	// exists. Registration is intentionally part of creation/update rather than
+	// a second, easy-to-forget dashboard action.
+	if created {
+		if err := s.registerConfiguredDevice(r.Context(), config.Host, device); err != nil {
+			http.Error(w, "device configuration was saved, but Credimi registration failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
 	http.Redirect(w, r, "/devices", http.StatusSeeOther)
+}
+
+func (s *Server) registerConfiguredDevice(ctx context.Context, values dashboardruntime.Values, device dashboardruntime.DeviceRuntimeConfig) error {
+	if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
+		return err
+	}
+	key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
+	if key == "" {
+		key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+	}
+	if key == "" || strings.TrimSpace(values["CREDIMI_URL"]) == "" {
+		return errors.New("Credimi URL and API key are required")
+	}
+	return (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).RegisterMobileDevice(ctx, dashboardruntime.RegisterDeviceRequest{
+		Organization: values["CREDIMI_RUNNER_ORGANIZATION"], DeviceID: device.ID, RunnerID: values["CREDIMI_RUNNER_ID"], Name: device.Name, Description: device.Description, Type: device.Type, Serial: device.Serial,
+	})
+}
+
+// applyDeviceDefaults keeps the dashboard form concise while making every
+// indexed block independently runnable. Explicit user input always wins.
+func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
+	if device.Values == nil {
+		device.Values = dashboardruntime.Values{}
+	}
+	set := func(key, value string) {
+		if strings.TrimSpace(device.Values[key]) == "" {
+			device.Values[key] = value
+		}
+	}
+	switch device.Type {
+	case "android_emulator":
+		set("RUNNER_IMAGE", "ghcr.io/forkbombeu/credimi-runner-emulator:latest")
+		set("RUNNER_IMAGE_PULL_POLICY", "always")
+		set("BASE_NAME", "credimi")
+		set("GOLDEN_PATH", "/avd-golden/credimi-golden")
+	case "android_phone", "redroid":
+		set("RUNNER_IMAGE", "ghcr.io/forkbombeu/credimi-runner-phone:latest")
+		set("RUNNER_IMAGE_PULL_POLICY", "always")
+	}
+	if device.Mode == "wifi" || device.Type == "redroid" {
+		set("WIFI_PORT", "5555")
+	}
+	if device.Type == "redroid" {
+		set("REDROID_DATA_DIR", "/home/credimi/redroid-data")
+		set("REDROID_DATA_TAR", "/home/credimi/redroid-data.tar")
+	}
 }
 
 func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page string) {
@@ -931,6 +998,11 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		s.renderSetupError(w, incoming, "identity resolution failed: "+err.Error())
 		return
 	}
+	devices, err := s.setupDevices(r, incoming)
+	if err != nil {
+		s.renderSetupError(w, incoming, "device setup failed: "+err.Error())
+		return
+	}
 	if errs, err := s.cfg.Apply(incoming); err != nil {
 		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Configuration validation failed."})
 		html, _ := s.render.FragmentPage("setup", d)
@@ -939,12 +1011,82 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(html))
 		return
 	}
-	if r.Header.Get("HX-Request") == "true" {
-		w.Header().Set("HX-Redirect", "/devices")
-		w.WriteHeader(http.StatusAccepted)
+	values := dashboardruntime.Values(s.cfg.Snapshot())
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		s.renderSetupError(w, incoming, "configuration store failed: "+err.Error())
 		return
 	}
-	http.Redirect(w, r, "/devices", http.StatusSeeOther)
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: values, Devices: devices}); err != nil {
+		s.renderSetupError(w, incoming, "device inventory failed: "+err.Error())
+		return
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	values = dashboardruntime.Values(s.cfg.Snapshot())
+	if err := s.validateRuntimeRequirements(values); err != nil {
+		s.renderSetupError(w, map[string]string(values), "runtime requirement check failed: "+err.Error())
+		return
+	}
+	if s.manager != nil {
+		s.manager.Configure(values)
+	}
+	if err := dashboardruntime.WriteComposeFile(s.composeDir, values); err != nil {
+		s.renderSetupError(w, map[string]string(values), "compose generation failed: "+err.Error())
+		return
+	}
+	s.startStartupJob(map[string]string(values))
+	s.renderSetupComplete(w, r)
+}
+
+func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dashboardruntime.DeviceRuntimeConfig, error) {
+	names := r.PostForm["setup_device_name"]
+	if len(names) == 0 {
+		return nil, errors.New("add at least one device")
+	}
+	valueAt := func(key string, index int) string {
+		items := r.PostForm[key]
+		if index < len(items) {
+			return strings.TrimSpace(items[index])
+		}
+		return ""
+	}
+	apiKey := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+	}
+	client := &dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: apiKey, HTTPClient: http.DefaultClient}
+	devices := make([]dashboardruntime.DeviceRuntimeConfig, 0, len(names))
+	for index, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, fmt.Errorf("device %d name is required", index+1)
+		}
+		device := dashboardruntime.DeviceRuntimeConfig{Name: name, Description: valueAt("setup_device_description", index), Type: valueAt("setup_device_type", index), Mode: valueAt("setup_device_mode", index), Enabled: true, Serial: valueAt("setup_device_serial", index), Values: dashboardruntime.Values{}}
+		if device.Type == "" {
+			device.Type = "android_phone"
+		}
+		if device.Mode == "" {
+			device.Mode = "usb"
+		}
+		device.Values["SERIAL"] = device.Serial
+		if value := valueAt("setup_device_wifi_ip", index); value != "" {
+			device.Values["WIFI_IP"] = value
+		}
+		if value := valueAt("setup_device_wifi_port", index); value != "" {
+			device.Values["WIFI_PORT"] = value
+		}
+		applyDeviceDefaults(&device)
+		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
+			return nil, err
+		}
+		preview, err := client.PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
+		if err != nil {
+			return nil, fmt.Errorf("resolve device %q ID: %w", device.Name, err)
+		}
+		device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+		devices = append(devices, device)
+	}
+	return devices, nil
 }
 
 func (s *Server) renderSetupComplete(w http.ResponseWriter, r *http.Request) {
@@ -1565,7 +1707,7 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter,  action string) {
+func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, action string) {
 	snapshot, err := s.submitRuntimeAction(action)
 	if err != nil {
 		s.renderRuntimeActionError(w, "overview", err)
@@ -1574,7 +1716,7 @@ func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter,  action stri
 	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action))
 }
 
-func (s *Server) queueRuntimeAction(w http.ResponseWriter,  page string, kind controller.OperationKind, action func(context.Context) error, success string) {
+func (s *Server) queueRuntimeAction(w http.ResponseWriter, page string, kind controller.OperationKind, action func(context.Context) error, success string) {
 	if s.operations == nil {
 		s.operations = controller.NewCoordinator(s.ctx)
 	}
