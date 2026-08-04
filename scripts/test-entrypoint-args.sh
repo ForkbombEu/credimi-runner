@@ -92,6 +92,26 @@ if find_in_calls "adb "; then
   echo "FAIL: adb should not be called in --no-device mode" >&2
   exit 1
 fi
+
+echo "Testing: --inventory prepares all configured Android targets once"
+reset_calls
+CREDIMI_DEVICE_COUNT=2 \
+  CREDIMI_DEVICE_1_ID=acme/runner/usb \
+  CREDIMI_DEVICE_1_TYPE=android_phone \
+  CREDIMI_DEVICE_1_MODE=usb \
+  CREDIMI_DEVICE_2_ID=acme/runner/wifi \
+  CREDIMI_DEVICE_2_TYPE=android_phone \
+  CREDIMI_DEVICE_2_MODE=wifi \
+  CREDIMI_DEVICE_2_WIFI_IP=192.168.1.42 \
+  "${entrypoint}" --inventory >/dev/null 2>&1
+if ! find_in_calls "adb start-server" || ! find_in_calls "adb connect 192.168.1.42:5555" || ! find_in_calls "credimi-runner serve"; then
+  echo "FAIL: inventory mode did not start adb, connect Wi-Fi, and start the runner" >&2
+  exit 1
+fi
+if [[ $(rg -n "adb start-server" "${calls_file}" | head -n1 | cut -d: -f1) -ge $(rg -n "adb connect" "${calls_file}" | head -n1 | cut -d: -f1) ]]; then
+  echo "FAIL: inventory mode must start adb before connecting Wi-Fi devices" >&2
+  exit 1
+fi
 if find_in_calls "credimi-runner serve"; then
   echo "PASS: credimi-runner started in --no-device mode"
 else

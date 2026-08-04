@@ -96,7 +96,7 @@ func (f *fakeRunner) Start(ctx context.Context, spec CommandSpec) (*exec.Cmd, er
 func TestLifecycleManagerStartStop(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND": "host",
 		"CREDIMI_SERVICE_MODE":   "auto",
 		"RUNNER_HOST":            "127.0.0.1",
@@ -431,6 +431,8 @@ func TestLifecycleManagerStartWithProgressStreamsComposePull(t *testing.T) {
 	runner := &fakeRunner{runOutput: []byte("runner Pulling fs layer\nrunner Downloading 128MB\nrunner Pull complete\n")}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_DEVICE_COUNT":   "1",
+		"CREDIMI_DEVICE_1_ID":    "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND": "container",
 		"CREDIMI_SERVICE_MODE":   "auto",
 	}, runner)
@@ -450,6 +452,8 @@ func TestLifecycleManagerStartSkipsLocalRunnerPull(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":                         "acme/runner",
+		"CREDIMI_DEVICE_COUNT":                      "1",
+		"CREDIMI_DEVICE_1_ID":                       "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND":                    "container",
 		"CREDIMI_SERVICE_MODE":                      "auto",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE":             "credimi-runner-phone:latest",
@@ -477,6 +481,8 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_DEVICE_COUNT":          "1",
+		"CREDIMI_DEVICE_1_ID":           "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND":        "container",
 		"CREDIMI_SERVICE_MODE":          "manual",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
@@ -514,6 +520,8 @@ func TestLifecycleManagerUpgradeRunnerImageRestartsQuickTunnel(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_DEVICE_COUNT":          "1",
+		"CREDIMI_DEVICE_1_ID":           "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND":        "container",
 		"CREDIMI_SERVICE_MODE":          "auto",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
@@ -538,6 +546,8 @@ func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing
 	runner := &imageVersionRunner{imageIDs: []string{"sha256:old", "sha256:new"}}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_DEVICE_COUNT":          "1",
+		"CREDIMI_DEVICE_1_ID":           "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND":        "container",
 		"CREDIMI_SERVICE_MODE":          "manual",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
@@ -551,18 +561,18 @@ func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing
 	}
 }
 
-func TestLifecycleManagerUpgradeRunnerImagePullsDistinctDeviceImages(t *testing.T) {
-	runner := &imageVersionRunner{imageIDs: []string{"sha256:phone-old", "sha256:phone-new", "sha256:emu-old", "sha256:emu-new"}}
+func TestLifecycleManagerUpgradeRunnerImagePullsSharedDeviceImage(t *testing.T) {
+	runner := &imageVersionRunner{imageIDs: []string{"sha256:old", "sha256:new"}}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_SERVICE_MODE": "manual", "CREDIMI_DEVICE_COUNT": "2",
-		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/phone:latest",
-		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_RUNNER_IMAGE": "example.test/emulator:latest",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/shared:latest",
+		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_RUNNER_IMAGE": "example.test/shared:latest",
 	}, runner)
 	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	commands := commandArgs(runner.runs)
-	for _, expected := range []string{"pull example.test/phone:latest", "pull example.test/emulator:latest", "image rm -f sha256:phone-old", "image rm -f sha256:emu-old"} {
+	for _, expected := range []string{"pull example.test/shared:latest", "image rm -f sha256:old"} {
 		if !strings.Contains(commands, expected) {
 			t.Fatalf("missing %q in %s", expected, commands)
 		}
@@ -572,6 +582,8 @@ func TestLifecycleManagerUpgradeRunnerImagePullsDistinctDeviceImages(t *testing.
 func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_DEVICE_COUNT":          "1",
+		"CREDIMI_DEVICE_1_ID":           "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND":        "host",
 		"CREDIMI_SERVICE_MODE":          "manual",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
@@ -584,12 +596,14 @@ func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
 func TestLifecycleManagerUpgradeRunnerImageRejectsLocalPolicy(t *testing.T) {
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":                         "acme/runner",
+		"CREDIMI_DEVICE_COUNT":                      "1",
+		"CREDIMI_DEVICE_1_ID":                       "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND":                    "container",
 		"CREDIMI_SERVICE_MODE":                      "manual",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE":             "credimi-runner-phone:latest",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "never",
 	}, &fakeRunner{})
-	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY=never") {
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "local-only") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -600,6 +614,8 @@ func TestLifecycleManagerUpgradeRunnerImageReportsDockerStageErrors(t *testing.T
 			runner := &failOnRunRunner{failAt: failAt}
 			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 				"CREDIMI_RUNNER_ID":             "acme/runner",
+				"CREDIMI_DEVICE_COUNT":          "1",
+				"CREDIMI_DEVICE_1_ID":           "acme/runner/device",
 				"CREDIMI_RUNNER_BACKEND":        "container",
 				"CREDIMI_SERVICE_MODE":          "manual",
 				"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
@@ -615,32 +631,33 @@ func TestLifecycleManagerUpgradeRunnerImageReportsDockerStageErrors(t *testing.T
 	}
 }
 
-func TestLifecycleManagerUpgradeRunnerImageRequiresImage(t *testing.T) {
+func TestLifecycleManagerUpgradeRunnerImageUsesDefaultSharedImage(t *testing.T) {
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
 		"CREDIMI_RUNNER_BACKEND": "container",
 		"CREDIMI_SERVICE_MODE":   "manual",
+		"CREDIMI_DEVICE_COUNT":   "1",
+		"CREDIMI_DEVICE_1_ID":    "acme/runner/device",
 	}, &fakeRunner{})
-	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "CREDIMI_DEVICE_1_RUNNER_IMAGE") {
-		t.Fatalf("error = %v", err)
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
+		t.Fatalf("upgrade default image: %v", err)
 	}
 	manager.setLastError(nil)
 }
 
-func TestConfiguredRuntimeImagesDeduplicatesAndSkipsLocalImages(t *testing.T) {
+func TestConfiguredRuntimeImagesUsesOneSharedImage(t *testing.T) {
 	values := Values{
-		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "3",
-		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "phone:v1", "CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "always",
-		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_RUNNER_IMAGE": "emulator:v1", "CREDIMI_DEVICE_2_RUNNER_IMAGE_PULL_POLICY": "missing",
-		"CREDIMI_DEVICE_3_ID": "acme/runner/local", "CREDIMI_DEVICE_3_RUNNER_IMAGE": "phone:v1", "CREDIMI_DEVICE_3_RUNNER_IMAGE_PULL_POLICY": "never",
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "shared:v1", "CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "always",
+		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_RUNNER_IMAGE": "shared:v1", "CREDIMI_DEVICE_2_RUNNER_IMAGE_PULL_POLICY": "always",
 	}
-	if got := configuredRuntimeImages(values); !slices.Equal(got, []string{"phone:v1", "emulator:v1"}) {
+	if got := configuredRuntimeImages(values); !slices.Equal(got, []string{"shared:v1"}) {
 		t.Fatalf("configuredRuntimeImages = %v", got)
 	}
-	if got := configuredRuntimeImages(Values{"CREDIMI_DEVICE_1_RUNNER_IMAGE": "legacy:v1"}); !slices.Equal(got, []string{"legacy:v1"}) {
-		t.Fatalf("legacy fallback = %v", got)
-	}
-	if got := configuredRuntimeImages(Values{"CREDIMI_DEVICE_1_RUNNER_IMAGE": "local:v1", "CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "never"}); len(got) != 0 {
-		t.Fatalf("local fallback = %v", got)
+	values["CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY"] = "never"
+	values["CREDIMI_DEVICE_2_RUNNER_IMAGE_PULL_POLICY"] = "never"
+	if got := configuredRuntimeImages(values); len(got) != 0 {
+		t.Fatalf("local shared image = %v", got)
 	}
 }
 

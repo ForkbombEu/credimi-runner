@@ -1008,8 +1008,11 @@ func TestServerMaintenanceCheckRefreshesMetadata(t *testing.T) {
 func TestServerMaintenanceCheckSkipsLocalRunnerImage(t *testing.T) {
 	s := newTestServer(t)
 	s.maintenanceChecked = false
-	s.cfg.values["RUNNER_IMAGE"] = "credimi-runner-phone:latest"
-	s.cfg.values["RUNNER_IMAGE_PULL_POLICY"] = "never"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_DEVICE_COUNT"] = "1"
+	s.cfg.values["CREDIMI_DEVICE_1_ID"] = "acme/runner/phone"
+	s.cfg.values["CREDIMI_DEVICE_1_RUNNER_IMAGE"] = "local:latest"
+	s.cfg.values["CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY"] = "never"
 	checkedImage := "not-called"
 	s.maintenanceChecker = func(_ context.Context, _ string, _ time.Time, image string) maintenance.Status {
 		checkedImage = image
@@ -1805,26 +1808,6 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	}
 }
 
-func TestServerDeviceRegisterRejectsIncompleteDashboardMetadata(t *testing.T) {
-	s := newTestServer(t)
-	dir := filepath.Dir(s.cfg.Path())
-	store, err := dashboardruntime.LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/device", Enabled: true, Values: dashboardruntime.Values{}}}}); err != nil {
-		t.Fatal(err)
-	}
-	s.cfg = loadConfigSnapshot(store, s.cfg)
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/devices/register", strings.NewReader(url.Values{"device_id": {"acme/runner/device"}}.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.deviceRegister(recorder, request)
-	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "device name") {
-		t.Fatalf("register = %d %s", recorder.Code, recorder.Body.String())
-	}
-}
-
 func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	s := newTestServer(t)
 	dir := filepath.Dir(s.cfg.Path())
@@ -1871,55 +1854,6 @@ func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	updated, err = stored.RuntimeConfig()
 	if err != nil || len(updated.Devices) != 1 || updated.Devices[0].Index != 1 || updated.Devices[0].ID != "acme/runner/two" {
 		t.Fatalf("reindexed inventory = %#v, %v", updated, err)
-	}
-}
-
-func TestServerDeviceRegisterSendsStoredDeviceToCredimi(t *testing.T) {
-	s := newTestServer(t)
-	dir := filepath.Dir(s.cfg.Path())
-	store, err := dashboardruntime.LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{
-		Host: dashboardruntime.Values{
-			"CREDIMI_URL":                 "https://credimi.example",
-			"CREDIMI_USER_API_KEY":        "user-key",
-			"CREDIMI_RUNNER_ID":           "acme/runner",
-			"CREDIMI_RUNNER_ORGANIZATION": "acme",
-		},
-		Devices: []dashboardruntime.DeviceRuntimeConfig{{
-			ID: "acme/runner/pixel", Name: "Pixel", Description: "Lab phone", Type: "android_phone", Mode: "usb", Enabled: true,
-			Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"},
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	s.cfg = loadConfigSnapshot(store, s.cfg)
-
-	originalTransport := http.DefaultTransport
-	var registered dashboardruntime.RegisterDeviceRequest
-	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Path != "/api/mobile-device" {
-			return nil, errors.New("unexpected Credimi path: " + request.URL.Path)
-		}
-		if err := json.NewDecoder(request.Body).Decode(&registered); err != nil {
-			return nil, err
-		}
-		return &http.Response{StatusCode: http.StatusCreated, Status: "201 Created", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
-	})
-	t.Cleanup(func() { http.DefaultTransport = originalTransport })
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/devices/register", strings.NewReader(url.Values{"device_id": {"acme/runner/pixel"}}.Encode()))
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.deviceRegister(recorder, request)
-
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"registered":true`) {
-		t.Fatalf("register response = %d %s", recorder.Code, recorder.Body.String())
-	}
-	if registered.DeviceID != "acme/runner/pixel" || registered.RunnerID != "acme/runner" || registered.Serial != "usb-1" {
-		t.Fatalf("Credimi registration = %#v", registered)
 	}
 }
 
@@ -2188,9 +2122,6 @@ func TestServerManagedDeviceActions(t *testing.T) {
 	}
 	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusSeeOther {
 		t.Fatalf("disable = %d %s", rec.Code, rec.Body.String())
-	}
-	if rec := post(s.deviceRegister, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusOK {
-		t.Fatalf("register = %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := post(s.deviceRemove, url.Values{"device_id": {"acme/runner/pixel"}, "confirm": {"true"}}); rec.Code != http.StatusOK {
 		t.Fatalf("remove = %d %s", rec.Code, rec.Body.String())

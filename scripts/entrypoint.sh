@@ -4,9 +4,11 @@ set -euo pipefail
 print_help() {
   cat <<'USAGE'
 Usage:
+  phone-connect --inventory
   phone-connect [--emulator] [--no-device] [--no-wait] [--usb] [--host-adb] [--serial SERIAL] [--help|-h] PHONE_IP[:PORT] [PORT]
 
 Modes:
+  --inventory         Start one runner from all indexed CREDIMI_DEVICE_<n> blocks.
   --emulator          Validate KVM, cleanup emulator leftovers, start adb, then run credimi-runner.
   --no-device         Skip adb checks/connect/wait and start credimi-runner immediately.
   Wi-Fi (default)     adb connect to PHONE_IP[:PORT]
@@ -19,6 +21,7 @@ Options:
   -h, --help          Show this help message
 
 Examples:
+  phone-connect --inventory
   phone-connect --no-device
   phone-connect 192.168.1.42
   phone-connect 192.168.1.42 5555
@@ -135,6 +138,30 @@ ensure_emulator_assets() {
   fi
 }
 
+ensure_inventory_emulator_assets() {
+  local index="$1"
+  local avd_home="${ANDROID_AVD_HOME:-/avd-home}"
+  local golden_root="${AVDCTL_GOLDEN_DIR:-/avd-golden}"
+  local base_var="CREDIMI_DEVICE_${index}_BASE_NAME"
+  local golden_var="CREDIMI_DEVICE_${index}_GOLDEN_PATH"
+  local base_name="${!base_var:-credimi}"
+  local configured_golden_path="${!golden_var:-${golden_root}/${base_name}-golden}"
+  local golden_path
+  local base_avd_dir="${avd_home}/${base_name}.avd"
+  local base_ini="${avd_home}/${base_name}.ini"
+
+  mkdir -p "$avd_home" "$golden_root"
+  golden_path="$(resolve_golden_path "$golden_root" "$configured_golden_path")"
+  if [[ ! -d "$base_avd_dir" || ! -f "$base_ini" ]]; then
+    echo "ERROR: device ${index} base AVD assets are missing at ${base_avd_dir} and ${base_ini}." >&2
+    exit 1
+  fi
+  if [[ ! -d "$golden_path" ]]; then
+    echo "ERROR: device ${index} golden assets are missing at ${configured_golden_path}." >&2
+    exit 1
+  fi
+}
+
 # Flags
 no_wait=false
 usb_mode=false
@@ -179,8 +206,12 @@ while [[ $# -gt 0 ]]; do
       emulator_mode=true
       shift
       ;;
-    --no-device)
+  --no-device)
       no_device=true
+      shift
+      ;;
+    --inventory)
+      inventory_mode=true
       shift
       ;;
     *)
@@ -191,6 +222,45 @@ done
 
 materialize_adb_keys_from_env
 ensure_workflows_dir
+
+# Inventory mode is the shared multi-device runtime contract. It deliberately
+# performs host preparation once and leaves target selection to the runner's
+# indexed device inventory.
+if [[ "${inventory_mode:-false}" == true ]]; then
+  count="${CREDIMI_DEVICE_COUNT:-0}"
+  if ! [[ "$count" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: --inventory requires CREDIMI_DEVICE_COUNT." >&2
+    exit 1
+  fi
+  has_emulator=false
+  has_adb=false
+  wifi_targets=()
+  for ((i=1; i<=count; i++)); do
+    type_var="CREDIMI_DEVICE_${i}_TYPE"
+    mode_var="CREDIMI_DEVICE_${i}_MODE"
+    type="${!type_var:-}"
+    mode="${!mode_var:-}"
+    if [[ "$type" == "android_emulator" ]]; then
+      has_emulator=true
+    fi
+    [[ "$type" != "ios_simulator" && "$mode" != "no_device" ]] && has_adb=true
+    if [[ "$mode" == "wifi" ]]; then
+      ip_var="CREDIMI_DEVICE_${i}_WIFI_IP"; port_var="CREDIMI_DEVICE_${i}_WIFI_PORT"
+      if [[ -n "${!ip_var:-}" ]]; then wifi_targets+=("${!ip_var}:${!port_var:-5555}"); fi
+    fi
+  done
+  if [[ "$has_emulator" == true ]]; then
+    need_kvm
+    for ((i=1; i<=count; i++)); do
+      type_var="CREDIMI_DEVICE_${i}_TYPE"
+      [[ "${!type_var:-}" == "android_emulator" ]] && ensure_inventory_emulator_assets "$i"
+    done
+    cleanup_emulator_leftovers
+  fi
+  if [[ "$has_adb" == true && -z "${ADB_SERVER_SOCKET:-}" ]]; then adb start-server; fi
+  for target in "${wifi_targets[@]}"; do adb connect "$target" || true; done
+  exec credimi-runner serve --host 0.0.0.0 --port "$service_port"
+fi
 
 # Emulator mode: no PHONE args, just validate + start adb + run service
 if [[ "$emulator_mode" == true ]]; then

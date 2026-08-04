@@ -284,7 +284,12 @@ func (d PageData) RunnerImage() string {
 			return service.Image
 		}
 	}
-	return orDash(d.Runner.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE"))
+	if d.Runner != nil {
+		if image, _, err := dashboardruntime.SharedRunnerImage(d.Runner.Snapshot(), goruntime.GOOS); err == nil {
+			return orDash(image)
+		}
+	}
+	return "—"
 }
 
 func (d PageData) RunnerContainerDetails() string {
@@ -327,8 +332,10 @@ func componentState(component maintenance.Component) string {
 
 func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
 func (d PageData) ImageVersionState() string {
-	if d.Runner != nil && strings.TrimSpace(d.Runner.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY")) == "never" {
-		return "Registry check disabled"
+	if d.Runner != nil {
+		if _, pullPolicy, err := dashboardruntime.SharedRunnerImage(d.Runner.Snapshot(), goruntime.GOOS); err == nil && pullPolicy == "never" {
+			return "Registry check disabled"
+		}
 	}
 	return componentState(d.MaintenanceStatus().Image)
 }

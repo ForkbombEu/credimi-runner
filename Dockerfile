@@ -85,7 +85,7 @@ COPY scripts/entrypoint.sh /usr/local/bin/phone-connect
 RUN chmod +x /usr/local/bin/phone-connect
 
 ENTRYPOINT ["/usr/local/bin/phone-connect"]
-CMD ["--help"]
+CMD ["--inventory"]
 
 ############################
 # Phone runtime alias (for CI target compatibility)
@@ -179,4 +179,4 @@ RUN set -eux; \
 
 
 ENTRYPOINT ["/usr/local/bin/phone-connect"]
-CMD ["--emulator"]
+CMD ["--inventory"]

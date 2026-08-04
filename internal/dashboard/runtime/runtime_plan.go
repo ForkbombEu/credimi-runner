@@ -78,9 +78,6 @@ var FieldImpacts = map[string]FieldImpact{
 func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
 	backend := defaultIfEmpty(values["CREDIMI_RUNNER_BACKEND"], DefaultContainerBackend)
-	if inventory, err := ParseRuntimeConfig(values); err == nil && len(inventory.Devices) > 0 {
-		backend = defaultIfEmpty(inventory.Devices[0].Values["BACKEND"], backend)
-	}
 
 	canonicalDir, err := filepath.Abs(configDir)
 	if err != nil {

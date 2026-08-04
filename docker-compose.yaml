@@ -4,7 +4,7 @@ services:
     restart: "no"
     profiles: ["phone"]
     command:
-      - --no-device
+      - --inventory
     env_file:
       - .env
     volumes:
@@ -28,6 +28,8 @@ services:
       - /dev/kvm:/dev/kvm
     env_file:
       - .env
+    command:
+      - --inventory
     environment:
       CREDIMI_URL: ${CREDIMI_URL:-https://credimi.io}
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal.credimi.io:7233}

@@ -21,10 +21,10 @@ services:
         target: /app/.env
         read_only: true
       - type: bind
-        source: "${CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}"
+        source: "${CREDIMI_AVD_HOME_PATH:-/srv/credimi/avd-home}"
         target: /avd-home
       - type: bind
-        source: "${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}"
+        source: "${CREDIMI_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}"
         target: /avd-golden
 
     environment:
@@ -36,6 +36,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-credimi-runner}     
       CREDIMI_RUNNER_ID: ${CREDIMI_RUNNER_ID:?}
+      CREDIMI_RUNNER_CONFIG_DIR: /app
       ADB_PRIVATE_KEY: ${ADB_PRIVATE_KEY:?}
       ADB_PUBLIC_KEY: ${ADB_PUBLIC_KEY:?}
       PORT: ${PORT:-8060}

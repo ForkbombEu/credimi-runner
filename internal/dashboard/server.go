@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -286,7 +287,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /devices/android-emulator/assets/download", s.androidEmulatorAssetsDownload)
 	mux.HandleFunc("POST /devices/connect", s.deviceConnect)
 	mux.HandleFunc("POST /devices/preview-id", s.devicePreviewID)
-	mux.HandleFunc("POST /devices/register", s.deviceRegister)
 	mux.HandleFunc("POST /devices/enable", s.deviceEnable)
 	mux.HandleFunc("POST /devices/disable", s.deviceDisable)
 	mux.HandleFunc("POST /devices/remove", s.deviceRemove)
@@ -337,51 +337,6 @@ func (s *Server) devicePreviewID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, preview)
-}
-
-func (s *Server) deviceRegister(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
-	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	config, err := store.RuntimeConfig()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-	var selected dashboardruntime.DeviceRuntimeConfig
-	for _, device := range config.Devices {
-		if strings.TrimPrefix(device.ID, "/") == deviceID {
-			selected = device
-			break
-		}
-	}
-	if selected.ID == "" {
-		http.Error(w, "unknown device", 404)
-		return
-	}
-	if err := dashboardruntime.ValidateDeviceRegistration(selected); err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-	values := s.cfg.Snapshot()
-	key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-	if key == "" {
-		key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
-	}
-	client := &dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}
-	err = client.RegisterMobileDevice(r.Context(), dashboardruntime.RegisterDeviceRequest{Organization: values["CREDIMI_RUNNER_ORGANIZATION"], DeviceID: selected.ID, RunnerID: values["CREDIMI_RUNNER_ID"], Name: selected.Name, Description: selected.Description, Type: selected.Type, Serial: selected.Serial})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, map[string]any{"device_id": selected.ID, "registered": true})
 }
 
 func (s *Server) setDeviceEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
@@ -595,8 +550,8 @@ func (s *Server) ensureMaintenanceChecked(ctx context.Context, force bool) {
 	if checker == nil {
 		return
 	}
-	image := strings.TrimSpace(s.cfg.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE"))
-	if strings.TrimSpace(s.cfg.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY")) == "never" {
+	image, pullPolicy, err := dashboardruntime.SharedRunnerImage(s.cfg.Snapshot(), runtime.GOOS)
+	if err != nil || pullPolicy == "never" {
 		image = ""
 	}
 	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt(), image)

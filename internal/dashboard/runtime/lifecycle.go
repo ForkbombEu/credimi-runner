@@ -312,7 +312,12 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 			m.status.LastError = err.Error()
 			return err
 		}
-		pullServices := composePullServices(plan.ComposeServices, primaryDeviceValue(m.values, "RUNNER_IMAGE_PULL_POLICY"))
+		spec, specErr := sharedRunnerSpec(m.values, runtime.GOOS)
+		if specErr != nil && containsService(plan.ComposeServices, "runner") {
+			m.status.LastError = specErr.Error()
+			return specErr
+		}
+		pullServices := composePullServices(plan.ComposeServices, spec.PullPolicy)
 		if !containsService(pullServices, "runner") && containsService(plan.ComposeServices, "runner") {
 			emitProgress(progress, "Using the configured local runner image without pulling it.")
 		}
@@ -903,10 +908,7 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	m.mu.Unlock()
 	if len(images) == 0 {
-		if strings.TrimSpace(primaryDeviceValue(m.values, "RUNNER_IMAGE")) != "" && defaultIfEmpty(primaryDeviceValue(m.values, "RUNNER_IMAGE_PULL_POLICY"), DefaultRunnerImagePullPolicy) == "never" {
-			return fmt.Errorf("runner image upgrade is disabled when CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY=never")
-		}
-		return fmt.Errorf("no configured device runtime image can be upgraded (CREDIMI_DEVICE_1_RUNNER_IMAGE is empty)")
+		return fmt.Errorf("the configured shared runner image is local-only or no container runtime is configured")
 	}
 	if !containsService(plan.ComposeServices, "runner") {
 		return fmt.Errorf("runner image upgrade requires the container backend")
@@ -973,37 +975,15 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	return nil
 }
 
-// configuredRuntimeImages returns each pullable device image once. A `never`
-// policy means the operator owns a local image and it must not be touched by
-// the common dashboard maintenance action.
+// configuredRuntimeImages returns the one image used by the shared container.
+// A `never` policy means the operator owns a local image and it must not be
+// touched by the common dashboard maintenance action.
 func configuredRuntimeImages(values Values) []string {
-	inventory, err := ParseRuntimeConfig(values)
-	if err != nil {
-		// Kept solely for manager unit tests and an in-memory dashboard that has
-		// not persisted its first inventory yet. Persisted runners always use
-		// indexed blocks.
-		image := strings.TrimSpace(primaryDeviceValue(values, "RUNNER_IMAGE"))
-		if image != "" && defaultIfEmpty(primaryDeviceValue(values, "RUNNER_IMAGE_PULL_POLICY"), DefaultRunnerImagePullPolicy) != "never" {
-			return []string{image}
-		}
+	spec, err := sharedRunnerSpec(values, runtime.GOOS)
+	if err != nil || spec.Image == "" || spec.PullPolicy == "never" {
 		return nil
 	}
-	seen := map[string]bool{}
-	var images []string
-	for _, device := range inventory.Devices {
-		image := strings.TrimSpace(device.Values["RUNNER_IMAGE"])
-		policy := defaultIfEmpty(device.Values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
-		if image == "" || policy == "never" || seen[image] {
-			continue
-		}
-		seen[image] = true
-		images = append(images, image)
-	}
-	return images
-}
-
-func primaryDeviceValue(values Values, key string) string {
-	return values["CREDIMI_DEVICE_1_"+key]
+	return []string{spec.Image}
 }
 
 func (m *LifecycleManager) runnerImageID(ctx context.Context, image string) (string, error) {

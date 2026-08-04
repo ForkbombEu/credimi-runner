@@ -38,69 +38,39 @@ func TestComposeParityCases(t *testing.T) {
 		contains []string
 	}{
 		{
-			name:     "linux usb container uses host adb namespace",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone"},
-			contains: []string{"pull_policy: always", "--host-adb", "--usb", "network_mode: host", `caddy.reverse_proxy: "host.docker.internal:${RUNNER_PORT:-8050}"`},
+			name:     "linux USB inventory uses one host-network runner",
+			vals:     indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone"}),
+			contains: []string{"pull_policy: always", "--inventory", "network_mode: host", `caddy.reverse_proxy: "host.docker.internal:${RUNNER_PORT:-8050}"`},
 		},
 		{
-			name:     "local runner image",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_IMAGE": "credimi-runner-phone:latest", "RUNNER_IMAGE_PULL_POLICY": "never"},
-			contains: []string{"image: credimi-runner-phone:latest", "pull_policy: never"},
+			name:     "custom shared image",
+			vals:     indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_IMAGE": "custom:latest", "RUNNER_IMAGE_PULL_POLICY": "never"}),
+			contains: []string{"image: custom:latest", "pull_policy: never"},
 		},
 		{
-			name:     "wifi container",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"},
-			contains: []string{`"${CREDIMI_DEVICE_1_WIFI_IP}:${CREDIMI_DEVICE_1_WIFI_PORT:-5555}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
+			name:     "wifi inventory starts through inventory entrypoint",
+			vals:     indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"}),
+			contains: []string{"--inventory", "ADB_SERVER_SOCKET", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
-			name:     "emulator",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_emulator"},
-			contains: []string{"--emulator", "/dev/kvm:/dev/kvm", "${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`, "networks:\n      - ingress"},
+			name:     "emulator inventory uses shared emulator image",
+			vals:     indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}),
+			contains: []string{"image: " + DefaultEmulatorImage, "--inventory", "/dev/kvm:/dev/kvm", "${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`, "networks:\n      - ingress"},
 		},
 		{
-			name:     "redroid known hosts",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid", "AVDCTL_SSH_TARGET": "box", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "/tmp/known_hosts"},
-			contains: []string{"--no-device", "${CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
+			name:     "mixed Android inventory needs one emulator-capable runner",
+			vals:     mixedComposeValues(),
+			contains: []string{"image: " + DefaultEmulatorImage, "--inventory", "/dev/kvm:/dev/kvm", "network_mode: host"},
 		},
 		{
-			name:     "redroid auto publishes local runner API",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid"},
-			contains: []string{"--no-device", `- "127.0.0.1:${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
-		},
-		{
-			name:     "manual redroid publishes runner API on all host interfaces",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_SERVICE_MODE": "manual"},
-			contains: []string{"--no-device", `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
-		},
-		{
-			name:     "manual emulator publishes runner API on all host interfaces",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "CREDIMI_SERVICE_MODE": "manual"},
-			contains: []string{"--emulator", `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
-		},
-		{
-			name:     "manual wifi publishes runner API on all host interfaces",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10", "CREDIMI_SERVICE_MODE": "manual"},
-			contains: []string{`"${CREDIMI_DEVICE_1_WIFI_IP}:${CREDIMI_DEVICE_1_WIFI_PORT:-5555}"`, `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
-		},
-		{
-			name:     "manual usb uses host network",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"},
-			contains: []string{"--host-adb", "--usb", "network_mode: host"},
-		},
-		{
-			name:     "emulator custom runner port",
-			vals:     Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "RUNNER_PORT": "8052"},
-			contains: []string{`PORT: "${RUNNER_PORT:-8050}"`, `- "${RUNNER_PORT:-8050}"`, `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
-		},
-		{
-			name:     "host edge service target",
-			vals:     Values{"CREDIMI_RUNNER_BACKEND": "host"},
-			contains: []string{`caddy.reverse_proxy: "host.docker.internal:${RUNNER_PORT:-8050}"`},
+			name:     "manual inventory publishes runner API",
+			vals:     indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_SERVICE_MODE": "manual"}),
+			contains: []string{"--inventory", `- "${RUNNER_PORT:-8050}:${RUNNER_PORT:-8050}"`, "networks:\n      - ingress"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content, err := ComposeYAML(indexedComposeValues(tt.vals), "linux")
+			content, err := ComposeYAML(tt.vals, "linux")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -116,6 +86,30 @@ func TestComposeParityCases(t *testing.T) {
 				t.Fatalf("emulator tunnel should use caddy network URL, got:\n%s", content)
 			}
 		})
+	}
+}
+
+func mixedComposeValues() Values {
+	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone"})
+	values["CREDIMI_DEVICE_COUNT"] = "3"
+	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
+	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
+	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	values["CREDIMI_DEVICE_3_ID"] = "acme/runner/redroid"
+	values["CREDIMI_DEVICE_3_TYPE"] = "redroid"
+	values["CREDIMI_DEVICE_3_MODE"] = "no_device"
+	return values
+}
+
+func TestComposeRejectsConflictingDeviceImageOverrides(t *testing.T) {
+	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_IMAGE": "example.test/phone:latest"})
+	values["CREDIMI_DEVICE_COUNT"] = "2"
+	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
+	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
+	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	values["CREDIMI_DEVICE_2_RUNNER_IMAGE"] = "example.test/emulator:latest"
+	if _, err := ComposeYAML(values, "linux"); err == nil || !strings.Contains(err.Error(), "one runtime image") {
+		t.Fatalf("ComposeYAML error = %v", err)
 	}
 }
 

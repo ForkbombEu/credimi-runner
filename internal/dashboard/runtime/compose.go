@@ -32,10 +32,19 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	spec, err := sharedRunnerSpec(normalized, goos)
+	if err != nil {
+		// Host runners do not use the generated runner service; they retain a
+		// Compose file only for Caddy/tunnel services.
+		if BuildRuntimePlan("", normalized).Backend != DefaultHostBackend {
+			return "", err
+		}
+		spec = sharedRunnerRuntime{Image: DefaultPhoneImage, PullPolicy: DefaultRunnerImagePullPolicy, NetworkMode: "bridge"}
+	}
 
 	var builder strings.Builder
 	builder.WriteString("services:\n")
-	writeRunnerService(&builder, normalized, goos)
+	writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec)
 	writeRunnerHostService(&builder)
 	writeCaddyService(&builder)
 	writeTunnelService(&builder)
@@ -53,49 +62,31 @@ volumes:
 	return builder.String(), nil
 }
 
-func writeRunnerService(builder *strings.Builder, values Values, goos string) {
-	mode := values["CREDIMI_DEVICE_1_MODE"]
-	image := defaultIfEmpty(values["CREDIMI_DEVICE_1_RUNNER_IMAGE"], DefaultPhoneImage)
-	pullPolicy := defaultIfEmpty(values["CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
-	networkMode := runnerNetworkMode(mode, goos)
-	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", image, pullPolicy)
-	switch mode {
-	case "wifi":
-		fmt.Fprintf(builder, "    command:\n      - \"${CREDIMI_DEVICE_1_WIFI_IP}:${CREDIMI_DEVICE_1_WIFI_PORT:-%s}\"\n", DefaultWiFiPort)
-	case "emulator":
-		builder.WriteString("    command:\n      - --emulator\n")
-	case "no_device":
-		builder.WriteString("    command:\n      - --no-device\n")
-	default:
-		builder.WriteString("    command:\n      - --host-adb\n      - --usb\n")
-	}
+func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec sharedRunnerRuntime) {
+	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", spec.Image, spec.PullPolicy)
+	builder.WriteString("    command:\n      - --inventory\n")
 	builder.WriteString("    env_file:\n      - .env\n")
 	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
-	if mode == "usb" && networkMode != "host" {
+	if spec.HasADB && spec.NetworkMode != "host" {
 		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
 	}
-	switch mode {
-	case "emulator":
+	if spec.HasEmulator {
 		builder.WriteString("      CREDIMI_RUNNER_CONFIG_DIR: /app\n")
 		builder.WriteString("    devices:\n      - /dev/kvm:/dev/kvm\n")
-		builder.WriteString("    volumes:\n      - ${CREDIMI_DEVICE_1_ANDROID_KEYS_DIR}:/root/.android\n      - ${CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH}:/avd-home\n      - ${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden\n")
-	case "no_device":
-		if values["CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET"] != "" && values["CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH"] != "" {
-			builder.WriteString("    volumes:\n      - ${CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro\n")
-		}
-	case "usb":
+		fmt.Fprintf(builder, "    volumes:\n      - ${CREDIMI_DEVICE_%d_ANDROID_KEYS_DIR}:/root/.android\n      - ${CREDIMI_DEVICE_%d_HOST_AVD_HOME_PATH}:/avd-home\n      - ${CREDIMI_DEVICE_%d_HOST_AVD_GOLDEN_PATH}:/avd-golden\n", spec.EmulatorIndex, spec.EmulatorIndex, spec.EmulatorIndex)
+	} else if spec.HasUSB {
 		builder.WriteString("    volumes:\n      - adbkeys:/root/.android\n")
-		if goos == "linux" && networkMode != "host" {
+		if goos == "linux" && spec.NetworkMode != "host" {
 			builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n")
 		}
 	}
-	if networkMode == "host" {
+	if spec.NetworkMode == "host" {
 		builder.WriteString("    network_mode: host\n")
 	} else {
 		builder.WriteString("    expose:\n")
 		fmt.Fprintf(builder, "      - \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 		builder.WriteString("    ports:\n")
-		if normalizeServiceMode(values["CREDIMI_SERVICE_MODE"]) == "manual" {
+		if serviceMode == "manual" {
 			fmt.Fprintf(builder, "      - \"${RUNNER_PORT:-%s}:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort, DefaultRunnerPort)
 		} else {
 			fmt.Fprintf(builder, "      - \"127.0.0.1:${RUNNER_PORT:-%s}:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort, DefaultRunnerPort)
@@ -103,25 +94,109 @@ func writeRunnerService(builder *strings.Builder, values Values, goos string) {
 	}
 	builder.WriteString("    labels:\n      caddy: \"${RUNNER_CADDY_SITE:-:80}\"\n")
 	writeControllerLabels(builder)
-	if networkMode == "host" {
+	if spec.NetworkMode == "host" {
 		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"host.docker.internal:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	} else {
 		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"{{upstreams ${RUNNER_PORT:-%s}}}\"\n", DefaultRunnerPort)
 	}
-	if networkMode != "host" {
+	if spec.NetworkMode != "host" {
 		builder.WriteString("    networks:\n      - ingress\n")
 	}
 }
 
-func runnerNetworkMode(mode, goos string) string {
-	// A host ADB server normally listens only on 127.0.0.1. On Linux, a
-	// bridge-network container reaches the host through its gateway instead,
-	// where that loopback-only server is unavailable. Keep USB host-ADB in the
-	// host network namespace so it uses the same local ADB socket as the host.
-	if goos == "linux" && mode == "usb" {
-		return "host"
+type sharedRunnerRuntime struct {
+	Image         string
+	PullPolicy    string
+	NetworkMode   string
+	HasADB        bool
+	HasUSB        bool
+	HasEmulator   bool
+	EmulatorIndex int
+}
+
+// SharedRunnerImage reports the actual image and pull policy of the one
+// container that serves the complete device inventory.
+func SharedRunnerImage(values Values, goos string) (image, pullPolicy string, err error) {
+	spec, err := sharedRunnerSpec(values, goos)
+	if err != nil {
+		return "", "", err
 	}
-	return "bridge"
+	return spec.Image, spec.PullPolicy, nil
+}
+
+func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
+	inventory, err := ParseRuntimeConfig(values)
+	if err != nil {
+		return sharedRunnerRuntime{}, err
+	}
+	spec := sharedRunnerRuntime{Image: DefaultPhoneImage, PullPolicy: DefaultRunnerImagePullPolicy, NetworkMode: "bridge"}
+	customImages := map[string]string{}
+	customPolicies := map[string]string{}
+	var avdHome, avdGolden, adbKeys string
+	for _, device := range inventory.Devices {
+		if !device.Enabled {
+			continue
+		}
+		deviceType := device.Type
+		if deviceType == "" {
+			// Direct `serve` deployments need only an execution identifier. Keep
+			// their minimal inventory usable by treating omitted setup metadata as
+			// a physical Android target.
+			deviceType = "android_phone"
+		}
+		deviceMode := device.Mode
+		if deviceMode == "" {
+			deviceMode = "usb"
+		}
+		if deviceType == "ios_simulator" {
+			return sharedRunnerRuntime{}, fmt.Errorf("iOS simulators require the host runner backend; Docker runner containers cannot access CoreSimulator")
+		}
+		if deviceType != "android_phone" && deviceType != "android_emulator" && deviceType != "redroid" {
+			return sharedRunnerRuntime{}, fmt.Errorf("device %q has unsupported runner type %q", device.ID, deviceType)
+		}
+		if deviceMode != "no_device" && deviceType != "redroid" {
+			spec.HasADB = true
+		}
+		if deviceMode == "usb" {
+			spec.HasUSB = true
+		}
+		if deviceType == "android_emulator" {
+			spec.HasEmulator = true
+			if spec.EmulatorIndex == 0 {
+				spec.EmulatorIndex = device.Index
+				avdHome, avdGolden, adbKeys = device.Values["HOST_AVD_HOME_PATH"], device.Values["HOST_AVD_GOLDEN_PATH"], device.Values["ANDROID_KEYS_DIR"]
+			} else if avdHome != device.Values["HOST_AVD_HOME_PATH"] || avdGolden != device.Values["HOST_AVD_GOLDEN_PATH"] || adbKeys != device.Values["ANDROID_KEYS_DIR"] {
+				return sharedRunnerRuntime{}, fmt.Errorf("all Android emulators on one container runner must share Android keys and AVD root paths")
+			}
+		}
+		image := strings.TrimSpace(device.Values["RUNNER_IMAGE"])
+		defaultImage := DefaultPhoneImage
+		if deviceType == "android_emulator" {
+			defaultImage = DefaultEmulatorImage
+		}
+		policy := defaultIfEmpty(device.Values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
+		if image != "" && (image != defaultImage || policy != DefaultRunnerImagePullPolicy) {
+			if existingPolicy, exists := customPolicies[image]; exists && existingPolicy != policy {
+				return sharedRunnerRuntime{}, fmt.Errorf("a shared runner image must use one pull policy; configured device policies differ")
+			}
+			customImages[image] = device.ID
+			customPolicies[image] = policy
+		}
+	}
+	if len(customImages) > 1 {
+		return sharedRunnerRuntime{}, fmt.Errorf("a shared runner container supports one runtime image; configured device image overrides differ")
+	}
+	if spec.HasEmulator {
+		spec.Image = DefaultEmulatorImage
+	}
+	for image := range customImages {
+		spec.Image = image
+		spec.PullPolicy = customPolicies[image]
+	}
+	if goos == "linux" && spec.HasUSB {
+		spec.NetworkMode = "host"
+	}
+	return spec, nil
 }
 
 func writeRunnerHostService(builder *strings.Builder) {
