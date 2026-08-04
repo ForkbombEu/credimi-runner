@@ -1877,6 +1877,7 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 		"setup_device_name":           {"Pixel"},
 		"setup_device_type":           {"redroid"},
 		"setup_device_mode":           {"no_device"},
+		"setup_device_wifi_ip":        {"192.0.2.10"},
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))

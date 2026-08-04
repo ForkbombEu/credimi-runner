@@ -250,6 +250,7 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 		`data-setup-form`,
 		`data-step-target="identity"`,
 		`data-step-target="network"`,
+		`data-step-target="devices"`,
 		`data-step-target="advanced"`,
 		`data-step-target="review"`,
 		`data-org-value`,
@@ -262,8 +263,10 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 			t.Fatalf("setup wizard missing %q", want)
 		}
 	}
-	if strings.Contains(html, `CREDIMI_RUNNER_TYPE`) {
-		t.Fatalf("host setup must not render legacy target settings: %s", html)
+	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-emulator-assets-panel`, `data-device-provision-template`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("setup device provisioning missing %q", want)
+		}
 	}
 }
 

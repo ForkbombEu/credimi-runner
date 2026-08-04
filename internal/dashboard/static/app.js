@@ -415,6 +415,7 @@
     $$('[data-setup-form]', root).forEach((form) => {
       if (form.dataset.setupReady) return;
       form.dataset.setupReady = '1';
+	  $$('[data-legacy-setup-devices] input, [data-legacy-setup-devices] select, [data-legacy-setup-devices] textarea', form).forEach((field) => { field.disabled = true; });
       let current = 0;
       const buttons = $$('.wizard-step', form);
       const panels = $$('.wizard-panel', form);
@@ -430,6 +431,30 @@
         box.textContent = msg || '';
       };
       const valueMissing = (name) => !String(value(name) || '').trim();
+      const deviceValidationError = () => {
+        for (const card of $$('[data-device-provision]', form)) {
+          const get = (name) => {
+            const radio = $(`input[type="radio"][name="${name}"]:checked`, card);
+            return (radio || $(`[name="${name}"]`, card) || {}).value || '';
+          };
+          if (!String(get('CREDIMI_DEVICE_NAME')).trim()) return 'Each device needs a name.';
+          const type = get('CREDIMI_RUNNER_TYPE');
+          const mode = get('CREDIMI_RUNNER_DEVICE_MODE');
+          if (type === 'android_phone' && mode === 'usb' && !String(get('CREDIMI_RUNNER_SERIAL')).trim()) return 'Select a connected Android device for every USB target.';
+          if ((type === 'android_phone' && mode === 'wifi') || type === 'redroid') {
+            if (!String(get('CREDIMI_RUNNER_WIFI_IP')).trim()) return 'Every Wi-Fi or Redroid target requires an IP address.';
+          }
+          if (type === 'android_emulator') {
+            const assets = $('[data-android-emulator-assets-panel]', card);
+            if (!String(get('BASE_NAME')).trim() || (assets && assets.dataset.ready !== '1')) return 'Emulator base and golden assets must be ready.';
+          }
+          if (type === 'ios_simulator') {
+            const simulator = $('[data-ios-simulator-panel]', card);
+            if (!String(get('BASE_NAME')).trim() || (simulator && simulator.dataset.exists !== '1')) return 'Create or select every iOS simulator before continuing.';
+          }
+        }
+        return '';
+      };
       const currentStepValid = () => {
         const panel = panels[current];
         if (!panel) return false;
@@ -447,30 +472,7 @@
             if (mode === 'cloudflare-managed') return !valueMissing('RUNNER_DOMAIN') && !valueMissing('CLOUDFLARE_TUNNEL_TOKEN');
             return true;
           }
-          case 'device': {
-            const runnerType = value('CREDIMI_RUNNER_TYPE');
-            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
-            if (runnerType === 'android_phone' && mode !== 'wifi') {
-              return !valueMissing('CREDIMI_RUNNER_SERIAL');
-            }
-            if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi') {
-              return !valueMissing('CREDIMI_RUNNER_WIFI_IP');
-            }
-            if (runnerType === 'android_emulator') {
-              const panel = $('[data-android-emulator-assets-panel]', form);
-              return !valueMissing('BASE_NAME') && (!panel || panel.dataset.ready === '1');
-            }
-            if (runnerType === 'ios_simulator') {
-              const panel = $('[data-ios-simulator-panel]', form);
-              return !valueMissing('BASE_NAME') && (!panel || panel.dataset.exists === '1');
-            }
-            if (runnerType === 'redroid') {
-              const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
-              return !valueMissing('CREDIMI_RUNNER_WIFI_IP') &&
-                (!sshEnabled || !sshEnabled.checked || !valueMissing('AVDCTL_SSH_TARGET'));
-            }
-            return !!runnerType;
-          }
+          case 'devices': return !deviceValidationError();
           default:
             return true;
         }
@@ -495,31 +497,7 @@
             if (mode === 'cloudflare-managed' && valueMissing('CLOUDFLARE_TUNNEL_TOKEN')) return 'Managed mode requires a tunnel token.';
             return '';
           }
-          case 'device': {
-            const runnerType = value('CREDIMI_RUNNER_TYPE');
-            if (!runnerType) return 'Runner type is required.';
-            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
-            if (runnerType === 'android_phone' && mode === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
-              return 'Wi-Fi mode requires an Android Wi-Fi IP.';
-            }
-            if (runnerType === 'android_phone' && mode !== 'wifi' && valueMissing('CREDIMI_RUNNER_SERIAL')) {
-              return 'Select a connected Android device.';
-            }
-            if (runnerType === 'android_emulator' && valueMissing('BASE_NAME')) return 'Base name is required.';
-            if (runnerType === 'android_emulator') {
-              const panel = $('[data-android-emulator-assets-panel]', form);
-              if (panel && panel.dataset.checking === '1') return 'Checking emulator assets.';
-              return 'Emulator assets must be present before continuing.';
-            }
-            if (runnerType === 'ios_simulator' && valueMissing('BASE_NAME')) return 'Simulator name is required.';
-            if (runnerType === 'ios_simulator') return 'Create or select the named simulator before continuing.';
-            if (runnerType === 'redroid' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) return 'Redroid requires an Android Wi-Fi IP.';
-            if (runnerType === 'redroid') {
-              const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
-              if (sshEnabled && sshEnabled.checked && valueMissing('AVDCTL_SSH_TARGET')) return 'Remote avdctl requires an SSH target.';
-            }
-            return '';
-          }
+          case 'devices': return deviceValidationError();
           default:
             return '';
         }
@@ -815,9 +793,14 @@
     const add = e.target.closest('[data-setup-device-add]');
     if (add) {
       const form = add.closest('form');
-      const template = form && form.querySelector('template[data-setup-device-template]');
-      const list = form && form.querySelector('[data-setup-devices]');
-      if (template && list) list.appendChild(template.content.cloneNode(true));
+      const template = form && form.querySelector('template[data-device-provision-template]');
+      const list = form && form.querySelector('[data-setup-devices]:not([data-legacy-setup-devices])');
+      if (template && list) {
+        const card = template.content.cloneNode(true);
+        list.appendChild(card);
+        list.lastElementChild.querySelector('[data-setup-device-remove]').hidden = false;
+        updateDeviceFields(list.lastElementChild);
+      }
       return;
     }
     const remove = e.target.closest('[data-setup-device-remove]');
@@ -1275,14 +1258,14 @@
   document.addEventListener('change', (e) => {
     const select = e.target.closest('[data-android-phone-device-select]');
     if (!select) return;
-    const root = select.closest('form') || document;
+    const root = select.closest('[data-device-provision]') || select.closest('form') || document;
     setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', select.value || '');
     root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
   });
   document.addEventListener('click', (e) => {
     const pick = e.target.closest('[data-dev-pick]');
     if (!pick) return;
-    const root = pick.closest('form') || document;
+    const root = pick.closest('[data-device-provision]') || pick.closest('form') || document;
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
@@ -1303,16 +1286,16 @@
   });
   document.addEventListener('change', (e) => {
     if (e.target.name === 'CREDIMI_RUNNER_DEVICE_MODE' || e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
-      updateDeviceFields(e.target.closest('form') || document);
+      updateDeviceFields(e.target.closest('[data-device-provision]') || e.target.closest('form') || document);
     }
   });
   document.addEventListener('dashboard:step-shown', (e) => {
-    if (e.detail && e.detail.step === 'device') updateDeviceFields(e.target.closest('form') || document);
+    if (e.detail && e.detail.step === 'devices') (e.target.closest('form') || document).querySelectorAll('[data-device-provision]').forEach(updateDeviceFields);
   });
   document.addEventListener('click', async (e) => {
     const create = e.target.closest('[data-ios-simulator-create]');
     if (create) {
-      const root = create.closest('form') || document;
+      const root = create.closest('[data-device-provision]') || create.closest('form') || document;
       const panel = create.closest('[data-ios-simulator-panel]');
       const message = panel && panel.querySelector('[data-ios-simulator-message]');
       const deviceType = panel && panel.querySelector('[data-ios-simulator-device-type]');
@@ -1341,7 +1324,7 @@
 
     const applyAVD = e.target.closest('[data-android-emulator-apply-avd]');
     if (applyAVD) {
-      const root = applyAVD.closest('form') || document;
+      const root = applyAVD.closest('[data-device-provision]') || applyAVD.closest('form') || document;
       const panel = applyAVD.closest('[data-android-emulator-assets-panel]');
       const select = panel && panel.querySelector('[data-android-emulator-avd-select]');
       const option = select && select.selectedOptions[0];
@@ -1354,7 +1337,7 @@
 
     const applyGolden = e.target.closest('[data-android-emulator-apply-golden]');
     if (applyGolden) {
-      const root = applyGolden.closest('form') || document;
+      const root = applyGolden.closest('[data-device-provision]') || applyGolden.closest('form') || document;
       const panel = applyGolden.closest('[data-android-emulator-assets-panel]');
       const select = panel && panel.querySelector('[data-android-emulator-golden-select]');
       const option = select && select.selectedOptions[0];
@@ -1368,7 +1351,7 @@
 
     const download = e.target.closest('[data-android-emulator-download]');
     if (download) {
-      const root = download.closest('form') || document;
+      const root = download.closest('[data-device-provision]') || download.closest('form') || document;
       const panel = download.closest('[data-android-emulator-assets-panel]');
       const message = panel && panel.querySelector('[data-android-emulator-assets-message]');
       const avdControls = panel && panel.querySelector('[data-android-emulator-avd-controls]');
@@ -1407,7 +1390,8 @@
   });
   const initDeviceFields = () => {
     $$('form').forEach((form) => {
-      if (form.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked')) updateDeviceFields(form);
+      form.querySelectorAll('[data-device-provision]').forEach(updateDeviceFields);
+      if (!form.querySelector('[data-device-provision]') && form.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked')) updateDeviceFields(form);
     });
   };
   initDeviceFields();

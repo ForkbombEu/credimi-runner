@@ -1006,7 +1006,10 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dashboardruntime.DeviceRuntimeConfig, error) {
-	names := r.PostForm["setup_device_name"]
+	names := r.PostForm["CREDIMI_DEVICE_NAME"]
+	if len(names) == 0 {
+		names = r.PostForm["setup_device_name"]
+	}
 	if len(names) == 0 {
 		return nil, errors.New("add at least one device")
 	}
@@ -1028,7 +1031,13 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 		if name == "" {
 			return nil, fmt.Errorf("device %d name is required", index+1)
 		}
-		device := dashboardruntime.DeviceRuntimeConfig{Name: name, Description: valueAt("setup_device_description", index), Type: valueAt("setup_device_type", index), Mode: valueAt("setup_device_mode", index), Enabled: true, Serial: valueAt("setup_device_serial", index), Values: dashboardruntime.Values{}}
+		field := func(modern, legacy string) string {
+			if value := valueAt(modern, index); value != "" {
+				return value
+			}
+			return valueAt(legacy, index)
+		}
+		device := dashboardruntime.DeviceRuntimeConfig{Name: name, Description: field("CREDIMI_DEVICE_DESCRIPTION", "setup_device_description"), Type: field("CREDIMI_RUNNER_TYPE", "setup_device_type"), Mode: field("CREDIMI_RUNNER_DEVICE_MODE", "setup_device_mode"), Enabled: true, Serial: field("CREDIMI_RUNNER_SERIAL", "setup_device_serial"), Values: dashboardruntime.Values{}}
 		if device.Type == "" {
 			device.Type = "android_phone"
 		}
@@ -1036,11 +1045,24 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 			device.Mode = "usb"
 		}
 		device.Values["SERIAL"] = device.Serial
-		if value := valueAt("setup_device_wifi_ip", index); value != "" {
+		if value := field("CREDIMI_RUNNER_WIFI_IP", "setup_device_wifi_ip"); value != "" {
 			device.Values["WIFI_IP"] = value
 		}
-		if value := valueAt("setup_device_wifi_port", index); value != "" {
+		if value := field("CREDIMI_RUNNER_WIFI_PORT", "setup_device_wifi_port"); value != "" {
 			device.Values["WIFI_PORT"] = value
+		}
+		for formKey, valueKey := range map[string]string{"BASE_NAME": "BASE_NAME", "RUNNER_IMAGE": "RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY": "RUNNER_IMAGE_PULL_POLICY", "ANDROID_KEYS_DIR": "ANDROID_KEYS_DIR", "GOLDEN_PATH": "GOLDEN_PATH", "HOST_AVD_HOME_PATH": "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH": "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR": "REDROID_DATA_DIR", "REDROID_DATA_TAR": "REDROID_DATA_TAR", "IOS_UDID": "IOS_UDID"} {
+			if value := valueAt(formKey, index); value != "" {
+				device.Values[valueKey] = value
+			}
+		}
+		if device.Type == "android_phone" && device.Mode == "usb" && device.Serial == "" {
+			return nil, fmt.Errorf("device %d requires a selected USB Android device", index+1)
+		}
+		if (device.Type == "android_phone" && device.Mode == "wifi") || device.Type == "redroid" {
+			if device.Values["WIFI_IP"] == "" {
+				return nil, fmt.Errorf("device %d requires a Wi-Fi or Redroid IP address", index+1)
+			}
 		}
 		applyDeviceDefaults(&device)
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
