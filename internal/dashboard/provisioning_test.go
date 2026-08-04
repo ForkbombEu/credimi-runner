@@ -381,8 +381,8 @@ func TestAndroidEmulatorAssetsDownloadRoute(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/devices/android-emulator/assets/download", strings.NewReader(`{}`))
 	s.androidEmulatorAssetsDownload(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("missing paths code = %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default paths code = %d", rec.Code)
 	}
 
 	avdHome := filepath.Join(t.TempDir(), "avd")

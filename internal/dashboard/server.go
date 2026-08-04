@@ -2047,6 +2047,16 @@ func (s *Server) androidEmulatorAssetsStatus(w http.ResponseWriter, r *http.Requ
 	if baseName == "" {
 		baseName = dashboardruntime.DefaultBaseName
 	}
+	// A phone-only inventory has no emulator-specific indexed block yet. Use
+	// the runner's local defaults so adding the first emulator discovers assets
+	// already present on disk instead of reporting empty paths as missing.
+	configDir := filepath.Dir(s.cfg.Path())
+	if avdHome == "" {
+		avdHome = filepath.Join(configDir, dashboardruntime.DefaultHostAVDHome)
+	}
+	if goldenRoot == "" {
+		goldenRoot = filepath.Join(configDir, dashboardruntime.DefaultHostAVDGolden)
+	}
 	goldenLeaf := goldenLeafFromPath(goldenPath, baseName)
 	status := AndroidEmulatorAssetsStatus{
 		BaseName:      baseName,
@@ -2095,9 +2105,12 @@ func (s *Server) androidEmulatorAssetsDownload(w http.ResponseWriter, r *http.Re
 	}
 	avdHome := strings.TrimSpace(req.AVDHome)
 	goldenRoot := strings.TrimSpace(req.GoldenRoot)
-	if avdHome == "" || goldenRoot == "" {
-		http.Error(w, "avd_home and golden_root are required", http.StatusBadRequest)
-		return
+	configDir := filepath.Dir(s.cfg.Path())
+	if avdHome == "" {
+		avdHome = filepath.Join(configDir, dashboardruntime.DefaultHostAVDHome)
+	}
+	if goldenRoot == "" {
+		goldenRoot = filepath.Join(configDir, dashboardruntime.DefaultHostAVDGolden)
 	}
 	goldenLeaf := goldenLeafFromPath(req.GoldenPath, baseName)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
