@@ -62,6 +62,12 @@ type PauseRunnerRequest struct {
 	Reason   string `json:"reason"`
 }
 
+type DeleteDeviceRequest struct {
+	Organization string `json:"organization,omitempty"`
+	RunnerID     string `json:"runner_id"`
+	DeviceID     string `json:"device_id"`
+}
+
 type CredimiClient struct {
 	BaseURL    string
 	APIKey     string
@@ -237,6 +243,28 @@ func (c *CredimiClient) PauseMobileRunner(ctx context.Context, request PauseRunn
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return credimiResponseError("mobile runner pause failed", resp)
+	}
+	return nil
+}
+
+func (c *CredimiClient) DeleteMobileDevice(ctx context.Context, request DeleteDeviceRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, utils.JoinURL(c.BaseURL, "api", "mobile-device"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile device deletion failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return credimiResponseError("mobile device deletion failed", resp)
 	}
 	return nil
 }

@@ -417,6 +417,18 @@ func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown device", http.StatusNotFound)
 		return
 	}
+	key := strings.TrimSpace(s.cfg.Snapshot()["CREDIMI_USER_API_KEY"])
+	if key == "" {
+		key = strings.TrimSpace(s.cfg.Snapshot()["CREDIMI_INTERNAL_ADMIN_KEY"])
+	}
+	values := s.cfg.Snapshot()
+	if key != "" && strings.TrimSpace(values["CREDIMI_URL"]) != "" {
+		err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).DeleteMobileDevice(r.Context(), dashboardruntime.DeleteDeviceRequest{Organization: values["CREDIMI_RUNNER_ORGANIZATION"], RunnerID: values["CREDIMI_RUNNER_ID"], DeviceID: deviceID})
+		if err != nil {
+			http.Error(w, "Credimi device deletion failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
 	config.Devices = devices
 	if err := store.SaveRuntimeConfig(config); err != nil {
 		http.Error(w, err.Error(), 500)
