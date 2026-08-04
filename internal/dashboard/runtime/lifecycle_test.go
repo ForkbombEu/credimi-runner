@@ -171,7 +171,9 @@ func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing
 	t.Setenv(verboseLogPathEnv, path)
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_TYPE":    "android_phone",
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_DEVICE_COUNT":   "1",
+		"CREDIMI_DEVICE_1_ID":    "acme/runner/device",
 		"CREDIMI_RUNNER_BACKEND": "container",
 		"CREDIMI_SERVICE_MODE":   "manual",
 	}, runner)
@@ -854,6 +856,8 @@ func TestLifecycleManagerStartReportsDockerStageFailures(t *testing.T) {
 			runner := &failOnRunRunner{failAt: failAt}
 			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 				"CREDIMI_RUNNER_ID":      "acme/runner",
+				"CREDIMI_DEVICE_COUNT":   "1",
+				"CREDIMI_DEVICE_1_ID":    "acme/runner/device",
 				"CREDIMI_RUNNER_BACKEND": "container",
 				"CREDIMI_SERVICE_MODE":   "manual",
 			}, runner)
@@ -910,10 +914,12 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	runner := &fakeRunner{runOutput: []byte("line-1\nline-2\n")}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_DEVICE_COUNT":          "1",
+		"CREDIMI_DEVICE_1_ID":           "acme/runner/device",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest",
 	}, runner)
 
-	manager.Configure(Values{"CREDIMI_RUNNER_ID": "acme/runner-2", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest"})
+	manager.Configure(Values{"CREDIMI_RUNNER_ID": "acme/runner-2", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner-2/device", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest"})
 	status := manager.Status(context.Background())
 	if !status.Configured {
 		t.Fatal("expected configured status after Configure")
@@ -941,6 +947,8 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	}
 	manager.Configure(Values{
 		"CREDIMI_RUNNER_ID":             "acme/runner-2",
+		"CREDIMI_DEVICE_COUNT":          "1",
+		"CREDIMI_DEVICE_1_ID":           "acme/runner-2/device",
 		"CREDIMI_RUNNER_BACKEND":        "container",
 		"CREDIMI_SERVICE_MODE":          "manual",
 		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest",
