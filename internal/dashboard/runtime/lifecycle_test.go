@@ -551,6 +551,24 @@ func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing
 	}
 }
 
+func TestLifecycleManagerUpgradeRunnerImagePullsDistinctDeviceImages(t *testing.T) {
+	runner := &imageVersionRunner{imageIDs: []string{"sha256:phone-old", "sha256:phone-new", "sha256:emu-old", "sha256:emu-new"}}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_BACKEND": "container", "CREDIMI_SERVICE_MODE": "manual", "CREDIMI_DEVICE_COUNT": "2",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/phone:latest",
+		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_RUNNER_IMAGE": "example.test/emulator:latest",
+	}, runner)
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	commands := commandArgs(runner.runs)
+	for _, expected := range []string{"pull example.test/phone:latest", "pull example.test/emulator:latest", "image rm -f sha256:phone-old", "image rm -f sha256:emu-old"} {
+		if !strings.Contains(commands, expected) {
+			t.Fatalf("missing %q in %s", expected, commands)
+		}
+	}
+}
+
 func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
 		"CREDIMI_RUNNER_ID":             "acme/runner",
@@ -606,6 +624,24 @@ func TestLifecycleManagerUpgradeRunnerImageRequiresImage(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 	manager.setLastError(nil)
+}
+
+func TestConfiguredRuntimeImagesDeduplicatesAndSkipsLocalImages(t *testing.T) {
+	values := Values{
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "3",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "phone:v1", "CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "always",
+		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_RUNNER_IMAGE": "emulator:v1", "CREDIMI_DEVICE_2_RUNNER_IMAGE_PULL_POLICY": "missing",
+		"CREDIMI_DEVICE_3_ID": "acme/runner/local", "CREDIMI_DEVICE_3_RUNNER_IMAGE": "phone:v1", "CREDIMI_DEVICE_3_RUNNER_IMAGE_PULL_POLICY": "never",
+	}
+	if got := configuredRuntimeImages(values); !slices.Equal(got, []string{"phone:v1", "emulator:v1"}) {
+		t.Fatalf("configuredRuntimeImages = %v", got)
+	}
+	if got := configuredRuntimeImages(Values{"CREDIMI_DEVICE_1_RUNNER_IMAGE": "legacy:v1"}); !slices.Equal(got, []string{"legacy:v1"}) {
+		t.Fatalf("legacy fallback = %v", got)
+	}
+	if got := configuredRuntimeImages(Values{"CREDIMI_DEVICE_1_RUNNER_IMAGE": "local:v1", "CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "never"}); len(got) != 0 {
+		t.Fatalf("local fallback = %v", got)
+	}
 }
 
 func TestExecRunnerRunStreamsProgress(t *testing.T) {

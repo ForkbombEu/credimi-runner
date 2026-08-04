@@ -580,6 +580,23 @@ func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 	}
 }
 
+func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
+	emulator := dashboardruntime.DeviceRuntimeConfig{Type: "android_emulator", Mode: "emulator"}
+	applyDeviceDefaults(&emulator)
+	if emulator.Values["RUNNER_IMAGE"] == "" || emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" {
+		t.Fatalf("emulator defaults = %#v", emulator.Values)
+	}
+	redroid := dashboardruntime.DeviceRuntimeConfig{Type: "redroid", Mode: "no_device", Values: dashboardruntime.Values{"RUNNER_IMAGE": "custom:local"}}
+	applyDeviceDefaults(&redroid)
+	if redroid.Values["RUNNER_IMAGE"] != "custom:local" || redroid.Values["WIFI_PORT"] != "5555" || redroid.Values["REDROID_DATA_DIR"] == "" {
+		t.Fatalf("redroid defaults = %#v", redroid.Values)
+	}
+	s := newTestServer(t)
+	if err := s.registerConfiguredDevice(context.Background(), dashboardruntime.Values{}, dashboardruntime.DeviceRuntimeConfig{Name: "Pixel", Type: "android_phone", Mode: "usb"}); err == nil || !strings.Contains(err.Error(), "Credimi URL") {
+		t.Fatalf("missing credentials error = %v", err)
+	}
+}
+
 func TestServerConfigDiffAndHelpers(t *testing.T) {
 	s := newTestServer(t)
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
