@@ -1261,6 +1261,14 @@
     root.querySelectorAll('[data-dev-pick]').forEach(p => {
       p.classList.toggle('on', p.dataset.devPick === type);
     });
+	// A hidden USB selector must not block Wi-Fi/no-device submissions, while
+	// USB itself must never continue without an explicit ADB target.
+	const serialSelect = root.querySelector('[data-android-phone-device-select]');
+	if (serialSelect) {
+		const needsSerial = type === 'android_phone' && mode === 'usb';
+		serialSelect.required = needsSerial;
+		serialSelect.disabled = !needsSerial;
+	}
     refreshIOSSimulatorPanel(root);
     refreshAndroidEmulatorAssetsPanel(root);
   };

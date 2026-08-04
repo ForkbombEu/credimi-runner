@@ -670,16 +670,24 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		config = dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(values)}
 	}
-	name := strings.TrimSpace(r.FormValue("name"))
+	formValue := func(keys ...string) string {
+		for _, key := range keys {
+			if value := strings.TrimSpace(r.FormValue(key)); value != "" {
+				return value
+			}
+		}
+		return ""
+	}
+	name := formValue("name", "CREDIMI_DEVICE_NAME")
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
 	device := dashboardruntime.DeviceRuntimeConfig{
 		ID:          deviceID,
 		Name:        name,
 		Description: strings.TrimSpace(r.FormValue("description")),
-		Type:        strings.TrimSpace(r.FormValue("type")),
-		Mode:        strings.TrimSpace(r.FormValue("mode")),
+		Type:        formValue("type", "CREDIMI_RUNNER_TYPE"),
+		Mode:        formValue("mode", "CREDIMI_RUNNER_DEVICE_MODE"),
 		Enabled:     r.FormValue("enabled") != "false",
-		Serial:      strings.TrimSpace(r.FormValue("serial")),
+		Serial:      formValue("serial", "CREDIMI_RUNNER_SERIAL"),
 		Values:      dashboardruntime.Values{},
 	}
 	for formKey, valueKey := range map[string]string{
@@ -688,7 +696,11 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		"android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH",
 		"redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH",
 	} {
-		if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
+		value := strings.TrimSpace(r.FormValue(formKey))
+		if value == "" {
+			value = strings.TrimSpace(r.FormValue(map[string]string{"wifi_ip": "CREDIMI_RUNNER_WIFI_IP", "wifi_port": "CREDIMI_RUNNER_WIFI_PORT", "base_name": "BASE_NAME", "runner_image": "RUNNER_IMAGE", "runner_image_pull_policy": "RUNNER_IMAGE_PULL_POLICY", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"}[formKey]))
+		}
+		if value != "" {
 			device.Values[valueKey] = value
 		}
 	}

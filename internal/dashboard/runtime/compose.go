@@ -37,8 +37,8 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	builder.WriteString("services:\n")
 	writeRunnerService(&builder, normalized, goos)
 	writeRunnerHostService(&builder)
-	writeCaddyService(&builder, normalized, goos)
-	writeTunnelService(&builder, normalized, goos)
+	writeCaddyService(&builder)
+	writeTunnelService(&builder)
 	writeNamedTunnelService(&builder)
 	builder.WriteString(`
 networks:
@@ -146,7 +146,7 @@ func writeRunnerHostService(builder *strings.Builder) {
 `)
 }
 
-func writeCaddyService(builder *strings.Builder, values Values, goos string) {
+func writeCaddyService(builder *strings.Builder) {
 	builder.WriteString(`
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine
@@ -165,7 +165,7 @@ func writeCaddyService(builder *strings.Builder, values Values, goos string) {
 	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n")
 }
 
-func writeTunnelService(builder *strings.Builder, values Values, goos string) {
+func writeTunnelService(builder *strings.Builder) {
 	builder.WriteString(`
   tunnel:
     image: cloudflare/cloudflared:latest
