@@ -279,10 +279,10 @@ func (l RuntimeLifecycle) registrationEndpoint(ctx context.Context) (string, str
 		if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
 			return publicURL, "", nil
 		}
+		// LifecycleManager turns a positive tail into a Compose --since filter
+		// using LastStartedAt. Never search historical quick-tunnel output: old
+		// trycloudflare URLs expire on every restart and must not be registered.
 		tail := quickTunnelLogTail
-		if !status.LastStartedAt.IsZero() {
-			tail = -quickTunnelLogTail
-		}
 		matcher := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
 		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
