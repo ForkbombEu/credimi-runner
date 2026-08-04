@@ -211,7 +211,7 @@ func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
 	}
 }
 
-func erer_HidesIOSSimulatorOnLinux(t *testing.T) {
+func TestRenderer_HidesIOSSimulatorOnLinux(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "linux")
 	r, err := NewRenderer()
 	if err != nil {
@@ -230,6 +230,40 @@ func erer_HidesIOSSimulatorOnLinux(t *testing.T) {
 	}
 	if strings.Contains(html, `value="ios_simulator"`) {
 		t.Fatalf("linux setup page should not render ios_simulator: %s", html)
+	}
+}
+
+func TestSetupRendersProgressiveHostWizard(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := r.Page("setup", PageData{
+		Active: "setup",
+		Runner: &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
+		Pill:   PillData{OK: true, Label: "Setup"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-setup-form`,
+		`data-step-target="identity"`,
+		`data-step-target="network"`,
+		`data-step-target="advanced"`,
+		`data-step-target="review"`,
+		`data-org-value`,
+		`data-runner-id-value`,
+		`data-auth-seg`,
+		`data-net-mode="manual"`,
+		`data-runner-conflict-modal-summary`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("setup wizard missing %q", want)
+		}
+	}
+	if strings.Contains(html, `CREDIMI_RUNNER_TYPE`) {
+		t.Fatalf("host setup must not render legacy target settings: %s", html)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -99,6 +100,93 @@ func TestLifecycleActionPastTense(t *testing.T) {
 		if got := lifecycleActionPastTense(action); got != want {
 			t.Fatalf("%s = %q, want %q", action, got, want)
 		}
+	}
+}
+
+func TestLifecycleDashboardOpenReportsReachableDashboardWithoutDisplay(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/internal/controller/identity" || request.Header.Get("X-Credimi-Controller-Token") != "test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"controller_id":"controller-1","config_fingerprint":"fingerprint"}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	writeLifecycleMetadata(t, dir, server.URL+"/internal/controller/identity", 42)
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	command, output := lifecycleTestCommand()
+	if err := runLifecycleDashboardOpen(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Dashboard is running at") {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestLifecycleDashboardStopVerifiesIdentityBeforeSignalling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/internal/controller/identity" || request.Header.Get("X-Credimi-Controller-Token") != "test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"controller_id":"controller-1","config_fingerprint":"fingerprint"}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	writeLifecycleMetadata(t, dir, server.URL+"/internal/controller/identity", 42)
+	originalKill := lifecycleKill
+	var gotPID int
+	lifecycleKill = func(pid int, signal syscall.Signal) error {
+		gotPID = pid
+		if signal != syscall.SIGTERM {
+			t.Fatalf("signal=%v", signal)
+		}
+		return nil
+	}
+	t.Cleanup(func() { lifecycleKill = originalKill })
+	command, output := lifecycleTestCommand()
+	if err := runLifecycleDashboardStop(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotPID != 42 || !strings.Contains(output.String(), "Dashboard stop requested") {
+		t.Fatalf("pid=%d output=%q", gotPID, output.String())
+	}
+
+	writeLifecycleMetadata(t, dir, server.URL+"/internal/controller/identity", 1)
+	if err := runLifecycleDashboardStop(command, nil); err == nil || !strings.Contains(err.Error(), "invalid dashboard PID") {
+		t.Fatalf("invalid pid error=%v", err)
+	}
+}
+
+func TestLifecycleLogCommandsPrintAndExportReport(t *testing.T) {
+	dir := t.TempDir()
+	setLifecycleConfigDir(t, dir)
+	if err := os.WriteFile(lifecycleLogPath(), []byte(`{"schema":1,"timestamp":"2026-01-01T00:00:00Z","level":"info","event":"runner.started","message":"started"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command, output := lifecycleTestCommand()
+	lifecycleLogLines = 10
+	lifecycleLogOutput = ""
+	if err := runLifecycleLogTail(command, nil); err != nil || !strings.Contains(output.String(), "runner.started") {
+		t.Fatalf("tail err=%v output=%q", err, output.String())
+	}
+	output.Reset()
+	if err := runLifecycleLogExport(command, nil); err != nil || !strings.Contains(output.String(), "Credimi Runner lifecycle diagnostic") {
+		t.Fatalf("stdout export err=%v output=%q", err, output.String())
+	}
+	outputPath := filepath.Join(dir, "report.md")
+	lifecycleLogOutput = outputPath
+	t.Cleanup(func() { lifecycleLogOutput = "" })
+	if err := runLifecycleLogExport(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(outputPath)
+	if err != nil || !strings.Contains(string(contents), "runner.started") {
+		t.Fatalf("report=%q err=%v", contents, err)
 	}
 }
 
@@ -228,7 +316,7 @@ func TestLifecycleJSONHelpersAndBaseURL(t *testing.T) {
 func TestLifecycleCLIReportsMissingAndStaleControllers(t *testing.T) {
 	dir := t.TempDir()
 	setLifecycleConfigDir(t, dir)
-	command, output := lifecycleTestCommand()
+	command, _ := lifecycleTestCommand()
 	if err := runLifecycleRuntimeAction(command, "start"); err == nil || !strings.Contains(err.Error(), "runner configuration is missing") {
 		t.Fatalf("runtime action error = %v", err)
 	}
@@ -252,7 +340,7 @@ func TestLifecycleCLIReportsMissingAndStaleControllers(t *testing.T) {
 	}))
 	defer server.Close()
 	writeLifecycleMetadata(t, dir, server.URL+"/internal/controller/identity", 42)
-	command, output = lifecycleTestCommand()
+	command, output := lifecycleTestCommand()
 	if err := runLifecycleStatus(command, nil); err != nil || !strings.Contains(output.String(), "Dashboard: unavailable") {
 		t.Fatalf("stale status error=%v output=%q", err, output.String())
 	}

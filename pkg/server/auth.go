@@ -65,10 +65,7 @@ func (s *runnerService) matchesConfiguredAPIKey(key string, configuredKey func(u
 		return false
 	}
 	configuredHash := sha256.Sum256([]byte(configured))
-	if subtle.ConstantTimeCompare(presented[:], configuredHash[:]) == 1 {
-		return true
-	}
-	return false
+	return subtle.ConstantTimeCompare(presented[:], configuredHash[:]) == 1
 }
 
 func (s *runnerService) validInternalAdminAPIKey(ctx context.Context, key string) (bool, error) {

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,42 +19,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type dashboardFakeManager struct {
-	startCalls  int
-	logs        []dashboardruntime.LogLine
-	status      dashboardruntime.RuntimeStatus
-	startErr    error
-	progress    []string
-	logDeadline time.Time
-	logTail     int
-}
+type dashboardTestListener struct{ closed chan struct{} }
 
-func (f *dashboardFakeManager) Start(context.Context) error {
-	f.startCalls++
-	return f.startErr
-}
-func (f *dashboardFakeManager) StartWithProgress(ctx context.Context, progress func(string)) error {
-	f.progress = append(f.progress, "Pulling Docker images.")
-	progress("Pulling Docker images.")
-	return f.Start(ctx)
-}
-func (f *dashboardFakeManager) Stop(context.Context) error        { return nil }
-func (f *dashboardFakeManager) Restart(context.Context) error     { return nil }
-func (f *dashboardFakeManager) UpdateImage(context.Context) error { return nil }
-func (f *dashboardFakeManager) Configure(dashboardruntime.Values) {}
-func (f *dashboardFakeManager) SetPublicURL(publicURL string) {
-	f.status.PublicURL = publicURL
-}
-func (f *dashboardFakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
-	return f.status
-}
-func (f *dashboardFakeManager) Logs(ctx context.Context, tail int) ([]dashboardruntime.LogLine, error) {
-	f.logTail = tail
-	if deadline, ok := ctx.Deadline(); ok {
-		f.logDeadline = deadline
+func (l *dashboardTestListener) Accept() (net.Conn, error) { <-l.closed; return nil, net.ErrClosed }
+func (l *dashboardTestListener) Close() error {
+	select {
+	case <-l.closed:
+	default:
+		close(l.closed)
 	}
-	return f.logs, nil
+	return nil
 }
+func (l *dashboardTestListener) Addr() net.Addr { return &net.TCPAddr{} }
 
 func TestDashboardConfigPathHonorsOverride(t *testing.T) {
 	dir := t.TempDir()
@@ -88,8 +63,51 @@ func TestDashboardHandlerStartsWithoutRunnerIDOnFirstRun(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d", rec.Code)
 	}
-	if body := rec.Body.String(); body == "" || !strings.Contains(body, "Configure the host") {
+	if body := rec.Body.String(); body == "" || !strings.Contains(body, "Set up Credimi Runner") {
 		t.Fatalf("unexpected body: %s", body)
+	}
+}
+
+func TestRunDashboardGracefullyStopsFromInjectedSignal(t *testing.T) {
+	dir := t.TempDir()
+	originalEnv, hadEnv := os.LookupEnv("CREDIMI_RUNNER_CONFIG_DIR")
+	originalSource, originalReserve, originalOpen, originalConfigDir, originalHost, originalPort := dashboardSignalSource, dashboardListenerReservation, dashboardOpen, dashboardConfigDir, dashboardHost, dashboardPort
+	dashboardSignalSource = func() (<-chan os.Signal, func()) {
+		signals := make(chan os.Signal, 1)
+		signals <- syscall.SIGTERM
+		return signals, func() {}
+	}
+	dashboardOpen = false
+	dashboardListenerReservation = func(string, int) (net.Listener, error) {
+		return &dashboardTestListener{closed: make(chan struct{})}, nil
+	}
+	dashboardConfigDir = dir
+	dashboardHost = "127.0.0.1"
+	dashboardPort = 0
+	t.Cleanup(func() {
+		dashboardSignalSource = originalSource
+		dashboardListenerReservation = originalReserve
+		dashboardOpen = originalOpen
+		dashboardConfigDir = originalConfigDir
+		dashboardHost = originalHost
+		dashboardPort = originalPort
+		if hadEnv {
+			_ = os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", originalEnv)
+		} else {
+			_ = os.Unsetenv("CREDIMI_RUNNER_CONFIG_DIR")
+		}
+	})
+	command := &cobra.Command{}
+	command.Flags().String("host", "127.0.0.1", "")
+	command.Flags().Int("port", 0, "")
+	if err := command.Flags().Set("host", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Flags().Set("port", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runDashboard(command, nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

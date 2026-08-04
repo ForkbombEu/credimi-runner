@@ -105,7 +105,6 @@ type startupState struct {
 	LogBase   int64
 	LogNextID int64
 	running   bool
-	cancel    context.CancelFunc
 	done      chan struct{}
 }
 
@@ -353,7 +352,7 @@ func (s *Server) deviceRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	config, err := store.RuntimeConfig()
 	if err != nil {
-		http.Error(w, err.Error(), 422)
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	var selected dashboardruntime.DeviceRuntimeConfig
@@ -439,7 +438,7 @@ func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	config, err := store.RuntimeConfig()
 	if err != nil {
-		http.Error(w, err.Error(), 422)
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	devices := config.Devices[:0]
@@ -1281,7 +1280,7 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
-	s.queueDashboardRuntimeAction(w, r, "start")
+	s.queueDashboardRuntimeAction(w, "start")
 }
 
 func (s *Server) controllerStatus(w http.ResponseWriter, r *http.Request) {
@@ -1407,11 +1406,11 @@ func (s *Server) runtimeLifecycle(values map[string]string) controller.RuntimeLi
 }
 
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
-	s.queueDashboardRuntimeAction(w, r, "stop")
+	s.queueDashboardRuntimeAction(w, "stop")
 }
 
 func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
-	s.queueDashboardRuntimeAction(w, r, "restart")
+	s.queueDashboardRuntimeAction(w, "restart")
 }
 
 func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
@@ -1501,7 +1500,7 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeRegister(w http.ResponseWriter, r *http.Request) {
-	s.queueRuntimeAction(w, r, "overview", controller.OperationRegistration, func(ctx context.Context) error {
+	s.queueRuntimeAction(w, "overview", controller.OperationRegistration, func(ctx context.Context) error {
 		return s.registerCurrent(ctx, s.cfg.Snapshot())
 	}, "Credimi runner registration updated.")
 }
@@ -1566,7 +1565,7 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, r *http.Request, action string) {
+func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter,  action string) {
 	snapshot, err := s.submitRuntimeAction(action)
 	if err != nil {
 		s.renderRuntimeActionError(w, "overview", err)
@@ -1575,7 +1574,7 @@ func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, r *http.Requ
 	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action))
 }
 
-func (s *Server) queueRuntimeAction(w http.ResponseWriter, r *http.Request, page string, kind controller.OperationKind, action func(context.Context) error, success string) {
+func (s *Server) queueRuntimeAction(w http.ResponseWriter,  page string, kind controller.OperationKind, action func(context.Context) error, success string) {
 	if s.operations == nil {
 		s.operations = controller.NewCoordinator(s.ctx)
 	}

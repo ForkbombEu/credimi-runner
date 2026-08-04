@@ -89,7 +89,7 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	startAttempts = s.startWorkerIfNeeded(ctx, span, orgName, namespace, runnerID, startAttempts, startDelay)
+	s.startWorkerIfNeeded(ctx, span, orgName, namespace, runnerID, startAttempts, startDelay)
 	return nil
 }
 

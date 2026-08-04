@@ -370,10 +370,6 @@ func boolStr(b bool) string {
 	return "false"
 }
 
-func boolPtr(value bool) *bool {
-	return &value
-}
-
 func isTruthyFormValue(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on":

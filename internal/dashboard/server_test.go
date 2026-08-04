@@ -175,24 +175,31 @@ func TestNewHandlerWithManagerWrapper(t *testing.T) {
 	}
 }
 
-func bootstrapReadyRunner(t *testing.T) (string, string) {
-	t.Helper()
-	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/health":
-			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
-		case "/readyz":
-			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
-		default:
-			http.NotFound(w, request)
+func TestDashboardHandlerConstructorsAndConfigPreview(t *testing.T) {
+	for _, build := range []func() (http.Handler, context.CancelFunc, error){
+		func() (http.Handler, context.CancelFunc, error) { return NewHandler(t.TempDir()) },
+		func() (http.Handler, context.CancelFunc, error) {
+			return NewHandlerWithManagerContextAndIdentity(context.Background(), t.TempDir(), &fakeManager{}, "controller", "token", "fingerprint")
+		},
+		func() (http.Handler, context.CancelFunc, error) {
+			return NewHandlerWithManagerContextAndIdentityAndCoordinator(context.Background(), t.TempDir(), &fakeManager{}, "controller", "token", "fingerprint", controller.NewCoordinator(context.Background()))
+		},
+	} {
+		handler, cancel, err := build()
+		if err != nil || handler == nil {
+			t.Fatalf("handler=%v err=%v", handler, err)
 		}
-	}))
-	t.Cleanup(runner.Close)
-	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
-	if err != nil {
-		t.Fatal(err)
+		cancel()
 	}
-	return host, port
+	s := newTestServer(t)
+	form := url.Values{"CREDIMI_RUNNER_ID": {"acme/runner"}, "CREDIMI_DEVICE_COUNT": {"1"}, "CREDIMI_DEVICE_1_ID": {"acme/runner/device"}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/config/normalize", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.normalizeConfigPreview(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "acme/runner") {
+		t.Fatalf("preview=%d %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
@@ -1729,6 +1736,70 @@ func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
 	}
 }
 
+func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "one"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "wifi", Enabled: true, Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.2"}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	form := url.Values{"device_id": {"acme/runner/one"}, "name": {"Renamed One"}, "type": {"android_phone"}, "mode": {"wifi"}, "wifi_ip": {"10.0.0.1"}, "wifi_port": {"5555"}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("update = %d %s", recorder.Code, recorder.Body.String())
+	}
+	updated, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := updated.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Devices[0].Name != "Renamed One" || config.Devices[0].Values["WIFI_IP"] != "10.0.0.1" || config.Devices[1].Name != "Two" || config.Devices[1].Values["WIFI_IP"] != "10.0.0.2" {
+		t.Fatalf("devices = %#v", config.Devices)
+	}
+
+	form.Set("device_id", "acme/runner/missing")
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("missing update = %d", recorder.Code)
+	}
+}
+
+func TestServerDeviceRegisterRejectsIncompleteDashboardMetadata(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/device", Enabled: true, Values: dashboardruntime.Values{}}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/register", strings.NewReader(url.Values{"device_id": {"acme/runner/device"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.deviceRegister(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), "device name") {
+		t.Fatalf("register = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	s := newTestServer(t)
 	dir := filepath.Dir(s.cfg.Path())
@@ -1849,15 +1920,6 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
 		t.Fatalf("setup was not persisted: exists=%t values=%#v", s.cfg.Exists(), s.cfg.Snapshot())
 	}
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestServerRuntimeStartRegistersRunner(t *testing.T) {

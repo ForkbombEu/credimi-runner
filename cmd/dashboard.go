@@ -31,6 +31,12 @@ var (
 )
 
 var openDashboardBrowserFunc = openDashboardBrowser
+var dashboardListenerReservation = reserveDashboardListener
+var dashboardSignalSource = func() (<-chan os.Signal, func()) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	return signals, func() { signal.Stop(signals) }
+}
 
 func runDashboard(cmd *cobra.Command, args []string) error {
 	configDir := dashboardConfigDir
@@ -67,7 +73,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 	defer lease.Close()
 	listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
-	listener, err := reserveDashboardListener(listenHost, listenPort)
+	listener, err := dashboardListenerReservation(listenHost, listenPort)
 	if err != nil {
 		return err
 	}
@@ -126,9 +132,8 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigc)
+	sigc, stopSignals := dashboardSignalSource()
+	defer stopSignals()
 
 	select {
 	case err := <-errc:
@@ -258,11 +263,4 @@ func resolveDashboardListenAddress(cmd *cobra.Command, values dashboardruntime.V
 		return host, dashboardPort
 	}
 	return host, parsedPort
-}
-
-func currentDashboardGOOS() string {
-	if override := strings.ToLower(strings.TrimSpace(os.Getenv("GOOS_OVERRIDE"))); override != "" {
-		return override
-	}
-	return runtime.GOOS
 }

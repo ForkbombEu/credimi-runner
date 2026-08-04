@@ -23,7 +23,8 @@ import (
 var lifecycleStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard and runner lifecycle status", RunE: runLifecycleStatus}
 var lifecycleRunnerCmd = &cobra.Command{Use: "runner", Short: "Control the configured runner"}
 var lifecycleRunnerActionCmd = func(name string) *cobra.Command {
-	return &cobra.Command{Use: name, Short: strings.Title(name) + " the runner", RunE: func(cmd *cobra.Command, args []string) error {
+	title := strings.ToUpper(name[:1]) + name[1:]
+	return &cobra.Command{Use: name, Short: title + " the runner", RunE: func(cmd *cobra.Command, args []string) error {
 		return runLifecycleRuntimeAction(cmd, name)
 	}}
 }
@@ -36,6 +37,7 @@ var lifecycleLogLines int
 var lifecycleLogOutput string
 var lifecycleOperationPollInterval = 250 * time.Millisecond
 var lifecycleRuntimeExecutable = os.Executable
+var lifecycleKill = syscall.Kill
 var lifecycleRuntimeWaitReady func(context.Context, dashboardruntime.Values) error
 var lifecycleRuntimeManagerFactory = func(binaryPath, configDir string, values dashboardruntime.Values) dashboardruntime.Manager {
 	return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
@@ -325,7 +327,7 @@ func runLifecycleDashboardStop(cmd *cobra.Command, args []string) error {
 	if err := controller.Probe(ctx, metadata); err != nil {
 		return fmt.Errorf("refusing to stop an unverified dashboard controller: %w", err)
 	}
-	if err := syscall.Kill(metadata.PID, syscall.SIGTERM); err != nil {
+	if err := lifecycleKill(metadata.PID, syscall.SIGTERM); err != nil {
 		return err
 	}
 	cmd.Printf("Dashboard stop requested (pid %d)\n", metadata.PID)
