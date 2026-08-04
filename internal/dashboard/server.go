@@ -423,7 +423,14 @@ func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
-	writeJSON(w, map[string]any{"device_id": deviceID, "removed": true})
+	// Device actions are submitted from the dashboard, not a raw API client.
+	// Redirecting keeps the user inside the dashboard instead of rendering a
+	// transport JSON response after removal.
+	if r.Header.Get("Accept") == "application/json" {
+		writeJSON(w, map[string]any{"device_id": deviceID, "removed": true})
+		return
+	}
+	http.Redirect(w, r, "/devices", http.StatusSeeOther)
 }
 
 func loadConfigSnapshot(store *dashboardruntime.Store, current *Config) *Config {

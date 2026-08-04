@@ -1844,7 +1844,7 @@ func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/devices/remove", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}, "confirm": {"true"}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.deviceRemove(remove, req)
-	if remove.Code != http.StatusOK {
+	if remove.Code != http.StatusSeeOther {
 		t.Fatalf("remove = %d %s", remove.Code, remove.Body.String())
 	}
 	stored, err = dashboardruntime.LoadStore(dir)
@@ -2124,7 +2124,7 @@ func TestServerManagedDeviceActions(t *testing.T) {
 	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusSeeOther {
 		t.Fatalf("disable = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := post(s.deviceRemove, url.Values{"device_id": {"acme/runner/pixel"}, "confirm": {"true"}}); rec.Code != http.StatusOK {
+	if rec := post(s.deviceRemove, url.Values{"device_id": {"acme/runner/pixel"}, "confirm": {"true"}}); rec.Code != http.StatusSeeOther {
 		t.Fatalf("remove = %d %s", rec.Code, rec.Body.String())
 	}
 }
