@@ -589,8 +589,8 @@ func (s *Server) ensureMaintenanceChecked(ctx context.Context, force bool) {
 	if checker == nil {
 		return
 	}
-	image := strings.TrimSpace(s.cfg.Get("RUNNER_IMAGE"))
-	if strings.TrimSpace(s.cfg.Get("RUNNER_IMAGE_PULL_POLICY")) == "never" {
+	image := strings.TrimSpace(s.cfg.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE"))
+	if strings.TrimSpace(s.cfg.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY")) == "never" {
 		image = ""
 	}
 	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt(), image)

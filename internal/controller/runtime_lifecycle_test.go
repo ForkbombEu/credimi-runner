@@ -14,6 +14,12 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
+type lifecycleRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f lifecycleRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func TestReadinessFailureExplainsUnreachableAndroidPhone(t *testing.T) {
 	cause := errors.New("dial tcp 127.0.0.1:8050: connect: connection refused")
 	err := ReadinessFailure(dashboardruntime.Values{
@@ -63,7 +69,11 @@ func TestRuntimeLifecycleStartKeepsRuntimeWhenReadinessFails(t *testing.T) {
 	lifecycle := RuntimeLifecycle{
 		Manager: manager,
 		Values: dashboardruntime.Values{
-			"CREDIMI_RUNNER_TYPE":    "android_phone",
+			"CREDIMI_RUNNER_ID":      "acme/runner",
+			"CREDIMI_DEVICE_COUNT":   "1",
+			"CREDIMI_DEVICE_1_ID":    "acme/runner/device",
+			"CREDIMI_DEVICE_1_TYPE":  "android_phone",
+			"CREDIMI_DEVICE_1_MODE":  "usb",
 			"CREDIMI_SERVICE_MODE":   "manual",
 			"RUNNER_PUBLIC_URL":      "https://runner.example",
 			"CREDIMI_RUNNER_BACKEND": "container",
@@ -91,6 +101,23 @@ type lifecycleManager struct {
 	logs   []dashboardruntime.LogLine
 	starts int
 	stops  int
+}
+
+type failingLifecycleManager struct{ lifecycleManager }
+
+func (m *failingLifecycleManager) Start(context.Context) error { return errors.New("start failed") }
+
+type progressLifecycleManager struct {
+	lifecycleManager
+	progressCalls int
+}
+
+func (m *progressLifecycleManager) StartWithProgress(ctx context.Context, progress func(string)) error {
+	m.progressCalls++
+	if progress != nil {
+		progress("pulling runtime")
+	}
+	return m.Start(ctx)
 }
 
 func (m *lifecycleManager) Start(context.Context) error {
@@ -295,5 +322,119 @@ func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 		"RUNNER_PORT":             port,
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRuntimeLifecycleRegisterRegistersConfiguredDevices(t *testing.T) {
+	manager := &lifecycleManager{}
+	var runner dashboardruntime.RegisterRunnerRequest
+	var devices []dashboardruntime.RegisterDeviceRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/mobile-runner":
+			if err := json.NewDecoder(request.Body).Decode(&runner); err != nil {
+				t.Fatal(err)
+			}
+		case "/api/mobile-device":
+			var device dashboardruntime.RegisterDeviceRequest
+			if err := json.NewDecoder(request.Body).Decode(&device); err != nil {
+				t.Fatal(err)
+			}
+			devices = append(devices, device)
+		default:
+			http.NotFound(w, request)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer api.Close()
+
+	lifecycle := RuntimeLifecycle{
+		Manager: manager,
+		Values: dashboardruntime.Values{
+			"CREDIMI_URL":                 api.URL,
+			"CREDIMI_USER_API_KEY":        "key",
+			"CREDIMI_RUNNER_ID":           "acme/runner",
+			"CREDIMI_RUNNER_NAME":         "Lab Runner",
+			"CREDIMI_RUNNER_ORGANIZATION": "acme",
+			"CREDIMI_SERVICE_MODE":        "manual",
+			"RUNNER_PUBLIC_URL":           "https://runner.example",
+			"RUNNER_PUBLIC_PORT":          "443",
+			"CREDIMI_DEVICE_COUNT":        "2",
+			"CREDIMI_DEVICE_1_ID":         "acme/runner/pixel",
+			"CREDIMI_DEVICE_1_NAME":       "Pixel",
+			"CREDIMI_DEVICE_1_TYPE":       "android_phone",
+			"CREDIMI_DEVICE_1_MODE":       "usb",
+			"CREDIMI_DEVICE_1_SERIAL":     "usb-1",
+			"CREDIMI_DEVICE_2_ID":         "acme/runner/simulator",
+			"CREDIMI_DEVICE_2_NAME":       "Simulator",
+			"CREDIMI_DEVICE_2_TYPE":       "ios_simulator",
+			"CREDIMI_DEVICE_2_MODE":       "no_device",
+		},
+	}
+	if err := lifecycle.Register(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if runner.IP != "https://runner.example" || runner.Port != "443" || runner.Name != "Lab Runner" {
+		t.Fatalf("runner registration = %#v", runner)
+	}
+	if manager.status.PublicURL != "https://runner.example" {
+		t.Fatalf("public URL = %q", manager.status.PublicURL)
+	}
+	if len(devices) != 2 || devices[0].DeviceID != "acme/runner/pixel" || devices[0].Serial != "usb-1" || devices[1].DeviceID != "acme/runner/simulator" {
+		t.Fatalf("device registrations = %#v", devices)
+	}
+}
+
+func TestRuntimeLifecycleGuardsManagerFailuresAndEndpoints(t *testing.T) {
+	if err := (RuntimeLifecycle{}).Start(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "manager unavailable") {
+		t.Fatalf("nil manager start error = %v", err)
+	}
+	if err := (RuntimeLifecycle{}).Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "manager unavailable") {
+		t.Fatalf("nil manager stop error = %v", err)
+	}
+	if err := (RuntimeLifecycle{}).Register(context.Background()); err == nil || !strings.Contains(err.Error(), "manager unavailable") {
+		t.Fatalf("nil manager registration error = %v", err)
+	}
+
+	failing := RuntimeLifecycle{Manager: &failingLifecycleManager{}, Values: dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}, GOOS: "linux"}
+	if err := failing.Start(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("failed manager start error = %v", err)
+	}
+
+	progressManager := &progressLifecycleManager{}
+	progressLifecycle := RuntimeLifecycle{
+		Manager: progressManager,
+		Values: dashboardruntime.Values{
+			"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "key", "CREDIMI_RUNNER_ID": "acme/runner",
+			"CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example", "CREDIMI_RUNNER_BACKEND": "container",
+		},
+		GOOS: "linux", WaitReady: func(context.Context, dashboardruntime.Values) error { return nil },
+		HTTPClient: &http.Client{Transport: lifecycleRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Path != "/api/mobile-runner" {
+				return nil, errors.New("unexpected path: " + request.URL.Path)
+			}
+			return &http.Response{StatusCode: http.StatusNoContent, Status: "204 No Content", Header: make(http.Header), Body: http.NoBody}, nil
+		})},
+	}
+	var progress []string
+	if err := progressLifecycle.Start(context.Background(), func(message string) { progress = append(progress, message) }); err != nil {
+		t.Fatal(err)
+	}
+	if progressManager.progressCalls != 1 || progressManager.starts != 1 || len(progress) != 1 {
+		t.Fatalf("progress start manager=%#v progress=%v", progressManager, progress)
+	}
+
+	manager := &lifecycleManager{}
+	for name, values := range map[string]dashboardruntime.Values{
+		"manual":             {"CREDIMI_SERVICE_MODE": "manual"},
+		"cloudflare-managed": {"CREDIMI_SERVICE_MODE": "cloudflare-managed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := (RuntimeLifecycle{Manager: manager, Values: values}).registrationEndpoint(context.Background())
+			if err == nil {
+				t.Fatal("expected missing endpoint configuration error")
+			}
+		})
 	}
 }

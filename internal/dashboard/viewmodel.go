@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
@@ -279,7 +280,7 @@ func (d PageData) RunnerImage() string {
 			return service.Image
 		}
 	}
-	return orDash(d.Runner.Get("RUNNER_IMAGE"))
+	return orDash(d.Runner.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE"))
 }
 
 func (d PageData) RunnerContainerDetails() string {
@@ -322,7 +323,7 @@ func componentState(component maintenance.Component) string {
 
 func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
 func (d PageData) ImageVersionState() string {
-	if d.Runner != nil && strings.TrimSpace(d.Runner.Get("RUNNER_IMAGE_PULL_POLICY")) == "never" {
+	if d.Runner != nil && strings.TrimSpace(d.Runner.Get("CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY")) == "never" {
 		return "Registry check disabled"
 	}
 	return componentState(d.MaintenanceStatus().Image)
@@ -367,7 +368,7 @@ func (d PageData) FieldWithLabel(key, label string) FieldVM {
 }
 
 func (d PageData) DefaultSSHKnownHostsPath() string {
-	home := homeDir()
+	home, _ := os.UserHomeDir()
 	if home == "" {
 		return ""
 	}

@@ -5,78 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
-
-func obsolete_TestValidate(t *testing.T) {
-	tests := []struct {
-		name   string
-		vals   map[string]string
-		key    string
-		hasErr bool
-	}{
-		{
-			name:   "valid runner ID",
-			vals:   map[string]string{"CREDIMI_RUNNER_ID": "myorg/my-runner", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone"},
-			hasErr: false,
-		},
-		{
-			name:   "missing required runner ID",
-			vals:   map[string]string{"CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone"},
-			key:    "CREDIMI_RUNNER_ID",
-			hasErr: true,
-		},
-		{
-			name:   "invalid runner ID format (no slash)",
-			vals:   map[string]string{"CREDIMI_RUNNER_ID": "norunner", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone"},
-			key:    "CREDIMI_RUNNER_ID",
-			hasErr: true,
-		},
-		{
-			name:   "invalid port",
-			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_PORT": "abc"},
-			key:    "RUNNER_PORT",
-			hasErr: true,
-		},
-		{
-			name:   "valid port",
-			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_PORT": "8050"},
-			hasErr: false,
-		},
-		{
-			name:   "redroid requires Wi-Fi IP",
-			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "redroid"},
-			key:    "CREDIMI_RUNNER_WIFI_IP",
-			hasErr: true,
-		},
-		{
-			name:   "redroid accepts Wi-Fi IP",
-			vals:   map[string]string{"CREDIMI_RUNNER_ID": "org/name", "CREDIMI_URL": "https://credimi.io", "CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_RUNNER_WIFI_IP": "192.168.1.30"},
-			hasErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			errs := Validate(tt.vals)
-			if tt.hasErr {
-				if len(errs) == 0 {
-					t.Fatal("expected validation errors, got none")
-				}
-				if tt.key != "" {
-					if _, ok := errs[tt.key]; !ok {
-						t.Errorf("expected error for key %q, got: %v", tt.key, errs)
-					}
-				}
-			} else {
-				if len(errs) > 0 {
-					t.Errorf("unexpected validation errors: %v", errs)
-				}
-			}
-		})
-	}
-}
 
 func TestMaskSecret(t *testing.T) {
 	tests := []struct {
@@ -196,100 +125,6 @@ func TestConfig_ApplyAndWrite(t *testing.T) {
 	content := string(data)
 	if !contains(content, "CREDIMI_URL=https://custom.credimi.io") {
 		t.Errorf("expected CREDIMI_URL in .env, got:\n%s", content)
-	}
-}
-
-func obsolete_TestNormalizedConfigValuesPreservesSubmittedRedroidFields(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	current := map[string]string{
-		"CREDIMI_RUNNER_TYPE":   "android_phone",
-		"CREDIMI_RUNNER_SERIAL": "device-1",
-	}
-	incoming := map[string]string{
-		"CREDIMI_RUNNER_TYPE":    "redroid",
-		"CREDIMI_RUNNER_WIFI_IP": "192.168.1.30",
-		"AVDCTL_SSH_TARGET":      "credimi@redroid-host",
-	}
-
-	values, err := normalizedConfigValues(current, incoming, "linux")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if values["CREDIMI_RUNNER_SERIAL"] != "192.168.1.30:5555" || values["CREDIMI_RUNNER_WIFI_PORT"] != "5555" {
-		t.Fatalf("Redroid endpoint = %#v", values)
-	}
-	if values["AVDCTL_SSH_TARGET"] != "credimi@redroid-host" || values["AVDCTL_SSH_KNOWN_HOSTS_PATH"] != filepath.Join(home, ".ssh", "known_hosts") {
-		t.Fatalf("Redroid SSH = %#v", values)
-	}
-}
-
-func obsolete_TestConfigApplyWritesRedroidEndpointAndSSHDefaults(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	dir := t.TempDir()
-	cfg, err := LoadConfig(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	errs, err := cfg.Apply(map[string]string{
-		"CREDIMI_RUNNER_ID":      "acme/redroid",
-		"CREDIMI_RUNNER_TYPE":    "redroid",
-		"CREDIMI_RUNNER_WIFI_IP": "192.168.1.30",
-		"AVDCTL_SSH_TARGET":      "credimi@redroid-host",
-	})
-	if err != nil {
-		t.Fatalf("Apply failed: %v (errors: %v)", err, errs)
-	}
-	content, err := os.ReadFile(filepath.Join(dir, ".env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"CREDIMI_RUNNER_DEVICE_MODE=no_device",
-		"CREDIMI_RUNNER_SERIAL=192.168.1.30:5555",
-		"CREDIMI_RUNNER_WIFI_IP=192.168.1.30",
-		"CREDIMI_RUNNER_WIFI_PORT=5555",
-		"AVDCTL_SSH_KNOWN_HOSTS_PATH=" + filepath.Join(home, ".ssh", "known_hosts"),
-	} {
-		if !strings.Contains(string(content), want) {
-			t.Fatalf(".env missing %q:\n%s", want, content)
-		}
-	}
-}
-
-func obsolete_TestConfigApplyResetsTypeDerivedFieldsOnRunnerTypeChange(t *testing.T) {
-	dir := t.TempDir()
-	cfg, err := LoadConfig(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	cfg.values["RUNNER_IMAGE"] = defaultPhoneImage
-	cfg.values["BASE_NAME"] = ""
-	cfg.values["HOST_AVD_HOME_PATH"] = ""
-	cfg.values["HOST_AVD_GOLDEN_PATH"] = ""
-	cfg.values["GOLDEN_PATH"] = ""
-
-	errs, err := cfg.Apply(map[string]string{
-		"CREDIMI_URL":         "https://credimi.io",
-		"CREDIMI_RUNNER_ID":   "myorg/runner1",
-		"CREDIMI_RUNNER_TYPE": "android_emulator",
-	})
-	if err != nil {
-		t.Fatalf("Apply failed: %v (errors: %v)", err, errs)
-	}
-	if cfg.Get("RUNNER_IMAGE") != defaultEmulatorImage {
-		t.Fatalf("RUNNER_IMAGE = %q", cfg.Get("RUNNER_IMAGE"))
-	}
-	if cfg.Get("BASE_NAME") != dashboardruntime.DefaultBaseName {
-		t.Fatalf("BASE_NAME = %q", cfg.Get("BASE_NAME"))
-	}
-	if cfg.Get("GOLDEN_PATH") != dashboardruntime.DefaultGoldenPath {
-		t.Fatalf("GOLDEN_PATH = %q", cfg.Get("GOLDEN_PATH"))
-	}
-	if cfg.Get("HOST_AVD_HOME_PATH") == "" || cfg.Get("HOST_AVD_GOLDEN_PATH") == "" {
-		t.Fatalf("expected host AVD defaults, got home=%q golden=%q", cfg.Get("HOST_AVD_HOME_PATH"), cfg.Get("HOST_AVD_GOLDEN_PATH"))
 	}
 }
 
@@ -424,6 +259,40 @@ func TestTitleCase(t *testing.T) {
 		got := titleCase(tt.in)
 		if got != tt.want {
 			t.Errorf("titleCase(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestConfigApplyPersistsBooleanFormValues(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	incoming := map[string]string{
+		"CREDIMI_URL":              "https://credimi.example",
+		"CREDIMI_RUNNER_ID":        "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":   "container",
+		"CREDIMI_SERVICE_MODE":     "manual",
+		"CREDIMI_RUNNER_PUBLISHED": "on",
+		"CREDIMI_USER_API_KEY":     "test-key",
+	}
+	if errs, err := cfg.Apply(incoming); err != nil {
+		t.Fatalf("Apply errors=%v err=%v", errs, err)
+	}
+	if !cfg.Bool("CREDIMI_RUNNER_PUBLISHED") || cfg.AuthMode() != "user" {
+		t.Fatalf("config booleans/auth = published:%t auth:%q", cfg.Bool("CREDIMI_RUNNER_PUBLISHED"), cfg.AuthMode())
+	}
+	raw, err := os.ReadFile(cfg.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"CREDIMI_RUNNER_ID=acme/runner",
+		"CREDIMI_RUNNER_PUBLISHED=true",
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("persisted config missing %q:\n%s", want, raw)
 		}
 	}
 }

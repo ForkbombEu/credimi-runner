@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // DeviceRuntimeConfig is the immutable local configuration for one execution
@@ -225,6 +224,11 @@ func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 		config.Host = Values{}
 	}
 	values := cloneValues(config.Host)
+	for key := range values {
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") {
+			delete(values, key)
+		}
+	}
 	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(config.Devices))
 	for index, device := range config.Devices {
 		for key, value := range device.Values {
@@ -291,64 +295,6 @@ func (s *Store) write(content string, values Values) error {
 	}
 	s.Values, s.exists = cloneValues(values), true
 	return nil
-}
-
-// MigrateLegacySingleTarget converts the previous single-target root .env to
-// one indexed device block. It never marks the target registered: callers must
-// preview/register the returned device before enabling it. The original is
-// retained beside the new configuration for operator recovery.
-func (s *Store) MigrateLegacySingleTarget() (DeviceRuntimeConfig, bool, error) {
-	if _, configured := s.Values["CREDIMI_DEVICE_COUNT"]; configured {
-		return DeviceRuntimeConfig{}, false, nil
-	}
-	legacyType := strings.TrimSpace(s.Values["CREDIMI_RUNNER_TYPE"])
-	if legacyType == "" {
-		return DeviceRuntimeConfig{}, false, nil
-	}
-	if !s.exists {
-		return DeviceRuntimeConfig{}, false, nil
-	}
-	runnerID := canonicalID(s.Values["CREDIMI_RUNNER_ID"])
-	if runnerID == "" {
-		return DeviceRuntimeConfig{}, false, fmt.Errorf("cannot migrate a target without CREDIMI_RUNNER_ID")
-	}
-	content, err := os.ReadFile(s.Path)
-	if err != nil {
-		return DeviceRuntimeConfig{}, false, err
-	}
-	backup := s.Path + ".before-multi-device-" + time.Now().UTC().Format("20060102T150405Z")
-	if err := os.WriteFile(backup, content, 0o600); err != nil {
-		return DeviceRuntimeConfig{}, false, fmt.Errorf("write migration backup: %w", err)
-	}
-	host := cloneValues(s.Values)
-	deviceValues := Values{}
-	legacyToDevice := map[string]string{
-		"CREDIMI_RUNNER_SERIAL": "SERIAL", "CREDIMI_RUNNER_WIFI_IP": "WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT": "WIFI_PORT",
-		"BASE_NAME": "BASE_NAME", "GOLDEN_PATH": "GOLDEN_PATH", "HOST_AVD_HOME_PATH": "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH": "HOST_AVD_GOLDEN_PATH",
-		"ANDROID_KEYS_DIR": "ANDROID_KEYS_DIR", "REDROID_DATA_DIR": "REDROID_DATA_DIR", "REDROID_DATA_TAR": "REDROID_DATA_TAR",
-		"AVDCTL_SSH_TARGET": "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD": "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO": "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD": "AVDCTL_SUDO_PASSWORD",
-		"RUNNER_IMAGE": "RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY": "RUNNER_IMAGE_PULL_POLICY", "CREDIMI_RUNNER_BACKEND": "BACKEND", "CREDIMI_CONTAINER_MODE": "CONTAINER_MODE",
-	}
-	for oldKey, newKey := range legacyToDevice {
-		deviceValues[newKey] = host[oldKey]
-		delete(host, oldKey)
-	}
-	mode := strings.TrimSpace(s.Values["CREDIMI_RUNNER_DEVICE_MODE"])
-	if mode == "" {
-		mode = "no_device"
-	}
-	for _, oldKey := range []string{"CREDIMI_RUNNER_TYPE", "CREDIMI_RUNNER_DEVICE_MODE"} {
-		delete(host, oldKey)
-	}
-	name := strings.TrimSpace(s.Values["CREDIMI_RUNNER_NAME"])
-	if name == "" {
-		name = runnerNameFromID(runnerID)
-	}
-	device := DeviceRuntimeConfig{ID: runnerID + "/" + canonifyPlain(name), Name: name, Type: legacyType, Mode: mode, Values: deviceValues}
-	if err := s.SaveRuntimeConfig(RunnerRuntimeConfig{Host: host, Devices: []DeviceRuntimeConfig{device}}); err != nil {
-		return DeviceRuntimeConfig{}, false, err
-	}
-	return s.RuntimeConfigDevice(1), true, nil
 }
 
 func (s *Store) RuntimeConfigDevice(index int) DeviceRuntimeConfig {

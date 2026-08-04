@@ -195,96 +195,6 @@ func bootstrapReadyRunner(t *testing.T) (string, string) {
 	return host, port
 }
 
-func obsolete_TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime(t *testing.T) {
-	dir := t.TempDir()
-	runnerHost, runnerPort := bootstrapReadyRunner(t)
-	registered := make(chan struct{}, 1)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/mobile-runner" {
-			http.NotFound(w, r)
-			return
-		}
-		registered <- struct{}{}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer api.Close()
-	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\nRUNNER_HOST=" + runnerHost + "\nRUNNER_PORT=" + runnerPort + "\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true, PublicURL: "https://runner.example"}}
-	progress := make(chan string, 8)
-	_, cancel, err := NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(context.Background(), dir, manager, "controller-1", "token", "fingerprint", controller.NewCoordinator(context.Background()), func(message string) {
-		progress <- message
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-	select {
-	case <-registered:
-	case <-time.After(time.Second):
-		t.Fatal("configured runtime was not registered")
-	}
-	if manager.startCalls != 0 {
-		t.Fatalf("running runtime should not be started again: %d", manager.startCalls)
-	}
-	if manager.status.PublicURL != "https://runner.example" {
-		t.Fatalf("public URL = %q", manager.status.PublicURL)
-	}
-	select {
-	case message := <-progress:
-		if !strings.Contains(message, "Runner already running") {
-			t.Fatalf("bootstrap progress = %q", message)
-		}
-	default:
-		t.Fatal("bootstrap did not publish terminal progress")
-	}
-}
-
-func obsolete_TestBootstrapConfiguredRuntimeRestoresAutoTunnelURL(t *testing.T) {
-	dir := t.TempDir()
-	runnerHost, runnerPort := bootstrapReadyRunner(t)
-	registered := make(chan dashboardruntime.RegisterRunnerRequest, 1)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/mobile-runner" {
-			http.NotFound(w, r)
-			return
-		}
-		var payload dashboardruntime.RegisterRunnerRequest
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatal(err)
-		}
-		registered <- payload
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer api.Close()
-	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\nRUNNER_HOST=" + runnerHost + "\nRUNNER_PORT=" + runnerPort + "\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := &fakeManager{
-		status:   dashboardruntime.RuntimeStatus{RunnerRunning: true},
-		logLines: []dashboardruntime.LogLine{{Message: "tunnel ready https://restored.trycloudflare.com"}},
-	}
-	_, cancel, err := NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(context.Background(), dir, manager, "controller-1", "token", "fingerprint", controller.NewCoordinator(context.Background()), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-	select {
-	case payload := <-registered:
-		if payload.IP != "https://restored.trycloudflare.com" {
-			t.Fatalf("registered URL = %q", payload.IP)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("configured runtime was not registered")
-	}
-	if manager.status.PublicURL != "https://restored.trycloudflare.com" {
-		t.Fatalf("dashboard URL = %q", manager.status.PublicURL)
-	}
-}
-
 func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
@@ -556,7 +466,7 @@ func TestServerAuth(t *testing.T) {
 	}
 }
 
-func obsolete_TestServerPageAndPageData(t *testing.T) {
+func TestServerPageAndPageData(t *testing.T) {
 	s := newTestServer(t)
 	data := s.pageData("overview", map[string]any{"Saved": true})
 	if data.Active != "overview" || data.Title != "Overview" || data.Pill.Label != "All healthy" {
@@ -568,7 +478,7 @@ func obsolete_TestServerPageAndPageData(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("page code = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Set up Credimi Runner") {
+	if !strings.Contains(rec.Body.String(), "Credimi Runner — Setup") {
 		t.Fatalf("first run should render setup page, got: %s", rec.Body.String()[:200])
 	}
 
@@ -622,6 +532,40 @@ func TestServerConfigHandlers(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config/secret/CREDIMI_URL", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("non-secret reveal code = %d", rec.Code)
+	}
+}
+
+func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/pixel"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/devices", strings.NewReader(url.Values{
+		"name": {"Pixel"}, "type": {"android_phone"}, "mode": {"usb"}, "serial": {"usb-1"},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/devices" {
+		t.Fatalf("save device = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := store.RuntimeConfig()
+	if err != nil || len(config.Devices) != 1 || config.Devices[0].ID != "acme/runner/pixel" || config.Devices[0].Serial != "usb-1" {
+		t.Fatalf("saved config = %#v, %v", config, err)
 	}
 }
 
@@ -828,25 +772,6 @@ func TestServerConfigDiffRejectsUserScopedOrganizationChange(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "organization cannot be changed for user-scoped runners") {
 		t.Fatalf("configDiff user org change should explain rejection: %s", rec.Body.String())
-	}
-}
-
-func obsolete_TestServerNormalizeConfigPreviewRunnerTypeChange(t *testing.T) {
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.cfg.values["RUNNER_IMAGE"] = defaultPhoneImage
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/normalize", strings.NewReader(url.Values{
-		"CREDIMI_RUNNER_TYPE": {"android_emulator"},
-	}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.normalizeConfigPreview(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("normalizeConfigPreview = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), defaultEmulatorImage) || !strings.Contains(rec.Body.String(), dashboardruntime.DefaultGoldenPath) {
-		t.Fatalf("normalizeConfigPreview missing emulator defaults: %s", rec.Body.String())
 	}
 }
 
@@ -1359,71 +1284,6 @@ func TestServerSetupHelperEndpointValidation(t *testing.T) {
 	}
 }
 
-func obsolete_TestFinishSetupValidationAndRequirementErrors(t *testing.T) {
-	s := newTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(url.Values{
-		"CREDIMI_URL":          {"https://credimi.example"},
-		"CREDIMI_USER_API_KEY": {"user-key"},
-	}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention.") {
-		t.Fatalf("finishSetup validation = %d %s", rec.Code, rec.Body.String())
-	}
-
-	s.lookupPath = func(string) (string, error) { return "", os.ErrNotExist }
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(url.Values{
-		"CREDIMI_URL":                 {"https://credimi.example"},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"cloudflare-managed"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
-		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
-	}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "runtime requirement check failed") {
-		t.Fatalf("finishSetup requirements = %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-func obsolete_TestValidateSetupInputRequiresRedroidWiFiIP(t *testing.T) {
-	values := map[string]string{
-		"CREDIMI_URL":          "https://credimi.example",
-		"CREDIMI_USER_API_KEY": "user-key",
-		"CREDIMI_RUNNER_NAME":  "runner",
-		"CREDIMI_RUNNER_TYPE":  "redroid",
-	}
-	if errs := validateSetupInput(values); errs["CREDIMI_RUNNER_WIFI_IP"] == "" {
-		t.Fatalf("validateSetupInput errors = %#v", errs)
-	}
-	values["CREDIMI_RUNNER_WIFI_IP"] = "192.168.1.30"
-	if errs := validateSetupInput(values); len(errs) != 0 {
-		t.Fatalf("validateSetupInput errors = %#v", errs)
-	}
-}
-
-func obsolete_TestValidateSetupInputRequiresConnectionAndPublicEndpoint(t *testing.T) {
-	errs := validateSetupInput(map[string]string{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"})
-	for _, key := range []string{"CREDIMI_URL", "CREDIMI_USER_API_KEY", "CREDIMI_RUNNER_NAME", "CREDIMI_RUNNER_SERIAL", "RUNNER_PUBLIC_URL"} {
-		if errs[key] == "" {
-			t.Fatalf("missing validation error %s: %#v", key, errs)
-		}
-	}
-	valid := validateSetupInput(map[string]string{
-		"CREDIMI_URL": "https://credimi.example", "CREDIMI_INTERNAL_ADMIN_KEY": "key", "CREDIMI_RUNNER_ID": "acme/runner",
-		"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
-	})
-	if len(valid) != 0 {
-		t.Fatalf("valid setup errors = %#v", valid)
-	}
-}
-
 func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "darwin")
 	s := newTestServer(t)
@@ -1579,67 +1439,6 @@ func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
 		!strings.Contains(body, "runner Downloading 128MB") ||
 		!strings.Contains(body, `"next_id":4`) {
 		t.Fatalf("startupStatus cursor body = %s", body)
-	}
-}
-
-func obsolete_TestServerSaveAndFinishSetup(t *testing.T) {
-	s := newTestServer(t)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/mobile-runner":
-			w.WriteHeader(http.StatusOK)
-		case "/api/organizations/my":
-			w.Write([]byte(`{"canonified_name":"acme"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer api.Close()
-	form := url.Values{
-		"CREDIMI_URL":                 {api.URL},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"manual"},
-		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
-		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
-		"RUNNER_PORT":                 {"8050"},
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Trigger") == "" {
-		t.Fatalf("saveConfig = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "data-config-form") {
-		t.Fatalf("saveConfig body missing config form: %s", rec.Body.String())
-	}
-	if fm, ok := s.manager.(*fakeManager); !ok || fm.restartCalls != 0 {
-		t.Fatalf("saveConfig should not restart automatically: %#v", s.manager)
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
-		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
-	op := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
-		t.Fatalf("setup operation: %v", err)
-	}
-	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
-		t.Fatal("finishSetup should start runtime")
-	}
-	startup := s.startupSnapshot()
-	if !containsString(startup.Logs, "runner Downloading 128MB") {
-		t.Fatalf("startup logs missing docker progress: %#v", startup.Logs)
 	}
 }
 
@@ -1807,88 +1606,6 @@ func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T
 	}
 }
 
-func obsolete_TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T) {
-	s := newTestServer(t)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/mobile-runner":
-			http.Error(w, "registration unavailable", http.StatusBadGateway)
-		case "/api/organizations/my":
-			w.Write([]byte(`{"canonified_name":"acme"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer api.Close()
-	form := url.Values{
-		"CREDIMI_URL":                 {api.URL},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"manual"},
-		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
-		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
-		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
-	waitForCondition(t, func() bool {
-		return strings.Contains(s.startupSnapshot().Message, "runtime start failed")
-	})
-	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
-		t.Fatal("finishSetup should keep the runtime start when registration fails")
-	}
-	if !strings.Contains(s.lastRegistrationStatus, "runtime start failed") {
-		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
-	}
-}
-
-func obsolete_TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	s := newTestServer(t)
-	s.runnerReady = func(context.Context, map[string]string) error {
-		return context.DeadlineExceeded
-	}
-	form := url.Values{
-		"CREDIMI_URL":                 {"https://credimi.example"},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_BACKEND":      {"host"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"manual"},
-		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"ios_simulator"},
-		"BASE_NAME":                   {"credimi"},
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
-		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
-	waitForCondition(t, func() bool {
-		return strings.Contains(s.startupSnapshot().Message, "runtime start failed")
-	})
-	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
-		t.Fatal("finishSetup should keep the runtime start when readiness is not confirmed")
-	}
-	if !strings.Contains(s.lastRegistrationStatus, "runtime start failed") {
-		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
-	}
-}
-
 func waitForCondition(t *testing.T, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -1922,6 +1639,218 @@ func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
 	}
 }
 
+func TestServerDevicePreviewAndConfigNormalizationEndpoints(t *testing.T) {
+	s := newTestServer(t)
+	missing := httptest.NewRecorder()
+	s.devicePreviewID(missing, httptest.NewRequest(http.MethodPost, "/devices/preview-id", nil))
+	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), "name is required") {
+		t.Fatalf("missing preview name = %d %s", missing.Code, missing.Body.String())
+	}
+
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/pixel"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+
+	preview := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/preview-id", strings.NewReader(url.Values{"name": {"Pixel"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.devicePreviewID(preview, request)
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "acme/runner/pixel") {
+		t.Fatalf("device preview = %d %s", preview.Code, preview.Body.String())
+	}
+
+	normalized := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/config/normalize", strings.NewReader(url.Values{"RUNNER_PORT": {" 9000 "}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.normalizeConfigPreview(normalized, request)
+	if normalized.Code != http.StatusOK || !strings.Contains(normalized.Body.String(), `"RUNNER_PORT":"9000"`) {
+		t.Fatalf("normalized preview = %d %s", normalized.Code, normalized.Body.String())
+	}
+}
+
+func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, errors.New("unexpected Credimi path: " + request.URL.Path)
+		}
+		if request.Header.Get("Credimi-Api-Key") != "user-key" {
+			return nil, errors.New("missing Credimi API key")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"runner_id":"acme/runner","device_id":"/acme/runner/pixel"}`)),
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	form := url.Values{
+		"name":        {"Pixel 8"},
+		"description": {"USB test device"},
+		"type":        {"android_phone"},
+		"mode":        {"usb"},
+		"serial":      {"usb-1"},
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+
+	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/devices" {
+		t.Fatalf("save device response = %d location=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
+	}
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := store.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Devices) != 1 || config.Devices[0].ID != "acme/runner/pixel" || config.Devices[0].Serial != "usb-1" {
+		t.Fatalf("persisted devices = %#v", config.Devices)
+	}
+}
+
+func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{}},
+		{ID: "acme/runner/two", Name: "Two", Type: "ios_simulator", Mode: "no_device", Enabled: true, Values: dashboardruntime.Values{}},
+	}}
+	if err := store.SaveRuntimeConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+
+	enable := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/devices/disable", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.deviceDisable(enable, req)
+	if enable.Code != http.StatusOK || !strings.Contains(enable.Body.String(), `"enabled":false`) {
+		t.Fatalf("disable = %d %s", enable.Code, enable.Body.String())
+	}
+	stored, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := stored.RuntimeConfig()
+	if err != nil || updated.Devices[0].Enabled {
+		t.Fatalf("updated inventory = %#v, %v", updated, err)
+	}
+
+	remove := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/devices/remove", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}, "confirm": {"true"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.deviceRemove(remove, req)
+	if remove.Code != http.StatusOK {
+		t.Fatalf("remove = %d %s", remove.Code, remove.Body.String())
+	}
+	stored, err = dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err = stored.RuntimeConfig()
+	if err != nil || len(updated.Devices) != 1 || updated.Devices[0].Index != 1 || updated.Devices[0].ID != "acme/runner/two" {
+		t.Fatalf("reindexed inventory = %#v, %v", updated, err)
+	}
+}
+
+func TestServerDeviceRegisterSendsStoredDeviceToCredimi(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{
+		Host: dashboardruntime.Values{
+			"CREDIMI_URL":                 "https://credimi.example",
+			"CREDIMI_USER_API_KEY":        "user-key",
+			"CREDIMI_RUNNER_ID":           "acme/runner",
+			"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		},
+		Devices: []dashboardruntime.DeviceRuntimeConfig{{
+			ID: "acme/runner/pixel", Name: "Pixel", Description: "Lab phone", Type: "android_phone", Mode: "usb", Enabled: true,
+			Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+
+	originalTransport := http.DefaultTransport
+	var registered dashboardruntime.RegisterDeviceRequest
+	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/mobile-device" {
+			return nil, errors.New("unexpected Credimi path: " + request.URL.Path)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&registered); err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusCreated, Status: "201 Created", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/register", strings.NewReader(url.Values{"device_id": {"acme/runner/pixel"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.deviceRegister(recorder, request)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"registered":true`) {
+		t.Fatalf("register response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if registered.DeviceID != "acme/runner/pixel" || registered.RunnerID != "acme/runner" || registered.Serial != "usb-1" {
+		t.Fatalf("Credimi registration = %#v", registered)
+	}
+}
+
+func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
+	s := newTestServer(t)
+	form := url.Values{
+		"CREDIMI_URL":                 {"https://credimi.example"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_SERVICE_MODE":        {"manual"},
+		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("HX-Request", "true")
+	s.finishSetup(recorder, request)
+
+	if recorder.Code != http.StatusAccepted || recorder.Header().Get("HX-Redirect") != "/devices" {
+		t.Fatalf("setup response = %d redirect=%q body=%s", recorder.Code, recorder.Header().Get("HX-Redirect"), recorder.Body.String())
+	}
+	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
+		t.Fatalf("setup was not persisted: exists=%t values=%#v", s.cfg.Exists(), s.cfg.Snapshot())
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -1929,71 +1858,6 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func obsolete_TestValidateRuntimeRequirements(t *testing.T) {
-	s := newTestServer(t)
-	values := map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "auto",
-		"CREDIMI_RUNNER_TYPE":    "android_phone",
-		"CREDIMI_RUNNER_SERIAL":  "device-1",
-	}
-	if err := s.validateRuntimeRequirements(values); err != nil {
-		t.Fatalf("validateRuntimeRequirements = %v", err)
-	}
-
-	s.hub.snap.Devices = []Device{
-		{Serial: "emulator-5554", Name: "Pixel test", Type: "android_emulator", Mode: "emulator", OS: "Android", Status: Online},
-	}
-	values["CREDIMI_RUNNER_SERIAL"] = "emulator-5554"
-	if err := s.validateRuntimeRequirements(values); err != nil {
-		t.Fatalf("validateRuntimeRequirements emulator serial = %v", err)
-	}
-
-	s.lookupPath = func(name string) (string, error) {
-		if name == "docker" {
-			return "", os.ErrNotExist
-		}
-		return "/tmp/fake", nil
-	}
-	if err := s.validateRuntimeRequirements(values); err == nil || !strings.Contains(err.Error(), "docker is required") {
-		t.Fatalf("expected docker requirement error, got %v", err)
-	}
-
-	s = newTestServer(t)
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	s.lookupPath = func(name string) (string, error) {
-		if name == "xcrun" {
-			return "", os.ErrNotExist
-		}
-		return "/tmp/fake", nil
-	}
-	if err := s.validateRuntimeRequirements(map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
-	}); err == nil || !strings.Contains(err.Error(), "xcrun simctl") {
-		t.Fatalf("expected xcrun requirement error, got %v", err)
-	}
-
-	s = newTestServer(t)
-	s.statPath = func(path string) (os.FileInfo, error) {
-		if path == "/dev/kvm" {
-			return nil, os.ErrNotExist
-		}
-		return fakeFileInfo("ok"), nil
-	}
-	if err := s.validateRuntimeRequirements(map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "android_emulator",
-		"ANDROID_KEYS_DIR":       "/tmp/keys",
-		"HOST_AVD_HOME_PATH":     "/tmp/avd-home",
-		"HOST_AVD_GOLDEN_PATH":   "/tmp/avd-golden",
-	}); err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
-		t.Fatalf("expected /dev/kvm requirement error, got %v", err)
-	}
 }
 
 func TestServerRuntimeStartRegistersRunner(t *testing.T) {
@@ -2192,6 +2056,119 @@ func TestServerDeviceHandlers(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/devices/ABC123/disconnect", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deviceDisconnect = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerManagedDeviceActions(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(s.cfg.Snapshot()), Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/pixel", Name: "Pixel", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-1"}}, {ID: "acme/runner/pixel-2", Name: "Pixel Two", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-2"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	post := func(handler http.HandlerFunc, form url.Values) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/devices", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		handler(rec, req)
+		return rec
+	}
+	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusOK {
+		t.Fatalf("disable = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(s.deviceRegister, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusOK {
+		t.Fatalf("register = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(s.deviceRemove, url.Values{"device_id": {"acme/runner/pixel"}, "confirm": {"true"}}); rec.Code != http.StatusOK {
+		t.Fatalf("remove = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestServerValidateRuntimeRequirements(t *testing.T) {
+	base := map[string]string{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/pixel", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-1"}
+	s := newTestServer(t)
+	if err := s.validateRuntimeRequirements(base); err != nil {
+		t.Fatalf("connected phone requirements = %v", err)
+	}
+	s.hub.snap.Devices[0].Status = Offline
+	if err := s.validateRuntimeRequirements(base); err == nil || !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("offline phone requirements = %v", err)
+	}
+	emulator := cloneStringMap(base)
+	emulator["CREDIMI_DEVICE_1_TYPE"] = "android_emulator"
+	emulator["CREDIMI_DEVICE_1_MODE"] = "emulator"
+	emulator["CREDIMI_DEVICE_1_ANDROID_KEYS_DIR"] = "/keys"
+	emulator["CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH"] = "/avd"
+	emulator["CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH"] = "/golden"
+	s.statPath = func(path string) (os.FileInfo, error) {
+		if path == "/dev/kvm" {
+			return nil, os.ErrNotExist
+		}
+		return fakeFileInfo("ok"), nil
+	}
+	if err := s.validateRuntimeRequirements(emulator); err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
+		t.Fatalf("emulator requirements = %v", err)
+	}
+}
+
+func TestServerStartupJobStartsAndRegistersConfiguredHost(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-runner" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.startStartupJob(s.cfg.Snapshot())
+	waitForCondition(t, func() bool { return s.startupSnapshot().Phase == StartupReady && !s.startupSnapshot().running })
+	if s.manager.(*fakeManager).startCalls != 1 {
+		t.Fatalf("start calls = %d", s.manager.(*fakeManager).startCalls)
+	}
+}
+
+func TestServerExistingRuntimeJobRegistersWithoutRestart(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	s := newTestServer(t)
+	s.manager.(*fakeManager).status.RunnerRunning = true
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.startExistingRuntimeJob(s.cfg.Snapshot())
+	waitForCondition(t, func() bool { return s.startupSnapshot().Phase == StartupReady && !s.startupSnapshot().running })
+	if s.manager.(*fakeManager).startCalls != 0 {
+		t.Fatalf("start calls = %d", s.manager.(*fakeManager).startCalls)
 	}
 }
 

@@ -135,17 +135,6 @@ func TestStoreIgnoresInvalidKeys(t *testing.T) {
 	}
 }
 
-func obsolete_TestSecretMaskingAndDiffClassification(t *testing.T) {
-	impact := FieldImpacts["CREDIMI_USER_API_KEY"]
-	if !impact.Secret {
-		t.Fatal("expected CREDIMI_USER_API_KEY to be secret")
-	}
-	diff := DiffValues(Values{"RUNNER_IMAGE": "a"}, Values{"RUNNER_IMAGE": "b"})
-	if len(diff.Classes) == 0 || diff.Classes[0] != ApplyComposeRecreate {
-		t.Fatalf("diff classes = %#v", diff.Classes)
-	}
-}
-
 func TestConfigHelpers(t *testing.T) {
 	if got := quote(`hello world`); got != `"hello world"` {
 		t.Fatalf("quote = %q", got)
@@ -200,6 +189,9 @@ func TestRuntimeConfigRejectsInvalidInventory(t *testing.T) {
 		{"outside runner", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/other\nCREDIMI_DEVICE_1_NAME=A\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_MODE=usb\n", "must be a child"},
 		{"unindexed id", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_ID=acme/lab/a\n", "without an index is invalid"},
 		{"beyond count", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_NAME=A\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_MODE=usb\nCREDIMI_DEVICE_2_ID=acme/lab/b\n", "beyond CREDIMI_DEVICE_COUNT"},
+		{"unknown device key", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_UNSUPPORTED=x\n", "unknown device key"},
+		{"invalid enabled", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_ENABLED=maybe\n", "must be boolean"},
+		{"duplicate serial", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=2\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_SERIAL=usb\nCREDIMI_DEVICE_2_ID=acme/lab/b\nCREDIMI_DEVICE_2_SERIAL=usb\n", "duplicate serial"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -236,28 +228,22 @@ func TestRuntimeConfigRequiresOnlyDeviceIDForDirectServe(t *testing.T) {
 	}
 }
 
-func obsolete_TestMigrateLegacySingleTargetMakesBackupAndRequiresRegistration(t *testing.T) {
-	dir := t.TempDir()
-	legacy := "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_RUNNER_NAME=Pixel USB\nCREDIMI_RUNNER_TYPE=android_phone\nCREDIMI_RUNNER_DEVICE_MODE=usb\nCREDIMI_RUNNER_SERIAL=serial-1\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(legacy), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := LoadStore(dir)
+func TestRuntimeConfigEnvironmentAndDeviceLookup(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_ID", "acme/lab")
+	t.Setenv("CREDIMI_DEVICE_COUNT", "1")
+	t.Setenv("CREDIMI_DEVICE_1_ID", "acme/lab/pixel")
+	config, err := RuntimeConfigFromEnvironment()
 	if err != nil {
 		t.Fatal(err)
 	}
-	device, migrated, err := store.MigrateLegacySingleTarget()
-	if err != nil {
-		t.Fatal(err)
+	if len(config.Devices) != 1 || config.Devices[0].ID != "acme/lab/pixel" {
+		t.Fatalf("environment config = %#v", config)
 	}
-	if !migrated || device.ID != "acme/lab/pixel-usb" || device.Serial != "serial-1" {
-		t.Fatalf("migration = %#v, %t", device, migrated)
+	store := &Store{Values: Values{"CREDIMI_RUNNER_ID": "acme/lab", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/lab/pixel"}}
+	if got := store.RuntimeConfigDevice(1); got.ID != "acme/lab/pixel" {
+		t.Fatalf("device = %#v", got)
 	}
-	backups, err := filepath.Glob(filepath.Join(dir, ".env.before-multi-device-*"))
-	if err != nil || len(backups) != 1 {
-		t.Fatalf("backups = %v, %v", backups, err)
-	}
-	if _, migrated, err := store.MigrateLegacySingleTarget(); err != nil || migrated {
-		t.Fatalf("idempotent migration = %t, %v", migrated, err)
+	if got := store.RuntimeConfigDevice(2); got.ID != "" || got.Index != 0 || got.Values != nil {
+		t.Fatalf("out-of-range device = %#v", got)
 	}
 }

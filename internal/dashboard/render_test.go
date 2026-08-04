@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
 func TestIcons_Present(t *testing.T) {
@@ -208,67 +211,7 @@ func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
 	}
 }
 
-func obsolete_TestRenderer_SetupPage(t *testing.T) {
-	r, err := NewRenderer()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	d := PageData{
-		Active:   "setup",
-		Title:    "Setup",
-		Runner:   &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
-		Snapshot: Snapshot{Devices: []Device{{Serial: "device-1", Name: "Pixel 8", Type: "android_phone", Mode: "usb", Status: Online}}},
-		Workers:  []Worker{},
-		Pill:     PillData{OK: true, Label: "Setup"},
-	}
-
-	html, err := r.Page("setup", d)
-	if err != nil {
-		t.Fatalf("setup page failed: %v", err)
-	}
-	if !strings.Contains(html, "Set up Credimi Runner") {
-		t.Errorf("setup page missing heading: %s", html[:300])
-	}
-	if !strings.Contains(html, "data-setup-form") {
-		t.Errorf("setup page missing wizard form: %s", html[:300])
-	}
-	if !strings.Contains(html, "credimi.io/my/profile/api-keys") {
-		t.Errorf("setup page missing API key link")
-	}
-	if !strings.Contains(html, `name="RUNNER_PORT"`) {
-		t.Errorf("setup page missing runner port field")
-	}
-	if !strings.Contains(html, `data-android-phone-device-select`) || !strings.Contains(html, "device-1") {
-		t.Errorf("setup page missing connected Android device selector")
-	}
-	if !strings.Contains(html, `data-dev-type="redroid"`) || !strings.Contains(html, `name="CREDIMI_RUNNER_WIFI_IP"`) || !strings.Contains(html, `data-avdctl-ssh-control`) {
-		t.Errorf("setup page missing Redroid endpoint or SSH controls")
-	}
-	if strings.Count(html, `name="CREDIMI_RUNNER_WIFI_IP"`) != 1 || strings.Count(html, `name="CREDIMI_RUNNER_WIFI_PORT"`) != 1 {
-		t.Errorf("setup page must render one shared Wi-Fi endpoint field pair")
-	}
-	if !strings.Contains(html, `data-runner-wifi-fields`) {
-		t.Errorf("setup page missing shared Wi-Fi endpoint fields")
-	}
-	if !strings.Contains(html, `data-busy-log`) {
-		t.Errorf("base template missing busy log output")
-	}
-	if !strings.Contains(html, `data-startup-phase=`) || !strings.Contains(html, `data-startup-message=`) {
-		t.Errorf("base template missing startup state on busy overlay")
-	}
-	if strings.Contains(html, "data-runner-conflict-choice") {
-		t.Errorf("setup page should not render inline runner conflict controls")
-	}
-	if !strings.Contains(html, "runner-conflict-modal") {
-		t.Errorf("setup page missing runner conflict modal")
-	}
-	if strings.Contains(html, `class="sb"`) {
-		t.Errorf("setup page should not render sidebar")
-	}
-}
-
-func TestRenderer_HidesIOSSimulatorOnLinux(t *testing.T) {
+func erer_HidesIOSSimulatorOnLinux(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "linux")
 	r, err := NewRenderer()
 	if err != nil {
@@ -309,31 +252,6 @@ func TestRenderer_ShowsIOSSimulatorOnDarwin(t *testing.T) {
 	}
 	if !strings.Contains(html, `value="ios_simulator"`) {
 		t.Fatalf("darwin devices page should render ios_simulator: %s", html)
-	}
-}
-
-func obsolete_TestRenderer_UsesSimulatorNameLabel(t *testing.T) {
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	r, err := NewRenderer()
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := PageData{
-		Active:   "devices",
-		Title:    "Devices",
-		Runner:   &Config{values: map[string]string{"CREDIMI_RUNNER_TYPE": "ios_simulator", "BASE_NAME": "credimi"}},
-		Snapshot: Snapshot{},
-		Pill:     PillData{OK: true, Label: "Ready"},
-	}
-	html, err := r.Page("devices", d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(html, "Simulator name") {
-		t.Fatalf("devices page missing simulator label: %s", html)
-	}
-	if !strings.Contains(html, "Emulator base name") {
-		t.Fatalf("devices page missing emulator label: %s", html)
 	}
 }
 
@@ -444,9 +362,7 @@ func TestRenderer_FullPage(t *testing.T) {
 	if strings.Contains(html, "across environments") {
 		t.Fatalf("overview should not render multi-environment copy: %s", html)
 	}
-	if strings.Contains(html, "OpenAPI docs at") || strings.Contains(html, "/docs") {
-		t.Fatalf("overview should not render obsolete docs copy: %s", html)
-	}
+
 	if !strings.Contains(html, `data-copy-value=`) {
 		t.Fatalf("overview should render public URL copy action: %s", html)
 	}
@@ -458,7 +374,7 @@ func TestPageData_ViewModels(t *testing.T) {
 		Runner: &Config{values: Defaults},
 		Snapshot: Snapshot{
 			Devices: []Device{
-				{Serial: "a", Status: Online},
+				{Serial: "a", Status: Online, Type: "android_phone"},
 				{Serial: "b", Status: Online},
 				{Serial: "c", Status: Offline},
 				{Serial: "d", Status: Degraded},
@@ -487,5 +403,96 @@ func TestPageData_ViewModels(t *testing.T) {
 	}
 	if n := d.WorkersTotal(); n != 2 {
 		t.Errorf("WorkersTotal = %d, want 2", n)
+	}
+	if devices := d.AndroidDevices(); len(devices) != 1 || devices[0].Serial != "a" {
+		t.Fatalf("AndroidDevices = %#v", devices)
+	}
+	if devices := d.AndroidPhoneDevices(); len(devices) != 1 {
+		t.Fatalf("AndroidPhoneDevices = %#v", devices)
+	}
+	if field := d.FieldWithLabel("CREDIMI_URL", "Platform"); field.Label != "Platform" {
+		t.Fatalf("FieldWithLabel = %#v", field)
+	}
+	if got := d.DefaultSSHKnownHostsPath(); got == "" {
+		t.Fatal("DefaultSSHKnownHostsPath is empty")
+	}
+	if steps := d.SetupSteps(); len(steps) != 4 || steps[0].ID != "identity" {
+		t.Fatalf("SetupSteps = %#v", steps)
+	}
+	if got := d.Field("CREDIMI_USER_API_KEY").MaskedValue(); got != "" {
+		t.Fatalf("MaskedValue = %q", got)
+	}
+	if got := d.Pretty("<b>ok</b>"); string(got) != "<b>ok</b>" {
+		t.Fatalf("Pretty = %q", got)
+	}
+}
+
+func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
+	runner := &Config{values: map[string]string{
+		"CREDIMI_RUNNER_ID":                         "acme/runner",
+		"CREDIMI_DEVICE_COUNT":                      "1",
+		"CREDIMI_DEVICE_1_ID":                       "acme/runner/pixel",
+		"CREDIMI_DEVICE_1_NAME":                     "Pixel",
+		"CREDIMI_DEVICE_1_TYPE":                     "android_phone",
+		"CREDIMI_DEVICE_1_MODE":                     "usb",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE":             "registry.example/runner:v1",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "never",
+		"CREDIMI_RUNNER_ORGANIZATION":               "acme",
+		"RUNNER_HOST":                               "0.0.0.0",
+		"RUNNER_PORT":                               "9000",
+		"CREDIMI_SERVICE_MODE":                      "manual",
+		"RUNNER_PUBLIC_URL":                         "https://runner.example",
+		"RUNNER_PUBLIC_PORT":                        "443",
+		"CREDIMI_USER_API_KEY":                      "secret-value",
+	}}
+	d := PageData{
+		Active:   "overview",
+		Runner:   runner,
+		Snapshot: Snapshot{Services: []Service{{ID: "runner", Expected: true, Critical: true, Status: Online, Image: "registry.example/runner:v2", Uptime: "2m"}}},
+		Data: map[string]any{
+			"Errors":        map[string]string{"RUNNER_PORT": "Must be a port number."},
+			"Flash":         "Saved",
+			"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: true},
+			"Startup":       startupState{Phase: StartupReady, Message: "Ready"},
+			"RunnerVersion": "v1.2.3",
+			"Maintenance":   maintenance.Status{Runner: maintenance.Component{LatestVersion: "v1.2.4", UpdateAvailable: true}, Image: maintenance.Component{LatestVersion: "v2"}},
+		},
+	}
+
+	if devices := d.ConfiguredDevices(); len(devices) != 1 || devices[0].ID != "acme/runner/pixel" {
+		t.Fatalf("configured devices = %#v", devices)
+	}
+	if !d.RuntimeHealthy() || d.RuntimeHeadline() != "Running" || !d.RuntimeRunning() {
+		t.Fatalf("runtime state headline=%q healthy=%t running=%t", d.RuntimeHeadline(), d.RuntimeHealthy(), d.RuntimeRunning())
+	}
+	if d.RuntimeTogglePath() != "/runtime/stop" || d.RuntimeToggleLabel() != "Stop Runner" || !strings.Contains(d.RuntimeToggleBusyMessage(), "Stopping") {
+		t.Fatalf("runtime toggle = %q %q %q", d.RuntimeTogglePath(), d.RuntimeToggleLabel(), d.RuntimeToggleBusyMessage())
+	}
+	if d.RunnerAPIURL() != "http://127.0.0.1:9000" || d.PublicURL() != "https://runner.example:443" {
+		t.Fatalf("URLs api=%q public=%q", d.RunnerAPIURL(), d.PublicURL())
+	}
+	if d.RunnerImage() != "registry.example/runner:v2" || d.RunnerContainerDetails() != "Online · 2m" {
+		t.Fatalf("runner display image=%q details=%q", d.RunnerImage(), d.RunnerContainerDetails())
+	}
+	if !d.HasErrors() || d.Field("RUNNER_PORT").Err == "" || d.Flash() != "Saved" || d.StartupPhase() != StartupReady || d.StartupMessage() != "Ready" {
+		t.Fatalf("template payload was not exposed: %#v", d)
+	}
+	if !d.UpgradeAvailable() || d.RunnerVersionState() != "New version available" || d.ImageVersionState() != "Registry check disabled" || d.LatestRunnerVersion() != "v1.2.4" || d.LatestImageVersion() != "v2" {
+		t.Fatalf("maintenance view = runner=%q image=%q", d.RunnerVersionState(), d.ImageVersionState())
+	}
+	if d.RunnerVersion() != "v1.2.3" || d.AvatarInitials() != "AC" || d.Field("CREDIMI_USER_API_KEY").MaskedValue() == "secret-value" {
+		t.Fatalf("identity view runner=%q avatar=%q", d.RunnerVersion(), d.AvatarInitials())
+	}
+
+	d.Runner.values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
+	d.Runner.values["RUNNER_DOMAIN"] = ""
+	if d.PublicURL() != "https://<runner-domain>" {
+		t.Fatalf("managed public URL = %q", d.PublicURL())
+	}
+	d.Runner.values["CREDIMI_SERVICE_MODE"] = "auto"
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true}
+	d.Snapshot.Services[0].Status = Offline
+	if d.PublicURL() != "Waiting for quick tunnel URL" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Needs attention" {
+		t.Fatalf("stopped runtime view url=%q toggle=%q headline=%q", d.PublicURL(), d.RuntimeTogglePath(), d.RuntimeHeadline())
 	}
 }

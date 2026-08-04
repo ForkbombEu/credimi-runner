@@ -160,6 +160,55 @@ func TestRunnerLifecycleHeartbeatPostsExpectedPayload(t *testing.T) {
 	require.Equal(t, "heartbeat", req.Body.Reason)
 }
 
+func TestRunnerLifecycleHeartbeatReportsConfiguredDeviceReadiness(t *testing.T) {
+	recorder, client := newLifecycleClientForServer(t, http.StatusOK, nil)
+	client.SetDevices([]LifecycleDevice{
+		{DeviceID: "owner/ready", Online: true},
+		{DeviceID: "owner/offline", Online: true},
+		{DeviceID: "owner/missing", Online: true},
+		{DeviceID: "owner/disabled", Online: false},
+	})
+	client.readiness = func() Readiness {
+		return Readiness{Devices: map[string]DeviceReady{
+			"owner/ready":   {Ready: true, State: "device"},
+			"owner/offline": {Ready: false, State: "unauthorized"},
+		}}
+	}
+
+	require.NoError(t, client.Heartbeat(context.Background()))
+	devices := recorder.get(0).Body.Devices
+	require.Equal(t, []LifecycleDevice{
+		{DeviceID: "owner/ready", Online: true},
+		{DeviceID: "owner/offline", Online: false, Reason: "unauthorized"},
+		{DeviceID: "owner/missing", Online: false, Reason: "not reported by runner readiness"},
+		{DeviceID: "owner/disabled", Online: false, Reason: "disabled"},
+	}, devices)
+}
+
+func TestRunnerLifecycleSetDevicesCopiesCallerInventory(t *testing.T) {
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{}, nil, nil)
+	devices := []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}
+	client.SetDevices(devices)
+	devices[0].Online = false
+
+	client.readiness = nil
+	require.Equal(t, []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}, client.currentDevices())
+	(*RunnerLifecycleClient)(nil).SetDevices(devices)
+}
+
+func TestRunnerLifecycleConfigurationFallbacks(t *testing.T) {
+	t.Setenv(lifecycleEnabledEnvName, "not-a-bool")
+	t.Setenv(lifecycleHeartbeatIntervalEnvName, "-1s")
+	cfg := LoadRunnerLifecycleConfig(utils.Instance{InternalAdminKey: "admin-key"})
+	require.True(t, cfg.Enabled)
+	require.Equal(t, "admin-key", cfg.APIKey)
+	require.Equal(t, defaultHeartbeatInterval, cfg.HeartbeatInterval)
+
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{Enabled: true}, nil, nil)
+	client.warnf = func(string, ...any) {}
+	require.NoError(t, client.Resume(context.Background(), "startup"))
+}
+
 func TestRunnerLifecyclePausePostsExpectedPayload(t *testing.T) {
 	recorder, client := newLifecycleClientForServer(t, http.StatusOK, nil)
 

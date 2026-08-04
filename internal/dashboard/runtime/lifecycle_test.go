@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -213,6 +214,67 @@ func TestLifecycleManagerStartLogFollower(t *testing.T) {
 	}
 }
 
+func TestExecRunnerStreamsCommandOutputByLine(t *testing.T) {
+	var streamed []string
+	output, err := (ExecRunner{}).Run(context.Background(), CommandSpec{
+		Name:   "sh",
+		Args:   []string{"-c", "printf 'pulling\\rfinished\\n'"},
+		Stream: func(line string) { streamed = append(streamed, line) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := streamed, []string{"pulling", "finished"}; !slices.Equal(got, want) {
+		t.Fatalf("streamed lines = %q, want %q", got, want)
+	}
+	if got, want := string(output), "pulling\nfinished\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
+func TestValidateReachableHostRunnerVerifiesIdentityAndReadiness(t *testing.T) {
+	newRunner := func(status int, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/readyz" {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+	valuesFor := func(t *testing.T, endpoint string) Values {
+		t.Helper()
+		host, port, err := net.SplitHostPort(strings.TrimPrefix(endpoint, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Values{
+			"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1",
+			"CREDIMI_DEVICE_1_ID": "acme/runner/simulator", "CREDIMI_DEVICE_1_TYPE": "ios_simulator", "CREDIMI_DEVICE_1_MODE": "no_device",
+			"RUNNER_HOST": host, "RUNNER_PORT": port,
+		}
+	}
+
+	valid := newRunner(http.StatusOK, `{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"boot-1","devices":{"acme/runner/simulator":{"ready":true}}}`)
+	defer valid.Close()
+	if err := validateReachableHostRunner(context.Background(), valuesFor(t, valid.URL)); err != nil {
+		t.Fatalf("valid runner rejected: %v", err)
+	}
+
+	wrongID := newRunner(http.StatusOK, `{"service":"credimi-runner","runner_id":"acme/other","boot_id":"boot-1"}`)
+	defer wrongID.Close()
+	if err := validateReachableHostRunner(context.Background(), valuesFor(t, wrongID.URL)); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("wrong runner identity error = %v", err)
+	}
+
+	unready := newRunner(http.StatusServiceUnavailable, `{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"boot-1"}`)
+	defer unready.Close()
+	if err := validateReachableHostRunner(context.Background(), valuesFor(t, unready.URL)); err == nil || !strings.Contains(err.Error(), "HTTP 503") {
+		t.Fatalf("unready runner error = %v", err)
+	}
+}
+
 func TestLifecycleManagerStopLogFollowerWithoutProcess(t *testing.T) {
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{}, &fakeRunner{})
 	manager.logCmd = &exec.Cmd{}
@@ -244,39 +306,6 @@ func TestLifecycleManagerStartDetachesHostRunnerFromCallerContext(t *testing.T) 
 	}
 }
 
-func obsolete_TestLifecycleManagerStartReusesReachableHostRunner(t *testing.T) {
-	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/readyz" {
-			http.NotFound(w, request)
-			return
-		}
-		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
-	}))
-	defer listener.Close()
-	host, port, err := net.SplitHostPort(strings.TrimPrefix(listener.URL, "http://"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	runner := &fakeRunner{}
-	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":      "acme/runner",
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"RUNNER_HOST":            host,
-		"RUNNER_PORT":            port,
-	}, runner)
-	if err := manager.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.starts) != 0 {
-		t.Fatalf("existing reachable runner should be reused, starts = %#v", runner.starts)
-	}
-	if status := manager.Status(context.Background()); !status.RunnerRunning {
-		t.Fatalf("status = %#v", status)
-	}
-}
-
 func TestLifecycleManagerStartRejectsForeignReachableHostListener(t *testing.T) {
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"service":"other-service","boot_id":"test-boot"}`))
@@ -304,41 +333,34 @@ func TestLifecycleManagerStartRejectsForeignReachableHostListener(t *testing.T) 
 	}
 }
 
-func obsolete_TestValidateReachableHostRunnerRejectsMismatchedReadiness(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		status  int
-		body    string
-		values  Values
-		message string
-	}{
-		{name: "not ready", status: http.StatusServiceUnavailable, body: `{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"boot"}`, values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}, message: "HTTP 503"},
-		{name: "runner mismatch", status: http.StatusOK, body: `{"service":"credimi-runner","runner_id":"other","boot_id":"boot"}`, values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}, message: "does not match"},
-		{name: "serial mismatch", status: http.StatusOK, body: `{"service":"credimi-runner","boot_id":"boot","device_serial":"other"}`, values: Values{"CREDIMI_RUNNER_SERIAL": "device-1"}, message: "does not match"},
-		{name: "offline device", status: http.StatusOK, body: `{"service":"credimi-runner","boot_id":"boot","device_state":"offline"}`, values: Values{}, message: "offline"},
-		{name: "invalid JSON", status: http.StatusOK, body: `not JSON`, values: Values{}, message: "decode"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				if request.URL.Path != "/readyz" {
-					http.NotFound(w, request)
-					return
-				}
-				w.WriteHeader(test.status)
-				_, _ = w.Write([]byte(test.body))
-			}))
-			defer server.Close()
-			host, port, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			test.values["RUNNER_HOST"] = host
-			test.values["RUNNER_PORT"] = port
-			err = validateReachableHostRunner(context.Background(), test.values)
-			if err == nil || !strings.Contains(err.Error(), test.message) {
-				t.Fatalf("validateReachableHostRunner error = %v", err)
-			}
-		})
+func TestLifecycleManagerAdoptsAnIdentifiedRunningHostRunner(t *testing.T) {
+	runnerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/readyz" {
+			http.NotFound(w, request)
+			return
+		}
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"boot-1","devices":{"acme/runner/simulator":{"ready":true}}}`))
+	}))
+	defer runnerServer.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runnerServer.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{}
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_SERVICE_MODE": "manual",
+		"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/simulator", "CREDIMI_DEVICE_1_TYPE": "ios_simulator", "CREDIMI_DEVICE_1_MODE": "no_device",
+		"RUNNER_HOST": host, "RUNNER_PORT": port,
+	}, runner)
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.starts) != 0 {
+		t.Fatalf("reachable runner should be adopted, starts = %#v", runner.starts)
+	}
+	if status := manager.Status(context.Background()); !status.RunnerRunning {
+		t.Fatalf("adopted runner status = %#v", status)
 	}
 }
 
@@ -427,11 +449,11 @@ func TestLifecycleManagerStartWithProgressStreamsComposePull(t *testing.T) {
 func TestLifecycleManagerStartSkipsLocalRunnerPull(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":        "acme/runner",
-		"CREDIMI_RUNNER_BACKEND":   "container",
-		"CREDIMI_SERVICE_MODE":     "auto",
-		"RUNNER_IMAGE":             "credimi-runner-phone:latest",
-		"RUNNER_IMAGE_PULL_POLICY": "never",
+		"CREDIMI_RUNNER_ID":                         "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":                    "container",
+		"CREDIMI_SERVICE_MODE":                      "auto",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE":             "credimi-runner-phone:latest",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "never",
 	}, runner)
 	var progress []string
 	if err := manager.StartWithProgress(context.Background(), func(line string) {
@@ -454,10 +476,10 @@ func TestLifecycleManagerStartSkipsLocalRunnerPull(t *testing.T) {
 func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":      "acme/runner",
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"RUNNER_IMAGE":           "example.test/runner:latest",
+		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":        "container",
+		"CREDIMI_SERVICE_MODE":          "manual",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
 	}, runner)
 	var progress []string
 	if err := manager.UpgradeRunnerImage(context.Background(), func(line string) {
@@ -491,10 +513,10 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 func TestLifecycleManagerUpgradeRunnerImageRestartsQuickTunnel(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":      "acme/runner",
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "auto",
-		"RUNNER_IMAGE":           "example.test/runner:latest",
+		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":        "container",
+		"CREDIMI_SERVICE_MODE":          "auto",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
 	}, runner)
 
 	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
@@ -515,10 +537,10 @@ func TestLifecycleManagerUpgradeRunnerImageRestartsQuickTunnel(t *testing.T) {
 func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing.T) {
 	runner := &imageVersionRunner{imageIDs: []string{"sha256:old", "sha256:new"}}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":      "acme/runner",
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"RUNNER_IMAGE":           "example.test/runner:latest",
+		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":        "container",
+		"CREDIMI_SERVICE_MODE":          "manual",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
 	}, runner)
 	if err := manager.UpgradeRunnerImage(context.Background(), nil); err != nil {
 		t.Fatal(err)
@@ -531,10 +553,10 @@ func TestLifecycleManagerUpgradeRunnerImageDeletesOnlySupersededImage(t *testing
 
 func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":      "acme/runner",
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"RUNNER_IMAGE":           "example.test/runner:latest",
+		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":        "host",
+		"CREDIMI_SERVICE_MODE":          "manual",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
 	}, &fakeRunner{})
 	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "container backend") {
 		t.Fatalf("error = %v", err)
@@ -543,13 +565,13 @@ func TestLifecycleManagerUpgradeRunnerImageRejectsHostBackend(t *testing.T) {
 
 func TestLifecycleManagerUpgradeRunnerImageRejectsLocalPolicy(t *testing.T) {
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID":        "acme/runner",
-		"CREDIMI_RUNNER_BACKEND":   "container",
-		"CREDIMI_SERVICE_MODE":     "manual",
-		"RUNNER_IMAGE":             "credimi-runner-phone:latest",
-		"RUNNER_IMAGE_PULL_POLICY": "never",
+		"CREDIMI_RUNNER_ID":                         "acme/runner",
+		"CREDIMI_RUNNER_BACKEND":                    "container",
+		"CREDIMI_SERVICE_MODE":                      "manual",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE":             "credimi-runner-phone:latest",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY": "never",
 	}, &fakeRunner{})
-	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "RUNNER_IMAGE_PULL_POLICY=never") {
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY=never") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -559,10 +581,10 @@ func TestLifecycleManagerUpgradeRunnerImageReportsDockerStageErrors(t *testing.T
 		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
 			runner := &failOnRunRunner{failAt: failAt}
 			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-				"CREDIMI_RUNNER_ID":      "acme/runner",
-				"CREDIMI_RUNNER_BACKEND": "container",
-				"CREDIMI_SERVICE_MODE":   "manual",
-				"RUNNER_IMAGE":           "example.test/runner:latest",
+				"CREDIMI_RUNNER_ID":             "acme/runner",
+				"CREDIMI_RUNNER_BACKEND":        "container",
+				"CREDIMI_SERVICE_MODE":          "manual",
+				"CREDIMI_DEVICE_1_RUNNER_IMAGE": "example.test/runner:latest",
 			}, runner)
 			err := manager.UpgradeRunnerImage(context.Background(), nil)
 			if err == nil || !strings.Contains(err.Error(), "docker command failed") {
@@ -580,7 +602,7 @@ func TestLifecycleManagerUpgradeRunnerImageRequiresImage(t *testing.T) {
 		"CREDIMI_RUNNER_BACKEND": "container",
 		"CREDIMI_SERVICE_MODE":   "manual",
 	}, &fakeRunner{})
-	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "RUNNER_IMAGE") {
+	if err := manager.UpgradeRunnerImage(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "CREDIMI_DEVICE_1_RUNNER_IMAGE") {
 		t.Fatalf("error = %v", err)
 	}
 	manager.setLastError(nil)
@@ -750,6 +772,49 @@ func TestLifecycleManagerStopUsesBackendSourceOfTruth(t *testing.T) {
 	}
 }
 
+func TestLifecycleManagerStatusObservesComposeRuntimeWithExecRunner(t *testing.T) {
+	dir := t.TempDir()
+	docker := filepath.Join(dir, "docker")
+	if err := os.WriteFile(docker, []byte("#!/bin/sh\nprintf '%s\\n' '{\"Service\":\"runner\",\"State\":\"running\"}'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_RUNNER_ID":      "acme/runner",
+		"CREDIMI_RUNNER_BACKEND": "container",
+		"CREDIMI_SERVICE_MODE":   "manual",
+	}, ExecRunner{})
+	manager.SetPublicURL("https://runner.example")
+
+	status := manager.Status(context.Background())
+	if !status.Observed || !status.ComposeRunning || !status.RunnerRunning || !status.DeviceReady {
+		t.Fatalf("observed status = %#v", status)
+	}
+	if status.ObservedAt.IsZero() || status.PublicURL != "https://runner.example" {
+		t.Fatalf("observation lost metadata: %#v", status)
+	}
+}
+
+func TestLifecycleManagerStartReportsDockerStageFailures(t *testing.T) {
+	for _, failAt := range []int{1, 2, 3} {
+		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
+			runner := &failOnRunRunner{failAt: failAt}
+			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
+				"CREDIMI_RUNNER_ID":      "acme/runner",
+				"CREDIMI_RUNNER_BACKEND": "container",
+				"CREDIMI_SERVICE_MODE":   "manual",
+			}, runner)
+			err := manager.Start(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "docker command failed") {
+				t.Fatalf("Start error = %v", err)
+			}
+			if status := manager.Status(context.Background()); !strings.Contains(status.LastError, "docker command failed") {
+				t.Fatalf("failure status = %#v", status)
+			}
+		})
+	}
+}
+
 func TestVerifyComposeStoppedRejectsRemainingContainer(t *testing.T) {
 	runner := &fakeRunner{runOutput: []byte("0123456789abcdef\n")}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
@@ -791,11 +856,11 @@ func TestExecRunnerRunAndStart(t *testing.T) {
 func TestLifecycleManagerHelpers(t *testing.T) {
 	runner := &fakeRunner{runOutput: []byte("line-1\nline-2\n")}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_RUNNER_ID": "acme/runner",
-		"RUNNER_IMAGE":      "ghcr.io/forkbombeu/credimi-runner-phone:latest",
+		"CREDIMI_RUNNER_ID":             "acme/runner",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest",
 	}, runner)
 
-	manager.Configure(Values{"CREDIMI_RUNNER_ID": "acme/runner-2", "RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest"})
+	manager.Configure(Values{"CREDIMI_RUNNER_ID": "acme/runner-2", "CREDIMI_DEVICE_1_RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest"})
 	status := manager.Status(context.Background())
 	if !status.Configured {
 		t.Fatal("expected configured status after Configure")
@@ -822,10 +887,10 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 		t.Fatalf("TunnelLogs args = %#v", args)
 	}
 	manager.Configure(Values{
-		"CREDIMI_RUNNER_ID":      "acme/runner-2",
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"RUNNER_IMAGE":           "ghcr.io/forkbombeu/credimi-runner-phone:latest",
+		"CREDIMI_RUNNER_ID":             "acme/runner-2",
+		"CREDIMI_RUNNER_BACKEND":        "container",
+		"CREDIMI_SERVICE_MODE":          "manual",
+		"CREDIMI_DEVICE_1_RUNNER_IMAGE": "ghcr.io/forkbombeu/credimi-runner-phone:latest",
 	})
 	if err := manager.UpdateImage(context.Background()); err != nil {
 		t.Fatal(err)

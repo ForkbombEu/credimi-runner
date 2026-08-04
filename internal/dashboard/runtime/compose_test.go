@@ -31,7 +31,7 @@ func TestComposeServicesByPlan(t *testing.T) {
 	}
 }
 
-func obsolete_TestComposeParityCases(t *testing.T) {
+func TestComposeParityCases(t *testing.T) {
 	tests := []struct {
 		name     string
 		vals     Values
@@ -60,7 +60,7 @@ func obsolete_TestComposeParityCases(t *testing.T) {
 		{
 			name:     "redroid known hosts",
 			vals:     Values{"CREDIMI_RUNNER_TYPE": "redroid", "AVDCTL_SSH_TARGET": "box", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "/tmp/known_hosts"},
-			contains: []string{"--no-device", "${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
+			contains: []string{"--no-device", "${CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`},
 		},
 		{
 			name:     "redroid auto publishes local runner API",
@@ -100,7 +100,7 @@ func obsolete_TestComposeParityCases(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			content, err := ComposeYAML(tt.vals, "linux")
+			content, err := ComposeYAML(indexedComposeValues(tt.vals), "linux")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,6 +117,39 @@ func obsolete_TestComposeParityCases(t *testing.T) {
 			}
 		})
 	}
+}
+
+func indexedComposeValues(values Values) Values {
+	indexed := cloneValues(values)
+	deviceType := indexed["CREDIMI_RUNNER_TYPE"]
+	delete(indexed, "CREDIMI_RUNNER_TYPE")
+	mode := indexed["CREDIMI_RUNNER_DEVICE_MODE"]
+	delete(indexed, "CREDIMI_RUNNER_DEVICE_MODE")
+	if mode == "" {
+		switch deviceType {
+		case "android_emulator":
+			mode = "emulator"
+		case "redroid":
+			mode = "no_device"
+		default:
+			mode = "usb"
+		}
+	}
+	indexed["CREDIMI_RUNNER_ID"] = "acme/runner"
+	indexed["CREDIMI_DEVICE_COUNT"] = "1"
+	indexed["CREDIMI_DEVICE_1_ID"] = "acme/runner/device"
+	indexed["CREDIMI_DEVICE_1_TYPE"] = deviceType
+	indexed["CREDIMI_DEVICE_1_MODE"] = mode
+	for oldKey, deviceKey := range map[string]string{
+		"RUNNER_IMAGE": "RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY": "RUNNER_IMAGE_PULL_POLICY",
+		"AVDCTL_SSH_TARGET": "AVDCTL_SSH_TARGET", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "AVDCTL_SSH_KNOWN_HOSTS_PATH",
+	} {
+		if value := indexed[oldKey]; value != "" {
+			indexed["CREDIMI_DEVICE_1_"+deviceKey] = value
+			delete(indexed, oldKey)
+		}
+	}
+	return indexed
 }
 
 func TestRunnerAPIReachableFromHost(t *testing.T) {
@@ -165,16 +198,16 @@ func TestRunnerReadinessRequiredBeforeRegistration(t *testing.T) {
 	}
 }
 
-func obsolete_TestDeviceReadinessRequired(t *testing.T) {
+func TestDeviceReadinessRequired(t *testing.T) {
 	tests := []struct {
 		name string
 		vals Values
 		goos string
 		want bool
 	}{
-		{"usb phone", Values{"CREDIMI_RUNNER_TYPE": "android_phone"}, "linux", true},
-		{"wifi phone", Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"}, "linux", true},
-		{"redroid managed device", Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"}, "linux", false},
+		{"usb phone", indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone"}), "linux", true},
+		{"wifi phone", indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"}), "linux", true},
+		{"redroid managed device", indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "redroid", "CREDIMI_DEVICE_1_WIFI_IP": "192.168.1.10"}), "linux", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

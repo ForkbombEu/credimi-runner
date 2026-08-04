@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"fmt"
 	"runtime"
 	"strings"
 )
@@ -18,7 +17,6 @@ const (
 	DefaultDashboardHost         = "0.0.0.0"
 	DefaultDashboardPort         = "8051"
 	DefaultRunnerCaddySite       = ":80"
-	DefaultContainerMode         = "usb"
 	DefaultPhoneImage            = "ghcr.io/forkbombeu/credimi-runner-phone:latest"
 	DefaultEmulatorImage         = "ghcr.io/forkbombeu/credimi-runner-emulator:latest"
 	DefaultBaseName              = "credimi"
@@ -85,17 +83,6 @@ func normalizeIndexedValues(values Values) (Values, error) {
 		return nil, err
 	}
 	return normalized, nil
-}
-
-func normalizeRunnerImagePullPolicy(values Values) error {
-	policy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
-	switch policy {
-	case "always", "never":
-		values["RUNNER_IMAGE_PULL_POLICY"] = policy
-		return nil
-	default:
-		return fmt.Errorf("RUNNER_IMAGE_PULL_POLICY must be always or never, got %q", policy)
-	}
 }
 
 func normalizeRunnerIdentity(values Values) {

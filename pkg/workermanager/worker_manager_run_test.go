@@ -3,6 +3,7 @@ package workermanager
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -195,4 +196,30 @@ func TestRunTemporalWorker_NonRetryableInitErrorReturnsError(t *testing.T) {
 	err := run(context.Background())
 	require.Error(t, err)
 	require.ErrorContains(t, err, "bad namespace")
+}
+
+func TestRunTemporalWorkerWithInventoryValidatesAndSizesConcurrency(t *testing.T) {
+	setWorkerManagerTestHooks(t)
+	invalid := RunTemporalWorkerWithInventory("namespace", RunnerRuntimeConfig{})
+	if err := invalid(context.Background()); err == nil || !strings.Contains(err.Error(), "runner ID is required") {
+		t.Fatalf("invalid inventory error = %v", err)
+	}
+
+	temporalClientGetter = func(string) (client.Client, error) { return nil, nil }
+	fake := &fakeTemporalWorker{}
+	maxActivities := 0
+	temporalWorkerFactory = func(_ client.Client, _ string, options worker.Options) temporalWorker {
+		maxActivities = options.MaxConcurrentActivityExecutionSize
+		return fake
+	}
+	inventory := RunnerRuntimeConfig{RunnerID: "acme/runner", Devices: []DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Enabled: true},
+		{ID: "acme/runner/two", Enabled: true},
+	}}
+	if err := RunTemporalWorkerWithInventory("namespace", inventory)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if maxActivities != 2 || fake.activityRegistrations == 0 {
+		t.Fatalf("worker concurrency=%d registrations=%d", maxActivities, fake.activityRegistrations)
+	}
 }

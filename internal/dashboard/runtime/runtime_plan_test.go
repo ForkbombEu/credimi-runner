@@ -39,8 +39,8 @@ func TestBuildRuntimePlanExpectedServices(t *testing.T) {
 	}
 }
 
-func obsolete_TestDiffValuesCoverageBranches(t *testing.T) {
-	if got := DiffValues(Values{"RUNNER_IMAGE": "a"}, Values{"RUNNER_IMAGE": "a"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
+func TestDiffValuesCoverageBranches(t *testing.T) {
+	if got := DiffValues(Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Values{"CREDIMI_RUNNER_ID": "acme/runner"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
 		t.Fatalf("saved only diff = %#v", got)
 	}
 	if got := DiffValues(Values{"CREDIMI_RUNNER_NAME": "a"}, Values{"CREDIMI_RUNNER_NAME": "b"}); len(got.ChangedKeys) == 0 || !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
@@ -49,8 +49,25 @@ func obsolete_TestDiffValuesCoverageBranches(t *testing.T) {
 	if got := DiffValues(Values{"RUNNER_PORT": "8050"}, Values{"RUNNER_PORT": "8051"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("recreate diff = %#v", got)
 	}
-	if got := DiffValues(Values{"RUNNER_IMAGE_PULL_POLICY": "always"}, Values{"RUNNER_IMAGE_PULL_POLICY": "never"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) {
-		t.Fatalf("runner image pull policy diff = %#v", got)
+	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/b"}); !containsApplyClass(got.Classes, ApplyRestartRequired) {
+		t.Fatalf("device inventory diff = %#v", got)
+	}
+}
+
+func TestRuntimePlanReadinessUsesIndexedDevices(t *testing.T) {
+	phone := Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/pixel", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb"}
+	if !RunnerAPIReachableFromHost(phone, "linux") || !RunnerReadinessRequiredBeforeRegistration(phone, "linux") || !DeviceReadinessRequired(phone, "linux") {
+		t.Fatalf("phone readiness = api:%t runner:%t device:%t", RunnerAPIReachableFromHost(phone, "linux"), RunnerReadinessRequiredBeforeRegistration(phone, "linux"), DeviceReadinessRequired(phone, "linux"))
+	}
+	managed := cloneValues(phone)
+	managed["CREDIMI_DEVICE_1_MODE"] = "no_device"
+	if DeviceReadinessRequired(managed, "linux") {
+		t.Fatal("managed device should not require an attached ADB target")
+	}
+	host := cloneValues(phone)
+	host["CREDIMI_RUNNER_BACKEND"] = "host"
+	if !RunnerAPIReachableFromHost(host, "darwin") || !RunnerReadinessRequiredBeforeRegistration(host, "darwin") {
+		t.Fatal("host runner should be reachable before registration")
 	}
 }
 

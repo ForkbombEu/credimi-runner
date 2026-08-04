@@ -55,12 +55,9 @@ volumes:
 
 func writeRunnerService(builder *strings.Builder, values Values, goos string) {
 	mode := values["CREDIMI_DEVICE_1_MODE"]
-	if mode == "" {
-		mode = values["CREDIMI_CONTAINER_MODE"]
-	}
-	image := defaultIfEmpty(values["RUNNER_IMAGE"], DefaultPhoneImage)
-	pullPolicy := defaultIfEmpty(values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
-	networkMode := runnerNetworkMode(values, goos)
+	image := defaultIfEmpty(values["CREDIMI_DEVICE_1_RUNNER_IMAGE"], DefaultPhoneImage)
+	pullPolicy := defaultIfEmpty(values["CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
+	networkMode := runnerNetworkMode(mode, goos)
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", image, pullPolicy)
 	switch mode {
 	case "wifi":
@@ -83,8 +80,8 @@ func writeRunnerService(builder *strings.Builder, values Values, goos string) {
 		builder.WriteString("    devices:\n      - /dev/kvm:/dev/kvm\n")
 		builder.WriteString("    volumes:\n      - ${CREDIMI_DEVICE_1_ANDROID_KEYS_DIR}:/root/.android\n      - ${CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH}:/avd-home\n      - ${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden\n")
 	case "no_device":
-		if values["AVDCTL_SSH_TARGET"] != "" && values["AVDCTL_SSH_KNOWN_HOSTS_PATH"] != "" {
-			builder.WriteString("    volumes:\n      - ${AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro\n")
+		if values["CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET"] != "" && values["CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH"] != "" {
+			builder.WriteString("    volumes:\n      - ${CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH}:/root/.ssh/known_hosts:ro\n")
 		}
 	case "usb":
 		builder.WriteString("    volumes:\n      - adbkeys:/root/.android\n")
@@ -116,12 +113,12 @@ func writeRunnerService(builder *strings.Builder, values Values, goos string) {
 	}
 }
 
-func runnerNetworkMode(values Values, goos string) string {
+func runnerNetworkMode(mode, goos string) string {
 	// A host ADB server normally listens only on 127.0.0.1. On Linux, a
 	// bridge-network container reaches the host through its gateway instead,
 	// where that loopback-only server is unavailable. Keep USB host-ADB in the
 	// host network namespace so it uses the same local ADB socket as the host.
-	if goos == "linux" && values["CREDIMI_CONTAINER_MODE"] == "usb" {
+	if goos == "linux" && mode == "usb" {
 		return "host"
 	}
 	return "bridge"

@@ -12,8 +12,6 @@ import (
 )
 
 func TestServerCmdRunE_ListenError(t *testing.T) {
-	t.Skip("temporarily skipped to unblock release while server command tests are stabilized")
-
 	origHost, origPort, origDebug := host, port, debug
 	t.Cleanup(func() {
 		host, port, debug = origHost, origPort, origDebug
@@ -30,8 +28,6 @@ func TestServerCmdRunE_ListenError(t *testing.T) {
 }
 
 func TestServerCmdRunE_ShutdownOnSignal(t *testing.T) {
-	t.Skip("temporarily skipped to unblock release while server command tests are stabilized")
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -42,8 +38,6 @@ func TestServerCmdRunE_ShutdownOnSignal(t *testing.T) {
 }
 
 func TestServerCmdSignalHelper(t *testing.T) {
-	t.Skip("helper covered by temporarily skipped server command tests")
-
 	if os.Getenv("GO_WANT_SERVER_HELPER") != "1" {
 		return
 	}
@@ -53,6 +47,10 @@ func TestServerCmdSignalHelper(t *testing.T) {
 	debug = false
 	_ = os.Setenv("CREDIMI_URL", "http://127.0.0.1:1")
 	_ = os.Setenv("CREDIMI_RUNNER_ID", "test-runner")
+	_ = os.Setenv("CREDIMI_DEVICE_COUNT", "1")
+	_ = os.Setenv("CREDIMI_DEVICE_1_ID", "test-runner/simulator")
+	_ = os.Setenv("CREDIMI_DEVICE_1_TYPE", "ios_simulator")
+	_ = os.Setenv("CREDIMI_DEVICE_1_MODE", "no_device")
 
 	ready := make(chan struct{})
 	serverSignalReadyHook = func() {
@@ -78,6 +76,9 @@ func TestServerCmdSignalHelper(t *testing.T) {
 		os.Exit(6)
 	}
 
+	// The listener is deliberately published before signal handling is installed
+	// so clients can reach the runner while startup work continues.
+	time.Sleep(100 * time.Millisecond)
 	_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 
 	select {

@@ -69,16 +69,6 @@ func TestLifecycleCLIStatusAndRuntimeAction(t *testing.T) {
 	}
 }
 
-func TestLifecycleRunnerCommandIsTheUserFacingGroup(t *testing.T) {
-	command, _, err := rootCmd.Find([]string{"runner", "start"})
-	if err != nil || command == nil || command.Name() != "start" {
-		t.Fatalf("runner start command = %#v, err = %v", command, err)
-	}
-	if _, _, err := rootCmd.Find([]string{"runtime", "start"}); err == nil {
-		t.Fatal("obsolete runtime command is still available")
-	}
-}
-
 func TestLifecycleRuntimeActionReportsOperationFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -109,6 +99,35 @@ func TestLifecycleActionPastTense(t *testing.T) {
 		if got := lifecycleActionPastTense(action); got != want {
 			t.Fatalf("%s = %q, want %q", action, got, want)
 		}
+	}
+}
+
+func TestWaitForLifecycleOperationPollsQueuedOperationAndRejectsMissingID(t *testing.T) {
+	if _, err := waitForLifecycleOperation(context.Background(), "http://dashboard.example", ""); err == nil || !strings.Contains(err.Error(), "without an ID") {
+		t.Fatalf("missing operation ID error = %v", err)
+	}
+
+	var polls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/controller/operations/op-1" {
+			http.NotFound(w, request)
+			return
+		}
+		polls++
+		phase := "running"
+		if polls == 2 {
+			phase = "succeeded"
+		}
+		_, _ = w.Write([]byte(`{"id":"op-1","phase":"` + phase + `"}`))
+	}))
+	defer server.Close()
+
+	originalInterval := lifecycleOperationPollInterval
+	lifecycleOperationPollInterval = time.Millisecond
+	t.Cleanup(func() { lifecycleOperationPollInterval = originalInterval })
+	completed, err := waitForLifecycleOperation(context.Background(), server.URL, "op-1")
+	if err != nil || completed.Phase != controller.PhaseSucceeded || polls != 2 {
+		t.Fatalf("operation completed=%#v polls=%d err=%v", completed, polls, err)
 	}
 }
 

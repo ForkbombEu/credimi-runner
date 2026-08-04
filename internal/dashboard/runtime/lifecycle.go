@@ -251,7 +251,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 	m.emitLifecycleLocked(lifecyclelog.Event{
 		Level: lifecyclelog.LevelInfo, Event: "operation.started",
 		Message: "runtime start requested", Component: "runtime", Phase: "starting",
-		Fields: map[string]any{"backend": plan.Backend, "service_mode": plan.ServiceMode, "runner_type": plan.RunnerType},
+		Fields: map[string]any{"backend": plan.Backend, "service_mode": plan.ServiceMode},
 	})
 	m.verbose.Printf("runtime start requested")
 	defer func() {
@@ -312,7 +312,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 			m.status.LastError = err.Error()
 			return err
 		}
-		pullServices := composePullServices(plan.ComposeServices, m.values["RUNNER_IMAGE_PULL_POLICY"])
+		pullServices := composePullServices(plan.ComposeServices, primaryDeviceValue(m.values, "RUNNER_IMAGE_PULL_POLICY"))
 		if !containsService(pullServices, "runner") && containsService(plan.ComposeServices, "runner") {
 			emitProgress(progress, "Using the configured local runner image without pulling it.")
 		}
@@ -899,18 +899,18 @@ func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
 // plain-text pull output.
 func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func(string)) error {
 	m.mu.Lock()
-	image := strings.TrimSpace(m.values["RUNNER_IMAGE"])
-	pullPolicy := defaultIfEmpty(m.values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
+	image := strings.TrimSpace(primaryDeviceValue(m.values, "RUNNER_IMAGE"))
+	pullPolicy := defaultIfEmpty(primaryDeviceValue(m.values, "RUNNER_IMAGE_PULL_POLICY"), DefaultRunnerImagePullPolicy)
 	plan := BuildRuntimePlan(m.configDir, m.values)
 	m.mu.Unlock()
 	if image == "" {
-		return fmt.Errorf("RUNNER_IMAGE is required")
+		return fmt.Errorf("CREDIMI_DEVICE_1_RUNNER_IMAGE is required")
 	}
 	if !containsService(plan.ComposeServices, "runner") {
 		return fmt.Errorf("runner image upgrade requires the container backend")
 	}
 	if pullPolicy == "never" {
-		return fmt.Errorf("runner image upgrade is disabled when RUNNER_IMAGE_PULL_POLICY=never")
+		return fmt.Errorf("runner image upgrade is disabled when CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY=never")
 	}
 	oldImageID, _ := m.runnerImageID(ctx, image)
 	emitProgress(progress, "Checking for a newer runner image: "+image)
@@ -966,6 +966,10 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 	}
 	emitProgress(progress, "Runner image upgrade complete.")
 	return nil
+}
+
+func primaryDeviceValue(values Values, key string) string {
+	return values["CREDIMI_DEVICE_1_"+key]
 }
 
 func (m *LifecycleManager) runnerImageID(ctx context.Context, image string) (string, error) {

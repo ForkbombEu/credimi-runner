@@ -16,8 +16,6 @@ type RuntimePlan struct {
 	ComposeProject    string
 	ConfigFingerprint string
 	Backend           string
-	RunnerType        string
-	ContainerMode     string
 	ServiceMode       string
 	ComposeServices   []string
 	PublicMode        string
@@ -60,15 +58,10 @@ var FieldImpacts = map[string]FieldImpact{
 	"CREDIMI_INTERNAL_ADMIN_KEY":  {Restart: true, Secret: true},
 	"CREDIMI_RUNNER_BACKEND":      {Restart: true, Recreate: true},
 	"CREDIMI_RUNNER_DESCRIPTION":  {CredimiUpdate: true},
-	"CREDIMI_RUNNER_DEVICE_MODE":  {Restart: true},
 	"CREDIMI_RUNNER_ID":           {Restart: true, CredimiUpdate: true},
 	"CREDIMI_RUNNER_NAME":         {Restart: true, CredimiUpdate: true},
 	"CREDIMI_RUNNER_ORGANIZATION": {Restart: true, CredimiUpdate: true},
 	"CREDIMI_RUNNER_PUBLISHED":    {CredimiUpdate: true},
-	"CREDIMI_RUNNER_SERIAL":       {Restart: true, CredimiUpdate: true},
-	"CREDIMI_RUNNER_TYPE":         {Restart: true, CredimiUpdate: true},
-	"CREDIMI_RUNNER_WIFI_IP":      {Restart: true},
-	"CREDIMI_RUNNER_WIFI_PORT":    {Restart: true},
 	"CREDIMI_SERVICE_MODE":        {Recreate: true, CredimiUpdate: true},
 	"CREDIMI_USER_API_KEY":        {Restart: true, Secret: true},
 	"OTEL_EXPORTER_OTLP_ENDPOINT": {Restart: true},
@@ -76,29 +69,16 @@ var FieldImpacts = map[string]FieldImpact{
 	"RUNNER_CADDY_SITE":           {Recreate: true},
 	"RUNNER_DOMAIN":               {CredimiUpdate: true},
 	"RUNNER_HOST":                 {Recreate: true},
-	"RUNNER_IMAGE":                {Restart: true, Recreate: true},
-	"RUNNER_IMAGE_PULL_POLICY":    {Recreate: true},
 	"RUNNER_PORT":                 {Recreate: true, CredimiUpdate: true},
 	"RUNNER_PUBLIC_PORT":          {CredimiUpdate: true},
 	"RUNNER_PUBLIC_URL":           {CredimiUpdate: true},
 	"TEMPORAL_ADDRESS":            {Restart: true},
-	"ANDROID_KEYS_DIR":            {Restart: true},
-	"BASE_NAME":                   {Restart: true},
-	"GOLDEN_PATH":                 {Restart: true},
-	"HOST_AVD_GOLDEN_PATH":        {Restart: true, Recreate: true},
-	"HOST_AVD_HOME_PATH":          {Restart: true, Recreate: true},
-	"REDROID_DATA_DIR":            {Restart: true, Recreate: true},
-	"REDROID_DATA_TAR":            {Restart: true, Recreate: true},
 }
 
 func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
 	backend := defaultIfEmpty(values["CREDIMI_RUNNER_BACKEND"], DefaultContainerBackend)
-	runnerType := defaultIfEmpty(values["CREDIMI_RUNNER_TYPE"], "android_phone")
-	containerMode := strings.TrimSpace(values["CREDIMI_CONTAINER_MODE"])
 	if inventory, err := ParseRuntimeConfig(values); err == nil && len(inventory.Devices) > 0 {
-		runnerType = inventory.Devices[0].Type
-		containerMode = inventory.Devices[0].Mode
 		backend = defaultIfEmpty(inventory.Devices[0].Values["BACKEND"], backend)
 	}
 
@@ -114,8 +94,6 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 		ComposeProject:    composeProjectName(canonicalDir),
 		ConfigFingerprint: fingerprint,
 		Backend:           backend,
-		RunnerType:        runnerType,
-		ContainerMode:     containerMode,
 		ServiceMode:       serviceMode,
 		PublicMode:        serviceMode,
 		RequiresDocker:    backend == DefaultContainerBackend || serviceMode != "manual",
@@ -151,7 +129,7 @@ func composeProjectName(configDir string) string {
 func configFingerprint(configDir string, values Values) string {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(configDir))
-	for _, key := range []string{"CREDIMI_RUNNER_ID", "CREDIMI_RUNNER_BACKEND", "CREDIMI_RUNNER_TYPE", "CREDIMI_RUNNER_SERIAL", "CREDIMI_SERVICE_MODE", "RUNNER_HOST", "RUNNER_PORT"} {
+	for _, key := range []string{"CREDIMI_RUNNER_ID", "CREDIMI_RUNNER_BACKEND", "CREDIMI_SERVICE_MODE", "RUNNER_HOST", "RUNNER_PORT"} {
 		_, _ = hash.Write([]byte(key + "=" + values[key] + "\n"))
 	}
 	return fmt.Sprintf("%016x", hash.Sum64())
@@ -234,7 +212,7 @@ func DeviceReadinessRequired(values Values, goos string) bool {
 		}
 		return false
 	}
-	return normalized["CREDIMI_CONTAINER_MODE"] != "no_device"
+	return false
 }
 
 func DiffValues(oldValues, newValues Values) ConfigDiff {
