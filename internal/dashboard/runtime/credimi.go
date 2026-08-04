@@ -57,6 +57,11 @@ type RegisterDeviceRequest struct {
 	Serial       string `json:"serial,omitempty"`
 }
 
+type PauseRunnerRequest struct {
+	RunnerID string `json:"runner_id"`
+	Reason   string `json:"reason"`
+}
+
 type CredimiClient struct {
 	BaseURL    string
 	APIKey     string
@@ -208,6 +213,30 @@ func (c *CredimiClient) RegisterMobileDevice(ctx context.Context, request Regist
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return credimiResponseError("mobile device registration failed", resp)
+	}
+	return nil
+}
+
+// PauseMobileRunner marks the runner and all of its devices offline before a
+// dashboard-controlled shutdown can terminate the runner process.
+func (c *CredimiClient) PauseMobileRunner(ctx context.Context, request PauseRunnerRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-runner", "lifecycle", "pause"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile runner pause failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return credimiResponseError("mobile runner pause failed", resp)
 	}
 	return nil
 }

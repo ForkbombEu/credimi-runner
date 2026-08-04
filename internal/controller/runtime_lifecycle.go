@@ -71,11 +71,30 @@ func (l RuntimeLifecycle) Stop(ctx context.Context) error {
 	if l.Manager == nil {
 		return errors.New("runtime manager unavailable")
 	}
+	// Compose can stop the runner and tunnel concurrently, so do not rely on
+	// the process receiving enough time to send its own graceful pause request.
+	// A failed notification must not prevent local shutdown: live health checks
+	// still make the device catalog unavailable immediately.
+	l.pauseRegisteredRunner(ctx)
 	if err := l.Manager.Stop(ctx); err != nil {
 		return err
 	}
 	l.clearAutoPublicURL()
 	return nil
+}
+
+func (l RuntimeLifecycle) pauseRegisteredRunner(ctx context.Context) {
+	apiKey := strings.TrimSpace(l.Values["CREDIMI_USER_API_KEY"])
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(l.Values["CREDIMI_INTERNAL_ADMIN_KEY"])
+	}
+	runnerID := strings.TrimSpace(l.Values["CREDIMI_RUNNER_ID"])
+	if apiKey == "" || runnerID == "" || strings.TrimSpace(l.Values["CREDIMI_URL"]) == "" {
+		return
+	}
+	pauseCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_ = (&dashboardruntime.CredimiClient{BaseURL: l.Values["CREDIMI_URL"], APIKey: apiKey, HTTPClient: l.httpClient()}).PauseMobileRunner(pauseCtx, dashboardruntime.PauseRunnerRequest{RunnerID: runnerID, Reason: "dashboard_stop"})
 }
 
 func (l RuntimeLifecycle) Restart(ctx context.Context, progress func(string)) error {
