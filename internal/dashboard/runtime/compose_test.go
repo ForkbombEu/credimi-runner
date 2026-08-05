@@ -117,6 +117,23 @@ func TestComposeMixedInventoryUsesEmulatorImageOverPhoneOverride(t *testing.T) {
 	}
 }
 
+func TestComposeMixedInventoryUsesLocalEmulatorSibling(t *testing.T) {
+	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_IMAGE": "credimi-runner-phone:latest", "RUNNER_IMAGE_PULL_POLICY": "never"})
+	values["CREDIMI_DEVICE_COUNT"] = "2"
+	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
+	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
+	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	values["CREDIMI_DEVICE_2_RUNNER_IMAGE"] = DefaultEmulatorImage
+	values["CREDIMI_DEVICE_2_RUNNER_IMAGE_PULL_POLICY"] = "never"
+	content, err := ComposeYAML(values, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "image: credimi-runner-emulator:latest") || !strings.Contains(content, "pull_policy: never") {
+		t.Fatalf("mixed local inventory must select local emulator sibling:\n%s", content)
+	}
+}
+
 func TestComposeRejectsConflictingEmulatorImageOverrides(t *testing.T) {
 	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "RUNNER_IMAGE": "example.test/emulator-one:latest"})
 	values["CREDIMI_DEVICE_COUNT"] = "2"

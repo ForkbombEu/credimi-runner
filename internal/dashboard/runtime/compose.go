@@ -207,6 +207,19 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 			spec.Image = image
 			spec.PullPolicy = customPolicies[image]
 		}
+		// Older inventories stored an image on every device. When a local
+		// phone-only runner gains its first emulator, the new device may still
+		// carry the registry default. Prefer the deterministic sibling of the
+		// already-selected local phone image so no registry pull is attempted.
+		if spec.Image == DefaultEmulatorImage {
+			for image := range customImages {
+				if paired := emulatorSiblingImage(image); paired != "" {
+					spec.Image = paired
+					spec.PullPolicy = customPolicies[image]
+					break
+				}
+			}
+		}
 	} else {
 		if len(customImages) > 1 {
 			return sharedRunnerRuntime{}, fmt.Errorf("a shared runner container supports one runtime image; configured device image overrides differ")
@@ -220,6 +233,13 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 		spec.NetworkMode = "host"
 	}
 	return spec, nil
+}
+
+func emulatorSiblingImage(image string) string {
+	if strings.Contains(image, "credimi-runner-phone") {
+		return strings.Replace(image, "credimi-runner-phone", "credimi-runner-emulator", 1)
+	}
+	return ""
 }
 
 func writeRunnerHostService(builder *strings.Builder, caddyOnHost bool) {
