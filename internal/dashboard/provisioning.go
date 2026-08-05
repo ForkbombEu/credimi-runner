@@ -52,14 +52,15 @@ type AndroidGoldenOption struct {
 }
 
 type AndroidEmulatorAssetsStatus struct {
-	BaseName      string                `json:"base_name"`
-	AVDHome       string                `json:"avd_home"`
-	GoldenRoot    string                `json:"golden_root"`
-	GoldenLeaf    string                `json:"golden_leaf"`
-	AVDPresent    bool                  `json:"avd_present"`
-	GoldenPresent bool                  `json:"golden_present"`
-	AVDOptions    []AndroidAVDOption    `json:"avd_options,omitempty"`
-	GoldenOptions []AndroidGoldenOption `json:"golden_options,omitempty"`
+	BaseName       string                `json:"base_name"`
+	AndroidKeysDir string                `json:"android_keys_dir"`
+	AVDHome        string                `json:"avd_home"`
+	GoldenRoot     string                `json:"golden_root"`
+	GoldenLeaf     string                `json:"golden_leaf"`
+	AVDPresent     bool                  `json:"avd_present"`
+	GoldenPresent  bool                  `json:"golden_present"`
+	AVDOptions     []AndroidAVDOption    `json:"avd_options,omitempty"`
+	GoldenOptions  []AndroidGoldenOption `json:"golden_options,omitempty"`
 }
 
 type DownloadProgress struct {

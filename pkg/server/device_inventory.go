@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -57,5 +58,11 @@ func deviceArtifactRoot(root, deviceID, runID string) (string, error) {
 			return "", fmt.Errorf("unsafe run identifier")
 		}
 	}
-	return filepath.Join(append([]string{root}, append(parts, runParts...)...)...), nil
+	// Mobile activities keep each device workspace under a digest rather than
+	// the slash-delimited canonical identifier. Keep server-side artifact
+	// validation on that same layout; otherwise valid recordings and Maestro
+	// screenshots are rejected after the multi-device migration.
+	digest := sha256.Sum256([]byte(deviceID))
+	workspace := fmt.Sprintf("device-%x", digest[:])
+	return filepath.Join(root, workspace, filepath.Join(runParts...)), nil
 }

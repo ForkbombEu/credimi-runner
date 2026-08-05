@@ -1098,6 +1098,9 @@
       const res = await fetch(`/devices/android-emulator/assets/status?${query.toString()}`);
       if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
       const data = await res.json();
+		if (!fieldValue(root, 'ANDROID_KEYS_DIR') && data.android_keys_dir) setFieldValue(root, 'ANDROID_KEYS_DIR', data.android_keys_dir);
+		if (!fieldValue(root, 'HOST_AVD_HOME_PATH') && data.avd_home) setFieldValue(root, 'HOST_AVD_HOME_PATH', data.avd_home);
+		if (!fieldValue(root, 'HOST_AVD_GOLDEN_PATH') && data.golden_root) setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', data.golden_root);
       const avdReady = data.avd_present === true;
       const goldenReady = data.golden_present === true;
       const avdOptions = data.avd_options || [];
@@ -1244,6 +1247,13 @@
     root.querySelectorAll('[data-dev-pick]').forEach(p => {
       p.classList.toggle('on', p.dataset.devPick === type);
     });
+	// Device cards reuse field names across type-specific branches. Disabled
+	// controls are not submitted, so an inactive phone USB radio cannot
+	// override the selected emulator's hidden `emulator` mode.
+	root.querySelectorAll('[data-dev-type] input, [data-dev-type] select, [data-dev-type] textarea').forEach(control => { control.disabled = false; });
+	root.querySelectorAll('[data-dev-type], [data-dev-mode]').forEach(panel => {
+		if (panel.style.display === 'none') panel.querySelectorAll('input, select, textarea').forEach(control => { control.disabled = true; });
+	});
 	// A hidden USB selector must not block Wi-Fi/no-device submissions, while
 	// USB itself must never continue without an explicit ADB target.
 	const serialSelect = root.querySelector('[data-android-phone-device-select]');

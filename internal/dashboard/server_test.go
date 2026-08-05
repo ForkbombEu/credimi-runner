@@ -583,7 +583,7 @@ func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	emulator := dashboardruntime.DeviceRuntimeConfig{Type: "android_emulator", Mode: "emulator"}
 	applyDeviceDefaults(&emulator)
-	if emulator.Values["RUNNER_IMAGE"] == "" || emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" {
+	if emulator.Values["RUNNER_IMAGE"] == "" || emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
 		t.Fatalf("emulator defaults = %#v", emulator.Values)
 	}
 	redroid := dashboardruntime.DeviceRuntimeConfig{Type: "redroid", Mode: "no_device", Values: dashboardruntime.Values{"RUNNER_IMAGE": "custom:local"}}

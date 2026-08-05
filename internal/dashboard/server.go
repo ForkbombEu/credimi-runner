@@ -763,9 +763,14 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	}
 	switch device.Type {
 	case "android_emulator":
+		homeDir, _ := os.UserHomeDir()
+		androidKeysDir := filepath.Join(homeDir, ".android")
 		set("RUNNER_IMAGE", "ghcr.io/forkbombeu/credimi-runner-emulator:latest")
 		set("RUNNER_IMAGE_PULL_POLICY", "always")
 		set("BASE_NAME", "credimi")
+		set("ANDROID_KEYS_DIR", androidKeysDir)
+		set("HOST_AVD_HOME_PATH", filepath.Join(androidKeysDir, "avd"))
+		set("HOST_AVD_GOLDEN_PATH", filepath.Join(homeDir, "avd-golden"))
 		set("GOLDEN_PATH", "/avd-golden/credimi-golden")
 	case "android_phone", "redroid":
 		set("RUNNER_IMAGE", "ghcr.io/forkbombeu/credimi-runner-phone:latest")
@@ -2048,25 +2053,27 @@ func (s *Server) androidEmulatorAssetsStatus(w http.ResponseWriter, r *http.Requ
 		baseName = dashboardruntime.DefaultBaseName
 	}
 	// A phone-only inventory has no emulator-specific indexed block yet. Use
-	// the runner's local defaults so adding the first emulator discovers assets
-	// already present on disk instead of reporting empty paths as missing.
-	configDir := filepath.Dir(s.cfg.Path())
+	// the established host defaults so adding the first emulator discovers the
+	// assets the one-device setup already placed in the user's home directory.
+	homeDir, _ := os.UserHomeDir()
+	androidKeysDir := filepath.Join(homeDir, ".android")
 	if avdHome == "" {
-		avdHome = filepath.Join(configDir, dashboardruntime.DefaultHostAVDHome)
+		avdHome = filepath.Join(androidKeysDir, "avd")
 	}
 	if goldenRoot == "" {
-		goldenRoot = filepath.Join(configDir, dashboardruntime.DefaultHostAVDGolden)
+		goldenRoot = filepath.Join(homeDir, "avd-golden")
 	}
 	goldenLeaf := goldenLeafFromPath(goldenPath, baseName)
 	status := AndroidEmulatorAssetsStatus{
-		BaseName:      baseName,
-		AVDHome:       avdHome,
-		GoldenRoot:    goldenRoot,
-		GoldenLeaf:    goldenLeaf,
-		AVDPresent:    avdAssetsExistForName(avdHome, baseName),
-		GoldenPresent: goldenAssetsPresentForLeaf(goldenRoot, goldenLeaf),
-		AVDOptions:    listAVDOptions(avdHome),
-		GoldenOptions: listGoldenOptions(goldenRoot),
+		BaseName:       baseName,
+		AndroidKeysDir: androidKeysDir,
+		AVDHome:        avdHome,
+		GoldenRoot:     goldenRoot,
+		GoldenLeaf:     goldenLeaf,
+		AVDPresent:     avdAssetsExistForName(avdHome, baseName),
+		GoldenPresent:  goldenAssetsPresentForLeaf(goldenRoot, goldenLeaf),
+		AVDOptions:     listAVDOptions(avdHome),
+		GoldenOptions:  listGoldenOptions(goldenRoot),
 	}
 	writeJSON(w, status)
 }
@@ -2105,12 +2112,13 @@ func (s *Server) androidEmulatorAssetsDownload(w http.ResponseWriter, r *http.Re
 	}
 	avdHome := strings.TrimSpace(req.AVDHome)
 	goldenRoot := strings.TrimSpace(req.GoldenRoot)
-	configDir := filepath.Dir(s.cfg.Path())
+	homeDir, _ := os.UserHomeDir()
+	androidKeysDir := filepath.Join(homeDir, ".android")
 	if avdHome == "" {
-		avdHome = filepath.Join(configDir, dashboardruntime.DefaultHostAVDHome)
+		avdHome = filepath.Join(androidKeysDir, "avd")
 	}
 	if goldenRoot == "" {
-		goldenRoot = filepath.Join(configDir, dashboardruntime.DefaultHostAVDGolden)
+		goldenRoot = filepath.Join(homeDir, "avd-golden")
 	}
 	goldenLeaf := goldenLeafFromPath(req.GoldenPath, baseName)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
