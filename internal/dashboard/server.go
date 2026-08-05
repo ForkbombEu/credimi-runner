@@ -977,6 +977,11 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	incoming := formValuesMap(r.PostForm)
+	// Setup resolves the runner and every device through Credimi before it can
+	// persist the inventory. Do not let an unavailable Credimi endpoint leave
+	// the wizard's request open forever while its startup status stays idle.
+	setupCtx, cancelSetup := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancelSetup()
 	if errs := validateSetupInput(incoming); len(errs) > 0 {
 		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Some fields need attention."})
 		html, _ := s.render.FragmentPage("setup", d)
@@ -985,11 +990,11 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(html))
 		return
 	}
-	if err := s.resolveSetupIdentity(r.Context(), incoming); err != nil {
+	if err := s.resolveSetupIdentity(setupCtx, incoming); err != nil {
 		s.renderSetupError(w, incoming, "identity resolution failed: "+err.Error())
 		return
 	}
-	devices, err := s.setupDevices(r, incoming)
+	devices, err := s.setupDevices(r.WithContext(setupCtx), incoming)
 	if err != nil {
 		s.renderSetupError(w, incoming, "device setup failed: "+err.Error())
 		return
