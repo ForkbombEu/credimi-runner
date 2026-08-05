@@ -247,6 +247,15 @@ func writeCaddyService(builder *strings.Builder, caddyOnHost bool) {
       io.credimi.runner.managed: "true"
       io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
       io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
+    healthcheck:
+      # Caddy's process may be running before docker-proxy has built the
+      # reverse-proxy route from the runner labels. The quick tunnel must not
+      # publish a URL until that route exists.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2019/config/ | grep -q reverse_proxy"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
 `)
 	if caddyOnHost {
 		builder.WriteString("    network_mode: host\n")
@@ -289,7 +298,8 @@ func writeNamedTunnelService(builder *strings.Builder) {
       io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
       io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
     depends_on:
-      - caddy
+      caddy:
+        condition: service_healthy
     networks:
       - ingress
 `)
