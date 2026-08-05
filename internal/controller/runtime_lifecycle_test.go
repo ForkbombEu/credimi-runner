@@ -325,6 +325,30 @@ func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 	}
 }
 
+func TestWaitForRunnerReadyDoesNotBlockOnNewEmulator(t *testing.T) {
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+		case "/readyz":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/emulator":{"state":"missing","ready":false}}}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer runner.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForRunnerReady(context.Background(), runner.Client(), dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/emulator", "CREDIMI_DEVICE_1_TYPE": "android_emulator", "CREDIMI_DEVICE_1_MODE": "emulator", "RUNNER_HOST": host, "RUNNER_PORT": port,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeLifecycleRegisterRegistersConfiguredDevices(t *testing.T) {
 	manager := &lifecycleManager{}
 	var runner dashboardruntime.RegisterRunnerRequest

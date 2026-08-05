@@ -53,17 +53,14 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 	if err := json.NewDecoder(response.Body).Decode(&ready); err != nil {
 		return RunnerReadiness{}, fmt.Errorf("%w: response is not runner readiness JSON", ErrListenerConflict)
 	}
-	if response.StatusCode != http.StatusOK {
-		if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
-			return ready, ErrRunnerIdentityMismatch
-		}
-		return ready, ErrRunnerNotReady
-	}
 	if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
 		return ready, ErrRunnerIdentityMismatch
 	}
 	if want := strings.TrimSpace(values["CREDIMI_RUNNER_ID"]); want != "" && ready.RunnerID != want {
 		return ready, ErrRunnerIdentityMismatch
+	}
+	if response.StatusCode != http.StatusOK && deviceRequired {
+		return ready, ErrRunnerNotReady
 	}
 	if deviceRequired {
 		if inventory, inventoryErr := dashboardruntime.ParseRuntimeConfig(values); inventoryErr == nil {

@@ -203,12 +203,25 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
+	// Registration establishes the runner and its device inventory in Credimi.
+	// A newly configured emulator has no ADB serial until it is provisioned, so
+	// waiting for every device here creates a deadlock: the runner cannot
+	// register its device, and its device heartbeat is rejected as unknown.
+	// Verify the listener and runner identity only; individual target readiness
+	// remains exposed through /readyz and the dashboard inventory.
+	identityValues := dashboardruntime.Values{}
+	for key, value := range values {
+		if key == "CREDIMI_DEVICE_COUNT" || strings.HasPrefix(key, "CREDIMI_DEVICE_") {
+			continue
+		}
+		identityValues[key] = value
+	}
 	for {
 		connection, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = connection.Close()
 			if healthErr := runnerHealth(deadline, client, host, port); healthErr == nil {
-				if _, readyErr := ValidateReadiness(deadline, client, "http://"+address, values); readyErr == nil {
+				if _, readyErr := ValidateReadiness(deadline, client, "http://"+address, identityValues); readyErr == nil {
 					return nil
 				} else {
 					lastErr = readyErr

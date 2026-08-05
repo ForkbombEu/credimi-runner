@@ -66,6 +66,17 @@ func TestValidateReadinessIgnoresDeferredManagedDevice(t *testing.T) {
 	}
 }
 
+func TestValidateReadinessAcceptsRunnerIdentityWhenDevicesAreDeferred(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1"}`))
+	}))
+	defer server.Close()
+	if _, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1"}); err != nil {
+		t.Fatalf("identity readiness error = %v", err)
+	}
+}
+
 func TestValidateReadinessRejectsMismatchedOrUnavailableRunner(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
