@@ -85,8 +85,16 @@ func deviceReadinessRequired(deviceType, mode, enabled string) bool {
 	if value, err := strconv.ParseBool(strings.TrimSpace(enabled)); err == nil && !value {
 		return false
 	}
+	// Emulators and simulators are managed execution targets: their ADB serial is
+	// allocated when the target is started, rather than being a host-level
+	// prerequisite like a USB or Wi-Fi phone. Requiring one here made every
+	// configured emulator report "missing" and consequently offline forever.
+	switch strings.TrimSpace(deviceType) {
+	case "android_emulator", "ios_simulator", "redroid":
+		return false
+	}
 	mode = strings.TrimSpace(mode)
-	return mode != "" && mode != "no_device" && strings.TrimSpace(deviceType) != "redroid"
+	return mode != "" && mode != "no_device"
 }
 
 func (s *ReadinessService) environment(key string) string {

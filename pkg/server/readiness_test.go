@@ -84,6 +84,31 @@ func TestReadinessAcceptsDeferredManagedDevice(t *testing.T) {
 	}
 }
 
+func TestReadinessAcceptsConfiguredEmulatorWithoutADBSerial(t *testing.T) {
+	deviceStateCalled := false
+	service := &ReadinessService{Environment: func(key string) string {
+		return map[string]string{
+			"CREDIMI_RUNNER_ID":      "runner-1",
+			"CREDIMI_RUNNER_BOOT_ID": "boot-1",
+			"CREDIMI_DEVICE_COUNT":   "1",
+			"CREDIMI_DEVICE_1_ID":    "runner-1/emulator",
+			"CREDIMI_DEVICE_1_TYPE":  "android_emulator",
+			"CREDIMI_DEVICE_1_MODE":  "emulator",
+		}[key]
+	}, DeviceState: func(string) string {
+		deviceStateCalled = true
+		return "missing"
+	}}
+
+	ready := service.Check()
+	if deviceStateCalled {
+		t.Fatal("managed emulator readiness must not query ADB before it is started")
+	}
+	if device := ready.Devices["runner-1/emulator"]; !device.Ready || device.State != "" {
+		t.Fatalf("emulator readiness = %#v", device)
+	}
+}
+
 func TestReadinessUsesIndexedSerialAndReportsMissingIdentity(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
 		return map[string]string{"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-2", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-2"}[key]
