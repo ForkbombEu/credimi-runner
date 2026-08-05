@@ -716,6 +716,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		device.ID = strings.TrimPrefix(preview.DeviceID, "/")
 		applyDeviceDefaults(&device)
+		inheritLocalRuntimeImage(&device, config.Devices)
 		config.Devices = append(config.Devices, device)
 	}
 	if err := store.SaveRuntimeConfig(config); err != nil {
@@ -806,6 +807,29 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	if device.Type == "redroid" {
 		set("REDROID_DATA_DIR", "/home/credimi/redroid-data")
 		set("REDROID_DATA_TAR", "/home/credimi/redroid-data.tar")
+	}
+}
+
+// inheritLocalRuntimeImage keeps image selection a runner concern even while
+// legacy indexed configuration stores it on device blocks. Once a runner was
+// configured to use a local image, newly added targets must never silently
+// switch to a published image. The emulator image is the paired superset of a
+// local phone image; phones added to an emulator runner keep that same image.
+func inheritLocalRuntimeImage(device *dashboardruntime.DeviceRuntimeConfig, configured []dashboardruntime.DeviceRuntimeConfig) {
+	for _, existing := range configured {
+		if !existing.Enabled || strings.TrimSpace(existing.Values["RUNNER_IMAGE_PULL_POLICY"]) != "never" {
+			continue
+		}
+		image := strings.TrimSpace(existing.Values["RUNNER_IMAGE"])
+		if image == "" {
+			continue
+		}
+		if device.Type == "android_emulator" && strings.Contains(image, "credimi-runner-phone") {
+			image = strings.Replace(image, "credimi-runner-phone", "credimi-runner-emulator", 1)
+		}
+		device.Values["RUNNER_IMAGE"] = image
+		device.Values["RUNNER_IMAGE_PULL_POLICY"] = "never"
+		return
 	}
 }
 
@@ -1118,6 +1142,7 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 			}
 		}
 		applyDeviceDefaults(&device)
+		inheritLocalRuntimeImage(&device, devices)
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
 			return nil, err
 		}

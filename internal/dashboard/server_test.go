@@ -591,6 +591,11 @@ func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	if redroid.Values["RUNNER_IMAGE"] != "custom:local" || redroid.Values["WIFI_PORT"] != "5555" || redroid.Values["REDROID_DATA_DIR"] == "" {
 		t.Fatalf("redroid defaults = %#v", redroid.Values)
 	}
+	localPhone := dashboardruntime.DeviceRuntimeConfig{Type: "android_phone", Enabled: true, Values: dashboardruntime.Values{"RUNNER_IMAGE": "credimi-runner-phone:latest", "RUNNER_IMAGE_PULL_POLICY": "never"}}
+	inheritLocalRuntimeImage(&emulator, []dashboardruntime.DeviceRuntimeConfig{localPhone})
+	if emulator.Values["RUNNER_IMAGE"] != "credimi-runner-emulator:latest" || emulator.Values["RUNNER_IMAGE_PULL_POLICY"] != "never" {
+		t.Fatalf("emulator must inherit paired local image: %#v", emulator.Values)
+	}
 	s := newTestServer(t)
 	if err := s.registerConfiguredDevice(context.Background(), dashboardruntime.Values{}, dashboardruntime.DeviceRuntimeConfig{Name: "Pixel", Type: "android_phone", Mode: "usb"}); err == nil || !strings.Contains(err.Error(), "Credimi URL") {
 		t.Fatalf("missing credentials error = %v", err)
