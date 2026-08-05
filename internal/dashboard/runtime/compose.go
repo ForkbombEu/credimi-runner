@@ -43,11 +43,16 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	}
 
 	var builder strings.Builder
+	// A Linux USB runner uses the host network so it can talk to the host ADB
+	// daemon. Caddy must use that namespace too: reaching the host through
+	// host.docker.internal resolves to Docker's bridge gateway, which is not a
+	// reliable route back to a host-networked runner on every Docker setup.
+	caddyOnHost := goos == "linux" && (spec.NetworkMode == "host" || BuildRuntimePlan("", normalized).Backend == DefaultHostBackend)
 	builder.WriteString("services:\n")
-	writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec)
-	writeRunnerHostService(&builder)
-	writeCaddyService(&builder)
-	writeTunnelService(&builder)
+	writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost)
+	writeRunnerHostService(&builder, caddyOnHost)
+	writeCaddyService(&builder, caddyOnHost)
+	writeTunnelService(&builder, caddyOnHost)
 	writeNamedTunnelService(&builder)
 	builder.WriteString(`
 networks:
@@ -62,7 +67,7 @@ volumes:
 	return builder.String(), nil
 }
 
-func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec sharedRunnerRuntime) {
+func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec sharedRunnerRuntime, caddyOnHost bool) {
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", spec.Image, spec.PullPolicy)
 	builder.WriteString("    command:\n      - --inventory\n")
 	builder.WriteString("    env_file:\n      - .env\n")
@@ -94,7 +99,9 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	}
 	builder.WriteString("    labels:\n      caddy: \"${RUNNER_CADDY_SITE:-:80}\"\n")
 	writeControllerLabels(builder)
-	if spec.NetworkMode == "host" {
+	if caddyOnHost && spec.NetworkMode == "host" {
+		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"127.0.0.1:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	} else if spec.NetworkMode == "host" {
 		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"host.docker.internal:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	} else {
 		fmt.Fprintf(builder, "      caddy.reverse_proxy: \"{{upstreams ${RUNNER_PORT:-%s}}}\"\n", DefaultRunnerPort)
@@ -199,7 +206,11 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 	return spec, nil
 }
 
-func writeRunnerHostService(builder *strings.Builder) {
+func writeRunnerHostService(builder *strings.Builder, caddyOnHost bool) {
+	upstreamHost := "host.docker.internal"
+	if caddyOnHost {
+		upstreamHost = "127.0.0.1"
+	}
 	builder.WriteString(`
   runner_host:
     image: alpine:3.21
@@ -212,7 +223,7 @@ func writeRunnerHostService(builder *strings.Builder) {
       - "host.docker.internal:host-gateway"
     labels:
       caddy: "${RUNNER_CADDY_SITE:-:80}"
-      caddy.reverse_proxy: "host.docker.internal:${RUNNER_PORT:-` + DefaultRunnerPort + `}"
+      caddy.reverse_proxy: "` + upstreamHost + `:${RUNNER_PORT:-` + DefaultRunnerPort + `}"
       io.credimi.runner.managed: "true"
       io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
       io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
@@ -221,7 +232,7 @@ func writeRunnerHostService(builder *strings.Builder) {
 `)
 }
 
-func writeCaddyService(builder *strings.Builder) {
+func writeCaddyService(builder *strings.Builder, caddyOnHost bool) {
 	builder.WriteString(`
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine
@@ -237,16 +248,24 @@ func writeCaddyService(builder *strings.Builder) {
       io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
       io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
 `)
+	if caddyOnHost {
+		builder.WriteString("    network_mode: host\n")
+		return
+	}
 	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n")
 }
 
-func writeTunnelService(builder *strings.Builder) {
+func writeTunnelService(builder *strings.Builder, caddyOnHost bool) {
 	builder.WriteString(`
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: "no"
     command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-`)
-	builder.WriteString("http://caddy:80")
+	if caddyOnHost {
+		builder.WriteString("http://host.docker.internal:80")
+	} else {
+		builder.WriteString("http://caddy:80")
+	}
 	builder.WriteString("}\n")
 	builder.WriteString("    labels:\n      io.credimi.runner.managed: \"true\"\n      io.credimi.runner.project: \"${CREDIMI_COMPOSE_PROJECT:-credimi-runner}\"\n      io.credimi.runner.config-fingerprint: \"${CREDIMI_CONFIG_FINGERPRINT:-unknown}\"\n")
 	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    depends_on:\n      - caddy\n    networks:\n      - ingress\n")
