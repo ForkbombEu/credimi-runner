@@ -240,6 +240,23 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 		}
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
 		classSet[ApplyRestartRequired] = struct{}{}
+		// Device inventory controls the shared container image, networking and
+		// mounts. Rebuild the generated compose definition before restarting so
+		// an added emulator or USB target is actually visible to the process.
+		classSet[ApplyComposeRecreate] = struct{}{}
+	}
+	for key := range newValues {
+		if !strings.HasPrefix(key, "CREDIMI_DEVICE_") || strings.HasSuffix(key, "_COUNT") {
+			continue
+		}
+		if _, existed := oldValues[key]; existed {
+			continue
+		}
+		// A newly added device has no old indexed keys to visit in the loop
+		// above. It has the same runtime impact as an updated device.
+		diff.ChangedKeys = append(diff.ChangedKeys, key)
+		classSet[ApplyRestartRequired] = struct{}{}
+		classSet[ApplyComposeRecreate] = struct{}{}
 	}
 
 	if len(diff.ChangedKeys) == 0 {

@@ -49,8 +49,11 @@ func TestDiffValuesCoverageBranches(t *testing.T) {
 	if got := DiffValues(Values{"RUNNER_PORT": "8050"}, Values{"RUNNER_PORT": "8051"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("recreate diff = %#v", got)
 	}
-	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/b"}); !containsApplyClass(got.Classes, ApplyRestartRequired) {
+	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/b"}); !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyComposeRecreate) {
 		t.Fatalf("device inventory diff = %#v", got)
+	}
+	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a", "CREDIMI_DEVICE_2_ID": "acme/runner/b"}); !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyComposeRecreate) {
+		t.Fatalf("added device inventory diff = %#v", got)
 	}
 }
 

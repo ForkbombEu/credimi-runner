@@ -1808,6 +1808,63 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	}
 }
 
+func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing.T) {
+	transport := http.DefaultTransport
+	var registrations []string
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		registrations = append(registrations, req.URL.Path)
+		switch req.URL.Path {
+		case "/api/mobile-device/preview-id":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/second"}`))}, nil
+		case "/api/mobile-runner", "/api/mobile-device":
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		default:
+			return nil, errors.New("unexpected Credimi path: " + req.URL.Path)
+		}
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+
+	s := newTestServer(t)
+	fm := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true}}
+	s.manager = fm
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values{
+		"CREDIMI_URL":                 "https://credimi.example",
+		"CREDIMI_USER_API_KEY":        "user-key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_SERVICE_MODE":        "manual",
+		"RUNNER_PUBLIC_URL":           "https://runner.example",
+		"CREDIMI_RUNNER_BACKEND":      "container",
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: []dashboardruntime.DeviceRuntimeConfig{{
+		ID: "acme/runner/first", Name: "First", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+
+	form := url.Values{"name": {"Second"}, "type": {"android_phone"}, "mode": {"usb"}, "serial": {"usb-2"}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("save device response = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fm.stopCalls != 1 || fm.startCalls != 1 {
+		t.Fatalf("device add lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
+	}
+	if got := strings.Join(registrations, ","); strings.Count(got, "/api/mobile-device") != 3 || !strings.Contains(got, "/api/mobile-runner") {
+		t.Fatalf("Credimi registrations = %s", got)
+	}
+}
+
 func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	s := newTestServer(t)
 	dir := filepath.Dir(s.cfg.Path())

@@ -635,6 +635,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	values := s.cfg.Snapshot()
+	oldValues := dashboardruntime.Values(cloneStringMap(values))
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -722,11 +723,34 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
+	newValues := dashboardruntime.Values(s.cfg.Snapshot())
+	diff := dashboardruntime.DiffValues(oldValues, newValues)
+	runtimeRunning := false
+	if s.manager != nil {
+		status := s.manager.Status(r.Context())
+		runtimeRunning = status.RunnerRunning || status.ComposeRunning
+		s.manager.Configure(newValues)
+	}
+	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) {
+		if err := dashboardruntime.WriteComposeFile(s.composeDir, newValues); err != nil {
+			http.Error(w, "device configuration was saved, but compose generation failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if runtimeRunning {
+		// The runner loads its inventory only at process startup. Restarting here
+		// both applies the indexed block and sends a resume/heartbeat containing
+		// every device, which is what makes a newly added child schedulable.
+		if _, err := s.applySavedConfig(diff, map[string]string(newValues)); err != nil {
+			http.Error(w, "device configuration was saved, but applying it to the running runner failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	}
 	// A device is a usable Credimi execution target only once its child record
 	// exists. Registration is intentionally part of creation/update rather than
 	// a second, easy-to-forget dashboard action.
-	if created {
-		if err := s.registerConfiguredDevice(r.Context(), config.Host, device); err != nil {
+	if created && !runtimeRunning {
+		if err := s.registerConfiguredDevice(r.Context(), newValues, device); err != nil {
 			http.Error(w, "device configuration was saved, but Credimi registration failed: "+err.Error(), http.StatusBadGateway)
 			return
 		}
