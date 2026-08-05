@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
@@ -144,6 +145,13 @@ var serverCmd = &cobra.Command{
 			cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
 			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
 		}
+		// `serve` may be started directly by Compose, Coolify, or the CLI rather
+		// than through the dashboard lifecycle controller. Ensure every indexed
+		// child exists before the first heartbeat reports its state to Credimi.
+		if err := registerConfiguredDevices(serveCtx); err != nil {
+			cluelog.Printf(serveCtx, "Warning: failed to register configured devices: %v", err)
+			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to register configured devices", err)
+		}
 		// Do not leave a newly started runner and its devices offline until the
 		// first periodic tick (normally 30 seconds). Resume records host state;
 		// this immediate heartbeat records the per-device readiness inventory.
@@ -210,6 +218,35 @@ var serverCmd = &cobra.Command{
 		)
 		return nil
 	},
+}
+
+func registerConfiguredDevices(ctx context.Context) error {
+	config, err := dashboardruntime.RuntimeConfigFromEnvironment()
+	if err != nil {
+		return err
+	}
+	apiKey := config.Host["CREDIMI_USER_API_KEY"]
+	if apiKey == "" {
+		apiKey = config.Host["CREDIMI_INTERNAL_ADMIN_KEY"]
+	}
+	if apiKey == "" || config.Host["CREDIMI_URL"] == "" {
+		return fmt.Errorf("Credimi URL and API key are required to register devices")
+	}
+	client := &dashboardruntime.CredimiClient{BaseURL: config.Host["CREDIMI_URL"], APIKey: apiKey, HTTPClient: http.DefaultClient}
+	for _, device := range config.Devices {
+		if err := client.RegisterMobileDevice(ctx, dashboardruntime.RegisterDeviceRequest{
+			Organization: config.Host["CREDIMI_RUNNER_ORGANIZATION"],
+			RunnerID:     config.Host["CREDIMI_RUNNER_ID"],
+			DeviceID:     device.ID,
+			Name:         device.Name,
+			Description:  device.Description,
+			Type:         device.Type,
+			Serial:       device.Serial,
+		}); err != nil {
+			return fmt.Errorf("register device %q: %w", device.ID, err)
+		}
+	}
+	return nil
 }
 
 func setRunnerBootID() error {
