@@ -262,13 +262,18 @@ func writeTunnelService(builder *strings.Builder, caddyOnHost bool) {
     restart: "no"
     command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-`)
 	if caddyOnHost {
-		builder.WriteString("http://host.docker.internal:80")
+		builder.WriteString("http://127.0.0.1:80")
 	} else {
 		builder.WriteString("http://caddy:80")
 	}
 	builder.WriteString("}\n")
 	builder.WriteString("    labels:\n      io.credimi.runner.managed: \"true\"\n      io.credimi.runner.project: \"${CREDIMI_COMPOSE_PROJECT:-credimi-runner}\"\n      io.credimi.runner.config-fingerprint: \"${CREDIMI_CONFIG_FINGERPRINT:-unknown}\"\n")
-	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    depends_on:\n      - caddy\n    networks:\n      - ingress\n")
+	builder.WriteString("    depends_on:\n      - caddy\n")
+	if caddyOnHost {
+		builder.WriteString("    network_mode: host\n")
+		return
+	}
+	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n")
 }
 
 func writeNamedTunnelService(builder *strings.Builder) {

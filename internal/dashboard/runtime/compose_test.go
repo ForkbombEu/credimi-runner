@@ -40,7 +40,7 @@ func TestComposeParityCases(t *testing.T) {
 		{
 			name:     "linux USB inventory uses one host-network runner",
 			vals:     indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone"}),
-			contains: []string{"pull_policy: always", "--inventory", "network_mode: host", `caddy.reverse_proxy: "127.0.0.1:${RUNNER_PORT:-8050}"`, "command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://host.docker.internal:80}"},
+			contains: []string{"pull_policy: always", "--inventory", "network_mode: host", `caddy.reverse_proxy: "127.0.0.1:${RUNNER_PORT:-8050}"`, "command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-http://127.0.0.1:80}"},
 		},
 		{
 			name:     "custom shared image",
