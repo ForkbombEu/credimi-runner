@@ -101,14 +101,30 @@ func mixedComposeValues() Values {
 	return values
 }
 
-func TestComposeRejectsConflictingDeviceImageOverrides(t *testing.T) {
+func TestComposeMixedInventoryUsesEmulatorImageOverPhoneOverride(t *testing.T) {
 	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone", "RUNNER_IMAGE": "example.test/phone:latest"})
 	values["CREDIMI_DEVICE_COUNT"] = "2"
 	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
 	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
 	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
 	values["CREDIMI_DEVICE_2_RUNNER_IMAGE"] = "example.test/emulator:latest"
-	if _, err := ComposeYAML(values, "linux"); err == nil || !strings.Contains(err.Error(), "one runtime image") {
+	content, err := ComposeYAML(values, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "image: example.test/emulator:latest") {
+		t.Fatalf("mixed inventory must select emulator image:\n%s", content)
+	}
+}
+
+func TestComposeRejectsConflictingEmulatorImageOverrides(t *testing.T) {
+	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_emulator", "RUNNER_IMAGE": "example.test/emulator-one:latest"})
+	values["CREDIMI_DEVICE_COUNT"] = "2"
+	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator-two"
+	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
+	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	values["CREDIMI_DEVICE_2_RUNNER_IMAGE"] = "example.test/emulator-two:latest"
+	if _, err := ComposeYAML(values, "linux"); err == nil || !strings.Contains(err.Error(), "one emulator runtime image") {
 		t.Fatalf("ComposeYAML error = %v", err)
 	}
 }

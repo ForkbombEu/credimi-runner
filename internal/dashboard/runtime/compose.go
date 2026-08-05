@@ -139,6 +139,7 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 	spec := sharedRunnerRuntime{Image: DefaultPhoneImage, PullPolicy: DefaultRunnerImagePullPolicy, NetworkMode: "bridge"}
 	customImages := map[string]string{}
 	customPolicies := map[string]string{}
+	emulatorImages := map[string]string{}
 	var avdHome, avdGolden, adbKeys string
 	for _, device := range inventory.Devices {
 		if !device.Enabled {
@@ -188,17 +189,32 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 			}
 			customImages[image] = device.ID
 			customPolicies[image] = policy
+			if deviceType == "android_emulator" {
+				emulatorImages[image] = device.ID
+			}
 		}
 	}
-	if len(customImages) > 1 {
-		return sharedRunnerRuntime{}, fmt.Errorf("a shared runner container supports one runtime image; configured device image overrides differ")
-	}
 	if spec.HasEmulator {
+		// The emulator image is a superset of the physical-device runtime. A
+		// mixed inventory therefore runs in one emulator-capable container;
+		// retaining a phone-only override would make the emulator unavailable.
+		// Only emulator overrides select that shared image.
+		if len(emulatorImages) > 1 {
+			return sharedRunnerRuntime{}, fmt.Errorf("a shared runner container supports one emulator runtime image; configured emulator image overrides differ")
+		}
 		spec.Image = DefaultEmulatorImage
-	}
-	for image := range customImages {
-		spec.Image = image
-		spec.PullPolicy = customPolicies[image]
+		for image := range emulatorImages {
+			spec.Image = image
+			spec.PullPolicy = customPolicies[image]
+		}
+	} else {
+		if len(customImages) > 1 {
+			return sharedRunnerRuntime{}, fmt.Errorf("a shared runner container supports one runtime image; configured device image overrides differ")
+		}
+		for image := range customImages {
+			spec.Image = image
+			spec.PullPolicy = customPolicies[image]
+		}
 	}
 	if goos == "linux" && spec.HasUSB {
 		spec.NetworkMode = "host"
