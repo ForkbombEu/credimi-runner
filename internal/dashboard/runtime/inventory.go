@@ -156,19 +156,19 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 		}
 		if serial := strings.TrimSpace(block["SERIAL"]); serial != "" && (block["TYPE"] == "android_phone" || block["TYPE"] == "redroid") {
 			if other, exists := seenSerials[serial]; exists {
-				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("duplicate phone or Redroid serial %q in devices %d and %d", serial, other, index)
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("serial %q is already registered for device %q; choose a different serial for device %q", serial, devices[other-1].Name, block["NAME"])
 			}
 			seenSerials[serial] = index
 		}
 		switch block["TYPE"] {
 		case "android_emulator":
 			if emulatorIndex != 0 {
-				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("only one android emulator is allowed (devices %d and %d)", emulatorIndex, index)
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("an Android emulator is already registered as device %q; only one is allowed", devices[emulatorIndex-1].Name)
 			}
 			emulatorIndex = index
 		case "ios_simulator":
 			if simulatorIndex != 0 {
-				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("only one iOS simulator is allowed (devices %d and %d)", simulatorIndex, index)
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("an iOS simulator is already registered as device %q; only one is allowed", devices[simulatorIndex-1].Name)
 			}
 			simulatorIndex = index
 		}
@@ -213,19 +213,19 @@ func ValidateDeviceRegistration(device DeviceRuntimeConfig) error {
 // is persisted. The API applies the same rules authoritatively, while this
 // keeps setup and dashboard errors immediate and readable.
 func ValidateDeviceConstraints(devices []DeviceRuntimeConfig) error {
-	seenSerials := map[string]int{}
+	seenSerials := map[string]string{}
 	emulatorIndex, simulatorIndex := 0, 0
 	for index, device := range devices {
 		position := index + 1
 		switch strings.TrimSpace(device.Type) {
 		case "android_emulator":
 			if emulatorIndex != 0 {
-				return fmt.Errorf("only one android emulator is allowed (devices %d and %d)", emulatorIndex, position)
+				return fmt.Errorf("an Android emulator is already registered as device %q; only one is allowed", devices[emulatorIndex-1].Name)
 			}
 			emulatorIndex = position
 		case "ios_simulator":
 			if simulatorIndex != 0 {
-				return fmt.Errorf("only one iOS simulator is allowed (devices %d and %d)", simulatorIndex, position)
+				return fmt.Errorf("an iOS simulator is already registered as device %q; only one is allowed", devices[simulatorIndex-1].Name)
 			}
 			simulatorIndex = position
 		case "android_phone", "redroid":
@@ -234,9 +234,9 @@ func ValidateDeviceConstraints(devices []DeviceRuntimeConfig) error {
 				continue
 			}
 			if other, exists := seenSerials[serial]; exists {
-				return fmt.Errorf("duplicate phone or Redroid serial %q in devices %d and %d", serial, other, position)
+				return fmt.Errorf("serial %q is already registered for device %q; choose a different serial for device %q", serial, other, device.Name)
 			}
-			seenSerials[serial] = position
+			seenSerials[serial] = device.Name
 		}
 	}
 	return nil
