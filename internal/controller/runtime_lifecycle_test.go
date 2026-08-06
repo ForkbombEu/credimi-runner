@@ -365,6 +365,14 @@ func TestRuntimeLifecycleRegisterRegistersConfiguredDevices(t *testing.T) {
 				t.Fatal(err)
 			}
 			devices = append(devices, device)
+		case "/api/mobile-device/reconcile":
+			var reconcile dashboardruntime.ReconcileDevicesRequest
+			if err := json.NewDecoder(request.Body).Decode(&reconcile); err != nil {
+				t.Fatal(err)
+			}
+			if len(reconcile.DeviceIDs) != 2 {
+				t.Fatalf("reconcile request = %#v", reconcile)
+			}
 		default:
 			http.NotFound(w, request)
 			return

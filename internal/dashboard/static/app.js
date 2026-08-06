@@ -370,6 +370,37 @@
     if (e.target.closest('[data-close-modal]')) closeModals();
     if (e.target.classList && e.target.classList.contains('modal-bk') && e.target.dataset.upgradeRunning !== '1') e.target.hidden = true;
   });
+
+  // A name that already exists in Credimi is not silently suffixed. Let the
+  // operator choose whether this dashboard form updates that record or creates
+  // the canonified next ID.
+  document.addEventListener('submit', async (e) => {
+    const form = e.target.closest('[data-device-add-form]');
+    if (!form || form.dataset.deviceConflictResolved === '1') return;
+    const name = ((form.querySelector('[name="CREDIMI_DEVICE_NAME"]') || {}).value || '').trim();
+    if (!name) return;
+    e.preventDefault();
+    try {
+      const body = new URLSearchParams(new FormData(form));
+      body.set('name', name);
+      const res = await fetch('/devices/preview-id', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+      const preview = await res.json();
+      if (!res.ok) throw new Error(preview.message || 'Unable to resolve device ID');
+      const action = form.querySelector('[data-device-conflict-action]');
+      const id = form.querySelector('[data-device-id]');
+      if (preview.conflict) {
+        const update = window.confirm(`A device named ${name} already exists (${preview.base_device_id}). Press OK to update it, or Cancel to create ${preview.preview_device_id}.`);
+        if (action) action.value = update ? 'update' : 'create';
+        if (id) id.value = update ? (preview.base_device_id || '') : (preview.preview_device_id || preview.device_id || '');
+      } else if (id) {
+        id.value = preview.preview_device_id || preview.device_id || '';
+      }
+      form.dataset.deviceConflictResolved = '1';
+      form.requestSubmit();
+    } catch (err) {
+      window.alert(err && err.message ? err.message : 'Unable to resolve device ID');
+    }
+  });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });
 
   // ── Review step: sync card values from form fields ────────────────────
@@ -656,7 +687,7 @@
         if (runnerPreviewEl) runnerPreviewEl.textContent = nextRunnerID || '';
         syncOTELServiceName(nextRunnerID || '');
       };
-      const openRunnerConflictModal = (preview) => new Promise((resolve) => {
+      const openRunnerConflictModal = (preview, kind = 'runner') => new Promise((resolve) => {
         const modal = $('#runner-conflict-modal');
         if (!modal) {
           resolve('cancel');
@@ -665,9 +696,18 @@
         const summary = $('[data-runner-conflict-modal-summary]', modal);
         const existing = $('[data-runner-conflict-modal-existing]', modal);
         const suggested = $('[data-runner-conflict-modal-preview]', modal);
-        if (summary) summary.textContent = 'The requested runner name already exists. Choose whether to update it or create a new runner ID.';
-        if (existing) existing.innerHTML = `Existing runner: <span class="tag mono">${escapeHtml(preview.base_runner_id || '')}</span>`;
-        if (suggested) suggested.innerHTML = `New available runner ID: <span class="tag mono">${escapeHtml(preview.preview_runner_id || preview.base_runner_id || '')}</span>`;
+        const device = kind === 'device';
+        const baseID = device ? preview.base_device_id : preview.base_runner_id;
+        const previewID = device ? preview.preview_device_id : preview.preview_runner_id;
+        const title = $('#runner-conflict-title', modal);
+        if (title) title.textContent = device ? 'Device already exists' : 'Runner already exists';
+        if (summary) summary.textContent = device ? 'The requested device name already exists on this runner. Choose whether to update it or create a new device ID.' : 'The requested runner name already exists. Choose whether to update it or create a new runner ID.';
+        if (existing) existing.innerHTML = `Existing ${device ? 'device' : 'runner'}: <span class="tag mono">${escapeHtml(baseID || '')}</span>`;
+        if (suggested) suggested.innerHTML = `New available ${device ? 'device' : 'runner'} ID: <span class="tag mono">${escapeHtml(previewID || baseID || '')}</span>`;
+        const update = $('[data-runner-conflict-decision="update"]', modal);
+        const create = $('[data-runner-conflict-decision="create"]', modal);
+        if (update) update.textContent = device ? 'Update existing device' : 'Update existing runner';
+        if (create) create.textContent = device ? 'Create new device' : 'Create new runner';
         modal.hidden = false;
         const primary = $('[data-runner-conflict-decision]', modal);
         if (primary) primary.focus();
@@ -752,6 +792,24 @@
             const decision = await openRunnerConflictModal(preview);
             if (decision === 'cancel') return false;
             applyConflictDecision(preview, decision);
+          }
+        }
+        if (panel.dataset.step === 'devices') {
+          const instanceURL = value('CREDIMI_URL');
+          const apiKey = selectedAPIKey();
+          const organization = value('CREDIMI_RUNNER_ORGANIZATION');
+          const runnerID = value('CREDIMI_RUNNER_ID');
+          for (const card of $$('[data-device-provision]', form)) {
+            const name = (($('[name="CREDIMI_DEVICE_NAME"]', card) || {}).value || '').trim();
+            if (!instanceURL || !apiKey || !organization || !runnerID || !name) continue;
+            const preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
+            if (!preview || !preview.conflict) continue;
+            const decision = await openRunnerConflictModal(preview, 'device');
+            if (decision === 'cancel') return false;
+            const action = $('[data-device-conflict-action]', card);
+            const id = $('[data-device-id]', card);
+            if (action) action.value = decision;
+            if (id) id.value = decision === 'update' ? (preview.base_device_id || '') : (preview.preview_device_id || preview.device_id || '');
           }
         }
         return true;

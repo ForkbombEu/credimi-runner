@@ -18,7 +18,7 @@
     </div>
   </section>
 
-  <form method="post" action="/devices/config" autocomplete="off" data-config-form data-target-config-form>
+  <form method="post" action="/devices/config" autocomplete="off" data-config-form data-target-config-form data-device-add-form>
     <style>[data-target-config-form] [data-device-runtime-image]{display:none}</style>
     {{template "setup_device_provision" .}}
     <div class="savebar"><span class="msg">The canonical device ID is resolved automatically and registration happens on save.</span><div class="sp"></div><button class="btn btn-pri">{{icon "plus"}} Add device</button></div>

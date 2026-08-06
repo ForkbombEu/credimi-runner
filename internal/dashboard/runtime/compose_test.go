@@ -141,7 +141,7 @@ func TestComposeRejectsConflictingEmulatorImageOverrides(t *testing.T) {
 	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
 	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
 	values["CREDIMI_DEVICE_2_RUNNER_IMAGE"] = "example.test/emulator-two:latest"
-	if _, err := ComposeYAML(values, "linux"); err == nil || !strings.Contains(err.Error(), "one emulator runtime image") {
+	if _, err := ComposeYAML(values, "linux"); err == nil || !strings.Contains(err.Error(), "only one android emulator") {
 		t.Fatalf("ComposeYAML error = %v", err)
 	}
 }

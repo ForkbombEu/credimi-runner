@@ -191,7 +191,7 @@ func TestRuntimeConfigRejectsInvalidInventory(t *testing.T) {
 		{"beyond count", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_NAME=A\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_MODE=usb\nCREDIMI_DEVICE_2_ID=acme/lab/b\n", "beyond CREDIMI_DEVICE_COUNT"},
 		{"unknown device key", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_UNSUPPORTED=x\n", "unknown device key"},
 		{"invalid enabled", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_ENABLED=maybe\n", "must be boolean"},
-		{"duplicate serial", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=2\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_SERIAL=usb\nCREDIMI_DEVICE_2_ID=acme/lab/b\nCREDIMI_DEVICE_2_SERIAL=usb\n", "duplicate serial"},
+		{"duplicate serial", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=2\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_SERIAL=usb\nCREDIMI_DEVICE_2_ID=acme/lab/b\nCREDIMI_DEVICE_2_TYPE=redroid\nCREDIMI_DEVICE_2_SERIAL=usb\n", "duplicate phone or Redroid serial"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

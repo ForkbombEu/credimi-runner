@@ -42,9 +42,12 @@ type RegisterRunnerRequest struct {
 }
 
 type DevicePreview struct {
-	RunnerID       string `json:"runner_id"`
-	DeviceID       string `json:"device_id"`
-	CanonifiedName string `json:"canonified_name"`
+	RunnerID        string `json:"runner_id"`
+	DeviceID        string `json:"device_id"`
+	BaseDeviceID    string `json:"base_device_id"`
+	PreviewDeviceID string `json:"preview_device_id"`
+	CanonifiedName  string `json:"canonified_name"`
+	Conflict        bool   `json:"conflict"`
 }
 
 type RegisterDeviceRequest struct {
@@ -66,6 +69,12 @@ type DeleteDeviceRequest struct {
 	Organization string `json:"organization,omitempty"`
 	RunnerID     string `json:"runner_id"`
 	DeviceID     string `json:"device_id"`
+}
+
+type ReconcileDevicesRequest struct {
+	Organization string   `json:"organization,omitempty"`
+	RunnerID     string   `json:"runner_id"`
+	DeviceIDs    []string `json:"device_ids"`
 }
 
 type CredimiClient struct {
@@ -265,6 +274,30 @@ func (c *CredimiClient) DeleteMobileDevice(ctx context.Context, request DeleteDe
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return credimiResponseError("mobile device deletion failed", resp)
+	}
+	return nil
+}
+
+// ReconcileMobileDevices removes Credimi records belonging to this runner that
+// are absent from the runner's persisted device inventory.
+func (c *CredimiClient) ReconcileMobileDevices(ctx context.Context, request ReconcileDevicesRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-device", "reconcile"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile device reconciliation failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return credimiResponseError("mobile device reconciliation failed", resp)
 	}
 	return nil
 }

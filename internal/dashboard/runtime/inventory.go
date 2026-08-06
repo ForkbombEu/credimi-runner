@@ -106,6 +106,7 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 
 	devices := make([]DeviceRuntimeConfig, 0, count)
 	seenIDs, seenNames, seenSerials := map[string]int{}, map[string]int{}, map[string]int{}
+	emulatorIndex, simulatorIndex := 0, 0
 	seenAVDs, seenPorts, seenContainers, seenPaths := map[string]int{}, map[string]int{}, map[string]int{}, map[string]int{}
 	for index := 1; index <= count; index++ {
 		block := blocks[index]
@@ -127,7 +128,7 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 		}
 		block["ID"] = id
 		for key, value := range map[string]string{
-			"device ID": id, "device name": block["NAME"], "serial": block["SERIAL"], "AVD name": block["AVD_NAME"],
+			"device ID": id, "device name": block["NAME"], "AVD name": block["AVD_NAME"],
 			"port": block["PORT"], "container name": block["CONTAINER_NAME"], "work path": block["WORK_DIR"],
 		} {
 			if strings.TrimSpace(value) == "" {
@@ -139,8 +140,6 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 				seen = seenIDs
 			case "device name":
 				seen = seenNames
-			case "serial":
-				seen = seenSerials
 			case "AVD name":
 				seen = seenAVDs
 			case "port":
@@ -154,6 +153,24 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("duplicate %s %q in devices %d and %d", key, value, other, index)
 			}
 			seen[value] = index
+		}
+		if serial := strings.TrimSpace(block["SERIAL"]); serial != "" && (block["TYPE"] == "android_phone" || block["TYPE"] == "redroid") {
+			if other, exists := seenSerials[serial]; exists {
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("duplicate phone or Redroid serial %q in devices %d and %d", serial, other, index)
+			}
+			seenSerials[serial] = index
+		}
+		switch block["TYPE"] {
+		case "android_emulator":
+			if emulatorIndex != 0 {
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("only one android emulator is allowed (devices %d and %d)", emulatorIndex, index)
+			}
+			emulatorIndex = index
+		case "ios_simulator":
+			if simulatorIndex != 0 {
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("only one iOS simulator is allowed (devices %d and %d)", simulatorIndex, index)
+			}
+			simulatorIndex = index
 		}
 		enabled := true
 		if raw := strings.TrimSpace(block["ENABLED"]); raw != "" {
@@ -187,6 +204,39 @@ func ValidateDeviceRegistration(device DeviceRuntimeConfig) error {
 	} {
 		if strings.TrimSpace(field.value) == "" {
 			return fmt.Errorf("device %s is required for dashboard registration", field.name)
+		}
+	}
+	return nil
+}
+
+// ValidateDeviceConstraints applies runner-wide target limits before a config
+// is persisted. The API applies the same rules authoritatively, while this
+// keeps setup and dashboard errors immediate and readable.
+func ValidateDeviceConstraints(devices []DeviceRuntimeConfig) error {
+	seenSerials := map[string]int{}
+	emulatorIndex, simulatorIndex := 0, 0
+	for index, device := range devices {
+		position := index + 1
+		switch strings.TrimSpace(device.Type) {
+		case "android_emulator":
+			if emulatorIndex != 0 {
+				return fmt.Errorf("only one android emulator is allowed (devices %d and %d)", emulatorIndex, position)
+			}
+			emulatorIndex = position
+		case "ios_simulator":
+			if simulatorIndex != 0 {
+				return fmt.Errorf("only one iOS simulator is allowed (devices %d and %d)", simulatorIndex, position)
+			}
+			simulatorIndex = position
+		case "android_phone", "redroid":
+			serial := strings.TrimSpace(device.Serial)
+			if serial == "" {
+				continue
+			}
+			if other, exists := seenSerials[serial]; exists {
+				return fmt.Errorf("duplicate phone or Redroid serial %q in devices %d and %d", serial, other, position)
+			}
+			seenSerials[serial] = position
 		}
 	}
 	return nil

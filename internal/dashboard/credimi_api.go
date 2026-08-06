@@ -28,6 +28,14 @@ type setupRunnerPreviewRequest struct {
 	Name         string `json:"name"`
 }
 
+type setupDevicePreviewRequest struct {
+	InstanceURL  string `json:"instance_url"`
+	APIKey       string `json:"api_key"`
+	Organization string `json:"organization"`
+	RunnerID     string `json:"runner_id"`
+	Name         string `json:"name"`
+}
+
 type setupRunnerPreview struct {
 	Organization    string `json:"organization"`
 	BaseRunnerID    string `json:"base_runner_id"`

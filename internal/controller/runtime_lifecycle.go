@@ -153,6 +153,7 @@ func (l RuntimeLifecycle) Register(ctx context.Context) error {
 		return fmt.Errorf("load device inventory for registration: %w", err)
 	}
 	var deviceErrors []error
+	configuredDeviceIDs := make([]string, 0, len(inventory.Devices))
 	for _, device := range inventory.Devices {
 		if strings.TrimSpace(device.ID) == "" {
 			deviceErrors = append(deviceErrors, fmt.Errorf("device %d has no canonical ID; preview it from the dashboard before starting", device.Index))
@@ -164,10 +165,19 @@ func (l RuntimeLifecycle) Register(ctx context.Context) error {
 			Description: device.Description, Type: device.Type, Serial: device.Serial,
 		}); err != nil {
 			deviceErrors = append(deviceErrors, fmt.Errorf("register device %q: %w", device.ID, err))
+			continue
 		}
+		configuredDeviceIDs = append(configuredDeviceIDs, device.ID)
 	}
 	if len(deviceErrors) > 0 {
 		return errors.Join(deviceErrors...)
+	}
+	if err := client.ReconcileMobileDevices(ctx, dashboardruntime.ReconcileDevicesRequest{
+		Organization: strings.TrimSpace(l.Values["CREDIMI_RUNNER_ORGANIZATION"]),
+		RunnerID:     inventory.Host["CREDIMI_RUNNER_ID"],
+		DeviceIDs:    configuredDeviceIDs,
+	}); err != nil {
+		return fmt.Errorf("reconcile configured devices: %w", err)
 	}
 	return nil
 }

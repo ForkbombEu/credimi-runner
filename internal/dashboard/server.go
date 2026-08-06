@@ -266,6 +266,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /setup", s.finishSetup)
 	mux.HandleFunc("POST /setup/organization", s.lookupSetupOrganization)
 	mux.HandleFunc("POST /setup/runner-id", s.previewSetupRunnerID)
+	mux.HandleFunc("POST /setup/device-id", s.previewSetupDeviceID)
 	mux.HandleFunc("POST /setup/canonify", s.canonifySetupName)
 	mux.HandleFunc("GET /config/raw", s.rawConfig)
 	mux.HandleFunc("GET /config/secret/{key}", s.revealSecret)
@@ -654,7 +655,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		return ""
 	}
 	name := formValue("name", "CREDIMI_DEVICE_NAME")
-	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	deviceID := strings.TrimPrefix(formValue("device_id", "CREDIMI_DEVICE_ID"), "/")
 	device := dashboardruntime.DeviceRuntimeConfig{
 		ID:          deviceID,
 		Name:        name,
@@ -679,9 +680,8 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 			device.Values[valueKey] = value
 		}
 	}
-	created := deviceID == ""
-	if !created {
-		found := false
+	created := true
+	if deviceID != "" {
 		for index := range config.Devices {
 			if config.Devices[index].ID != deviceID {
 				continue
@@ -693,14 +693,11 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			config.Devices[index] = device
-			found = true
+			created = false
 			break
 		}
-		if !found {
-			http.Error(w, "unknown device", http.StatusNotFound)
-			return
-		}
-	} else {
+	}
+	if created {
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
@@ -709,15 +706,25 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		if key == "" {
 			key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
 		}
-		preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+		if deviceID == "" {
+			preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			deviceID = preview.PreviewDeviceID
+			if deviceID == "" {
+				deviceID = preview.DeviceID
+			}
 		}
-		device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+		device.ID = strings.TrimPrefix(deviceID, "/")
 		applyDeviceDefaults(&device)
 		inheritLocalRuntimeImage(&device, config.Devices)
 		config.Devices = append(config.Devices, device)
+	}
+	if err := dashboardruntime.ValidateDeviceConstraints(config.Devices); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
 	}
 	if err := store.SaveRuntimeConfig(config); err != nil {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -1150,8 +1157,19 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 		if err != nil {
 			return nil, fmt.Errorf("resolve device %q ID: %w", device.Name, err)
 		}
-		device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+		action := valueAt("CREDIMI_DEVICE_CONFLICT_ACTION", index)
+		if preview.Conflict && action == "update" {
+			device.ID = strings.TrimPrefix(preview.BaseDeviceID, "/")
+		} else {
+			device.ID = strings.TrimPrefix(preview.PreviewDeviceID, "/")
+			if device.ID == "" {
+				device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+			}
+		}
 		devices = append(devices, device)
+	}
+	if err := dashboardruntime.ValidateDeviceConstraints(devices); err != nil {
+		return nil, err
 	}
 	return devices, nil
 }
@@ -1484,6 +1502,29 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 			RunnerID:        req.Organization + "/" + canonifyPlain(req.Name),
 			DefaultAction:   "update",
 		}
+	}
+	writeJSON(w, preview)
+}
+
+func (s *Server) previewSetupDeviceID(w http.ResponseWriter, r *http.Request) {
+	var req setupDevicePreviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	for _, value := range []*string{&req.InstanceURL, &req.APIKey, &req.Organization, &req.RunnerID, &req.Name} {
+		*value = strings.TrimSpace(*value)
+	}
+	if req.InstanceURL == "" || req.APIKey == "" || req.Organization == "" || req.RunnerID == "" || req.Name == "" {
+		http.Error(w, "Credimi URL, API key, organization, runner ID, and device name are required", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	preview, err := (&dashboardruntime.CredimiClient{BaseURL: req.InstanceURL, APIKey: req.APIKey, HTTPClient: http.DefaultClient}).PreviewDeviceID(ctx, req.RunnerID, req.Name, req.Organization)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
 	writeJSON(w, preview)
 }
