@@ -55,7 +55,7 @@ func TestComposeParityCases(t *testing.T) {
 		{
 			name:     "emulator inventory uses shared emulator image",
 			vals:     indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_emulator"}),
-			contains: []string{"image: " + DefaultEmulatorImage, "--inventory", "/dev/kvm:/dev/kvm", "${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`, "networks:\n      - ingress"},
+			contains: []string{"image: " + DefaultEmulatorImage, "--inventory", "BASE_NAME: ${CREDIMI_DEVICE_1_BASE_NAME}", "GOLDEN_PATH: ${CREDIMI_DEVICE_1_GOLDEN_PATH}", "/dev/kvm:/dev/kvm", "${CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH}:/avd-golden", `caddy.reverse_proxy: "{{upstreams ${RUNNER_PORT:-8050}}}"`, "networks:\n      - ingress"},
 		},
 		{
 			name:     "mixed Android inventory needs one emulator-capable runner",

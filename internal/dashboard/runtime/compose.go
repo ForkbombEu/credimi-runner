@@ -77,6 +77,10 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	}
 	if spec.HasEmulator {
 		builder.WriteString("      CREDIMI_RUNNER_CONFIG_DIR: /app\n")
+		// credimi-extra's emulator activities read these runtime settings from
+		// their process environment. Keep the inventory indexed, but project the
+		// selected emulator's values into the activity-compatible names.
+		fmt.Fprintf(builder, "      BASE_NAME: ${CREDIMI_DEVICE_%d_BASE_NAME}\n      GOLDEN_PATH: ${CREDIMI_DEVICE_%d_GOLDEN_PATH}\n", spec.EmulatorIndex, spec.EmulatorIndex)
 		builder.WriteString("    devices:\n      - /dev/kvm:/dev/kvm\n")
 		fmt.Fprintf(builder, "    volumes:\n      - ${CREDIMI_DEVICE_%d_ANDROID_KEYS_DIR}:/root/.android\n      - ${CREDIMI_DEVICE_%d_HOST_AVD_HOME_PATH}:/avd-home\n      - ${CREDIMI_DEVICE_%d_HOST_AVD_GOLDEN_PATH}:/avd-golden\n", spec.EmulatorIndex, spec.EmulatorIndex, spec.EmulatorIndex)
 	} else if spec.HasUSB {
