@@ -14,11 +14,9 @@ func TestSystemMonitorHourlyAveragesPersistedSamples(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, systemMetricsLogName)
 	now := time.Now().UTC().Truncate(time.Hour)
-	temp := 51.0
-	voltage := false
 	samples := []SystemMetrics{
-		{Timestamp: now.Unix(), CPUPercent: 20, CPUTemperature: &temp, CPUUndervoltage: &voltage, RAMPercent: 30, DiskUsedPercent: 40, DiskFreeBytes: 400, DiskActivityKiB: 10},
-		{Timestamp: now.Add(10 * time.Second).Unix(), CPUPercent: 40, CPUTemperature: &temp, CPUUndervoltage: &voltage, RAMPercent: 50, DiskUsedPercent: 60, DiskFreeBytes: 200, DiskActivityKiB: 30},
+		{Timestamp: now.Unix(), CPUPercent: 20, RAMPercent: 30, DiskUsedPercent: 40, DiskFreeBytes: 400, DiskActivityKiB: 10},
+		{Timestamp: now.Add(10 * time.Second).Unix(), CPUPercent: 40, RAMPercent: 50, DiskUsedPercent: 60, DiskFreeBytes: 200, DiskActivityKiB: 30},
 		{Timestamp: now.Add(-25 * time.Hour).Unix(), CPUPercent: 99},
 	}
 	file, err := os.Create(path)
@@ -46,9 +44,6 @@ func TestSystemMonitorHourlyAveragesPersistedSamples(t *testing.T) {
 	got := averages[0]
 	if got.CPUPercent != 30 || got.RAMPercent != 40 || got.DiskUsedPercent != 50 || got.DiskFreeBytes != 300 || got.DiskActivityKiB != 20 {
 		t.Fatalf("hourly average = %#v", got)
-	}
-	if got.CPUTemperature == nil || *got.CPUTemperature != 51 || got.CPUUndervoltage == nil || *got.CPUUndervoltage {
-		t.Fatalf("optional values = %#v", got)
 	}
 }
 

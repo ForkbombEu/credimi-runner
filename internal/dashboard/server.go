@@ -258,6 +258,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /devices", s.page("devices"))
 	mux.HandleFunc("GET /workers", s.page("workers"))
 	mux.HandleFunc("GET /network", s.page("network"))
+	mux.HandleFunc("GET /monitoring", s.page("monitoring"))
 	mux.HandleFunc("GET /config", s.page("config"))
 
 	// Config actions

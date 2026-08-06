@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,14 +18,12 @@ const systemMetricsLogName = "system-metrics.jsonl"
 // SystemMetrics is deliberately small and JSON-friendly: each record is one
 // host sample that can be inspected with standard command-line tools.
 type SystemMetrics struct {
-	Timestamp       int64    `json:"timestamp"`
-	CPUPercent      float64  `json:"cpu_percent"`
-	CPUTemperature  *float64 `json:"cpu_temperature_c,omitempty"`
-	CPUUndervoltage *bool    `json:"cpu_undervoltage,omitempty"`
-	RAMPercent      float64  `json:"ram_percent"`
-	DiskUsedPercent float64  `json:"disk_used_percent"`
-	DiskFreeBytes   uint64   `json:"disk_free_bytes"`
-	DiskActivityKiB float64  `json:"disk_activity_kib_s"`
+	Timestamp       int64   `json:"timestamp"`
+	CPUPercent      float64 `json:"cpu_percent"`
+	RAMPercent      float64 `json:"ram_percent"`
+	DiskUsedPercent float64 `json:"disk_used_percent"`
+	DiskFreeBytes   uint64  `json:"disk_free_bytes"`
+	DiskActivityKiB float64 `json:"disk_activity_kib_s"`
 }
 
 type systemMetricTotals struct{ total, idle, diskSectors uint64 }
@@ -156,12 +153,9 @@ func (m *SystemMonitor) Hourly() []SystemMetrics {
 	defer file.Close()
 	cutoff := time.Now().Add(-24 * time.Hour).Unix()
 	type aggregate struct {
-		count                          int
-		cpu, ram, disk, activity, temp float64
-		temps                          int
-		undervoltage                   bool
-		voltageKnown                   bool
-		free                           uint64
+		count                    int
+		cpu, ram, disk, activity float64
+		free                     uint64
 	}
 	groups := map[int64]*aggregate{}
 	scanner := bufio.NewScanner(file)
@@ -182,27 +176,11 @@ func (m *SystemMonitor) Hourly() []SystemMetrics {
 		agg.disk += metric.DiskUsedPercent
 		agg.activity += metric.DiskActivityKiB
 		agg.free += metric.DiskFreeBytes
-		if metric.CPUTemperature != nil {
-			agg.temp += *metric.CPUTemperature
-			agg.temps++
-		}
-		if metric.CPUUndervoltage != nil {
-			agg.voltageKnown = true
-			agg.undervoltage = agg.undervoltage || *metric.CPUUndervoltage
-		}
 	}
 	result := make([]SystemMetrics, 0, len(groups))
 	for hour, agg := range groups {
 		count := float64(agg.count)
 		metric := SystemMetrics{Timestamp: hour, CPUPercent: agg.cpu / count, RAMPercent: agg.ram / count, DiskUsedPercent: agg.disk / count, DiskActivityKiB: agg.activity / count, DiskFreeBytes: agg.free / uint64(agg.count)}
-		if agg.temps > 0 {
-			value := agg.temp / float64(agg.temps)
-			metric.CPUTemperature = &value
-		}
-		if agg.voltageKnown {
-			value := agg.undervoltage
-			metric.CPUUndervoltage = &value
-		}
 		result = append(result, metric)
 	}
 	for i := range result {
@@ -227,8 +205,6 @@ func collectSystemMetrics(now time.Time, previous systemMetricTotals, lastAt tim
 		metric.DiskActivityKiB = float64(totals.diskSectors-previous.diskSectors) / 2 / now.Sub(lastAt).Seconds()
 	}
 	metric.RAMPercent = readRAMPercent()
-	metric.CPUTemperature = readCPUTemperature()
-	metric.CPUUndervoltage = readCPUUndervoltage()
 	var fs syscall.Statfs_t
 	if syscall.Statfs("/", &fs) == nil && fs.Blocks > 0 {
 		metric.DiskFreeBytes = fs.Bavail * uint64(fs.Bsize)
@@ -286,45 +262,4 @@ func readRAMPercent() float64 {
 		return 0
 	}
 	return 100 * (total - available) / total
-}
-
-func readCPUTemperature() *float64 {
-	paths, _ := filepath.Glob("/sys/class/thermal/thermal_zone*/temp")
-	for _, path := range paths {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		value, err := strconv.ParseFloat(strings.TrimSpace(string(raw)), 64)
-		if err != nil {
-			continue
-		}
-		if value > 1000 {
-			value /= 1000
-		}
-		if value > 0 && value < 150 {
-			return &value
-		}
-	}
-	return nil
-}
-
-func readCPUUndervoltage() *bool {
-	for _, path := range []string{"/sys/devices/platform/soc/soc:firmware/get_throttled", "/sys/devices/platform/soc/firmware/get_throttled"} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		value, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(string(raw), "0x")), 16, 64)
-		if err != nil {
-			continue
-		}
-		result := value&(1<<0|1<<16) != 0
-		return &result
-	}
-	return nil
-}
-
-func (m SystemMetrics) String() string {
-	return fmt.Sprintf("cpu=%.1f%% ram=%.1f%%", m.CPUPercent, m.RAMPercent)
 }

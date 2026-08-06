@@ -1,0 +1,24 @@
+{{define "main" -}}
+<main class="page">
+  <div class="page-head">
+    <span class="eyebrow">Host health</span>
+    <h1>Monitoring</h1>
+    <p>Near-real-time resource usage for the host running Credimi Runner.</p>
+  </div>
+
+  <section class="card system-monitor" data-system-monitor>
+    <header class="card-h">{{icon "activity"}}<div><h3>Host resources</h3><div class="sub">Live samples and 24-hour hourly averages</div></div>
+      <div class="right"><div class="seg system-monitor-tabs"><button type="button" class="on" data-system-range="live">Live</button><button type="button" data-system-range="hourly">24h average</button></div></div>
+    </header>
+    <div class="card-b">
+      <div class="system-monitor-meta" data-system-monitor-meta>Loading host metrics…</div>
+      <div class="system-monitor-grid">
+        <div class="system-metric"><div><b>CPU load</b><span data-system-value="cpu_percent">—</span></div><canvas data-system-chart="cpu_percent"></canvas></div>
+        <div class="system-metric"><div><b>RAM load</b><span data-system-value="ram_percent">—</span></div><canvas data-system-chart="ram_percent"></canvas></div>
+        <div class="system-metric"><div><b>Disk space</b><span data-system-value="disk_used_percent">—</span></div><canvas data-system-chart="disk_used_percent"></canvas></div>
+        <div class="system-metric"><div><b>Disk activity</b><span data-system-value="disk_activity_kib_s">—</span></div><canvas data-system-chart="disk_activity_kib_s"></canvas></div>
+      </div>
+    </div>
+  </section>
+</main>
+{{- end}}

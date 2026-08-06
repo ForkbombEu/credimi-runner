@@ -36,12 +36,13 @@ func NewRenderer() (*Renderer, error) {
 	base := "templates/base.html"
 	partials := "templates/partials.html"
 	pageFiles := map[string]string{
-		"overview": "templates/overview.html",
-		"devices":  "templates/devices.html",
-		"workers":  "templates/workers.html",
-		"network":  "templates/network.html",
-		"config":   "templates/config.html",
-		"setup":    "templates/setup.html",
+		"overview":   "templates/overview.html",
+		"devices":    "templates/devices.html",
+		"workers":    "templates/workers.html",
+		"network":    "templates/network.html",
+		"monitoring": "templates/monitoring.html",
+		"config":     "templates/config.html",
+		"setup":      "templates/setup.html",
 	}
 	r := &Renderer{pages: map[string]*template.Template{}}
 	for name, file := range pageFiles {

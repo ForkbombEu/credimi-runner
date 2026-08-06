@@ -921,8 +921,6 @@
   }
   function metricDisplay(key, sample) {
     const value = sample && sample[key];
-    if (key === 'cpu_temperature_c') return value == null ? 'Unavailable' : `${Number(value).toFixed(1)} °C`;
-    if (key === 'cpu_undervoltage') return value == null ? 'Unavailable' : value ? 'Detected' : 'Normal';
     if (key === 'disk_activity_kib_s') return `${Number(value || 0).toFixed(1)} KiB/s`;
     if (key === 'disk_used_percent') return `${Number(value || 0).toFixed(1)}% used · ${formatSystemBytes(sample && sample.disk_free_bytes)} free`;
     return `${Number(value || 0).toFixed(1)}%`;
@@ -931,12 +929,12 @@
     const ratio = window.devicePixelRatio || 1; const width = Math.max(1, canvas.clientWidth); const height = Math.max(1, canvas.clientHeight);
     canvas.width = width * ratio; canvas.height = height * ratio;
     const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
-    const values = samples.map(s => key === 'cpu_undervoltage' ? (s[key] ? 1 : 0) : Number(s[key])).filter(v => Number.isFinite(v));
+    const values = samples.map(s => Number(s[key])).filter(v => Number.isFinite(v));
     if (!values.length) { ctx.fillStyle = '#9A97B5'; ctx.font = '12px sans-serif'; ctx.fillText('No host data available', 8, height / 2); return; }
-    const max = key === 'cpu_undervoltage' ? 1 : Math.max(1, ...values) * 1.1;
+    const max = Math.max(1, ...values) * 1.1;
     ctx.strokeStyle = '#E4E4E7'; ctx.lineWidth = 1; for (let line = 1; line < 4; line++) { const y = height * line / 4; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
-    ctx.strokeStyle = key === 'cpu_undervoltage' && values.some(Boolean) ? '#EF4343' : '#3D1FC4'; ctx.lineWidth = 2; ctx.beginPath();
-    samples.forEach((sample, index) => { let value = key === 'cpu_undervoltage' ? (sample[key] ? 1 : 0) : Number(sample[key]); if (!Number.isFinite(value)) return; const x = samples.length < 2 ? width : index * width / (samples.length - 1); const y = height - Math.min(value, max) / max * (height - 4) - 2; if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
+    ctx.strokeStyle = '#3D1FC4'; ctx.lineWidth = 2; ctx.beginPath();
+    samples.forEach((sample, index) => { const value = Number(sample[key]); if (!Number.isFinite(value)) return; const x = samples.length < 2 ? width : index * width / (samples.length - 1); const y = height - Math.min(value, max) / max * (height - 4) - 2; if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
   }
   async function refreshSystemMonitor(root, range = root && root.dataset.systemRange || 'live') {
     if (!root || !root.isConnected) return;
