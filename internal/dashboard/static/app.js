@@ -1890,7 +1890,9 @@
       initNetMode();
       initDeviceFields();
       syncAVDCTLSSH(e.detail.target);
-      initSystemMonitor(e.detail.target);
+      // outerHTML swaps detach the original <main>, so initialize from the
+      // current document rather than the event's stale target.
+      initSystemMonitor();
     }
   });
   window.addEventListener('popstate', syncNav);
