@@ -539,5 +539,9 @@ body.flat-status .chip.idle .d { background: var(--idle); }
 .system-metric b { color: var(--fg-subtle); }
 .system-metric span { font: 600 12px var(--font-mono); color: var(--fg); white-space: nowrap; }
 .system-metric canvas { display: block; width: 100%; height: 70px; margin-top: 8px; }
+.system-metric-card { padding: 0; }
+.system-metric-card > .card-h { min-height: 62px; }
+.system-metric-card > .card-h [data-system-value] { font: 700 18px var(--font-mono); color: var(--fg); }
+.system-metric-card canvas { height: 180px; margin-top: 0; }
 @media (max-width: 900px) { .system-monitor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 560px) { .system-monitor-grid { grid-template-columns: 1fr; } }
