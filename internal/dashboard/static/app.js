@@ -910,6 +910,54 @@
   };
   initNetMode();
 
+  // ── Host resource monitor ───────────────────────────────────────────────
+  let systemMonitorTimer = null;
+  function formatSystemBytes(value) {
+    const n = Number(value || 0); if (!Number.isFinite(n)) return '—';
+    if (n < 1024) return `${Math.round(n)} B`;
+    if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KiB`;
+    if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MiB`;
+    return `${(n / 1024 ** 3).toFixed(1)} GiB`;
+  }
+  function metricDisplay(key, sample) {
+    const value = sample && sample[key];
+    if (key === 'cpu_temperature_c') return value == null ? 'Unavailable' : `${Number(value).toFixed(1)} °C`;
+    if (key === 'cpu_undervoltage') return value == null ? 'Unavailable' : value ? 'Detected' : 'Normal';
+    if (key === 'disk_activity_kib_s') return `${Number(value || 0).toFixed(1)} KiB/s`;
+    if (key === 'disk_used_percent') return `${Number(value || 0).toFixed(1)}% used · ${formatSystemBytes(sample && sample.disk_free_bytes)} free`;
+    return `${Number(value || 0).toFixed(1)}%`;
+  }
+  function drawSystemChart(canvas, samples, key) {
+    const ratio = window.devicePixelRatio || 1; const width = Math.max(1, canvas.clientWidth); const height = Math.max(1, canvas.clientHeight);
+    canvas.width = width * ratio; canvas.height = height * ratio;
+    const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
+    const values = samples.map(s => key === 'cpu_undervoltage' ? (s[key] ? 1 : 0) : Number(s[key])).filter(v => Number.isFinite(v));
+    if (!values.length) { ctx.fillStyle = '#9A97B5'; ctx.font = '12px sans-serif'; ctx.fillText('No host data available', 8, height / 2); return; }
+    const max = key === 'cpu_undervoltage' ? 1 : Math.max(1, ...values) * 1.1;
+    ctx.strokeStyle = '#E4E4E7'; ctx.lineWidth = 1; for (let line = 1; line < 4; line++) { const y = height * line / 4; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+    ctx.strokeStyle = key === 'cpu_undervoltage' && values.some(Boolean) ? '#EF4343' : '#3D1FC4'; ctx.lineWidth = 2; ctx.beginPath();
+    samples.forEach((sample, index) => { let value = key === 'cpu_undervoltage' ? (sample[key] ? 1 : 0) : Number(sample[key]); if (!Number.isFinite(value)) return; const x = samples.length < 2 ? width : index * width / (samples.length - 1); const y = height - Math.min(value, max) / max * (height - 4) - 2; if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
+  }
+  async function refreshSystemMonitor(root, range = root && root.dataset.systemRange || 'live') {
+    if (!root || !root.isConnected) return;
+    try {
+      const response = await fetch(dashboardURL(`/api/system/metrics?range=${range}`), { headers: { Accept: 'application/json' } }); if (!response.ok) throw new Error('host metrics unavailable');
+      const payload = await response.json(); const samples = payload.samples || []; const current = samples[samples.length - 1] || {};
+      root.dataset.systemRange = range;
+      $$('[data-system-value]', root).forEach(node => { node.textContent = metricDisplay(node.dataset.systemValue, current); });
+      $$('[data-system-chart]', root).forEach(canvas => drawSystemChart(canvas, samples, canvas.dataset.systemChart));
+      const seconds = Number(payload.interval_ms || 2000) / 1000; const meta = $('[data-system-monitor-meta]', root);
+      if (meta) meta.textContent = range === 'hourly' ? `${samples.length} hourly averages from the local JSON log (previous 24 hours).` : `${samples.length} live samples · refreshes every ${seconds % 1 ? seconds.toFixed(1) : seconds} seconds.`;
+    } catch (error) { const meta = $('[data-system-monitor-meta]', root); if (meta) meta.textContent = `Host metrics unavailable: ${error.message}`; }
+  }
+  function initSystemMonitor(root = document) {
+    const monitor = $('[data-system-monitor]', root); if (!monitor) return;
+    clearInterval(systemMonitorTimer); refreshSystemMonitor(monitor);
+    monitor.addEventListener('click', event => { const tab = event.target.closest('[data-system-range]'); if (!tab) return; $$('[data-system-range]', monitor).forEach(button => button.classList.toggle('on', button === tab)); refreshSystemMonitor(monitor, tab.dataset.systemRange); });
+    systemMonitorTimer = setInterval(() => { if (monitor.dataset.systemRange !== 'hourly') refreshSystemMonitor(monitor); }, 2000);
+  }
+  initSystemMonitor();
+
   // ── Device step: radio cards + show/hide fields based on runner type and mode ──
   const setPanelVisible = (el, visible) => {
     el.style.display = visible ? '' : 'none';
@@ -1844,6 +1892,7 @@
       initNetMode();
       initDeviceFields();
       syncAVDCTLSSH(e.detail.target);
+      initSystemMonitor(e.detail.target);
     }
   });
   window.addEventListener('popstate', syncNav);

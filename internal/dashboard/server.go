@@ -75,6 +75,7 @@ type Server struct {
 	maintenance             maintenance.Status
 	maintenanceChecked      bool
 	maintenanceChecker      func(context.Context, string, time.Time, string) maintenance.Status
+	systemMonitor           *SystemMonitor
 	binaryPath              string
 	downloadBinary          func(context.Context, *http.Client, string, func(string)) error
 	restartDashboard        func(string) error
@@ -220,6 +221,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 
 	hubCtx, cancel := context.WithCancel(parent)
 	srv.hubCtx = hubCtx
+	srv.systemMonitor = NewSystemMonitor(hubCtx, filepath.Dir(cfg.Path()), strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_VERBOSE_LOG_PATH")) != "")
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
@@ -230,7 +232,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	} else {
 		srv.startHub()
 	}
-	return srv.auth(mux), cancel, nil
+	return srv.auth(mux), func() { srv.systemMonitor.Close(); cancel() }, nil
 }
 
 func (s *Server) startHub() {
@@ -278,6 +280,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/register", s.runtimeRegister)
 	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
 	mux.HandleFunc("GET /startup/status", s.startupStatus)
+	mux.HandleFunc("GET /api/system/metrics", s.systemMetrics)
 
 	// Device actions
 	mux.HandleFunc("POST /devices/config", s.saveDevicesConfig)
@@ -1535,6 +1538,18 @@ func (s *Server) controllerStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) controllerOperationCurrent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.operations.Current())
+}
+
+func (s *Server) systemMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.systemMonitor == nil {
+		writeJSON(w, map[string]any{"samples": []SystemMetrics{}, "interval_ms": 2000})
+		return
+	}
+	samples := s.systemMonitor.Live()
+	if r.URL.Query().Get("range") == "hourly" {
+		samples = s.systemMonitor.Hourly()
+	}
+	writeJSON(w, map[string]any{"samples": samples, "interval_ms": s.systemMonitor.Interval().Milliseconds()})
 }
 
 func (s *Server) controllerOperation(w http.ResponseWriter, r *http.Request) {

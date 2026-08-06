@@ -20,6 +20,23 @@
     <div class="stat"><div class="k">{{icon "cloud"}} Exposure</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">public runner route</div></div>
   </div>
 
+  <section class="card system-monitor" data-system-monitor style="margin-bottom:16px">
+    <header class="card-h">{{icon "activity"}}<div><h3>Host resources</h3><div class="sub">Local runner host · live samples and 24-hour averages</div></div>
+      <div class="right"><div class="seg system-monitor-tabs"><button type="button" class="on" data-system-range="live">Live</button><button type="button" data-system-range="hourly">24h average</button></div></div>
+    </header>
+    <div class="card-b">
+      <div class="system-monitor-meta" data-system-monitor-meta>Loading host metrics…</div>
+      <div class="system-monitor-grid">
+        <div class="system-metric"><div><b>CPU load</b><span data-system-value="cpu_percent">—</span></div><canvas data-system-chart="cpu_percent"></canvas></div>
+        <div class="system-metric"><div><b>CPU temperature</b><span data-system-value="cpu_temperature_c">Unavailable</span></div><canvas data-system-chart="cpu_temperature_c"></canvas></div>
+        <div class="system-metric"><div><b>RAM load</b><span data-system-value="ram_percent">—</span></div><canvas data-system-chart="ram_percent"></canvas></div>
+        <div class="system-metric"><div><b>Disk space</b><span data-system-value="disk_used_percent">—</span></div><canvas data-system-chart="disk_used_percent"></canvas></div>
+        <div class="system-metric"><div><b>Disk activity</b><span data-system-value="disk_activity_kib_s">—</span></div><canvas data-system-chart="disk_activity_kib_s"></canvas></div>
+        <div class="system-metric"><div><b>CPU undervoltage</b><span data-system-value="cpu_undervoltage">Unavailable</span></div><canvas data-system-chart="cpu_undervoltage"></canvas></div>
+      </div>
+    </div>
+  </section>
+
   <form hx-post="/overview/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Updating runner publication state in the background.">
     <section class="card" style="margin-bottom:16px">
       <header class="card-h">{{icon "shield"}}<div><h3>Runner publication</h3><div class="sub">Control whether published organizations can schedule pipelines here</div></div>

@@ -530,3 +530,14 @@ body.flat-status .chip.online .d { background: var(--ok); }
 body.flat-status .chip.degraded .d { background: var(--warn); }
 body.flat-status .chip.offline .d { background: var(--down); }
 body.flat-status .chip.idle .d { background: var(--idle); }
+
+/* Host resource monitor */
+.system-monitor-meta { color: var(--fg-muted); font-size: 12px; margin-bottom: 12px; }
+.system-monitor-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.system-metric { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; min-width: 0; }
+.system-metric > div { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.system-metric b { color: var(--fg-subtle); }
+.system-metric span { font: 600 12px var(--font-mono); color: var(--fg); white-space: nowrap; }
+.system-metric canvas { display: block; width: 100%; height: 70px; margin-top: 8px; }
+@media (max-width: 900px) { .system-monitor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .system-monitor-grid { grid-template-columns: 1fr; } }
