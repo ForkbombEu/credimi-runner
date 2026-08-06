@@ -96,6 +96,28 @@ func TestRuntimeLifecycleStartKeepsRuntimeWhenReadinessFails(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleStartReportsRunnerExitDuringReadiness(t *testing.T) {
+	manager := &exitedLifecycleManager{lifecycleManager: lifecycleManager{logs: []dashboardruntime.LogLine{
+		{Message: "runner-1 | error: protocol fault (couldn't read status): Connection reset by peer"},
+	}}}
+	lifecycle := RuntimeLifecycle{
+		Manager: manager,
+		Values: dashboardruntime.Values{
+			"CREDIMI_SERVICE_MODE":   "auto",
+			"CREDIMI_RUNNER_BACKEND": "container",
+		},
+		GOOS: "linux",
+	}
+
+	err := lifecycle.Start(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "runner container exited during startup") || !strings.Contains(err.Error(), "protocol fault") {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if got := manager.status.PublicURL; got != "" {
+		t.Fatalf("public URL = %q, want empty", got)
+	}
+}
+
 type lifecycleManager struct {
 	status dashboardruntime.RuntimeStatus
 	logs   []dashboardruntime.LogLine
@@ -106,6 +128,15 @@ type lifecycleManager struct {
 type failingLifecycleManager struct{ lifecycleManager }
 
 func (m *failingLifecycleManager) Start(context.Context) error { return errors.New("start failed") }
+
+type exitedLifecycleManager struct{ lifecycleManager }
+
+func (m *exitedLifecycleManager) Start(context.Context) error {
+	m.starts++
+	m.status.Observed = true
+	m.status.RunnerRunning = false
+	return nil
+}
 
 type progressLifecycleManager struct {
 	lifecycleManager
@@ -320,7 +351,7 @@ func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 		"CREDIMI_DEVICE_1_SERIAL": "192.168.0.241:5555",
 		"RUNNER_HOST":             host,
 		"RUNNER_PORT":             port,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -344,7 +375,7 @@ func TestWaitForRunnerReadyDoesNotBlockOnNewEmulator(t *testing.T) {
 	}
 	if err := waitForRunnerReady(context.Background(), runner.Client(), dashboardruntime.Values{
 		"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/emulator", "CREDIMI_DEVICE_1_TYPE": "android_emulator", "CREDIMI_DEVICE_1_MODE": "emulator", "RUNNER_HOST": host, "RUNNER_PORT": port,
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 }

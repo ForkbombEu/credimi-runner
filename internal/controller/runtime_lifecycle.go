@@ -189,16 +189,16 @@ func (l RuntimeLifecycle) waitReady(ctx context.Context) error {
 	if l.WaitReady != nil {
 		return l.WaitReady(ctx, l.Values)
 	}
-	return waitForRunnerReady(ctx, l.httpClient(), l.Values)
+	return waitForRunnerReady(ctx, l.httpClient(), l.Values, l.Manager)
 }
 
 // WaitForRunnerReady verifies the runner listener, health endpoint, and
 // readiness identity. It is shared by dashboard and direct CLI control.
 func WaitForRunnerReady(ctx context.Context, values dashboardruntime.Values) error {
-	return waitForRunnerReady(ctx, http.DefaultClient, values)
+	return waitForRunnerReady(ctx, http.DefaultClient, values, nil)
 }
 
-func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboardruntime.Values) error {
+func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboardruntime.Values, manager dashboardruntime.Manager) error {
 	host := strings.TrimSpace(values["RUNNER_HOST"])
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
@@ -227,6 +227,12 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		identityValues[key] = value
 	}
 	for {
+		if manager != nil {
+			status := manager.Status(deadline)
+			if status.Observed && !status.RunnerRunning {
+				return runnerExitedDuringStartup(deadline, manager, status)
+			}
+		}
 		connection, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = connection.Close()
@@ -248,6 +254,25 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		case <-ticker.C:
 		}
 	}
+}
+
+func runnerExitedDuringStartup(ctx context.Context, manager dashboardruntime.Manager, status dashboardruntime.RuntimeStatus) error {
+	message := strings.TrimSpace(status.LastError)
+	logCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if logs, err := manager.Logs(logCtx, 30); err == nil {
+		for index := len(logs) - 1; index >= 0; index-- {
+			line := strings.TrimSpace(logs[index].Message)
+			if line != "" && strings.Contains(line, "runner") {
+				message = line
+				break
+			}
+		}
+	}
+	if message == "" {
+		message = "inspect the runner service logs for the exit cause"
+	}
+	return fmt.Errorf("runner container exited during startup: %s", message)
 }
 
 // ReadinessFailure retains the technical cause while adding the configured
