@@ -389,11 +389,11 @@
       const action = form.querySelector('[data-device-conflict-action]');
       const id = form.querySelector('[data-device-id]');
       if (preview.conflict) {
-        const update = window.confirm(`A device named ${name} already exists (${preview.base_device_id}). Press OK to update it, or Cancel to create ${preview.preview_device_id}.`);
+        const update = window.confirm(`A device named ${name} already exists (${preview.existing_device_id}). Press OK to update it, or Cancel to create ${preview.device_id}.`);
         if (action) action.value = update ? 'update' : 'create';
-        if (id) id.value = update ? (preview.base_device_id || '') : (preview.preview_device_id || preview.device_id || '');
+        if (id) id.value = update ? (preview.existing_device_id || '') : (preview.device_id || '');
       } else if (id) {
-        id.value = preview.preview_device_id || preview.device_id || '';
+        id.value = preview.device_id || '';
       }
       form.dataset.deviceConflictResolved = '1';
       form.requestSubmit();
@@ -680,7 +680,7 @@
       const applyConflictDecision = (preview, action) => {
         const actionInput = $('[data-runner-conflict-action]', form);
         const runnerID = field('CREDIMI_RUNNER_ID');
-        const nextRunnerID = action === 'create' ? preview.preview_runner_id : preview.base_runner_id;
+        const nextRunnerID = action === 'create' ? preview.runner_id : preview.existing_runner_id;
         if (actionInput) actionInput.value = action;
         if (runnerID) runnerID.value = nextRunnerID || '';
         const runnerPreviewEl = $('[data-runner-id-preview]', form);
@@ -697,8 +697,8 @@
         const existing = $('[data-runner-conflict-modal-existing]', modal);
         const suggested = $('[data-runner-conflict-modal-preview]', modal);
         const device = kind === 'device';
-        const baseID = device ? preview.base_device_id : preview.base_runner_id;
-        const previewID = device ? preview.preview_device_id : preview.preview_runner_id;
+        const baseID = device ? preview.existing_device_id : preview.existing_runner_id;
+        const previewID = device ? preview.device_id : preview.runner_id;
         const title = $('#runner-conflict-title', modal);
         if (title) title.textContent = device ? 'Device already exists' : 'Runner already exists';
         if (summary) summary.textContent = device ? 'The requested device name already exists on this runner. Choose whether to update it or create a new device ID.' : 'The requested runner name already exists. Choose whether to update it or create a new runner ID.';
@@ -760,7 +760,7 @@
           if (actionInput && !actionInput.value) {
             actionInput.value = data.default_action || 'update';
           }
-          rid = (actionInput && actionInput.value === 'create' ? data.preview_runner_id : data.base_runner_id) || data.runner_id || '';
+          rid = (actionInput && actionInput.value === 'create' ? data.runner_id : data.existing_runner_id) || data.runner_id || '';
           setConflictState(data);
           previewData = data;
         } catch (e) {
@@ -809,7 +809,7 @@
             const action = $('[data-device-conflict-action]', card);
             const id = $('[data-device-id]', card);
             if (action) action.value = decision;
-            if (id) id.value = decision === 'update' ? (preview.base_device_id || '') : (preview.preview_device_id || preview.device_id || '');
+            if (id) id.value = decision === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
           }
         }
         return true;

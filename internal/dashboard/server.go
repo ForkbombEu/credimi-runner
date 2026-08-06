@@ -712,10 +712,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusBadGateway)
 				return
 			}
-			deviceID = preview.PreviewDeviceID
-			if deviceID == "" {
-				deviceID = preview.DeviceID
-			}
+			deviceID = preview.DeviceID
 		}
 		device.ID = strings.TrimPrefix(deviceID, "/")
 		applyDeviceDefaults(&device)
@@ -1159,12 +1156,9 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 		}
 		action := valueAt("CREDIMI_DEVICE_CONFLICT_ACTION", index)
 		if preview.Conflict && action == "update" {
-			device.ID = strings.TrimPrefix(preview.BaseDeviceID, "/")
+			device.ID = strings.TrimPrefix(preview.ExistingDeviceID, "/")
 		} else {
-			device.ID = strings.TrimPrefix(preview.PreviewDeviceID, "/")
-			if device.ID == "" {
-				device.ID = strings.TrimPrefix(preview.DeviceID, "/")
-			}
+			device.ID = strings.TrimPrefix(preview.DeviceID, "/")
 		}
 		devices = append(devices, device)
 	}
@@ -1496,11 +1490,9 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 	preview, err := fetchCredimiRunnerPreview(ctx, req)
 	if err != nil {
 		preview = setupRunnerPreview{
-			Organization:    req.Organization,
-			BaseRunnerID:    req.Organization + "/" + canonifyPlain(req.Name),
-			PreviewRunnerID: req.Organization + "/" + canonifyPlain(req.Name),
-			RunnerID:        req.Organization + "/" + canonifyPlain(req.Name),
-			DefaultAction:   "update",
+			Organization:  req.Organization,
+			RunnerID:      req.Organization + "/" + canonifyPlain(req.Name),
+			DefaultAction: "update",
 		}
 	}
 	writeJSON(w, preview)

@@ -18,8 +18,11 @@ type Organization struct {
 }
 
 type RunnerPreview struct {
-	Organization string `json:"organization"`
-	RunnerID     string `json:"runner_id"`
+	Organization     string `json:"organization"`
+	RunnerID         string `json:"runner_id"`
+	ExistingRunnerID string `json:"existing_runner_id,omitempty"`
+	CanonifiedName   string `json:"canonified_name"`
+	Conflict         bool   `json:"conflict"`
 }
 
 type MobileRunnerListItem struct {
@@ -42,12 +45,11 @@ type RegisterRunnerRequest struct {
 }
 
 type DevicePreview struct {
-	RunnerID        string `json:"runner_id"`
-	DeviceID        string `json:"device_id"`
-	BaseDeviceID    string `json:"base_device_id"`
-	PreviewDeviceID string `json:"preview_device_id"`
-	CanonifiedName  string `json:"canonified_name"`
-	Conflict        bool   `json:"conflict"`
+	RunnerID         string `json:"runner_id"`
+	DeviceID         string `json:"device_id"`
+	ExistingDeviceID string `json:"existing_device_id,omitempty"`
+	CanonifiedName   string `json:"canonified_name"`
+	Conflict         bool   `json:"conflict"`
 }
 
 type RegisterDeviceRequest struct {

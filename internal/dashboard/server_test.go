@@ -1290,7 +1290,7 @@ func TestServerSetupHelperEndpoints(t *testing.T) {
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/setup/preview-id", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key","organization":"acme","name":"Runner Slug"}`))
 	s.previewSetupRunnerID(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"preview_runner_id":"acme/runner-slug-2"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"runner_id":"acme/runner-slug-2"`) {
 		t.Fatalf("previewSetupRunnerID = %d %s", rec.Code, rec.Body.String())
 	}
 }

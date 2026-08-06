@@ -37,12 +37,12 @@ type setupDevicePreviewRequest struct {
 }
 
 type setupRunnerPreview struct {
-	Organization    string `json:"organization"`
-	BaseRunnerID    string `json:"base_runner_id"`
-	PreviewRunnerID string `json:"preview_runner_id"`
-	RunnerID        string `json:"runner_id"`
-	Conflict        bool   `json:"conflict"`
-	DefaultAction   string `json:"default_action"`
+	Organization     string `json:"organization"`
+	CanonifiedName   string `json:"canonified_name"`
+	RunnerID         string `json:"runner_id"`
+	ExistingRunnerID string `json:"existing_runner_id,omitempty"`
+	Conflict         bool   `json:"conflict"`
+	DefaultAction    string `json:"default_action"`
 }
 
 func fetchCredimiOrganization(ctx context.Context, instanceURL, apiKey string) (setupOrganization, error) {
@@ -91,30 +91,27 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return setupRunnerPreview{}, fmt.Errorf("runner ID preview failed: %s", resp.Status)
 	}
-	var preview struct {
-		Organization string `json:"organization"`
-		RunnerID     string `json:"runner_id"`
-	}
+	var preview setupRunnerPreview
 	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
 		return setupRunnerPreview{}, fmt.Errorf("runner ID preview returned invalid JSON: %w", err)
 	}
 	baseRunnerID := reqData.Organization + "/" + canonifyPlain(reqData.Name)
-	previewRunnerID := strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
-	if previewRunnerID == "" {
-		previewRunnerID = baseRunnerID
+	preview.RunnerID = strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
+	if preview.RunnerID == "" {
+		preview.RunnerID = baseRunnerID
 	}
 	organization := preview.Organization
 	if organization == "" {
 		organization = reqData.Organization
 	}
-	return setupRunnerPreview{
-		Organization:    organization,
-		BaseRunnerID:    baseRunnerID,
-		PreviewRunnerID: previewRunnerID,
-		RunnerID:        baseRunnerID,
-		Conflict:        previewRunnerID != baseRunnerID,
-		DefaultAction:   "update",
-	}, nil
+	preview.Organization = organization
+	preview.ExistingRunnerID = strings.TrimPrefix(strings.TrimSpace(preview.ExistingRunnerID), "/")
+	preview.Conflict = preview.Conflict || preview.RunnerID != baseRunnerID
+	if preview.Conflict && preview.ExistingRunnerID == "" {
+		preview.ExistingRunnerID = baseRunnerID
+	}
+	preview.DefaultAction = "update"
+	return preview, nil
 }
 
 func fetchCredimiCanonify(ctx context.Context, instanceURL, apiKey, name string) (string, error) {
