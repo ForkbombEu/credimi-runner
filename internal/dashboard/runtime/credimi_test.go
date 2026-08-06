@@ -67,6 +67,67 @@ func TestCredimiClient(t *testing.T) {
 	}
 }
 
+func TestCredimiClientManagesRunnerDeviceLifecycle(t *testing.T) {
+	var pause PauseRunnerRequest
+	var deleted DeleteDeviceRequest
+	var reconciled ReconcileDevicesRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/mobile-runner/lifecycle/pause":
+			if r.Method != http.MethodPost || r.Header.Get("Credimi-Api-Key") != "key" {
+				t.Fatalf("pause request = %s headers=%v", r.Method, r.Header)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&pause)
+		case "/api/mobile-device":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("delete method = %s", r.Method)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&deleted)
+		case "/api/mobile-device/reconcile":
+			if r.Method != http.MethodPost {
+				t.Fatalf("reconcile method = %s", r.Method)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&reconciled)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+	ctx := context.Background()
+	if err := client.PauseMobileRunner(ctx, PauseRunnerRequest{RunnerID: "acme/runner", Reason: "restart"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeleteMobileDevice(ctx, DeleteDeviceRequest{Organization: "acme", RunnerID: "acme/runner", DeviceID: "acme/runner/old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ReconcileMobileDevices(ctx, ReconcileDevicesRequest{Organization: "acme", RunnerID: "acme/runner", DeviceIDs: []string{"acme/runner/new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if pause.RunnerID != "acme/runner" || pause.Reason != "restart" || deleted.DeviceID != "acme/runner/old" || strings.Join(reconciled.DeviceIDs, ",") != "acme/runner/new" {
+		t.Fatalf("lifecycle payloads pause=%#v deleted=%#v reconciled=%#v", pause, deleted, reconciled)
+	}
+}
+
+func TestCredimiClientReportsLifecycleFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "lifecycle rejected", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+	ctx := context.Background()
+	for _, err := range []error{
+		client.PauseMobileRunner(ctx, PauseRunnerRequest{RunnerID: "acme/runner"}),
+		client.DeleteMobileDevice(ctx, DeleteDeviceRequest{RunnerID: "acme/runner", DeviceID: "acme/runner/device"}),
+		client.ReconcileMobileDevices(ctx, ReconcileDevicesRequest{RunnerID: "acme/runner"}),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "lifecycle rejected") {
+			t.Fatalf("lifecycle error = %v", err)
+		}
+	}
+}
+
 func TestCredimiClientIncludesResponseBodyInErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"domain":"name","reason":"name is required"}`, http.StatusBadRequest)

@@ -1821,7 +1821,7 @@ func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing
 		switch req.URL.Path {
 		case "/api/mobile-device/preview-id":
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/second"}`))}, nil
-		case "/api/mobile-runner", "/api/mobile-device":
+		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
 			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
 		default:
 			return nil, errors.New("unexpected Credimi path: " + req.URL.Path)
@@ -1865,7 +1865,7 @@ func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing
 	if fm.stopCalls != 1 || fm.startCalls != 1 {
 		t.Fatalf("device add lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
 	}
-	if got := strings.Join(registrations, ","); strings.Count(got, "/api/mobile-device") != 3 || !strings.Contains(got, "/api/mobile-runner") {
+	if got := strings.Join(registrations, ","); strings.Count(got, "/api/mobile-device") < 3 || !strings.Contains(got, "/api/mobile-runner") || !strings.Contains(got, "/api/mobile-device/reconcile") {
 		t.Fatalf("Credimi registrations = %s", got)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -44,6 +45,14 @@ func TestSystemMonitorHourlyAveragesPersistedSamples(t *testing.T) {
 	got := averages[0]
 	if got.CPUPercent != 30 || got.RAMPercent != 40 || got.DiskUsedPercent != 50 || got.DiskFreeBytes != 300 || got.DiskActivityKiB != 20 {
 		t.Fatalf("hourly average = %#v", got)
+	}
+	monitor.prune(now.Add(time.Minute))
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(strings.TrimSpace(string(contents)), "\n") != 1 || strings.Contains(string(contents), `"cpu_percent":99`) {
+		t.Fatalf("pruned metrics = %s", contents)
 	}
 }
 

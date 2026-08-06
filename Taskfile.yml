@@ -98,7 +98,7 @@ tasks:
       - go generate ./...
 
   test:
-    desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
+    desc: Run tests with coverage excluding Goa generated code (fails at or below {{.COVERAGE_MIN}}%)
     deps: ["go:gen"]
     vars:
       TEST_PKGS:
@@ -107,7 +107,38 @@ tasks:
       - go test {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
       - >-
         go tool cover -func={{.COVERAGE_FILE}} |
-        awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
+        awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: > %s%%)\n", $3, min); if (($3 + 0) <= (min + 0)) exit 1 }'
+
+  "test:baseline":
+    desc: Record coverage without enforcing the rewrite quality gate
+    deps: ["go:gen"]
+    vars:
+      TEST_PKGS:
+        sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
+    cmds:
+      - go test {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
+      - >-
+        go tool cover -func={{.COVERAGE_FILE}} |
+        awk '/^total:/ { print "Baseline coverage: " $3 }'
+
+  "test:coverage-gate":
+    desc: Verify exactly 85 percent does not satisfy the strict coverage gate
+    cmds:
+      - |
+        set +e
+        printf 'total:\t(statements)\t85.0%%\n' | awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); if (($3 + 0) <= (min + 0)) exit 1 }'
+        status=$?
+        set -e
+        test "$status" -ne 0
+
+  "test:race":
+    desc: Run all non-generated tests with the race detector
+    deps: ["go:gen"]
+    vars:
+      TEST_PKGS:
+        sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
+    cmds:
+      - go test -race {{.TEST_PKGS}}
 
   clean:
     desc: Remove Goa generated code and local build artifacts

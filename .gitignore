@@ -5,6 +5,7 @@ pkg/gen
 apps/
 
 # Environment and local configuration
+/config.toml
 .env
 .env.*
 !.env.example
@@ -94,6 +95,13 @@ coverage.*
 *.exe
 
 # Logs and runtime files
+/runtime/
+/state/
+/artifacts/
+/agent-config.json
+/agent-token
+/desired-state.json
+/observed-state.json
 logs/
 log/
 *.log

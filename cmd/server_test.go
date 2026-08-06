@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -30,11 +32,18 @@ func TestServerCmdRunE_ListenError(t *testing.T) {
 func TestServerCmdRunE_ShutdownOnSignal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	configDir := t.TempDir()
 
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestServerCmdSignalHelper")
-	cmd.Env = append(os.Environ(), "GO_WANT_SERVER_HELPER=1")
-	err := cmd.Run()
-	require.NoError(t, err)
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "CREDIMI_DEVICE_") && !strings.HasPrefix(entry, "CREDIMI_RUNNER_CONFIG_DIR=") {
+			env = append(env, entry)
+		}
+	}
+	cmd.Env = append(env, "GO_WANT_SERVER_HELPER=1", "CREDIMI_RUNNER_CONFIG_DIR="+configDir)
+	output, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "signal helper output:\n%s", output)
 }
 
 func TestServerCmdSignalHelper(t *testing.T) {
@@ -69,6 +78,7 @@ func TestServerCmdSignalHelper(t *testing.T) {
 	case <-ready:
 	case runErr := <-done:
 		if runErr != nil {
+			_, _ = fmt.Fprintln(os.Stderr, runErr)
 			os.Exit(2)
 		}
 		os.Exit(5)
@@ -84,6 +94,7 @@ func TestServerCmdSignalHelper(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
 		os.Exit(0)

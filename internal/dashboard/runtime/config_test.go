@@ -228,6 +228,29 @@ func TestRuntimeConfigRequiresOnlyDeviceIDForDirectServe(t *testing.T) {
 	}
 }
 
+func TestValidateDeviceConstraintsExplainsConflicts(t *testing.T) {
+	cases := []struct {
+		name    string
+		devices []DeviceRuntimeConfig
+		want    string
+	}{
+		{"duplicate serial", []DeviceRuntimeConfig{{Name: "Pixel", Type: "android_phone", Serial: "usb-1"}, {Name: "Redroid", Type: "redroid", Serial: "usb-1"}}, `serial "usb-1" is already registered for device "Pixel"`},
+		{"duplicate emulator", []DeviceRuntimeConfig{{Name: "Emulator A", Type: "android_emulator"}, {Name: "Emulator B", Type: "android_emulator"}}, `Android emulator is already registered as device "Emulator A"`},
+		{"duplicate simulator", []DeviceRuntimeConfig{{Name: "Simulator A", Type: "ios_simulator"}, {Name: "Simulator B", Type: "ios_simulator"}}, `iOS simulator is already registered as device "Simulator A"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateDeviceConstraints(tc.devices)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := ValidateDeviceConstraints([]DeviceRuntimeConfig{{Name: "Phone", Type: "android_phone", Serial: "usb-1"}, {Name: "Redroid", Type: "redroid", Serial: "redroid-1"}}); err != nil {
+		t.Fatalf("different serials should be valid: %v", err)
+	}
+}
+
 func TestRuntimeConfigEnvironmentAndDeviceLookup(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_ID", "acme/lab")
 	t.Setenv("CREDIMI_DEVICE_COUNT", "1")

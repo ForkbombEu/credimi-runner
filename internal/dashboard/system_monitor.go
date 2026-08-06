@@ -38,6 +38,8 @@ type SystemMonitor struct {
 	logEvery  time.Duration
 	lastPrune time.Time
 	cancel    context.CancelFunc
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // NewSystemMonitor starts a local host sampler. Debug-verbose intentionally
@@ -48,19 +50,24 @@ func NewSystemMonitor(parent context.Context, configDir string, debugVerbose boo
 		interval, logEvery = 500*time.Millisecond, 500*time.Millisecond
 	}
 	ctx, cancel := context.WithCancel(parent)
-	m := &SystemMonitor{logPath: filepath.Join(configDir, systemMetricsLogName), interval: interval, logEvery: logEvery, cancel: cancel}
+	m := &SystemMonitor{logPath: filepath.Join(configDir, systemMetricsLogName), interval: interval, logEvery: logEvery, cancel: cancel, done: make(chan struct{})}
 	m.prune(time.Now().UTC())
 	go m.run(ctx)
 	return m
 }
 
 func (m *SystemMonitor) Close() {
-	if m != nil && m.cancel != nil {
-		m.cancel()
+	if m == nil || m.cancel == nil {
+		return
 	}
+	m.closeOnce.Do(func() {
+		m.cancel()
+		<-m.done
+	})
 }
 
 func (m *SystemMonitor) run(ctx context.Context) {
+	defer close(m.done)
 	nextLog := time.Time{}
 	for {
 		m.sample(time.Now().UTC(), !time.Now().Before(nextLog))

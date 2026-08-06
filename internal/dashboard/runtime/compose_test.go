@@ -141,8 +141,18 @@ func TestComposeRejectsConflictingEmulatorImageOverrides(t *testing.T) {
 	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
 	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
 	values["CREDIMI_DEVICE_2_RUNNER_IMAGE"] = "example.test/emulator-two:latest"
-	if _, err := ComposeYAML(values, "linux"); err == nil || !strings.Contains(err.Error(), "only one android emulator") {
+	if _, err := ComposeYAML(values, "linux"); err == nil || !strings.Contains(strings.ToLower(err.Error()), "only one is allowed") {
 		t.Fatalf("ComposeYAML error = %v", err)
+	}
+}
+
+func TestSharedRunnerImageReportsTheEffectiveContainerImage(t *testing.T) {
+	image, policy, err := SharedRunnerImage(mixedComposeValues(), "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image != DefaultEmulatorImage || policy != DefaultRunnerImagePullPolicy {
+		t.Fatalf("shared image = %q policy=%q", image, policy)
 	}
 }
 

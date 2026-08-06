@@ -60,6 +60,7 @@ type Server struct {
 	ctx                     context.Context
 	hubCtx                  context.Context
 	hubStartOnce            sync.Once
+	hubWG                   sync.WaitGroup
 	authToken               string
 	controllerID            string
 	controllerIdentityToken string
@@ -232,15 +233,28 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	} else {
 		srv.startHub()
 	}
-	return srv.auth(mux), func() { srv.systemMonitor.Close(); cancel() }, nil
+	return srv.auth(mux), func() {
+		cancel()
+		srv.systemMonitor.Close()
+		srv.hubWG.Wait()
+	}, nil
 }
 
 func (s *Server) startHub() {
 	if s.hub == nil || s.hubCtx == nil {
 		return
 	}
+	select {
+	case <-s.hubCtx.Done():
+		return
+	default:
+	}
 	s.hubStartOnce.Do(func() {
-		go s.hub.Run(s.hubCtx, 2*time.Second)
+		s.hubWG.Add(1)
+		go func() {
+			defer s.hubWG.Done()
+			s.hub.Run(s.hubCtx, 2*time.Second)
+		}()
 	})
 }
 
@@ -702,6 +716,10 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if created {
+		if deviceID != "" {
+			http.Error(w, "device not found", http.StatusNotFound)
+			return
+		}
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
