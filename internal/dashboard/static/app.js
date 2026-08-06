@@ -376,7 +376,24 @@
   // the canonified next ID.
   document.addEventListener('submit', async (e) => {
     const form = e.target.closest('[data-device-add-form]');
-    if (!form || form.dataset.deviceConflictResolved === '1') return;
+    if (!form) return;
+    const showError = (message) => {
+      const box = form.querySelector('[data-device-form-error]');
+      if (!box) return;
+      box.hidden = false;
+      box.textContent = message;
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    const save = async () => {
+      const response = await fetch(form.action, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(new FormData(form)), redirect: 'follow' });
+      if (!response.ok) throw new Error((await response.text()).trim() || 'Unable to save device configuration');
+      window.location.assign('/devices');
+    };
+    if (form.dataset.deviceConflictResolved === '1') {
+      e.preventDefault();
+      try { await save(); } catch (err) { showError(err && err.message ? err.message : 'Unable to save device configuration'); }
+      return;
+    }
     const name = ((form.querySelector('[name="CREDIMI_DEVICE_NAME"]') || {}).value || '').trim();
     if (!name) return;
     e.preventDefault();
@@ -396,9 +413,9 @@
         id.value = preview.device_id || '';
       }
       form.dataset.deviceConflictResolved = '1';
-      form.requestSubmit();
+      await save();
     } catch (err) {
-      window.alert(err && err.message ? err.message : 'Unable to resolve device ID');
+      showError(err && err.message ? err.message : 'Unable to resolve device ID');
     }
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });
