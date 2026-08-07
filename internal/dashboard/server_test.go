@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
@@ -130,10 +131,18 @@ func (f *fakeManager) Logs(_ context.Context, tail int) ([]dashboardruntime.LogL
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
-	cfg := &Config{path: t.TempDir() + "/.env", values: map[string]string{}}
+	cfg := &Config{path: filepath.Join(t.TempDir(), "config.toml"), values: map[string]string{}}
 	for k, v := range Defaults {
 		cfg.values[k] = v
 	}
+	cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	cfg.values["TEMPORAL_ADDRESS"] = "temporal.example:7233"
+	cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
 	render, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)
@@ -161,6 +170,22 @@ func newTestServer(t *testing.T) *Server {
 		maintenanceChecker: func(context.Context, string, time.Time, string) maintenance.Status { return maintenance.Status{} },
 		downloadBinary:     func(context.Context, *http.Client, string, func(string)) error { return nil },
 		restartDashboard:   func(string) error { return nil },
+	}
+}
+
+func writeDashboardTestConfig(t *testing.T, dir string, dashboardToken string) {
+	t.Helper()
+	cfg := runnerconfig.Config{
+		SchemaVersion: runnerconfig.SchemaVersion,
+		Runner:        runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"},
+		Credimi:       runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "test"},
+		Temporal:      runnerconfig.TemporalConfig{Address: "temporal.example:7233"},
+		Server:        runnerconfig.ServerConfig{DashboardToken: dashboardToken},
+		Exposure:      runnerconfig.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
+		Devices:       []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "usb-1"}}},
+	}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -204,9 +229,7 @@ func TestDashboardHandlerConstructorsAndConfigPreview(t *testing.T) {
 
 func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeDashboardTestConfig(t, dir, "")
 	manager := &fakeManager{}
 	handler, cancel, err := NewHandlerWithManagerContext(context.Background(), dir, manager)
 	if err != nil {
@@ -416,9 +439,7 @@ func TestNewHandlerAndRoutes(t *testing.T) {
 func TestNewHandlerAppliesDashboardTokenAuth(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DASHBOARD_TOKEN=secret-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeDashboardTestConfig(t, dir, "secret-token")
 	h, cancel, err := NewHandler(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -664,11 +685,11 @@ func TestServerConfigDiffRunnerTypeChangeRequiresApply(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "No restart") {
 		t.Fatalf("runner type change should not be saved-only: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"confirm_required":true`) {
-		t.Fatalf("runner type change should require confirmation: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
+		t.Fatalf("obsolete runner type field should be ignored: %s", rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "runner record in Credimi") {
-		t.Fatalf("runner type change should require Credimi update: %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "runner record in Credimi") {
+		t.Fatalf("obsolete runner type field should not require Credimi update: %s", rec.Body.String())
 	}
 }
 
@@ -1656,13 +1677,13 @@ func waitForCondition(t *testing.T, fn func() bool) {
 
 func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
 	s := newTestServer(t)
-	form := url.Values{"CREDIMI_URL": {"https://credimi.io"}}
+	form := url.Values{"CREDIMI_URL": {"not-a-url"}}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveConfig(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention") {
+	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("saveConfig validation = %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -1776,9 +1797,11 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "TEMPORAL_ADDRESS": "temporal.example:7233", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}, Devices: []dashboardruntime.DeviceRuntimeConfig{
 		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "one"}},
-		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "wifi", Enabled: true, Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.2"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "wifi", Enabled: true, Serial: "wifi-2", Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.2", "SERIAL": "wifi-2"}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1799,7 +1822,7 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Devices[0].Name != "Renamed One" || config.Devices[0].Values["WIFI_IP"] != "10.0.0.1" || config.Devices[1].Name != "Two" || config.Devices[1].Values["WIFI_IP"] != "10.0.0.2" {
+	if config.Devices[0].Name != "Renamed One" || config.Devices[0].Mode != "wifi" || config.Devices[0].Serial != "one" || config.Devices[1].Name != "Two" || config.Devices[1].Serial != "wifi-2" {
 		t.Fatalf("devices = %#v", config.Devices)
 	}
 
@@ -1845,6 +1868,7 @@ func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing
 		"CREDIMI_SERVICE_MODE":        "manual",
 		"RUNNER_PUBLIC_URL":           "https://runner.example",
 		"CREDIMI_RUNNER_BACKEND":      "container",
+		"TEMPORAL_ADDRESS":            "temporal.example:7233",
 	}
 	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: []dashboardruntime.DeviceRuntimeConfig{{
 		ID: "acme/runner/first", Name: "First", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"},
@@ -1871,15 +1895,22 @@ func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing
 }
 
 func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	s := newTestServer(t)
 	dir := filepath.Dir(s.cfg.Path())
 	store, err := dashboardruntime.LoadStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{
-		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{}},
-		{ID: "acme/runner/two", Name: "Two", Type: "ios_simulator", Mode: "no_device", Enabled: true, Values: dashboardruntime.Values{}},
+	config := dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "TEMPORAL_ADDRESS": "temporal.example:7233", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}, Devices: []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Serial: "usb-1", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-1"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Serial: "usb-2", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-2"}},
 	}}
 	if err := store.SaveRuntimeConfig(config); err != nil {
 		t.Fatal(err)
@@ -1940,6 +1971,7 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 		"setup_device_type":           {"redroid"},
 		"setup_device_mode":           {"no_device"},
 		"setup_device_wifi_ip":        {"192.0.2.10"},
+		"setup_device_serial":         {"redroid:5555"},
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))

@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"path/filepath"
+	"time"
+)
 
 func ApplyDefaults(cfg *Config) error {
 	if cfg.Server.APIListen == "" {
@@ -28,26 +31,26 @@ func ApplyDefaults(cfg *Config) error {
 		}
 		cfg.Storage.StateDir = stateDir
 	}
-	if cfg.Android.AgentImage == "" {
-		cfg.Android.AgentImage = "ghcr.io/forkbombeu/credimi-runner-agent:latest"
+	if cfg.Storage.TempDir == "" {
+		cfg.Storage.TempDir = filepath.Join(cfg.Storage.StateDir, "tmp")
 	}
-	if cfg.Android.AgentPullPolicy == "" {
-		cfg.Android.AgentPullPolicy = "if-not-present"
+	if cfg.Android.RunnerImage == "" {
+		cfg.Android.RunnerImage = "ghcr.io/forkbombeu/credimi-runner:latest"
 	}
-	if cfg.Android.AgentHostPort == 0 {
-		cfg.Android.AgentHostPort = 8060
+	if cfg.Android.PullPolicy == "" {
+		cfg.Android.PullPolicy = "if-not-present"
 	}
-	if cfg.Android.AgentContainerPort == 0 {
-		cfg.Android.AgentContainerPort = 8060
+	if cfg.Android.Network == "" {
+		cfg.Android.Network = "credimi-runner"
 	}
-	if cfg.Android.AgentNetwork == "" {
-		cfg.Android.AgentNetwork = "credimi-runner"
-	}
-	if cfg.Android.CommonDataVolume == "" {
-		cfg.Android.CommonDataVolume = "credimi-runner-agent-data"
+	if cfg.Android.StateVolume == "" {
+		cfg.Android.StateVolume = "credimi-runner-state"
 	}
 	if cfg.Android.ToolCacheVolume == "" {
-		cfg.Android.ToolCacheVolume = "credimi-runner-agent-tools"
+		cfg.Android.ToolCacheVolume = "credimi-runner-tools"
+	}
+	if cfg.Android.SDKVolume == "" {
+		cfg.Android.SDKVolume = "credimi-runner-sdk"
 	}
 	return nil
 }

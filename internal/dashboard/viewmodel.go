@@ -414,7 +414,7 @@ func (d PageData) SetupSteps() []SetupStep {
 		{
 			ID:      "review",
 			Title:   "Review",
-			Summary: "Write .env, generate docker-compose.yaml, and start services.",
+			Summary: "Write config.toml and start the runner services.",
 		},
 	}
 }

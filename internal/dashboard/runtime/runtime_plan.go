@@ -86,7 +86,7 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	fingerprint := configFingerprint(canonicalDir, values)
 	plan := RuntimePlan{
 		ConfigDir:         configDir,
-		EnvPath:           filepathJoin(configDir, ".env"),
+		EnvPath:           filepathJoin(configDir, "config.toml"),
 		ComposePath:       filepathJoin(configDir, "docker-compose.yaml"),
 		ComposeProject:    composeProjectName(canonicalDir),
 		ConfigFingerprint: fingerprint,
@@ -133,7 +133,7 @@ func configFingerprint(configDir string, values Values) string {
 }
 
 func composeArgs(plan RuntimePlan, command ...string) []string {
-	args := []string{"compose", "--project-name", plan.ComposeProject, "--env-file", plan.EnvPath, "-f", plan.ComposePath}
+	args := []string{"compose", "--project-name", plan.ComposeProject, "-f", plan.ComposePath}
 	return append(args, command...)
 }
 

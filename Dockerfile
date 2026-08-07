@@ -30,153 +30,19 @@ RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache \
     -ldflags "-s -w -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version=${VERSION} -X github.com/forkbombeu/credimi-runner/internal/buildinfo.BuildTime=${BUILD_TIME}" \
     -o /out/credimi-runner main.go
 
-FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
-
-
-############################
-# Base runtime (physical devices)
-############################
-FROM ubuntu:24.04 AS device
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    bash \
-    jq \
-    openjdk-17-jre-headless \
-    usbutils \
-    unzip \
-    adb \
-    aapt \
-    ffmpeg \
-    fontconfig \
-    fonts-noto-mono \
-    fonts-noto-color-emoji \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN mkdir -p /etc/fonts/conf.d && \
-    printf '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <alias>\n    <family>monospace</family>\n    <prefer>\n      <family>Noto Color Emoji</family>\n    </prefer>\n  </alias>\n</fontconfig>' \
-    > /etc/fonts/conf.d/51-emoji-monospace.conf && \
-    fc-cache -fv
-
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    LC_CTYPE=C.UTF-8 \
-    JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8"
-
-# Install Maestro via official installer
-RUN curl -fsSL https://get.maestro.mobile.dev | bash \
-    && ln -s /root/.maestro/bin/maestro /usr/local/bin/maestro
-
+FROM ubuntu:24.04
 COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
-COPY --from=avdctl /usr/local/bin/avdctl /usr/local/bin/avdctl
-COPY --from=builder /src/pkg/server/docs /src/pkg/server/docs
-COPY --from=builder /src/pkg/gen/http /src/pkg/gen/http
-RUN chmod +x /usr/local/bin/credimi-runner /usr/local/bin/avdctl
-
-ENV CREDIMI_TEMP_DIR=/credimi/
-RUN mkdir -p ${CREDIMI_TEMP_DIR}/workflows
-
-# Physical-device entrypoint
-COPY scripts/entrypoint.sh /usr/local/bin/phone-connect
-RUN chmod +x /usr/local/bin/phone-connect
-
-ENTRYPOINT ["/usr/local/bin/phone-connect"]
-CMD ["--inventory"]
-
-############################
-# Phone runtime alias (for CI target compatibility)
-############################
-FROM device AS phone
-
-############################
-# Emulator runtime (extends device)
-############################
-FROM device AS emulator
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-    wget \
-    git \
-    psmisc \
-    qemu-kvm \
-    qemu-utils \
-    libvirt-daemon-system \
-    libvirt-clients \
-    bridge-utils \
-    libxkbfile1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxi6 \
-    libxrandr2 \
-    libxtst6 \
-    libnss3 \
-    libxdamage1 \
-    libxrender1 \
-    libatk1.0-0 \
-    libcairo2 \
-    libdbus-1-3 \
-    libgl1 \
-    libgtk-3-0 \
-    libpulse0 \
-    && rm -rf /var/lib/apt/lists/*
-
-
-
-WORKDIR /opt
-
-# Android SDK
-ENV ANDROID_SDK_ROOT=/opt/android-sdk
-ENV ANDROID_HOME=$ANDROID_SDK_ROOT
-ENV PATH=$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/build-tools/35.0.0:$PATH
-
-RUN mkdir -p $ANDROID_SDK_ROOT/cmdline-tools \
-    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip \
-    && unzip -q cmdline-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools \
-    && mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest \
-    && rm cmdline-tools.zip
-
-RUN --mount=type=cache,target=/opt/android-sdk/.android/cache \
-    --mount=type=cache,target=/opt/android-sdk/system-images \
-    yes | sdkmanager --licenses > /dev/null || true
-
-RUN sdkmanager --update
-RUN sdkmanager --install \
-    "platform-tools" \
-    "platforms;android-35" \
-    "system-images;android-35;google_apis_playstore;x86_64" \
-    "emulator" \
-    "build-tools;35.0.0"
-
-RUN rm -rf ${ANDROID_HOME}/emulator \
-    && wget -q https://dl.google.com/android/repository/emulator-linux_x64-13025442.zip -O emulator-linux_x64-13025442.zip \
-    && unzip -q emulator-linux_x64-13025442.zip -d ${ANDROID_HOME}/ \
-    && rm emulator-linux_x64-13025442.zip \
-    && ${ANDROID_HOME}/emulator/emulator -version
-
-RUN echo "auto.update=false" >> ${ANDROID_HOME}/emulator/emulator-user.ini
-
-# AVDs are stored outside /root/.android so mounting adb keys does not hide base AVDs.
-ENV ANDROID_AVD_HOME=/avd-home
-ENV AVDCTL_GOLDEN_DIR=/avd-golden
-RUN mkdir -p ${ANDROID_AVD_HOME} ${AVDCTL_GOLDEN_DIR}
-
-ARG ADB_PRIVATE_KEY
-ARG ADB_PUBLIC_KEY
-RUN set -eux; \
-    mkdir -p /root/.android; \
-    if [ -n "${ADB_PRIVATE_KEY:-}" ]; then \
-    printf "%s\n" "$ADB_PRIVATE_KEY" > /root/.android/adbkey; \
-    chmod 600 /root/.android/adbkey; \
-    fi; \
-    if [ -n "${ADB_PUBLIC_KEY:-}" ]; then \
-    printf "%s\n" "$ADB_PUBLIC_KEY" > /root/.android/adbkey.pub; \
-    chmod 644 /root/.android/adbkey.pub; \
-    fi
-
-
-ENTRYPOINT ["/usr/local/bin/phone-connect"]
-CMD ["--inventory"]
+ENV DEBIAN_FRONTEND=noninteractive \
+    ANDROID_SDK_ROOT=/opt/android-sdk \
+    ANDROID_HOME=/opt/android-sdk \
+    ANDROID_AVD_HOME=/var/lib/credimi-runner/avd \
+    PATH=/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:/opt/android-sdk/cmdline-tools/latest/bin:/root/.maestro/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl bash openjdk-17-jre-headless openssh-client adb ffmpeg \
+    unzip wget qemu-kvm qemu-utils libxkbfile1 libxcomposite1 libxcursor1 libxi6 \
+    libxrandr2 libxtst6 libnss3 libxdamage1 libxrender1 libatk1.0-0 libcairo2 \
+    libdbus-1-3 libgl1 libgtk-3-0 libpulse0 && \
+    curl -fsSL https://get.maestro.mobile.dev | bash && \
+    chmod 0555 /usr/local/bin/credimi-runner && \
+    rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["/usr/local/bin/credimi-runner"]

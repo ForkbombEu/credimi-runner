@@ -10,16 +10,19 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	controller "github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
+	runnerruntime "github.com/forkbombeu/credimi-runner/internal/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +43,9 @@ var dashboardSignalSource = func() (<-chan os.Signal, func()) {
 
 func runDashboard(cmd *cobra.Command, args []string) error {
 	configDir := dashboardConfigDir
+	if configPath != "" {
+		configDir = filepath.Dir(configPath)
+	}
 	if configDir == "" {
 		configDir = dashboard.ConfigDir()
 	}
@@ -52,15 +58,24 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	store, err := dashboardruntime.LoadStore(configDir)
+	config, err := dashboard.LoadConfig(configDir)
 	if err != nil {
 		return err
+	}
+	if config.Exists() {
+		typed, err := runnerconfig.LoadFile(config.Path())
+		if err != nil {
+			return err
+		}
+		if _, err := runnerruntime.Select(typed, runtime.GOOS); err != nil {
+			return err
+		}
 	}
 	binaryPath, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	values, err := dashboardruntime.NormalizeValues(store.Snapshot(), runtime.GOOS)
+	values, err := dashboardruntime.NormalizeValues(config.Snapshot(), runtime.GOOS)
 	if err != nil {
 		return err
 	}

@@ -225,18 +225,13 @@ func validateExposure(cfg ExposureConfig) error {
 }
 
 func validateAndroid(cfg AndroidConfig) error {
-	if err := required("android.agent_image", cfg.AgentImage); err != nil {
+	if err := required("android.runner_image", cfg.RunnerImage); err != nil {
 		return err
 	}
-	if cfg.AgentPullPolicy != "always" && cfg.AgentPullPolicy != "if-not-present" && cfg.AgentPullPolicy != "never" {
-		return errorsf("android.agent_pull_policy must be always, if-not-present, or never")
+	if cfg.PullPolicy != "always" && cfg.PullPolicy != "if-not-present" && cfg.PullPolicy != "never" {
+		return errorsf("android.pull_policy must be always, if-not-present, or never")
 	}
-	for name, port := range map[string]int{"agent_host_port": cfg.AgentHostPort, "agent_container_port": cfg.AgentContainerPort} {
-		if port < 1 || port > 65535 {
-			return fmt.Errorf("android.%s must be between 1 and 65535", name)
-		}
-	}
-	for name, value := range map[string]string{"agent_network": cfg.AgentNetwork, "common_data_volume": cfg.CommonDataVolume, "tool_cache_volume": cfg.ToolCacheVolume} {
+	for name, value := range map[string]string{"network": cfg.Network, "state_volume": cfg.StateVolume, "tool_cache_volume": cfg.ToolCacheVolume, "sdk_volume": cfg.SDKVolume} {
 		if err := required("android."+name, value); err != nil {
 			return err
 		}

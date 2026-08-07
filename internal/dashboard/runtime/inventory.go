@@ -249,21 +249,18 @@ func (s *Store) RuntimeConfig() (RunnerRuntimeConfig, error) {
 	return parseRunnerRuntimeConfig(s.Values)
 }
 
-// RuntimeConfigFromEnvironment validates the one root dotenv file after it has
-// been loaded into the process environment (or an equivalent deployment
-// environment has injected it).
+// RuntimeConfigFromEnvironment is retained as a source-compatible name for
+// the GoA server. The runner configuration is loaded from typed TOML; process
+// environment values are not accepted as a configuration source.
 func RuntimeConfigFromEnvironment() (RunnerRuntimeConfig, error) {
-	values := Values{}
-	for _, entry := range os.Environ() {
-		key, value, ok := strings.Cut(entry, "=")
-		if !ok {
-			continue
-		}
-		if _, known := RunnerKeys[key]; known || strings.HasPrefix(key, "CREDIMI_DEVICE_") {
-			values[key] = value
-		}
+	store, err := LoadStore(DefaultConfigDir())
+	if err != nil {
+		return RunnerRuntimeConfig{}, err
 	}
-	return parseRunnerRuntimeConfig(values)
+	if !store.Exists() {
+		return RunnerRuntimeConfig{}, fmt.Errorf("runner config.toml is required")
+	}
+	return store.RuntimeConfig()
 }
 
 // SaveRuntimeConfig atomically writes host keys followed by deterministic device
@@ -320,7 +317,11 @@ func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 			lines = append(lines, line)
 		}
 	}
-	return s.write(strings.Join(lines, "\n")+"\n", values)
+	typed, err := configFromLegacyValues(values)
+	if err != nil {
+		return err
+	}
+	return s.writeTOML(typed, values)
 }
 
 func SortedRunnerKeys() []string {

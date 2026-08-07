@@ -1029,7 +1029,7 @@ func TestLifecycleManagerStopComposeFollowerNilDone(t *testing.T) {
 }
 
 func TestComposeLogArgsIncludesSince(t *testing.T) {
-	plan := RuntimePlan{EnvPath: "/tmp/.env", ComposePath: "/tmp/docker-compose.yaml"}
+	plan := RuntimePlan{EnvPath: "/tmp/config.toml", ComposePath: "/tmp/docker-compose.yaml"}
 	args := composeLogArgs(plan, 50, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 	if !strings.Contains(strings.Join(args, " "), "--since 2026-01-02T03:04:05Z") {
 		t.Fatalf("composeLogArgs missing --since: %#v", args)
@@ -1037,7 +1037,7 @@ func TestComposeLogArgsIncludesSince(t *testing.T) {
 }
 
 func TestComposeLogArgsCanIncludeHistoricalLogs(t *testing.T) {
-	plan := RuntimePlan{EnvPath: "/tmp/.env", ComposePath: "/tmp/docker-compose.yaml"}
+	plan := RuntimePlan{EnvPath: "/tmp/config.toml", ComposePath: "/tmp/docker-compose.yaml"}
 	args := composeLogArgs(plan, -1000, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "--since") {

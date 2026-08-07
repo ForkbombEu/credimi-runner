@@ -1,23 +1,26 @@
 package dashboard
 
 import (
-	"bufio"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config: typed view over ~/.config/credimi/runner/.env
+// Config: compatibility view over the typed TOML runner configuration.
 //
-// The field registry drives both the rendered form and the .env round-trip, so
+// The field registry drives both the rendered form and the TOML compatibility
+// mapping, so
 // there is exactly one place to add or change a setting.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -83,10 +86,10 @@ var fieldByKey = func() map[string]Field {
 	return m
 }()
 
-// Defaults applied when the .env is missing a key.
+// Defaults applied when the TOML file is missing a key.
 var Defaults = map[string]string(dashboardruntime.DefaultValues())
 
-// Config is a concurrency-safe key/value store backed by the .env file.
+// Config is a concurrency-safe compatibility view backed by config.toml.
 type Config struct {
 	mu      sync.RWMutex
 	path    string
@@ -100,40 +103,25 @@ func ConfigDir() string {
 }
 
 func LoadConfig(dir string) (*Config, error) {
-	c := &Config{path: filepath.Join(dir, ".env"), values: map[string]string{}}
+	c := &Config{path: filepath.Join(dir, "config.toml"), values: map[string]string{}}
 	for k, v := range Defaults {
 		c.values[k] = v
 	}
-	f, err := os.Open(c.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return c, nil // first run — defaults only
-		}
+	if _, err := os.Stat(c.path); os.IsNotExist(err) {
+		return c, nil
+	} else if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	known := fieldByKey
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		t := strings.TrimSpace(line)
-		if t == "" || strings.HasPrefix(t, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(t, "=")
-		if !ok {
-			continue
-		}
-		k = strings.TrimSpace(k)
-		v = unquote(strings.TrimSpace(v))
-		if _, isKnown := known[k]; isKnown || strings.HasPrefix(k, "CREDIMI_DEVICE_") {
-			c.values[k] = v
-		} else {
-			c.rawTail = append(c.rawTail, k+"="+v) // keep unknown keys
-		}
+	cfg, err := runnerconfig.LoadFile(c.path)
+	if err != nil {
+		return nil, err
 	}
-	return c, sc.Err()
+	values, err := valuesFromTOML(cfg)
+	if err != nil {
+		return nil, err
+	}
+	c.values = values
+	return c, nil
 }
 
 func (c *Config) Exists() bool {
@@ -206,7 +194,7 @@ func Validate(vals map[string]string) map[string]string {
 	return errs
 }
 
-// Apply validates and persists incoming form values, then writes .env atomically.
+// Apply validates and persists incoming form values as typed TOML atomically.
 func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
 	normalized, err := normalizedConfigValues(c.Snapshot(), incoming, currentGOOS())
 	if err != nil {
@@ -238,38 +226,15 @@ func normalizedConfigValues(current, incoming map[string]string, goos string) (d
 	return dashboardruntime.NormalizeValues(dashboardruntime.Values(next), goos)
 }
 
-// write serializes the config to .env atomically with 0600 perms.
+// write converts the compatibility form values to typed TOML atomically.
 func (c *Config) write() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
-	var b strings.Builder
-	b.WriteString("# ~/.config/credimi/runner/.env\n# Managed by the credimi-runner dashboard\n\n")
-	group := ""
-	for _, f := range Registry {
-		if f.Group != group {
-			group = f.Group
-			fmt.Fprintf(&b, "# ── %s ──\n", group)
-		}
-		fmt.Fprintf(&b, "%s=%s\n", f.Key, quote(c.values[f.Key]))
-	}
-	writeIndexedDeviceBlocks(&b, c.values)
-	if len(c.rawTail) > 0 {
-		b.WriteString("\n# ── Preserved ──\n")
-		for _, l := range c.rawTail {
-			b.WriteString(l)
-			b.WriteByte('\n')
-		}
-	}
-
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
+	cfg, err := configFromValues(c.values)
+	if err != nil {
 		return err
 	}
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(b.String()), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, c.path) // atomic on same filesystem
+	return runnerconfig.WriteFile(c.path, cfg)
 }
 
 func writeIndexedDeviceBlocks(b *strings.Builder, values map[string]string) {
@@ -291,12 +256,13 @@ func writeIndexedDeviceBlocks(b *strings.Builder, values map[string]string) {
 	}
 }
 
-// RawEnv renders the .env text. When mask is true, secrets are partially hidden.
+// RawEnv renders the compatibility view. When mask is true, secrets are
+// partially hidden; the persisted source of truth remains TOML.
 func (c *Config) RawEnv(mask bool) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	var b strings.Builder
-	b.WriteString("# ~/.config/credimi/runner/.env\n# Managed by the credimi-runner dashboard\n\n")
+	b.WriteString("# config.toml compatibility view\n# Managed by the credimi-runner dashboard\n\n")
 	group := ""
 	for _, f := range Registry {
 		if f.Group != group {
@@ -310,6 +276,140 @@ func (c *Config) RawEnv(mask bool) string {
 		fmt.Fprintf(&b, "%s=%s\n", f.Key, v)
 	}
 	return b.String()
+}
+
+// valuesFromTOML exposes the historical field names to the unchanged
+// dashboard templates and handlers. It is deliberately one-way at the UI
+// boundary: the file on disk remains typed TOML.
+func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
+	values := map[string]string{}
+	for k, v := range Defaults {
+		values[k] = v
+	}
+	values["CREDIMI_URL"] = cfg.Credimi.URL
+	values["CREDIMI_RUNNER_ID"] = cfg.Runner.ID
+	values["CREDIMI_RUNNER_NAME"] = cfg.Runner.Name
+	values["CREDIMI_RUNNER_ORGANIZATION"] = cfg.Runner.Organization
+	values["CREDIMI_RUNNER_DESCRIPTION"] = cfg.Runner.Description
+	values["CREDIMI_RUNNER_PUBLISHED"] = strconv.FormatBool(cfg.Runner.Published)
+	values["CREDIMI_USER_API_KEY"] = cfg.Credimi.UserAPIKey
+	values["CREDIMI_INTERNAL_ADMIN_KEY"] = cfg.Credimi.InternalAdminKey
+	values["TEMPORAL_ADDRESS"] = cfg.Temporal.Address
+	values["DASHBOARD_TOKEN"] = cfg.Server.DashboardToken
+	values["OTEL_ENABLED"] = strconv.FormatBool(cfg.Observability.Enabled)
+	values["OTEL_EXPORTER_OTLP_ENDPOINT"] = cfg.Observability.OTLPEndpoint
+	values["OTEL_SERVICE_NAME"] = cfg.Observability.ServiceName
+	values["CREDIMI_TEMP_DIR"] = cfg.Storage.TempDir
+	if host, port, err := net.SplitHostPort(cfg.Server.APIListen); err == nil {
+		values["RUNNER_HOST"], values["RUNNER_PORT"] = host, port
+	}
+	if host, port, err := net.SplitHostPort(cfg.Server.DashboardListen); err == nil {
+		values["DASHBOARD_HOST"], values["DASHBOARD_PORT"] = host, port
+	}
+	switch cfg.Exposure.Mode {
+	case "quick_tunnel":
+		values["CREDIMI_SERVICE_MODE"] = "auto"
+	case "named_tunnel":
+		values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
+	default:
+		values["CREDIMI_SERVICE_MODE"] = "manual"
+	}
+	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
+	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
+	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
+	for i, device := range cfg.Devices {
+		prefix := fmt.Sprintf("CREDIMI_DEVICE_%d_", i+1)
+		values[prefix+"ID"] = device.ID
+		values[prefix+"NAME"] = device.Name
+		values[prefix+"DESCRIPTION"] = device.Description
+		values[prefix+"ENABLED"] = strconv.FormatBool(device.Enabled)
+		legacyType := string(device.Type)
+		if device.Type == runnerconfig.DeviceAndroidPhysical {
+			legacyType = "android_phone"
+		}
+		values[prefix+"TYPE"] = legacyType
+		switch device.Type {
+		case runnerconfig.DeviceAndroidPhysical:
+			values[prefix+"MODE"] = device.AndroidPhysical.Transport
+			values[prefix+"SERIAL"] = device.AndroidPhysical.Serial
+		case runnerconfig.DeviceAndroidEmulator:
+			values[prefix+"MODE"] = "emulator"
+			values[prefix+"AVD_NAME"] = device.AndroidEmulator.AVDName
+			values[prefix+"BASE_NAME"] = device.AndroidEmulator.BaseName
+			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
+		case runnerconfig.DeviceRedroid:
+			values[prefix+"MODE"] = "redroid"
+			values[prefix+"SERIAL"] = device.Redroid.Serial
+			values[prefix+"REDROID_DATA_DIR"] = device.Redroid.DataDir
+			values[prefix+"REDROID_DATA_TAR"] = device.Redroid.DataArchive
+		case runnerconfig.DeviceIOSSimulator:
+			values[prefix+"MODE"] = "no_device"
+			values[prefix+"IOS_UDID"] = device.IOSSimulator.UDID
+		}
+	}
+	return values, nil
+}
+
+func configFromValues(values map[string]string) (runnerconfig.Config, error) {
+	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(values), currentGOOS())
+	if err != nil {
+		return runnerconfig.Config{}, err
+	}
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner.ID = normalized["CREDIMI_RUNNER_ID"]
+	cfg.Runner.Name = normalized["CREDIMI_RUNNER_NAME"]
+	cfg.Runner.Organization = normalized["CREDIMI_RUNNER_ORGANIZATION"]
+	cfg.Runner.Description = normalized["CREDIMI_RUNNER_DESCRIPTION"]
+	cfg.Runner.Published = isTruthyFormValue(normalized["CREDIMI_RUNNER_PUBLISHED"])
+	cfg.Credimi.URL = normalized["CREDIMI_URL"]
+	cfg.Credimi.UserAPIKey = normalized["CREDIMI_USER_API_KEY"]
+	cfg.Credimi.InternalAdminKey = normalized["CREDIMI_INTERNAL_ADMIN_KEY"]
+	if cfg.Credimi.InternalAdminKey != "" {
+		cfg.Credimi.AuthMode = "internal_admin"
+	}
+	cfg.Temporal.Address = normalized["TEMPORAL_ADDRESS"]
+	cfg.Server.APIListen = net.JoinHostPort(normalized["RUNNER_HOST"], normalized["RUNNER_PORT"])
+	cfg.Server.DashboardListen = net.JoinHostPort(normalized["DASHBOARD_HOST"], normalized["DASHBOARD_PORT"])
+	cfg.Server.DashboardToken = normalized["DASHBOARD_TOKEN"]
+	cfg.Observability.Enabled = isTruthyFormValue(normalized["OTEL_ENABLED"])
+	cfg.Observability.OTLPEndpoint = normalized["OTEL_EXPORTER_OTLP_ENDPOINT"]
+	cfg.Observability.ServiceName = normalized["OTEL_SERVICE_NAME"]
+	cfg.Storage.TempDir = normalized["CREDIMI_TEMP_DIR"]
+	switch normalized["CREDIMI_SERVICE_MODE"] {
+	case "cloudflare-managed":
+		cfg.Exposure.Mode = "named_tunnel"
+	case "manual":
+		cfg.Exposure.Mode = "manual"
+	default:
+		cfg.Exposure.Mode = "quick_tunnel"
+	}
+	cfg.Exposure.PublicURL = normalized["RUNNER_PUBLIC_URL"]
+	cfg.Exposure.CloudflareToken = normalized["CLOUDFLARE_TUNNEL_TOKEN"]
+	parsed, err := dashboardruntime.ParseRuntimeConfig(normalized)
+	if err != nil && strings.TrimSpace(normalized["CREDIMI_DEVICE_COUNT"]) != "" {
+		return runnerconfig.Config{}, err
+	}
+	for _, device := range parsed.Devices {
+		entry := runnerconfig.DeviceConfig{ID: device.ID, Name: device.Name, Description: device.Description, Enabled: device.Enabled}
+		switch device.Type {
+		case "android_phone":
+			entry.Type = runnerconfig.DeviceAndroidPhysical
+			entry.AndroidPhysical = &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode, Serial: device.Serial}
+		case "android_emulator":
+			entry.Type = runnerconfig.DeviceAndroidEmulator
+			entry.AndroidEmulator = &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], BaseName: device.Values["BASE_NAME"], GoldenSource: device.Values["GOLDEN_PATH"], ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", APILevel: 35, MemoryMB: 2048, Cores: 2}
+		case "redroid":
+			entry.Type = runnerconfig.DeviceRedroid
+			entry.Redroid = &runnerconfig.RedroidConfig{Serial: device.Serial, DataDir: device.Values["REDROID_DATA_DIR"], DataArchive: device.Values["REDROID_DATA_TAR"], Image: "redroid:latest", ADBPort: 5555}
+		case "ios_simulator":
+			entry.Type = runnerconfig.DeviceIOSSimulator
+			entry.IOSSimulator = &runnerconfig.IOSSimulatorConfig{UDID: device.Values["IOS_UDID"]}
+		default:
+			return runnerconfig.Config{}, fmt.Errorf("unsupported device type %q", device.Type)
+		}
+		cfg.Devices = append(cfg.Devices, entry)
+	}
+	return cfg, nil
 }
 
 // GroupedFields returns the registry grouped, preserving order.

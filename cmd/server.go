@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	stdlog "log"
 	"net"
 	"net/http"
 	"os"
@@ -36,16 +35,6 @@ var serverCmd = &cobra.Command{
 	Short:  "Start HTTP server to control credimi mobile runner",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Load env from the working directory first, then from the XDG config dir.
-		envPath, err := loadDotEnv()
-		if err != nil {
-			stdlog.Printf("Failed to load .env file: %v", err)
-		} else if envPath == "" {
-			stdlog.Println("No .env file found in current directory or config directory, using environment variables")
-		}
-		if err := validateRequiredRuntimeEnv(); err != nil {
-			return err
-		}
 		if err := setRunnerBootID(); err != nil {
 			return err
 		}

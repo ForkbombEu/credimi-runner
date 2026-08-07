@@ -70,7 +70,8 @@ volumes:
 func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec sharedRunnerRuntime, caddyOnHost bool) {
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", spec.Image, spec.PullPolicy)
 	builder.WriteString("    command:\n      - --inventory\n")
-	builder.WriteString("    env_file:\n      - .env\n")
+	// Configuration is TOML and is mounted by the unified runner container;
+	// Compose must not treat it as a dotenv file.
 	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	if spec.HasADB && spec.NetworkMode != "host" {
 		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")

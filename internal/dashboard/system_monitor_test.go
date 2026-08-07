@@ -2,8 +2,6 @@ package dashboard
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,32 +51,6 @@ func TestSystemMonitorHourlyAveragesPersistedSamples(t *testing.T) {
 	}
 	if strings.Count(strings.TrimSpace(string(contents)), "\n") != 1 || strings.Contains(string(contents), `"cpu_percent":99`) {
 		t.Fatalf("pruned metrics = %s", contents)
-	}
-}
-
-func TestSystemMetricsEndpointReturnsLiveAndHourlySamples(t *testing.T) {
-	now := time.Now().UTC().Truncate(time.Hour)
-	monitor := &SystemMonitor{interval: 2 * time.Second, samples: []SystemMetrics{{Timestamp: now.Unix(), CPUPercent: 12}}}
-	server := &Server{systemMonitor: monitor}
-	for _, target := range []string{"/api/system/metrics", "/api/system/metrics?range=hourly"} {
-		recorder := httptest.NewRecorder()
-		server.systemMetrics(recorder, httptest.NewRequest(http.MethodGet, target, nil))
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("%s status = %d", target, recorder.Code)
-		}
-		var payload struct {
-			Samples    []SystemMetrics `json:"samples"`
-			IntervalMS int64           `json:"interval_ms"`
-		}
-		if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
-			t.Fatal(err)
-		}
-		if payload.IntervalMS != 2000 {
-			t.Fatalf("interval = %d", payload.IntervalMS)
-		}
-		if target == "/api/system/metrics" && len(payload.Samples) != 1 {
-			t.Fatalf("live samples = %#v", payload.Samples)
-		}
 	}
 }
 

@@ -29,8 +29,12 @@ mode = "quick_tunnel"
 artifact_retention = "168h"
 
 [android]
-agent_image = "ghcr.io/forkbombeu/credimi-runner-agent:latest"
-agent_pull_policy = "if-not-present"
+runner_image = "ghcr.io/forkbombeu/credimi-runner:latest"
+pull_policy = "if-not-present"
+network = "credimi-runner"
+state_volume = "credimi-runner-state"
+tool_cache_volume = "credimi-runner-tools"
+sdk_volume = "credimi-runner-sdk"
 
 [[devices]]
 id = "example-org/office-runner/pixel-7"

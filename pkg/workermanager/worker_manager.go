@@ -119,11 +119,14 @@ func runTemporalWorker(namespace, configuredRunnerID string, inventories ...Runn
 				continue
 			}
 
-			maxActivities := 1
+			// Temporal owns concurrency across activities. Credimi's device gate
+			// serializes work touching one device; the runner must not turn that
+			// per-device contract into a global lock.
+			maxActivities := 2
 			if len(inventories) > 0 {
 				maxActivities = len(inventories[0].Devices)
-				if maxActivities < 1 {
-					maxActivities = 1
+				if maxActivities < 2 {
+					maxActivities = 2
 				}
 			}
 			w := temporalWorkerFactory(c, taskqueue, worker.Options{

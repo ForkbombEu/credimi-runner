@@ -4,9 +4,9 @@
     <div>
       <span class="eyebrow">API &amp; configuration</span>
       <h1>API &amp; Config</h1>
-      <p>Everything written to <span class="tag mono">~/.config/credimi/runner/.env</span>. Changes are validated before they reach the running service.</p>
+      <p>Everything is written to the typed <span class="tag mono">config.toml</span>. Changes are validated before they reach the running service.</p>
     </div>
-    <a class="btn btn-out btn-sm" href="/config/raw" target="_blank" rel="noopener">View .env</a>
+    <a class="btn btn-out btn-sm" href="/config/raw" target="_blank" rel="noopener">View config</a>
   </div>
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
@@ -61,7 +61,7 @@
         </div>
         <div data-auth-field="user" {{if eq .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_USER_API_KEY"}}</div>
         <div data-auth-field="admin" {{if ne .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_INTERNAL_ADMIN_KEY"}}</div>
-        <div class="callout warn">{{icon "warn"}}<div>Keys are stored in <b>plaintext</b> in <span class="tag mono">.env</span> with <span class="tag mono">chmod 600</span>. Anyone with read access to this file can act as this runner.</div></div>
+        <div class="callout warn">{{icon "warn"}}<div>Keys are stored in <b>plaintext</b> in private <span class="tag mono">config.toml</span> with <span class="tag mono">chmod 600</span>. Anyone with read access to this file can act as this runner.</div></div>
       </div>
     </section>
 
@@ -87,7 +87,7 @@
     </section>
 
     <div class="savebar" data-savebar hidden>
-      <span class="msg">{{icon "warn"}} Save writes <b>.env</b> and applies the required restart, recreate, or Credimi registration update.</span>
+      <span class="msg">{{icon "warn"}} Save writes <b>config.toml</b> and applies the required restart, recreate, or Credimi registration update.</span>
       <div class="sp"></div>
       <button type="button" class="btn btn-out btn-sm" data-discard>Discard</button>
       <button type="submit" class="btn btn-pri">{{icon "check"}} Save</button>

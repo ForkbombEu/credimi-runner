@@ -113,9 +113,7 @@ func TestRunDashboardGracefullyStopsFromInjectedSignal(t *testing.T) {
 
 func TestDashboardConfiguredStoreExists(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestTOMLConfig(t, dir)
 	store, err := dashboardruntime.LoadStore(dir)
 	if err != nil {
 		t.Fatal(err)

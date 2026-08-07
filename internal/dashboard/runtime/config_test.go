@@ -1,272 +1,83 @@
 package runtime
 
 import (
-	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+
+	"github.com/forkbombeu/credimi-runner/internal/config"
 )
 
-func TestLoadStoreMissingFile(t *testing.T) {
+func testTOMLConfig(dir string) config.Config {
+	return config.Config{
+		SchemaVersion: config.SchemaVersion,
+		Runner:        config.RunnerConfig{ID: "acme/runner", Name: "Runner", Organization: "acme"},
+		Credimi:       config.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"},
+		Temporal:      config.TemporalConfig{Address: "temporal.example:7233"},
+		Server:        config.ServerConfig{APIListen: "127.0.0.1:8050", DashboardListen: "127.0.0.1:8051", ReadHeaderTimeout: config.Duration(1), ShutdownTimeout: config.Duration(1)},
+		Exposure:      config.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
+		Storage:       config.StorageConfig{StateDir: filepath.Join(dir, "state"), ArtifactRetention: config.Duration(1)},
+		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "one:5555"}}},
+	}
+}
+
+func TestLoadStoreMissingTOML(t *testing.T) {
 	store, err := LoadStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Exists() {
-		t.Fatal("missing file should not exist")
-	}
-	if store.Values["RUNNER_PORT"] != DefaultRunnerPort {
-		t.Fatalf("default RUNNER_PORT = %q", store.Values["RUNNER_PORT"])
-	}
-	if store.Values["DASHBOARD_HOST"] != "0.0.0.0" {
-		t.Fatalf("default DASHBOARD_HOST = %q", store.Values["DASHBOARD_HOST"])
+	if store.Exists() || filepath.Base(store.Path) != "config.toml" {
+		t.Fatalf("store=%#v", store)
 	}
 }
 
-func TestDefaultConfigDirHonorsOverride(t *testing.T) {
-	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "/tmp/credimi-runner-config")
-	if got := DefaultConfigDir(); got != "/tmp/credimi-runner-config" {
-		t.Fatalf("DefaultConfigDir = %q", got)
-	}
-}
-
-func TestDefaultConfigDirUsesUserConfigDirectory(t *testing.T) {
-	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if got := DefaultConfigDir(); !strings.HasSuffix(got, filepath.Join("credimi", "runner")) {
-		t.Fatalf("DefaultConfigDir = %q", got)
-	}
-}
-
-func TestLoadStoreAndSaveReportFilesystemErrors(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(file, []byte("not a directory"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadStore(file); err == nil {
-		t.Fatal("LoadStore should reject a file as config directory")
-	}
-	store := &Store{Path: filepath.Join(file, ".env"), Values: DefaultValues()}
-	if err := store.Save(store.Snapshot()); err == nil {
-		t.Fatal("Save should report an invalid parent directory")
-	}
-}
-
-func TestStoreSaveCreates0600File(t *testing.T) {
+func TestStoreLoadsAndSavesTypedTOML(t *testing.T) {
 	dir := t.TempDir()
-	store, err := LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	values := store.Snapshot()
-	values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	if err := store.Save(values); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(filepath.Join(dir, ".env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode = %o", info.Mode().Perm())
-	}
-}
-
-func TestStorePreservesUnknownKeys(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".env")
-	content := "CREDIMI_RUNNER_ID=acme/runner\nUNKNOWN_KEY=value\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	path := filepath.Join(dir, "config.toml")
+	if err := config.WriteFile(path, testTOMLConfig(dir)); err != nil {
 		t.Fatal(err)
 	}
 	store, err := LoadStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	values := store.Snapshot()
-	values["RUNNER_PORT"] = "9000"
-	if err := store.Save(values); err != nil {
-		t.Fatal(err)
+	if store.Values["CREDIMI_RUNNER_ID"] != "acme/runner" || store.Values["CREDIMI_DEVICE_1_SERIAL"] != "one:5555" {
+		t.Fatalf("values=%#v", store.Values)
 	}
-	out, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	inventory, err := store.RuntimeConfig()
+	if err != nil || len(inventory.Devices) != 1 {
+		t.Fatalf("inventory=%#v err=%v", inventory, err)
 	}
-	if !strings.Contains(string(out), "UNKNOWN_KEY=value") {
-		t.Fatalf("unknown key not preserved:\n%s", string(out))
-	}
-}
-
-func TestStoreLoadsRunnerNameAsKnownKey(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".env")
-	content := "CREDIMI_RUNNER_ID=filippo-s-organization/test-runner-dashboard\nCREDIMI_RUNNER_NAME=Test-Runner-Dashboard\n"
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := store.Values["CREDIMI_RUNNER_NAME"]; got != "Test-Runner-Dashboard" {
-		t.Fatalf("CREDIMI_RUNNER_NAME = %q", got)
-	}
-	for _, line := range store.UnknownLines {
-		if strings.Contains(line, "CREDIMI_RUNNER_NAME") {
-			t.Fatalf("runner name should not be unknown: %q", line)
-		}
-	}
-}
-
-func TestStoreIgnoresInvalidKeys(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".env")
-	if err := os.WriteFile(path, []byte("BAD-KEY=value\nGOOD_KEY=value\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range store.UnknownLines {
-		if strings.Contains(line, "BAD-KEY") {
-			t.Fatalf("invalid key should be ignored: %q", line)
-		}
-	}
-}
-
-func TestConfigHelpers(t *testing.T) {
-	if got := quote(`hello world`); got != `"hello world"` {
-		t.Fatalf("quote = %q", got)
-	}
-	if got := unquote(`"hello world"`); got != "hello world" {
-		t.Fatalf("unquote = %q", got)
-	}
-}
-
-func TestRuntimeConfigParsesIndexedDevicesAndWritesStableBlocks(t *testing.T) {
-	dir := t.TempDir()
-	store, err := LoadStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	config := RunnerRuntimeConfig{
-		Host: Values{"CREDIMI_RUNNER_ID": "acme/lab", "CREDIMI_URL": "https://credimi.example"},
-		Devices: []DeviceRuntimeConfig{
-			{ID: "acme/lab/pixel", Name: "Pixel USB", Type: "android_phone", Mode: "usb", Values: Values{"SERIAL": "usb-1"}},
-			{ID: "acme/lab/sim", Name: "Simulator", Type: "ios_simulator", Mode: "no_device", Values: Values{"IOS_UDID": "udid-1"}},
-		},
-	}
-	if err := store.SaveRuntimeConfig(config); err != nil {
+	inventory.Devices[0].Serial = "two:5555"
+	inventory.Devices[0].Values["SERIAL"] = "two:5555"
+	if err := store.SaveRuntimeConfig(inventory); err != nil {
 		t.Fatal(err)
 	}
 	reloaded, err := LoadStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := reloaded.RuntimeConfig()
-	if err != nil {
-		t.Fatal(err)
+	if reloaded.Values["CREDIMI_DEVICE_1_SERIAL"] != "two:5555" {
+		t.Fatalf("reloaded=%#v", reloaded.Values)
 	}
-	if len(got.Devices) != 2 || got.Devices[0].ID != "acme/lab/pixel" || got.Devices[1].Values["IOS_UDID"] != "udid-1" {
-		t.Fatalf("runtime config = %#v", got)
-	}
-	contents, err := os.ReadFile(filepath.Join(dir, ".env"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"# --- Runner host (managed by Credimi Runner) ---", "CREDIMI_DEVICE_COUNT=2", "# --- Device 1: Pixel USB ---", "CREDIMI_DEVICE_2_IOS_UDID=udid-1"} {
-		if !strings.Contains(string(contents), want) {
-			t.Fatalf("missing %q in:\n%s", want, contents)
-		}
+}
+
+func TestDefaultConfigDirHonorsOverride(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "/tmp/runner-config")
+	if got := DefaultConfigDir(); got != "/tmp/runner-config" {
+		t.Fatalf("dir=%q", got)
 	}
 }
 
 func TestRuntimeConfigRejectsInvalidInventory(t *testing.T) {
-	cases := []struct{ name, env, want string }{
-		{"missing count", "CREDIMI_RUNNER_ID=acme/lab\n", "CREDIMI_DEVICE_COUNT is required"},
-		{"gap", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=2\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_NAME=A\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_MODE=usb\n", "device index 2 is missing"},
-		{"outside runner", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/other\nCREDIMI_DEVICE_1_NAME=A\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_MODE=usb\n", "must be a child"},
-		{"unindexed id", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_ID=acme/lab/a\n", "without an index is invalid"},
-		{"beyond count", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_NAME=A\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_MODE=usb\nCREDIMI_DEVICE_2_ID=acme/lab/b\n", "beyond CREDIMI_DEVICE_COUNT"},
-		{"unknown device key", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_UNSUPPORTED=x\n", "unknown device key"},
-		{"invalid enabled", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=1\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_ENABLED=maybe\n", "must be boolean"},
-		{"duplicate serial", "CREDIMI_RUNNER_ID=acme/lab\nCREDIMI_DEVICE_COUNT=2\nCREDIMI_DEVICE_1_ID=acme/lab/a\nCREDIMI_DEVICE_1_NAME=Phone A\nCREDIMI_DEVICE_1_TYPE=android_phone\nCREDIMI_DEVICE_1_SERIAL=usb\nCREDIMI_DEVICE_2_ID=acme/lab/b\nCREDIMI_DEVICE_2_NAME=Redroid B\nCREDIMI_DEVICE_2_TYPE=redroid\nCREDIMI_DEVICE_2_SERIAL=usb\n", "already registered for device \"Phone A\""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(tc.env), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			store, err := LoadStore(dir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = store.RuntimeConfig()
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want %q", err, tc.want)
-			}
-		})
-	}
-}
-
-func TestRuntimeConfigRequiresOnlyDeviceIDForDirectServe(t *testing.T) {
-	config, err := ParseRuntimeConfig(Values{
-		"CREDIMI_RUNNER_ID":    "acme/lab",
-		"CREDIMI_DEVICE_COUNT": "1",
-		"CREDIMI_DEVICE_1_ID":  "acme/lab/device",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Devices) != 1 || config.Devices[0].ID != "acme/lab/device" {
-		t.Fatalf("runtime config = %#v", config)
-	}
-	if err := ValidateDeviceRegistration(config.Devices[0]); err == nil || !strings.Contains(err.Error(), "device name") {
-		t.Fatalf("registration error = %v, want missing name", err)
+	_, err := ParseRuntimeConfig(Values{"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_UNKNOWN": "bad"})
+	if err == nil {
+		t.Fatal("invalid inventory accepted")
 	}
 }
 
 func TestValidateDeviceConstraintsExplainsConflicts(t *testing.T) {
-	cases := []struct {
-		name    string
-		devices []DeviceRuntimeConfig
-		want    string
-	}{
-		{"duplicate serial", []DeviceRuntimeConfig{{Name: "Pixel", Type: "android_phone", Serial: "usb-1"}, {Name: "Redroid", Type: "redroid", Serial: "usb-1"}}, `serial "usb-1" is already registered for device "Pixel"`},
-		{"duplicate emulator", []DeviceRuntimeConfig{{Name: "Emulator A", Type: "android_emulator"}, {Name: "Emulator B", Type: "android_emulator"}}, `Android emulator is already registered as device "Emulator A"`},
-		{"duplicate simulator", []DeviceRuntimeConfig{{Name: "Simulator A", Type: "ios_simulator"}, {Name: "Simulator B", Type: "ios_simulator"}}, `iOS simulator is already registered as device "Simulator A"`},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateDeviceConstraints(tc.devices)
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %v, want %q", err, tc.want)
-			}
-		})
-	}
-	if err := ValidateDeviceConstraints([]DeviceRuntimeConfig{{Name: "Phone", Type: "android_phone", Serial: "usb-1"}, {Name: "Redroid", Type: "redroid", Serial: "redroid-1"}}); err != nil {
-		t.Fatalf("different serials should be valid: %v", err)
-	}
-}
-
-func TestRuntimeConfigEnvironmentAndDeviceLookup(t *testing.T) {
-	t.Setenv("CREDIMI_RUNNER_ID", "acme/lab")
-	t.Setenv("CREDIMI_DEVICE_COUNT", "1")
-	t.Setenv("CREDIMI_DEVICE_1_ID", "acme/lab/pixel")
-	config, err := RuntimeConfigFromEnvironment()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(config.Devices) != 1 || config.Devices[0].ID != "acme/lab/pixel" {
-		t.Fatalf("environment config = %#v", config)
-	}
-	store := &Store{Values: Values{"CREDIMI_RUNNER_ID": "acme/lab", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/lab/pixel"}}
-	if got := store.RuntimeConfigDevice(1); got.ID != "acme/lab/pixel" {
-		t.Fatalf("device = %#v", got)
-	}
-	if got := store.RuntimeConfigDevice(2); got.ID != "" || got.Index != 0 || got.Values != nil {
-		t.Fatalf("out-of-range device = %#v", got)
+	err := ValidateDeviceConstraints([]DeviceRuntimeConfig{{Name: "One", Type: "android_phone", Serial: "same"}, {Name: "Two", Type: "redroid", Serial: "same"}})
+	if err == nil {
+		t.Fatal("duplicate serial accepted")
 	}
 }

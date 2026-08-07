@@ -220,7 +220,7 @@ func TestRenderer_HidesIOSSimulatorOnLinux(t *testing.T) {
 	d := PageData{
 		Active:   "setup",
 		Title:    "Setup",
-		Runner:   &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
+		Runner:   &Config{path: "/tmp/credimi/runner/config.toml", values: Defaults},
 		Snapshot: Snapshot{},
 		Pill:     PillData{OK: true, Label: "Setup"},
 	}
@@ -240,7 +240,7 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	}
 	html, err := r.Page("setup", PageData{
 		Active: "setup",
-		Runner: &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
+		Runner: &Config{path: "/tmp/credimi/runner/config.toml", values: Defaults},
 		Pill:   PillData{OK: true, Label: "Setup"},
 	})
 	if err != nil {

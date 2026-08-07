@@ -1,12 +1,16 @@
 package runtime
 
 import (
-	"bufio"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
 
 type Values map[string]string
@@ -17,8 +21,6 @@ type Store struct {
 	UnknownLines []string
 	exists       bool
 }
-
-var validEnvKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func DefaultConfigDir() string {
 	if dir := strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")); dir != "" {
@@ -38,91 +40,138 @@ func LoadStore(configDir string) (*Store, error) {
 	}
 
 	store := &Store{
-		Path:   filepath.Join(configDir, ".env"),
+		Path:   filepath.Join(configDir, "config.toml"),
 		Values: DefaultValues(),
 	}
 
-	file, err := os.Open(store.Path)
+	cfg, err := runnerconfig.LoadFile(store.Path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return store, nil
 		}
 		return nil, err
 	}
-	defer file.Close()
-
 	store.exists = true
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			store.UnknownLines = append(store.UnknownLines, line)
-			continue
-		}
-
-		key, rawValue, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-
-		key = strings.TrimSpace(key)
-		if !validEnvKey.MatchString(key) {
-			continue
-		}
-
-		value := unquote(strings.TrimSpace(rawValue))
-		if _, known := KnownKeys[key]; known {
-			store.Values[key] = value
-			continue
-		}
-		// Keep all device-prefixed keys in Values so RuntimeConfig can report
-		// malformed indexes and unsupported suffixes instead of silently
-		// treating them as user-managed lines.
-		if strings.HasPrefix(key, "CREDIMI_DEVICE_") {
-			store.Values[key] = value
-			continue
-		}
-		store.UnknownLines = append(store.UnknownLines, key+"="+quote(value))
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
+	store.Values = legacyValuesFromConfig(cfg)
 
 	return store, nil
 }
 
 func (s *Store) Save(values Values) error {
 	snapshot := cloneValues(values)
-	var lines []string
-	for _, key := range SortedKnownKeys() {
-		lines = append(lines, key+"="+quote(snapshot[key]))
-	}
-	for _, line := range s.UnknownLines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		lines = append(lines, line)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
+	cfg, err := configFromLegacyValues(snapshot)
+	if err != nil {
 		return err
 	}
-
-	content := strings.Join(lines, "\n") + "\n"
-	tmpPath := s.Path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0o600); err != nil {
+	if err := runnerconfig.WriteFile(s.Path, cfg); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, s.Path); err != nil {
-		return err
-	}
-
 	s.Values = snapshot
 	s.exists = true
 	return nil
+}
+
+func (s *Store) writeTOML(cfg runnerconfig.Config, values Values) error {
+	if err := runnerconfig.WriteFile(s.Path, cfg); err != nil {
+		return err
+	}
+	s.Values, s.exists = cloneValues(values), true
+	return nil
+}
+
+func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
+	values := DefaultValues()
+	values["CREDIMI_URL"] = cfg.Credimi.URL
+	values["CREDIMI_RUNNER_ID"] = cfg.Runner.ID
+	values["CREDIMI_RUNNER_NAME"] = cfg.Runner.Name
+	values["CREDIMI_RUNNER_ORGANIZATION"] = cfg.Runner.Organization
+	values["CREDIMI_RUNNER_DESCRIPTION"] = cfg.Runner.Description
+	values["CREDIMI_RUNNER_PUBLISHED"] = strconv.FormatBool(cfg.Runner.Published)
+	values["CREDIMI_USER_API_KEY"] = cfg.Credimi.UserAPIKey
+	values["CREDIMI_INTERNAL_ADMIN_KEY"] = cfg.Credimi.InternalAdminKey
+	values["TEMPORAL_ADDRESS"] = cfg.Temporal.Address
+	values["DASHBOARD_TOKEN"] = cfg.Server.DashboardToken
+	if host, port, err := net.SplitHostPort(cfg.Server.APIListen); err == nil {
+		values["RUNNER_HOST"], values["RUNNER_PORT"] = host, port
+	}
+	if host, port, err := net.SplitHostPort(cfg.Server.DashboardListen); err == nil {
+		values["DASHBOARD_HOST"], values["DASHBOARD_PORT"] = host, port
+	}
+	values["CREDIMI_TEMP_DIR"] = cfg.Storage.TempDir
+	switch cfg.Exposure.Mode {
+	case "named_tunnel":
+		values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
+	case "manual":
+		values["CREDIMI_SERVICE_MODE"] = "manual"
+	default:
+		values["CREDIMI_SERVICE_MODE"] = "auto"
+	}
+	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
+	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
+	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
+	for i, device := range cfg.Devices {
+		prefix := devicePrefix(i + 1)
+		values[prefix+"ID"], values[prefix+"NAME"], values[prefix+"DESCRIPTION"] = device.ID, device.Name, device.Description
+		legacyType := string(device.Type)
+		if device.Type == runnerconfig.DeviceAndroidPhysical {
+			legacyType = "android_phone"
+		}
+		values[prefix+"TYPE"], values[prefix+"ENABLED"] = legacyType, strconv.FormatBool(device.Enabled)
+		switch device.Type {
+		case runnerconfig.DeviceAndroidPhysical:
+			values[prefix+"MODE"], values[prefix+"SERIAL"] = device.AndroidPhysical.Transport, device.AndroidPhysical.Serial
+		case runnerconfig.DeviceAndroidEmulator:
+			values[prefix+"MODE"], values[prefix+"AVD_NAME"] = "emulator", device.AndroidEmulator.AVDName
+		case runnerconfig.DeviceRedroid:
+			values[prefix+"MODE"], values[prefix+"SERIAL"] = "redroid", device.Redroid.Serial
+		case runnerconfig.DeviceIOSSimulator:
+			values[prefix+"MODE"], values[prefix+"IOS_UDID"] = "no_device", device.IOSSimulator.UDID
+		}
+	}
+	return values
+}
+
+func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner.ID, cfg.Runner.Name, cfg.Runner.Organization = values["CREDIMI_RUNNER_ID"], values["CREDIMI_RUNNER_NAME"], values["CREDIMI_RUNNER_ORGANIZATION"]
+	cfg.Runner.Description, cfg.Runner.Published = values["CREDIMI_RUNNER_DESCRIPTION"], strings.EqualFold(values["CREDIMI_RUNNER_PUBLISHED"], "true")
+	cfg.Credimi.URL, cfg.Credimi.UserAPIKey, cfg.Credimi.InternalAdminKey = values["CREDIMI_URL"], values["CREDIMI_USER_API_KEY"], values["CREDIMI_INTERNAL_ADMIN_KEY"]
+	if cfg.Credimi.InternalAdminKey != "" {
+		cfg.Credimi.AuthMode = "internal_admin"
+	}
+	cfg.Temporal.Address = values["TEMPORAL_ADDRESS"]
+	cfg.Server.APIListen, cfg.Server.DashboardListen = net.JoinHostPort(values["RUNNER_HOST"], values["RUNNER_PORT"]), net.JoinHostPort(values["DASHBOARD_HOST"], values["DASHBOARD_PORT"])
+	cfg.Server.DashboardToken, cfg.Storage.TempDir = values["DASHBOARD_TOKEN"], values["CREDIMI_TEMP_DIR"]
+	switch values["CREDIMI_SERVICE_MODE"] {
+	case "cloudflare-managed":
+		cfg.Exposure.Mode = "named_tunnel"
+	case "manual":
+		cfg.Exposure.Mode = "manual"
+	default:
+		cfg.Exposure.Mode = "quick_tunnel"
+	}
+	cfg.Exposure.PublicURL, cfg.Exposure.CloudflareToken = values["RUNNER_PUBLIC_URL"], values["CLOUDFLARE_TUNNEL_TOKEN"]
+	runtimeCfg, err := parseRunnerRuntimeConfig(values)
+	if err != nil && strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
+		return cfg, err
+	}
+	for _, device := range runtimeCfg.Devices {
+		entry := runnerconfig.DeviceConfig{ID: device.ID, Name: device.Name, Description: device.Description, Enabled: device.Enabled}
+		switch device.Type {
+		case "android_phone":
+			entry.Type, entry.AndroidPhysical = runnerconfig.DeviceAndroidPhysical, &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode, Serial: device.Serial}
+		case "android_emulator":
+			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, MemoryMB: 2048, Cores: 2}
+		case "redroid":
+			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{Image: "redroid:latest", Serial: device.Serial, DataDir: "/var/lib/credimi-runner/redroid", DataArchive: "/var/lib/credimi-runner/redroid.tar", ADBPort: 5555}
+		case "ios_simulator":
+			entry.Type, entry.IOSSimulator = runnerconfig.DeviceIOSSimulator, &runnerconfig.IOSSimulatorConfig{UDID: device.Values["IOS_UDID"]}
+		default:
+			return cfg, fmt.Errorf("unsupported device type %q", device.Type)
+		}
+		cfg.Devices = append(cfg.Devices, entry)
+	}
+	return cfg, nil
 }
 
 func (s *Store) Snapshot() Values {

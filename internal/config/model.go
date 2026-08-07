@@ -44,6 +44,11 @@ type Config struct {
 	Devices       []DeviceConfig      `toml:"devices"`
 }
 
+// Bootstrap is used by the first-run dashboard before a TOML file exists.
+func Bootstrap() Config {
+	return Config{SchemaVersion: SchemaVersion, Credimi: CredimiConfig{AuthMode: "user"}, Runner: RunnerConfig{}, Server: ServerConfig{APIListen: "0.0.0.0:8050", DashboardListen: "127.0.0.1:8051", OpenBrowser: true}, Exposure: ExposureConfig{Mode: "quick_tunnel"}}
+}
+
 type RunnerConfig struct {
 	ID           string `toml:"id"`
 	Name         string `toml:"name"`
@@ -91,13 +96,13 @@ type StorageConfig struct {
 }
 
 type AndroidConfig struct {
-	AgentImage         string `toml:"agent_image"`
-	AgentPullPolicy    string `toml:"agent_pull_policy"`
-	AgentHostPort      int    `toml:"agent_host_port"`
-	AgentContainerPort int    `toml:"agent_container_port"`
-	AgentNetwork       string `toml:"agent_network"`
-	CommonDataVolume   string `toml:"common_data_volume"`
-	ToolCacheVolume    string `toml:"tool_cache_volume"`
+	RunnerImage     string `toml:"runner_image"`
+	PullPolicy      string `toml:"pull_policy"`
+	Network         string `toml:"network"`
+	StateVolume     string `toml:"state_volume"`
+	ToolCacheVolume string `toml:"tool_cache_volume"`
+	SDKVolume       string `toml:"sdk_volume"`
+	ADBKeysPath     string `toml:"adb_keys_path"`
 }
 
 type DeviceConfig struct {

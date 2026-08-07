@@ -16,7 +16,7 @@ func validConfig() Config {
 		Server:        ServerConfig{APIListen: "127.0.0.1:8050", DashboardListen: "127.0.0.1:8051", ReadHeaderTimeout: Duration(1), ShutdownTimeout: Duration(1)},
 		Exposure:      ExposureConfig{Mode: "quick_tunnel"},
 		Storage:       StorageConfig{StateDir: "/tmp/credimi-state", ArtifactRetention: Duration(1)},
-		Android:       AndroidConfig{AgentImage: "agent:latest", AgentPullPolicy: "never", AgentHostPort: 8060, AgentContainerPort: 8060, AgentNetwork: "net", CommonDataVolume: "data", ToolCacheVolume: "tools"},
+		Android:       AndroidConfig{RunnerImage: "runner:latest", PullPolicy: "never", Network: "net", StateVolume: "data", ToolCacheVolume: "tools", SDKVolume: "sdk"},
 	}
 }
 
@@ -64,11 +64,9 @@ func TestValidateForPlatformRejectsInvalidCombinations(t *testing.T) {
 		{"named token", "linux", "named_tunnel", func(c *Config) { c.Exposure.Mode = "named_tunnel" }},
 		{"quick token", "linux", "quick_tunnel", func(c *Config) { c.Exposure.CloudflareToken = "token" }},
 		{"bad exposure", "linux", "exposure.mode", func(c *Config) { c.Exposure.Mode = "other" }},
-		{"bad port", "linux", "agent_host_port", func(c *Config) { c.Android.AgentHostPort = 0 }},
-		{"bad policy", "linux", "agent_pull_policy", func(c *Config) { c.Android.AgentPullPolicy = "later" }},
-		{"missing agent image", "linux", "android.agent_image", func(c *Config) { c.Android.AgentImage = "" }},
-		{"missing agent network", "linux", "android.agent_network", func(c *Config) { c.Android.AgentNetwork = "" }},
-		{"container port range", "linux", "agent_container_port", func(c *Config) { c.Android.AgentContainerPort = 65536 }},
+		{"bad policy", "linux", "android.pull_policy", func(c *Config) { c.Android.PullPolicy = "later" }},
+		{"missing runner image", "linux", "android.runner_image", func(c *Config) { c.Android.RunnerImage = "" }},
+		{"missing network", "linux", "android.network", func(c *Config) { c.Android.Network = "" }},
 		{"mac USB", "darwin", "does not support Android USB", func(c *Config) { c.Devices = []DeviceConfig{physical("acme/runner/p", "P", "usb", "usb")} }},
 		{"mac emulator", "darwin", "require Linux", func(c *Config) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/e", Name: "E", Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "a", APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "/x", MemoryMB: 1, Cores: 1}}}
@@ -160,7 +158,7 @@ func TestDefaultsPathsAndLoadResolution(t *testing.T) {
 	if cfg.SchemaVersion != 0 {
 		t.Fatal("schema_version must be explicitly configured")
 	}
-	if cfg.Android.AgentImage == "" || cfg.Storage.StateDir == "" || cfg.Server.APIListen == "" {
+	if cfg.Android.RunnerImage == "" || cfg.Storage.StateDir == "" || cfg.Server.APIListen == "" {
 		t.Fatalf("defaults=%#v", cfg)
 	}
 	if _, _, err := Load(filepath.Join(t.TempDir(), "missing.toml")); err == nil {
@@ -322,7 +320,7 @@ func TestValidationHelpersCoverSupportedModesAndDeviceErrors(t *testing.T) {
 	}
 	cfg := validConfig().Android
 	for _, policy := range []string{"always", "if-not-present", "never"} {
-		cfg.AgentPullPolicy = policy
+		cfg.PullPolicy = policy
 		if err := validateAndroid(cfg); err != nil {
 			t.Fatal(err)
 		}

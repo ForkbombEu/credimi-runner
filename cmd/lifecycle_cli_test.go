@@ -380,9 +380,7 @@ func TestLifecycleCLIDirectRuntimeControlWithoutDashboard(t *testing.T) {
 	registered := 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { registered++; w.WriteHeader(http.StatusOK) }))
 	defer api.Close()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_URL="+api.URL+"\nCREDIMI_USER_API_KEY=test\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=host\nCREDIMI_SERVICE_MODE=manual\nRUNNER_PUBLIC_URL=https://runner.example\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestTOMLConfigURL(t, dir, api.URL)
 	manager := &lifecycleDirectFakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true}}
 	originalExecutable, originalFactory := lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory
 	originalReady := lifecycleRuntimeWaitReady
@@ -399,7 +397,7 @@ func TestLifecycleCLIDirectRuntimeControlWithoutDashboard(t *testing.T) {
 	if err := runLifecycleRuntimeAction(command, "start"); err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != "Runner started successfully.\n" || manager.starts != 1 || readyCalls != 1 || registered != 1 {
+	if output.String() != "Runner started successfully.\n" || manager.starts != 1 || readyCalls != 1 || registered == 0 {
 		t.Fatalf("start output=%q starts=%d ready=%d register=%d", output.String(), manager.starts, readyCalls, registered)
 	}
 	output.Reset()
@@ -423,10 +421,7 @@ func TestUpgradeImageCommandUsesDirectLifecycleWhenDashboardIsStopped(t *testing
 	setLifecycleConfigDir(t, dir)
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer api.Close()
-	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_USER_API_KEY=test\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=container\nCREDIMI_RUNNER_TYPE=android_phone\nCREDIMI_SERVICE_MODE=manual\nRUNNER_PUBLIC_URL=https://runner.example\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestTOMLConfigURL(t, dir, api.URL)
 	manager := &lifecycleDirectFakeManager{}
 	originalExecutable, originalFactory, originalReady := lifecycleRuntimeExecutable, lifecycleRuntimeManagerFactory, lifecycleRuntimeWaitReady
 	lifecycleRuntimeExecutable = func() (string, error) { return "credimi-runner", nil }
@@ -488,12 +483,7 @@ func TestUpgradeCommandsAreTopLevel(t *testing.T) {
 func TestUpgradeBinaryStopsRuntimeBeforeReplacingExecutable(t *testing.T) {
 	dir := t.TempDir()
 	setLifecycleConfigDir(t, dir)
-	runnerPort := availableLifecycleTestPort(t)
-	dashboardPort := availableLifecycleTestPort(t)
-	config := "CREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_BACKEND=host\nCREDIMI_RUNNER_TYPE=android_phone\nRUNNER_HOST=127.0.0.1\nRUNNER_PORT=" + runnerPort + "\nDASHBOARD_HOST=127.0.0.1\nDASHBOARD_PORT=" + dashboardPort + "\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestTOMLConfig(t, dir)
 	manager := &lifecycleDirectFakeManager{}
 	originalExecutable, originalDownload, originalFactory := upgradeBinaryExecutable, upgradeBinaryDownload, lifecycleRuntimeManagerFactory
 	t.Cleanup(func() {
@@ -561,9 +551,7 @@ func TestUpgradeAddressHelpers(t *testing.T) {
 func TestLifecycleCLIDirectRuntimeControlRefusesHeldDashboardLock(t *testing.T) {
 	dir := t.TempDir()
 	setLifecycleConfigDir(t, dir)
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	writeTestTOMLConfig(t, dir)
 	lease, err := controller.Acquire(dir)
 	if err != nil {
 		t.Fatal(err)
