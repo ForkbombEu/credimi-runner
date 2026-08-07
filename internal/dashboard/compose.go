@@ -3,8 +3,6 @@ package dashboard
 import dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 
 const (
-	defaultPhoneImage      = dashboardruntime.DefaultPhoneImage
-	defaultEmulatorImage   = dashboardruntime.DefaultEmulatorImage
 	defaultAndroidWiFiPort = dashboardruntime.DefaultWiFiPort
 )
 

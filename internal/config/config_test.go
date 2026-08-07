@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func validConfig() Config {
@@ -67,10 +68,10 @@ func TestValidateForPlatformRejectsInvalidCombinations(t *testing.T) {
 		{"bad policy", "linux", "android.pull_policy", func(c *Config) { c.Android.PullPolicy = "later" }},
 		{"missing runner image", "linux", "android.runner_image", func(c *Config) { c.Android.RunnerImage = "" }},
 		{"missing network", "linux", "android.network", func(c *Config) { c.Android.Network = "" }},
+		{"missing state volume", "linux", "android.state_volume", func(c *Config) { c.Android.StateVolume = "" }},
+		{"missing tool cache volume", "linux", "android.tool_cache_volume", func(c *Config) { c.Android.ToolCacheVolume = "" }},
+		{"missing sdk volume", "linux", "android.sdk_volume", func(c *Config) { c.Android.SDKVolume = "" }},
 		{"mac USB", "darwin", "does not support Android USB", func(c *Config) { c.Devices = []DeviceConfig{physical("acme/runner/p", "P", "usb", "usb")} }},
-		{"mac emulator", "darwin", "require Linux", func(c *Config) {
-			c.Devices = []DeviceConfig{{ID: "acme/runner/e", Name: "E", Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "a", APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "/x", MemoryMB: 1, Cores: 1}}}
-		}},
 		{"linux ios", "linux", "require macOS", func(c *Config) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/i", Name: "I", Type: DeviceIOSSimulator, IOSSimulator: &IOSSimulatorConfig{UDID: "id"}}}
 		}},
@@ -83,6 +84,15 @@ func TestValidateForPlatformRejectsInvalidCombinations(t *testing.T) {
 		{"bad transport", "linux", "transport", func(c *Config) { c.Devices = []DeviceConfig{physical("acme/runner/p", "P", "bluetooth", "x")} }},
 		{"bad redroid port", "linux", "adb_port", func(c *Config) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/r", Name: "R", Type: DeviceRedroid, Redroid: &RedroidConfig{Image: "r", Serial: "r", DataDir: "/d", DataArchive: "/a"}}}
+		}},
+		{"unsupported emulator platform", "windows", "require Linux or macOS", func(c *Config) {
+			c.Devices = []DeviceConfig{{ID: "acme/runner/emulator", Name: "E", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}}
+		}},
+		{"duplicate emulator", "linux", "only one Android emulator", func(c *Config) {
+			emulator := DeviceConfig{ID: "acme/runner/emulator", Name: "E", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}
+			second := emulator
+			second.ID, second.Name, second.AndroidEmulator = "acme/runner/emulator-2", "E2", &AndroidEmulatorConfig{AVDName: "avd-2", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}
+			c.Devices = []DeviceConfig{emulator, second}
 		}},
 	}
 	for _, tc := range cases {
@@ -167,6 +177,24 @@ func TestDefaultsPathsAndLoadResolution(t *testing.T) {
 	var duration Duration
 	if err := duration.UnmarshalText([]byte("broken")); err == nil {
 		t.Fatal("malformed duration should fail")
+	}
+}
+
+func TestBootstrapProvidesFirstRunServerDefaults(t *testing.T) {
+	cfg := Bootstrap()
+	if cfg.SchemaVersion != SchemaVersion || cfg.Server.APIListen != "0.0.0.0:8050" || cfg.Server.DashboardListen != "127.0.0.1:8051" || cfg.Exposure.Mode != "quick_tunnel" || !cfg.Server.OpenBrowser {
+		t.Fatalf("bootstrap config = %#v", cfg)
+	}
+}
+
+func TestDurationRoundTripsText(t *testing.T) {
+	var duration Duration
+	if err := duration.UnmarshalText([]byte("1500ms")); err != nil || duration.Duration() != 1500*time.Millisecond {
+		t.Fatalf("unmarshal duration=%v err=%v", duration.Duration(), err)
+	}
+	encoded, err := duration.MarshalText()
+	if err != nil || string(encoded) != "1.5s" {
+		t.Fatalf("marshal duration=%q err=%v", encoded, err)
 	}
 }
 

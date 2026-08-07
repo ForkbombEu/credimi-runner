@@ -39,7 +39,7 @@ func ComposeYAML(values Values, goos string) (string, error) {
 		if BuildRuntimePlan("", normalized).Backend != DefaultHostBackend {
 			return "", err
 		}
-		spec = sharedRunnerRuntime{Image: DefaultPhoneImage, PullPolicy: DefaultRunnerImagePullPolicy, NetworkMode: "bridge"}
+		spec = sharedRunnerRuntime{Image: normalized["ANDROID_RUNNER_IMAGE"], PullPolicy: normalized["ANDROID_PULL_POLICY"], NetworkMode: "bridge"}
 	}
 
 	var builder strings.Builder
@@ -69,7 +69,7 @@ volumes:
 
 func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec sharedRunnerRuntime, caddyOnHost bool) {
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", spec.Image, spec.PullPolicy)
-	builder.WriteString("    command:\n      - --inventory\n")
+	builder.WriteString("    command:\n      - credimi-runner\n      - internal-runtime\n")
 	// Configuration is TOML and is mounted by the unified runner container;
 	// Compose must not treat it as a dotenv file.
 	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
@@ -77,19 +77,17 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
 	}
 	if spec.HasEmulator {
-		builder.WriteString("      CREDIMI_RUNNER_CONFIG_DIR: /app\n")
-		// credimi-extra's emulator activities read these runtime settings from
-		// their process environment. Keep the inventory indexed, but project the
-		// selected emulator's values into the activity-compatible names.
-		fmt.Fprintf(builder, "      BASE_NAME: ${CREDIMI_DEVICE_%d_BASE_NAME}\n      GOLDEN_PATH: ${CREDIMI_DEVICE_%d_GOLDEN_PATH}\n", spec.EmulatorIndex, spec.EmulatorIndex)
 		builder.WriteString("    devices:\n      - /dev/kvm:/dev/kvm\n")
-		fmt.Fprintf(builder, "    volumes:\n      - ${CREDIMI_DEVICE_%d_ANDROID_KEYS_DIR}:/root/.android\n      - ${CREDIMI_DEVICE_%d_HOST_AVD_HOME_PATH}:/avd-home\n      - ${CREDIMI_DEVICE_%d_HOST_AVD_GOLDEN_PATH}:/avd-golden\n", spec.EmulatorIndex, spec.EmulatorIndex, spec.EmulatorIndex)
-	} else if spec.HasUSB {
-		builder.WriteString("    volumes:\n      - adbkeys:/root/.android\n")
-		if goos == "linux" && spec.NetworkMode != "host" {
-			builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n")
-		}
+	} else if spec.HasUSB && goos == "linux" && spec.NetworkMode != "host" {
+		builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n")
 	}
+	builder.WriteString("    volumes:\n      - ./config.toml:/etc/credimi-runner/config.toml:ro\n")
+	if spec.ADBKeysPath != "" {
+		fmt.Fprintf(builder, "      - %s:/root/.android:ro\n", spec.ADBKeysPath)
+	} else {
+		builder.WriteString("      - adbkeys:/root/.android\n")
+	}
+	fmt.Fprintf(builder, "      - %s:/var/lib/credimi-runner\n      - %s:/opt/credimi-runner/tools\n      - %s:/opt/android-sdk\n", spec.StateVolume, spec.ToolCacheVolume, spec.SDKVolume)
 	if spec.NetworkMode == "host" {
 		builder.WriteString("    network_mode: host\n")
 	} else {
@@ -117,13 +115,16 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 }
 
 type sharedRunnerRuntime struct {
-	Image         string
-	PullPolicy    string
-	NetworkMode   string
-	HasADB        bool
-	HasUSB        bool
-	HasEmulator   bool
-	EmulatorIndex int
+	Image           string
+	PullPolicy      string
+	NetworkMode     string
+	HasADB          bool
+	HasUSB          bool
+	HasEmulator     bool
+	StateVolume     string
+	ToolCacheVolume string
+	SDKVolume       string
+	ADBKeysPath     string
 }
 
 // SharedRunnerImage reports the actual image and pull policy of the one
@@ -141,11 +142,7 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 	if err != nil {
 		return sharedRunnerRuntime{}, err
 	}
-	spec := sharedRunnerRuntime{Image: DefaultPhoneImage, PullPolicy: DefaultRunnerImagePullPolicy, NetworkMode: "bridge"}
-	customImages := map[string]string{}
-	customPolicies := map[string]string{}
-	emulatorImages := map[string]string{}
-	var avdHome, avdGolden, adbKeys string
+	spec := sharedRunnerRuntime{Image: defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), PullPolicy: defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), NetworkMode: "bridge", StateVolume: defaultIfEmpty(values["ANDROID_STATE_VOLUME"], "credimi-runner-state"), ToolCacheVolume: defaultIfEmpty(values["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"), SDKVolume: defaultIfEmpty(values["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"), ADBKeysPath: values["ANDROID_ADB_KEYS_PATH"]}
 	for _, device := range inventory.Devices {
 		if !device.Enabled {
 			continue
@@ -162,7 +159,7 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 			deviceMode = "usb"
 		}
 		if deviceType == "ios_simulator" {
-			return sharedRunnerRuntime{}, fmt.Errorf("iOS simulators require the host runner backend; Docker runner containers cannot access CoreSimulator")
+			return sharedRunnerRuntime{}, fmt.Errorf("iOS simulators require the native backend")
 		}
 		if deviceType != "android_phone" && deviceType != "android_emulator" && deviceType != "redroid" {
 			return sharedRunnerRuntime{}, fmt.Errorf("device %q has unsupported runner type %q", device.ID, deviceType)
@@ -175,76 +172,12 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 		}
 		if deviceType == "android_emulator" {
 			spec.HasEmulator = true
-			if spec.EmulatorIndex == 0 {
-				spec.EmulatorIndex = device.Index
-				avdHome, avdGolden, adbKeys = device.Values["HOST_AVD_HOME_PATH"], device.Values["HOST_AVD_GOLDEN_PATH"], device.Values["ANDROID_KEYS_DIR"]
-			} else if avdHome != device.Values["HOST_AVD_HOME_PATH"] || avdGolden != device.Values["HOST_AVD_GOLDEN_PATH"] || adbKeys != device.Values["ANDROID_KEYS_DIR"] {
-				return sharedRunnerRuntime{}, fmt.Errorf("all Android emulators on one container runner must share Android keys and AVD root paths")
-			}
-		}
-		image := strings.TrimSpace(device.Values["RUNNER_IMAGE"])
-		defaultImage := DefaultPhoneImage
-		if deviceType == "android_emulator" {
-			defaultImage = DefaultEmulatorImage
-		}
-		policy := defaultIfEmpty(device.Values["RUNNER_IMAGE_PULL_POLICY"], DefaultRunnerImagePullPolicy)
-		if image != "" && (image != defaultImage || policy != DefaultRunnerImagePullPolicy) {
-			if existingPolicy, exists := customPolicies[image]; exists && existingPolicy != policy {
-				return sharedRunnerRuntime{}, fmt.Errorf("a shared runner image must use one pull policy; configured device policies differ")
-			}
-			customImages[image] = device.ID
-			customPolicies[image] = policy
-			if deviceType == "android_emulator" {
-				emulatorImages[image] = device.ID
-			}
-		}
-	}
-	if spec.HasEmulator {
-		// The emulator image is a superset of the physical-device runtime. A
-		// mixed inventory therefore runs in one emulator-capable container;
-		// retaining a phone-only override would make the emulator unavailable.
-		// Only emulator overrides select that shared image.
-		if len(emulatorImages) > 1 {
-			return sharedRunnerRuntime{}, fmt.Errorf("a shared runner container supports one emulator runtime image; configured emulator image overrides differ")
-		}
-		spec.Image = DefaultEmulatorImage
-		for image := range emulatorImages {
-			spec.Image = image
-			spec.PullPolicy = customPolicies[image]
-		}
-		// Older inventories stored an image on every device. When a local
-		// phone-only runner gains its first emulator, the new device may still
-		// carry the registry default. Prefer the deterministic sibling of the
-		// already-selected local phone image so no registry pull is attempted.
-		if spec.Image == DefaultEmulatorImage {
-			for image := range customImages {
-				if paired := emulatorSiblingImage(image); paired != "" {
-					spec.Image = paired
-					spec.PullPolicy = customPolicies[image]
-					break
-				}
-			}
-		}
-	} else {
-		if len(customImages) > 1 {
-			return sharedRunnerRuntime{}, fmt.Errorf("a shared runner container supports one runtime image; configured device image overrides differ")
-		}
-		for image := range customImages {
-			spec.Image = image
-			spec.PullPolicy = customPolicies[image]
 		}
 	}
 	if goos == "linux" && spec.HasUSB {
 		spec.NetworkMode = "host"
 	}
 	return spec, nil
-}
-
-func emulatorSiblingImage(image string) string {
-	if strings.Contains(image, "credimi-runner-phone") {
-		return strings.Replace(image, "credimi-runner-phone", "credimi-runner-emulator", 1)
-	}
-	return ""
 }
 
 func writeRunnerHostService(builder *strings.Builder, caddyOnHost bool) {

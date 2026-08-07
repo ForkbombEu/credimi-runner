@@ -44,8 +44,9 @@ func TestNormalizeRunnerIdentityKeepsExplicitValues(t *testing.T) {
 }
 
 func TestNormalizeHelperFunctions(t *testing.T) {
-	if got := defaultServiceBackend("darwin"); got != DefaultHostBackend {
-		t.Fatalf("defaultServiceBackend(darwin) = %q", got)
+	values, err := NormalizeValues(Values{}, "darwin")
+	if err != nil || values["CREDIMI_RUNNER_BACKEND"] != DefaultContainerBackend {
+		t.Fatalf("default backend = %#v, %v", values, err)
 	}
 	if !defaultYesNoChoice("yes", false) || defaultYesNoChoice("no", true) {
 		t.Fatal("defaultYesNoChoice returned unexpected result")
@@ -61,6 +62,14 @@ func TestNormalizeHelperFunctions(t *testing.T) {
 	}
 	if got := canonifyPlain(" Test Runner "); got != "test-runner" {
 		t.Fatalf("canonifyPlain = %q", got)
+	}
+	for input, want := range map[string]string{"quick": "auto", "direct": "manual", "named": "cloudflare-managed", "auto": "auto", "manual": "manual", "unknown": "auto"} {
+		if got := normalizeServiceMode(input); got != want {
+			t.Fatalf("normalizeServiceMode(%q) = %q, want %q", input, got, want)
+		}
+	}
+	if got := resolvedRunnerPublicURL(Values{"CREDIMI_SERVICE_MODE": "auto", "RUNNER_PUBLIC_URL": "https://existing.example"}, "https://fallback.example"); got != "https://fallback.example" {
+		t.Fatalf("resolvedRunnerPublicURL fallback = %q", got)
 	}
 }
 

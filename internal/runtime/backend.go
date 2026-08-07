@@ -17,11 +17,22 @@ const (
 )
 
 func Select(cfg config.Config, goos string) (Backend, error) {
+	types := make([]config.DeviceType, 0, len(cfg.Devices))
+	for _, device := range cfg.Devices {
+		types = append(types, device.Type)
+	}
+	return SelectTypes(types, goos)
+}
+
+// SelectTypes is the single placement policy used by typed and legacy
+// configuration adapters. Device inventory, rather than the host OS alone,
+// determines placement.
+func SelectTypes(types []config.DeviceType, goos string) (Backend, error) {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	for _, device := range cfg.Devices {
-		if device.Type != config.DeviceIOSSimulator {
+	for _, deviceType := range types {
+		if deviceType != config.DeviceIOSSimulator {
 			continue
 		}
 		if goos != "darwin" {

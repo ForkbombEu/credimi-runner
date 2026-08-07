@@ -60,8 +60,6 @@ var Registry = []Field{
 	// Network
 	{Key: "CREDIMI_SERVICE_MODE", Label: "Service mode", Group: "Network", Type: TypeSelect,
 		Options: []string{"auto", "cloudflare-managed", "manual"}, Hint: "auto = quick tunnel · cloudflare-managed = named tunnel · manual = direct."},
-	{Key: "CREDIMI_RUNNER_BACKEND", Label: "Runner backend", Group: "Network", Type: TypeSelect,
-		Options: []string{"container", "host"}, Hint: "container runs the published image; host runs the downloaded binary and uses compose only for edge services."},
 	{Key: "RUNNER_HOST", Label: "Bind host", Group: "Network", Type: TypeText},
 	{Key: "RUNNER_PORT", Label: "Runner port", Group: "Network", Type: TypeText, Hint: "Local runner API port. Default is 8050."},
 	{Key: "RUNNER_CADDY_SITE", Label: "Caddy site address", Group: "Network", Type: TypeText, Hint: "Keep :80 behind Cloudflare Tunnel."},
@@ -76,6 +74,8 @@ var Registry = []Field{
 	{Key: "OTEL_SERVICE_NAME", Label: "Service name", Group: "Observability", Type: TypeText},
 	// Advanced
 	{Key: "CREDIMI_TEMP_DIR", Label: "Temp directory", Group: "Advanced", Type: TypeText},
+	{Key: "ANDROID_RUNNER_IMAGE", Label: "Android runner image", Group: "Advanced", Type: TypeText, Hint: "One image serves every Android device. Use credimi-runner:local for local development."},
+	{Key: "ANDROID_PULL_POLICY", Label: "Android image pull policy", Group: "Advanced", Type: TypeSelect, Options: []string{"if-not-present", "always", "never"}, Hint: "Use never with a locally built image."},
 }
 
 var fieldByKey = func() map[string]Field {
@@ -286,6 +286,12 @@ func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
 	for k, v := range Defaults {
 		values[k] = v
 	}
+	defaultValue := func(value, fallback string) string {
+		if strings.TrimSpace(value) == "" {
+			return fallback
+		}
+		return value
+	}
 	values["CREDIMI_URL"] = cfg.Credimi.URL
 	values["CREDIMI_RUNNER_ID"] = cfg.Runner.ID
 	values["CREDIMI_RUNNER_NAME"] = cfg.Runner.Name
@@ -297,9 +303,16 @@ func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
 	values["TEMPORAL_ADDRESS"] = cfg.Temporal.Address
 	values["DASHBOARD_TOKEN"] = cfg.Server.DashboardToken
 	values["OTEL_ENABLED"] = strconv.FormatBool(cfg.Observability.Enabled)
-	values["OTEL_EXPORTER_OTLP_ENDPOINT"] = cfg.Observability.OTLPEndpoint
-	values["OTEL_SERVICE_NAME"] = cfg.Observability.ServiceName
-	values["CREDIMI_TEMP_DIR"] = cfg.Storage.TempDir
+	values["OTEL_EXPORTER_OTLP_ENDPOINT"] = defaultValue(cfg.Observability.OTLPEndpoint, values["OTEL_EXPORTER_OTLP_ENDPOINT"])
+	values["OTEL_SERVICE_NAME"] = defaultValue(cfg.Observability.ServiceName, values["OTEL_SERVICE_NAME"])
+	values["CREDIMI_TEMP_DIR"] = defaultValue(cfg.Storage.TempDir, values["CREDIMI_TEMP_DIR"])
+	values["ANDROID_RUNNER_IMAGE"] = defaultValue(cfg.Android.RunnerImage, values["ANDROID_RUNNER_IMAGE"])
+	values["ANDROID_PULL_POLICY"] = defaultValue(cfg.Android.PullPolicy, values["ANDROID_PULL_POLICY"])
+	values["ANDROID_NETWORK"] = defaultValue(cfg.Android.Network, values["ANDROID_NETWORK"])
+	values["ANDROID_STATE_VOLUME"] = defaultValue(cfg.Android.StateVolume, values["ANDROID_STATE_VOLUME"])
+	values["ANDROID_TOOL_CACHE_VOLUME"] = defaultValue(cfg.Android.ToolCacheVolume, values["ANDROID_TOOL_CACHE_VOLUME"])
+	values["ANDROID_SDK_VOLUME"] = defaultValue(cfg.Android.SDKVolume, values["ANDROID_SDK_VOLUME"])
+	values["ANDROID_ADB_KEYS_PATH"] = cfg.Android.ADBKeysPath
 	if host, port, err := net.SplitHostPort(cfg.Server.APIListen); err == nil {
 		values["RUNNER_HOST"], values["RUNNER_PORT"] = host, port
 	}
@@ -375,6 +388,13 @@ func configFromValues(values map[string]string) (runnerconfig.Config, error) {
 	cfg.Observability.OTLPEndpoint = normalized["OTEL_EXPORTER_OTLP_ENDPOINT"]
 	cfg.Observability.ServiceName = normalized["OTEL_SERVICE_NAME"]
 	cfg.Storage.TempDir = normalized["CREDIMI_TEMP_DIR"]
+	cfg.Android.RunnerImage = normalized["ANDROID_RUNNER_IMAGE"]
+	cfg.Android.PullPolicy = normalized["ANDROID_PULL_POLICY"]
+	cfg.Android.Network = normalized["ANDROID_NETWORK"]
+	cfg.Android.StateVolume = normalized["ANDROID_STATE_VOLUME"]
+	cfg.Android.ToolCacheVolume = normalized["ANDROID_TOOL_CACHE_VOLUME"]
+	cfg.Android.SDKVolume = normalized["ANDROID_SDK_VOLUME"]
+	cfg.Android.ADBKeysPath = normalized["ANDROID_ADB_KEYS_PATH"]
 	switch normalized["CREDIMI_SERVICE_MODE"] {
 	case "cloudflare-managed":
 		cfg.Exposure.Mode = "named_tunnel"
@@ -451,14 +471,6 @@ func quote(v string) string {
 	}
 	if strings.ContainsAny(v, " \t#\"'") {
 		return `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
-	}
-	return v
-}
-
-func unquote(v string) string {
-	if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
-		v = v[1 : len(v)-1]
-		v = strings.ReplaceAll(v, `\"`, `"`)
 	}
 	return v
 }

@@ -77,11 +77,12 @@
     </section>
 
     <section class="card">
-      <header class="card-h">{{icon "server"}}<div><h3>Advanced</h3><div class="sub">Paths, temp dir &amp; emulator golden image</div></div></header>
+      <header class="card-h">{{icon "server"}}<div><h3>Advanced</h3><div class="sub">Shared Android runtime and persistent tooling</div></div></header>
       <div class="card-b">
         <details class="gear-panel">
           <summary>{{icon "gear"}} Runtime defaults</summary>
           {{template "field" .Field "CREDIMI_TEMP_DIR"}}
+          <div class="field-row">{{template "field" .Field "ANDROID_RUNNER_IMAGE"}}{{template "field" .Field "ANDROID_PULL_POLICY"}}</div>
         </details>
       </div>
     </section>

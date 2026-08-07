@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,12 +26,17 @@ func writeTestTOMLConfig(t *testing.T, dir string) {
 }
 
 func writeTestTOMLConfigURL(t *testing.T, dir, credimiURL string) {
+	writeTestTOMLConfigPortsURL(t, dir, "0.0.0.0:8050", "127.0.0.1:8051", credimiURL)
+}
+
+func writeTestTOMLConfigPortsURL(t *testing.T, dir, apiListen, dashboardListen, credimiURL string) {
 	t.Helper()
 	cfg := runnerconfig.Config{
 		SchemaVersion: runnerconfig.SchemaVersion,
 		Runner:        runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"},
 		Credimi:       runnerconfig.CredimiConfig{URL: credimiURL, AuthMode: "user", UserAPIKey: "test"},
 		Temporal:      runnerconfig.TemporalConfig{Address: "temporal.example:7233"},
+		Server:        runnerconfig.ServerConfig{APIListen: apiListen, DashboardListen: dashboardListen},
 		Exposure:      runnerconfig.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
 		Devices: []runnerconfig.DeviceConfig{{
 			ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
@@ -40,4 +46,15 @@ func writeTestTOMLConfigURL(t *testing.T, dir, credimiURL string) {
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func lifecycleFreeListenAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	return address
 }

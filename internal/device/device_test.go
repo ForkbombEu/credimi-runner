@@ -107,3 +107,38 @@ func TestEmptyRegistryIsSafeAndBoundaryNormalizationIsMinimal(t *testing.T) {
 		t.Fatalf("unchanged ID = %q", got)
 	}
 }
+
+func TestRegistryCopiesAllDeviceSpecificConfiguration(t *testing.T) {
+	configs := []config.DeviceConfig{
+		{ID: "runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{AVDName: "pixel", ABI: "x86_64", SystemImage: "system", BaseName: "base", GoldenSource: "golden", APILevel: 35, MemoryMB: 2048, Cores: 2}},
+		{ID: "runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Image: "redroid", Serial: "redroid", DataDir: "data", DataArchive: "archive", ADBPort: 5555}},
+		{ID: "runner/ios", Name: "iOS", Type: config.DeviceIOSSimulator, Enabled: true, IOSSimulator: &config.IOSSimulatorConfig{UDID: "udid"}},
+	}
+	registry, err := NewRegistry(configs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"runner/emulator", "runner/redroid", "runner/ios"} {
+		device, err := registry.Resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copy := device
+		if copy.AndroidEmulator != nil {
+			copy.AndroidEmulator.AVDName = "changed"
+		}
+		if copy.Redroid != nil {
+			copy.Redroid.Serial = "changed"
+		}
+		if copy.IOSSimulator != nil {
+			copy.IOSSimulator.UDID = "changed"
+		}
+		fresh, err := registry.Resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh.AndroidEmulator != nil && fresh.AndroidEmulator.AVDName != "pixel" || fresh.Redroid != nil && fresh.Redroid.Serial != "redroid" || fresh.IOSSimulator != nil && fresh.IOSSimulator.UDID != "udid" {
+			t.Fatalf("registry leaked %s configuration: %#v", id, fresh)
+		}
+	}
+}

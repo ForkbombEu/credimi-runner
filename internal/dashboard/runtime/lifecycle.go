@@ -357,7 +357,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 
 func composePullServices(services []string, runnerPullPolicy string) []string {
 	pullServices := append([]string(nil), services...)
-	if defaultIfEmpty(runnerPullPolicy, DefaultRunnerImagePullPolicy) != "never" {
+	if defaultIfEmpty(runnerPullPolicy, DefaultAndroidPullPolicy) != "never" {
 		return pullServices
 	}
 	filtered := pullServices[:0]

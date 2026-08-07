@@ -56,7 +56,6 @@ type FieldImpact struct {
 var FieldImpacts = map[string]FieldImpact{
 	"CLOUDFLARE_TUNNEL_TOKEN":     {Restart: true, Recreate: true, Secret: true},
 	"CREDIMI_INTERNAL_ADMIN_KEY":  {Restart: true, Secret: true},
-	"CREDIMI_RUNNER_BACKEND":      {Restart: true, Recreate: true},
 	"CREDIMI_RUNNER_DESCRIPTION":  {CredimiUpdate: true},
 	"CREDIMI_RUNNER_ID":           {Restart: true, CredimiUpdate: true},
 	"CREDIMI_RUNNER_NAME":         {Restart: true, CredimiUpdate: true},
@@ -64,6 +63,13 @@ var FieldImpacts = map[string]FieldImpact{
 	"CREDIMI_RUNNER_PUBLISHED":    {CredimiUpdate: true},
 	"CREDIMI_SERVICE_MODE":        {Recreate: true, CredimiUpdate: true},
 	"CREDIMI_USER_API_KEY":        {Restart: true, Secret: true},
+	"ANDROID_RUNNER_IMAGE":        {Recreate: true},
+	"ANDROID_PULL_POLICY":         {Recreate: true},
+	"ANDROID_NETWORK":             {Recreate: true},
+	"ANDROID_STATE_VOLUME":        {Recreate: true},
+	"ANDROID_TOOL_CACHE_VOLUME":   {Recreate: true},
+	"ANDROID_SDK_VOLUME":          {Recreate: true},
+	"ANDROID_ADB_KEYS_PATH":       {Recreate: true},
 	"OTEL_EXPORTER_OTLP_ENDPOINT": {Restart: true},
 	"OTEL_SERVICE_NAME":           {Restart: true},
 	"RUNNER_CADDY_SITE":           {Recreate: true},
@@ -133,7 +139,7 @@ func configFingerprint(configDir string, values Values) string {
 }
 
 func composeArgs(plan RuntimePlan, command ...string) []string {
-	args := []string{"compose", "--project-name", plan.ComposeProject, "-f", plan.ComposePath}
+	args := []string{"compose", "--project-name", plan.ComposeProject, "--project-directory", plan.ConfigDir, "-f", plan.ComposePath}
 	return append(args, command...)
 }
 
@@ -239,11 +245,10 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 			continue
 		}
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
-		classSet[ApplyRestartRequired] = struct{}{}
-		// Device inventory controls the shared container image, networking and
-		// mounts. Rebuild the generated compose definition before restarting so
-		// an added emulator or USB target is actually visible to the process.
-		classSet[ApplyComposeRecreate] = struct{}{}
+		// Device registration is dynamic. The GoA process and its existing
+		// workers remain alive; the Credimi registration path updates only the
+		// changed inventory.
+		classSet[ApplyCredimiUpdateRequired] = struct{}{}
 	}
 	for key := range newValues {
 		if !strings.HasPrefix(key, "CREDIMI_DEVICE_") || strings.HasSuffix(key, "_COUNT") {
@@ -255,8 +260,7 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 		// A newly added device has no old indexed keys to visit in the loop
 		// above. It has the same runtime impact as an updated device.
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
-		classSet[ApplyRestartRequired] = struct{}{}
-		classSet[ApplyComposeRecreate] = struct{}{}
+		classSet[ApplyCredimiUpdateRequired] = struct{}{}
 	}
 
 	if len(diff.ChangedKeys) == 0 {

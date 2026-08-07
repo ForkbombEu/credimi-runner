@@ -36,13 +36,21 @@ ENV DEBIAN_FRONTEND=noninteractive \
     ANDROID_SDK_ROOT=/opt/android-sdk \
     ANDROID_HOME=/opt/android-sdk \
     ANDROID_AVD_HOME=/var/lib/credimi-runner/avd \
-    PATH=/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:/opt/android-sdk/cmdline-tools/latest/bin:/root/.maestro/bin:$PATH
+    ANDROID_SDK_BOOTSTRAP=/opt/android-sdk-bootstrap \
+    PATH=/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk-bootstrap/cmdline-tools/latest/bin:/root/.maestro/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl bash openjdk-17-jre-headless openssh-client adb ffmpeg \
+    ca-certificates curl bash openjdk-17-jre-headless openssh-client ffmpeg \
     unzip wget qemu-kvm qemu-utils libxkbfile1 libxcomposite1 libxcursor1 libxi6 \
     libxrandr2 libxtst6 libnss3 libxdamage1 libxrender1 libatk1.0-0 libcairo2 \
     libdbus-1-3 libgl1 libgtk-3-0 libpulse0 && \
+    mkdir -p "$ANDROID_SDK_BOOTSTRAP/cmdline-tools" /opt/android-sdk && \
+    curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/android-cmdline-tools.zip && \
+    unzip -q /tmp/android-cmdline-tools.zip -d "$ANDROID_SDK_BOOTSTRAP/cmdline-tools" && \
+    mv "$ANDROID_SDK_BOOTSTRAP/cmdline-tools/cmdline-tools" "$ANDROID_SDK_BOOTSTRAP/cmdline-tools/latest" && \
+    yes | sdkmanager --sdk_root="$ANDROID_SDK_BOOTSTRAP" --licenses >/dev/null && \
+    sdkmanager --sdk_root="$ANDROID_SDK_BOOTSTRAP" "platform-tools" && \
+    ln -s "$ANDROID_SDK_BOOTSTRAP/platform-tools/adb" /usr/local/bin/adb && \
     curl -fsSL https://get.maestro.mobile.dev | bash && \
     chmod 0555 /usr/local/bin/credimi-runner && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /tmp/android-cmdline-tools.zip
 ENTRYPOINT ["/usr/local/bin/credimi-runner"]

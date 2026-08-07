@@ -142,8 +142,8 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if device.AndroidEmulator == nil {
 			return fmt.Errorf("%s.type android_emulator requires [devices.android_emulator]", label)
 		}
-		if goos != "linux" {
-			return errorsf("Android emulator devices require Linux")
+		if goos != "linux" && goos != "darwin" {
+			return errorsf("Android emulator devices require Linux or macOS Docker")
 		}
 		for name, value := range map[string]string{"avd_name": device.AndroidEmulator.AVDName, "abi": device.AndroidEmulator.ABI, "system_image": device.AndroidEmulator.SystemImage, "base_name": device.AndroidEmulator.BaseName, "golden_source": device.AndroidEmulator.GoldenSource} {
 			if err := required(label+".android_emulator."+name, value); err != nil {

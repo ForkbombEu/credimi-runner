@@ -686,13 +686,13 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	for formKey, valueKey := range map[string]string{
 		"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID",
-		"base_name": "BASE_NAME", "runner_image": "RUNNER_IMAGE", "runner_image_pull_policy": "RUNNER_IMAGE_PULL_POLICY",
+		"base_name":        "BASE_NAME",
 		"android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH",
 		"redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH",
 	} {
 		value := strings.TrimSpace(r.FormValue(formKey))
 		if value == "" {
-			value = strings.TrimSpace(r.FormValue(map[string]string{"wifi_ip": "CREDIMI_RUNNER_WIFI_IP", "wifi_port": "CREDIMI_RUNNER_WIFI_PORT", "base_name": "BASE_NAME", "runner_image": "RUNNER_IMAGE", "runner_image_pull_policy": "RUNNER_IMAGE_PULL_POLICY", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"}[formKey]))
+			value = strings.TrimSpace(r.FormValue(map[string]string{"wifi_ip": "CREDIMI_RUNNER_WIFI_IP", "wifi_port": "CREDIMI_RUNNER_WIFI_PORT", "base_name": "BASE_NAME", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"}[formKey]))
 		}
 		if value != "" {
 			device.Values[valueKey] = value
@@ -705,7 +705,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			device.Values = config.Devices[index].Values
-			for formKey, valueKey := range map[string]string{"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID", "base_name": "BASE_NAME", "runner_image": "RUNNER_IMAGE", "runner_image_pull_policy": "RUNNER_IMAGE_PULL_POLICY", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"} {
+			for formKey, valueKey := range map[string]string{"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID", "base_name": "BASE_NAME", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"} {
 				if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
 					device.Values[valueKey] = value
 				}
@@ -738,7 +738,6 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		device.ID = strings.TrimPrefix(deviceID, "/")
 		applyDeviceDefaults(&device)
-		inheritLocalRuntimeImage(&device, config.Devices)
 		config.Devices = append(config.Devices, device)
 	}
 	if err := dashboardruntime.ValidateDeviceConstraints(config.Devices); err != nil {
@@ -816,16 +815,12 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	case "android_emulator":
 		homeDir, _ := os.UserHomeDir()
 		androidKeysDir := filepath.Join(homeDir, ".android")
-		set("RUNNER_IMAGE", "ghcr.io/forkbombeu/credimi-runner-emulator:latest")
-		set("RUNNER_IMAGE_PULL_POLICY", "always")
 		set("BASE_NAME", "credimi")
 		set("ANDROID_KEYS_DIR", androidKeysDir)
 		set("HOST_AVD_HOME_PATH", filepath.Join(androidKeysDir, "avd"))
 		set("HOST_AVD_GOLDEN_PATH", filepath.Join(homeDir, "avd-golden"))
 		set("GOLDEN_PATH", "/avd-golden/credimi-golden")
 	case "android_phone", "redroid":
-		set("RUNNER_IMAGE", "ghcr.io/forkbombeu/credimi-runner-phone:latest")
-		set("RUNNER_IMAGE_PULL_POLICY", "always")
 	}
 	if device.Mode == "wifi" || device.Type == "redroid" {
 		set("WIFI_PORT", "5555")
@@ -833,29 +828,6 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	if device.Type == "redroid" {
 		set("REDROID_DATA_DIR", "/home/credimi/redroid-data")
 		set("REDROID_DATA_TAR", "/home/credimi/redroid-data.tar")
-	}
-}
-
-// inheritLocalRuntimeImage keeps image selection a runner concern even while
-// legacy indexed configuration stores it on device blocks. Once a runner was
-// configured to use a local image, newly added targets must never silently
-// switch to a published image. The emulator image is the paired superset of a
-// local phone image; phones added to an emulator runner keep that same image.
-func inheritLocalRuntimeImage(device *dashboardruntime.DeviceRuntimeConfig, configured []dashboardruntime.DeviceRuntimeConfig) {
-	for _, existing := range configured {
-		if !existing.Enabled || strings.TrimSpace(existing.Values["RUNNER_IMAGE_PULL_POLICY"]) != "never" {
-			continue
-		}
-		image := strings.TrimSpace(existing.Values["RUNNER_IMAGE"])
-		if image == "" {
-			continue
-		}
-		if device.Type == "android_emulator" && strings.Contains(image, "credimi-runner-phone") {
-			image = strings.Replace(image, "credimi-runner-phone", "credimi-runner-emulator", 1)
-		}
-		device.Values["RUNNER_IMAGE"] = image
-		device.Values["RUNNER_IMAGE_PULL_POLICY"] = "never"
-		return
 	}
 }
 
@@ -1154,7 +1126,7 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 		if value := field("CREDIMI_RUNNER_WIFI_PORT", "setup_device_wifi_port"); value != "" {
 			device.Values["WIFI_PORT"] = value
 		}
-		for formKey, valueKey := range map[string]string{"BASE_NAME": "BASE_NAME", "RUNNER_IMAGE": "RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY": "RUNNER_IMAGE_PULL_POLICY", "ANDROID_KEYS_DIR": "ANDROID_KEYS_DIR", "GOLDEN_PATH": "GOLDEN_PATH", "HOST_AVD_HOME_PATH": "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH": "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR": "REDROID_DATA_DIR", "REDROID_DATA_TAR": "REDROID_DATA_TAR", "IOS_UDID": "IOS_UDID"} {
+		for formKey, valueKey := range map[string]string{"BASE_NAME": "BASE_NAME", "ANDROID_KEYS_DIR": "ANDROID_KEYS_DIR", "GOLDEN_PATH": "GOLDEN_PATH", "HOST_AVD_HOME_PATH": "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH": "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR": "REDROID_DATA_DIR", "REDROID_DATA_TAR": "REDROID_DATA_TAR", "IOS_UDID": "IOS_UDID"} {
 			if value := valueAt(formKey, index); value != "" {
 				device.Values[valueKey] = value
 			}
@@ -1168,7 +1140,6 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 			}
 		}
 		applyDeviceDefaults(&device)
-		inheritLocalRuntimeImage(&device, devices)
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
 			return nil, err
 		}
@@ -1417,15 +1388,6 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 			}
 			if _, err := s.statPath("/dev/kvm"); err != nil {
 				return errors.New("/dev/kvm is required for Android emulator containers")
-			}
-			for _, key := range []string{"ANDROID_KEYS_DIR", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH"} {
-				path := strings.TrimSpace(device.Values[key])
-				if path == "" {
-					return fmt.Errorf("android emulator device %q is missing %s", device.ID, key)
-				}
-				if _, err := s.statPath(path); err != nil {
-					return fmt.Errorf("required emulator asset path is missing: %s", path)
-				}
 			}
 		}
 	}

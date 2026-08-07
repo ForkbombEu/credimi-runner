@@ -61,3 +61,12 @@ func TestSystemMonitorDebugCadence(t *testing.T) {
 		t.Fatalf("debug cadence = live %s log %s", monitor.Interval(), monitor.logEvery)
 	}
 }
+
+func TestSystemMonitorLiveReturnsAnIndependentSnapshot(t *testing.T) {
+	monitor := &SystemMonitor{samples: []SystemMetrics{{CPUPercent: 42}}}
+	samples := monitor.Live()
+	samples[0].CPUPercent = 0
+	if monitor.Live()[0].CPUPercent != 42 {
+		t.Fatal("Live exposed monitor-owned sample storage")
+	}
+}

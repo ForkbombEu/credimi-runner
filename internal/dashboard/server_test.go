@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -604,18 +605,13 @@ func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	emulator := dashboardruntime.DeviceRuntimeConfig{Type: "android_emulator", Mode: "emulator"}
 	applyDeviceDefaults(&emulator)
-	if emulator.Values["RUNNER_IMAGE"] == "" || emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
+	if emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
 		t.Fatalf("emulator defaults = %#v", emulator.Values)
 	}
-	redroid := dashboardruntime.DeviceRuntimeConfig{Type: "redroid", Mode: "no_device", Values: dashboardruntime.Values{"RUNNER_IMAGE": "custom:local"}}
+	redroid := dashboardruntime.DeviceRuntimeConfig{Type: "redroid", Mode: "no_device", Values: dashboardruntime.Values{}}
 	applyDeviceDefaults(&redroid)
-	if redroid.Values["RUNNER_IMAGE"] != "custom:local" || redroid.Values["WIFI_PORT"] != "5555" || redroid.Values["REDROID_DATA_DIR"] == "" {
+	if redroid.Values["WIFI_PORT"] != "5555" || redroid.Values["REDROID_DATA_DIR"] == "" {
 		t.Fatalf("redroid defaults = %#v", redroid.Values)
-	}
-	localPhone := dashboardruntime.DeviceRuntimeConfig{Type: "android_phone", Enabled: true, Values: dashboardruntime.Values{"RUNNER_IMAGE": "credimi-runner-phone:latest", "RUNNER_IMAGE_PULL_POLICY": "never"}}
-	inheritLocalRuntimeImage(&emulator, []dashboardruntime.DeviceRuntimeConfig{localPhone})
-	if emulator.Values["RUNNER_IMAGE"] != "credimi-runner-emulator:latest" || emulator.Values["RUNNER_IMAGE_PULL_POLICY"] != "never" {
-		t.Fatalf("emulator must inherit paired local image: %#v", emulator.Values)
 	}
 	s := newTestServer(t)
 	if err := s.registerConfiguredDevice(context.Background(), dashboardruntime.Values{}, dashboardruntime.DeviceRuntimeConfig{Name: "Pixel", Type: "android_phone", Mode: "usb"}); err == nil || !strings.Contains(err.Error(), "Credimi URL") {
@@ -668,7 +664,7 @@ func TestServerConfigDiffRunnerTypeChangeRequiresApply(t *testing.T) {
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
 	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.cfg.values["RUNNER_IMAGE"] = defaultPhoneImage
+	s.cfg.values["ANDROID_RUNNER_IMAGE"] = "runner:local"
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(url.Values{
@@ -1037,8 +1033,8 @@ func TestServerMaintenanceCheckSkipsLocalRunnerImage(t *testing.T) {
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_DEVICE_COUNT"] = "1"
 	s.cfg.values["CREDIMI_DEVICE_1_ID"] = "acme/runner/phone"
-	s.cfg.values["CREDIMI_DEVICE_1_RUNNER_IMAGE"] = "local:latest"
-	s.cfg.values["CREDIMI_DEVICE_1_RUNNER_IMAGE_PULL_POLICY"] = "never"
+	s.cfg.values["ANDROID_RUNNER_IMAGE"] = "local:latest"
+	s.cfg.values["ANDROID_PULL_POLICY"] = "never"
 	checkedImage := "not-called"
 	s.maintenanceChecker = func(_ context.Context, _ string, _ time.Time, image string) maintenance.Status {
 		checkedImage = image
@@ -1836,7 +1832,7 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	}
 }
 
-func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing.T) {
+func TestServerSaveDevicesConfigUpdatesRunningRunnerWithoutRestart(t *testing.T) {
 	transport := http.DefaultTransport
 	var registrations []string
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -1869,6 +1865,12 @@ func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing
 		"RUNNER_PUBLIC_URL":           "https://runner.example",
 		"CREDIMI_RUNNER_BACKEND":      "container",
 		"TEMPORAL_ADDRESS":            "temporal.example:7233",
+		"RUNNER_HOST":                 "127.0.0.1",
+		"RUNNER_PORT":                 "8050",
+		"DASHBOARD_HOST":              "127.0.0.1",
+		"DASHBOARD_PORT":              "8051",
+		"ANDROID_RUNNER_IMAGE":        "credimi-runner:local",
+		"ANDROID_PULL_POLICY":         "never",
 	}
 	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: []dashboardruntime.DeviceRuntimeConfig{{
 		ID: "acme/runner/first", Name: "First", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"},
@@ -1886,11 +1888,33 @@ func TestServerSaveDevicesConfigRestartsRunningRunnerWithNewInventory(t *testing
 	if recorder.Code != http.StatusSeeOther {
 		t.Fatalf("save device response = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if fm.stopCalls != 1 || fm.startCalls != 1 {
-		t.Fatalf("device add lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
+	if fm.stopCalls != 0 || fm.startCalls != 0 {
+		t.Fatalf("device add unexpectedly restarted runner stop=%d start=%d", fm.stopCalls, fm.startCalls)
 	}
 	if got := strings.Join(registrations, ","); strings.Count(got, "/api/mobile-device") < 3 || !strings.Contains(got, "/api/mobile-runner") || !strings.Contains(got, "/api/mobile-device/reconcile") {
 		t.Fatalf("Credimi registrations = %s", got)
+	}
+}
+
+func TestServerSetupDevicePreviewAndSystemMetricsEndpoints(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected path %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/phone"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	s := newTestServer(t)
+	preview := httptest.NewRecorder()
+	s.previewSetupDeviceID(preview, httptest.NewRequest(http.MethodPost, "/setup/device-id", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key","organization":"acme","runner_id":"acme/runner","name":"Phone"}`)))
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "acme/runner/phone") {
+		t.Fatalf("device preview = %d %s", preview.Code, preview.Body.String())
+	}
+	metrics := httptest.NewRecorder()
+	s.systemMetrics(metrics, httptest.NewRequest(http.MethodGet, "/api/system-metrics", nil))
+	if metrics.Code != http.StatusOK || !strings.Contains(metrics.Body.String(), "interval_ms") {
+		t.Fatalf("system metrics = %d %s", metrics.Code, metrics.Body.String())
 	}
 }
 

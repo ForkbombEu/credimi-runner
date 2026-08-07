@@ -27,3 +27,18 @@ func TestManagerReconcilesWithoutRestartingProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestManagerRejectsMissingRegistryAndPropagatesApplyErrors(t *testing.T) {
+	if err := (&Manager{}).Reconcile(context.Background(), nil); err == nil {
+		t.Fatal("manager without registry accepted reconciliation")
+	}
+	registry, err := NewRegistry([]config.DeviceConfig{physical("inventory/runner/one", true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := context.Canceled
+	manager := Manager{Registry: registry, Apply: func(context.Context, []config.DeviceConfig) error { return want }}
+	if err := manager.Reconcile(context.Background(), []config.DeviceConfig{physical("inventory/runner/two", true)}); err != want {
+		t.Fatalf("apply error = %v, want %v", err, want)
+	}
+}

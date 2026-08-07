@@ -1,33 +1,36 @@
 package runtime
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
+
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
+	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
 )
 
 const (
-	DefaultCredimiURL            = "https://credimi.io"
-	DefaultTempDir               = "/tmp/credimi-runner-tmp"
-	DefaultTemporalAddress       = "temporal.credimi.io:7233"
-	DefaultOTLPEndpoint          = "https://otel-collector.credimi.io"
-	DefaultOTELServiceName       = "credimi-runner"
-	DefaultRunnerHost            = "127.0.0.1"
-	DefaultRunnerPort            = "8050"
-	DefaultRunnerImagePullPolicy = "always"
-	DefaultDashboardHost         = "0.0.0.0"
-	DefaultDashboardPort         = "8051"
-	DefaultRunnerCaddySite       = ":80"
-	DefaultPhoneImage            = "ghcr.io/forkbombeu/credimi-runner-phone:latest"
-	DefaultEmulatorImage         = "ghcr.io/forkbombeu/credimi-runner-emulator:latest"
-	DefaultBaseName              = "credimi"
-	DefaultGoldenPath            = "/avd-golden/credimi-golden"
-	DefaultWiFiPort              = "5555"
-	DefaultRedroidDataDir        = "/home/credimi/redroid-data"
-	DefaultRedroidDataTar        = "/home/credimi/redroid-data.tar"
-	DefaultHostAVDHome           = ".android/avd"
-	DefaultHostAVDGolden         = "avd-golden"
-	DefaultContainerBackend      = "container"
-	DefaultHostBackend           = "host"
+	DefaultCredimiURL         = "https://credimi.io"
+	DefaultTempDir            = "/tmp/credimi-runner-tmp"
+	DefaultTemporalAddress    = "temporal.credimi.io:7233"
+	DefaultOTLPEndpoint       = "https://otel-collector.credimi.io"
+	DefaultOTELServiceName    = "credimi-runner"
+	DefaultRunnerHost         = "127.0.0.1"
+	DefaultRunnerPort         = "8050"
+	DefaultAndroidRunnerImage = "ghcr.io/forkbombeu/credimi-runner:latest"
+	DefaultAndroidPullPolicy  = "if-not-present"
+	DefaultDashboardHost      = "0.0.0.0"
+	DefaultDashboardPort      = "8051"
+	DefaultRunnerCaddySite    = ":80"
+	DefaultBaseName           = "credimi"
+	DefaultGoldenPath         = "/avd-golden/credimi-golden"
+	DefaultWiFiPort           = "5555"
+	DefaultRedroidDataDir     = "/home/credimi/redroid-data"
+	DefaultRedroidDataTar     = "/home/credimi/redroid-data.tar"
+	DefaultHostAVDHome        = ".android/avd"
+	DefaultHostAVDGolden      = "avd-golden"
+	DefaultContainerBackend   = "container"
+	DefaultHostBackend        = "host"
 )
 
 var KnownKeys = RunnerKeys
@@ -35,6 +38,12 @@ var KnownKeys = RunnerKeys
 func DefaultValues() Values {
 	values := Values{
 		"CREDIMI_RUNNER_PUBLISHED":    "false",
+		"ANDROID_RUNNER_IMAGE":        DefaultAndroidRunnerImage,
+		"ANDROID_PULL_POLICY":         DefaultAndroidPullPolicy,
+		"ANDROID_NETWORK":             "credimi-runner",
+		"ANDROID_STATE_VOLUME":        "credimi-runner-state",
+		"ANDROID_TOOL_CACHE_VOLUME":   "credimi-runner-tools",
+		"ANDROID_SDK_VOLUME":          "credimi-runner-sdk",
 		"CREDIMI_SERVICE_MODE":        "auto",
 		"CREDIMI_TEMP_DIR":            DefaultTempDir,
 		"CREDIMI_URL":                 DefaultCredimiURL,
@@ -56,14 +65,18 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 		goos = runtime.GOOS
 	}
 	if strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
-		return normalizeIndexedValues(values)
+		return normalizeIndexedValues(values, goos)
 	}
 	normalized := DefaultValues()
 	for key, value := range values {
 		normalized[key] = strings.TrimSpace(value)
 	}
 
-	normalized["CREDIMI_RUNNER_BACKEND"] = defaultIfEmpty(normalized["CREDIMI_RUNNER_BACKEND"], defaultServiceBackend(goos))
+	backend, err := legacyBackend(normalized, goos)
+	if err != nil {
+		return nil, err
+	}
+	normalized["CREDIMI_RUNNER_BACKEND"] = string(backend)
 	normalized["CREDIMI_SERVICE_MODE"] = normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"])
 	normalizeRunnerIdentity(normalized)
 
@@ -74,7 +87,7 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 	return normalized, nil
 }
 
-func normalizeIndexedValues(values Values) (Values, error) {
+func normalizeIndexedValues(values Values, goos string) (Values, error) {
 	normalized := DefaultValues()
 	for key, value := range values {
 		normalized[key] = strings.TrimSpace(value)
@@ -82,7 +95,52 @@ func normalizeIndexedValues(values Values) (Values, error) {
 	if _, err := ParseRuntimeConfig(normalized); err != nil {
 		return nil, err
 	}
+	backend, err := legacyBackend(normalized, goos)
+	if err != nil {
+		return nil, err
+	}
+	normalized["CREDIMI_RUNNER_BACKEND"] = string(backend)
 	return normalized, nil
+}
+
+func legacyBackend(values Values, goos string) (runnerplacement.Backend, error) {
+	types := []runnerconfig.DeviceType{}
+	if count := strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]); count != "" {
+		for index := 1; ; index++ {
+			key := fmt.Sprintf("CREDIMI_DEVICE_%d_TYPE", index)
+			value := strings.TrimSpace(values[key])
+			if value == "" {
+				break
+			}
+			types = append(types, legacyDeviceType(value))
+			if index >= atoiOrZero(count) {
+				break
+			}
+		}
+	} else if value := strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]); value != "" {
+		types = append(types, legacyDeviceType(value))
+	}
+	backend, err := runnerplacement.SelectTypes(types, goos)
+	if err != nil {
+		return "", err
+	}
+	if backend == runnerplacement.Native {
+		return DefaultHostBackend, nil
+	}
+	return backend, nil
+}
+
+func legacyDeviceType(value string) runnerconfig.DeviceType {
+	if value == "android_phone" {
+		return runnerconfig.DeviceAndroidPhysical
+	}
+	return runnerconfig.DeviceType(value)
+}
+
+func atoiOrZero(value string) int {
+	var result int
+	_, _ = fmt.Sscanf(value, "%d", &result)
+	return result
 }
 
 func normalizeRunnerIdentity(values Values) {
@@ -95,17 +153,6 @@ func normalizeRunnerIdentity(values Values) {
 	}
 	if strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]) == "" {
 		values["CREDIMI_RUNNER_ORGANIZATION"] = runnerOrgFromID(runnerID)
-	}
-}
-
-func defaultServiceBackend(goos string) string {
-	switch goos {
-	case "darwin":
-		return DefaultHostBackend
-	case "linux":
-		return DefaultContainerBackend
-	default:
-		return ""
 	}
 }
 

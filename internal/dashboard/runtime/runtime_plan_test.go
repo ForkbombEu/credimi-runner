@@ -10,12 +10,12 @@ func TestBuildRuntimePlanExpectedServices(t *testing.T) {
 	}{
 		{"container-auto", Values{}, []string{"runner", "caddy", "tunnel", "temporal"}},
 		{"container-managed", Values{"CREDIMI_SERVICE_MODE": "cloudflare-managed"}, []string{"runner", "caddy", "tunnel_named", "temporal"}},
-		{"host-manual", Values{"CREDIMI_RUNNER_BACKEND": "host", "CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, []string{"runner_host_process", "temporal"}},
+		{"native-manual", Values{"CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, []string{"runner_host_process", "temporal"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			goos := "linux"
-			if tt.name == "host-manual" {
+			if tt.name == "native-manual" {
 				goos = "darwin"
 			}
 			normalized, err := NormalizeValues(tt.vals, goos)
@@ -49,10 +49,10 @@ func TestDiffValuesCoverageBranches(t *testing.T) {
 	if got := DiffValues(Values{"RUNNER_PORT": "8050"}, Values{"RUNNER_PORT": "8051"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("recreate diff = %#v", got)
 	}
-	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/b"}); !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyComposeRecreate) {
+	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/b"}); containsApplyClass(got.Classes, ApplyRestartRequired) || containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("device inventory diff = %#v", got)
 	}
-	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a", "CREDIMI_DEVICE_2_ID": "acme/runner/b"}); !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyComposeRecreate) {
+	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a", "CREDIMI_DEVICE_2_ID": "acme/runner/b"}); containsApplyClass(got.Classes, ApplyRestartRequired) || containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("added device inventory diff = %#v", got)
 	}
 }

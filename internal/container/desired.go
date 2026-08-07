@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
+	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
 )
 
 type HostCapabilities struct{ Docker, KVM bool }
@@ -17,7 +18,11 @@ type Inputs struct {
 
 func Desired(cfg config.Config, goos string, capabilities HostCapabilities, inputs Inputs) ([]Spec, error) {
 	specs := []Spec{}
-	native := goos == "darwin" && hasIOS(cfg)
+	backend, err := runnerplacement.Select(cfg, goos)
+	if err != nil {
+		return nil, err
+	}
+	native := backend == runnerplacement.Native
 	if !native {
 		if !capabilities.Docker && goos == "linux" {
 			return nil, fmt.Errorf("container backend requires Docker")
@@ -27,7 +32,10 @@ func Desired(cfg config.Config, goos string, capabilities HostCapabilities, inpu
 			PullPolicy: cfg.Android.PullPolicy, Network: cfg.Android.Network,
 			Command: []string{"credimi-runner", "internal-runtime"},
 			Mounts:  []Mount{{inputs.ConfigPath, "/etc/credimi-runner/config.toml", true}, {cfg.Android.StateVolume, "/var/lib/credimi-runner", false}, {cfg.Android.ToolCacheVolume, "/opt/credimi-runner/tools", false}, {cfg.Android.SDKVolume, "/opt/android-sdk", false}},
-			Ports:   []Port{{"127.0.0.1", listenPort(cfg.Server.DashboardListen), listenPort(cfg.Server.DashboardListen)}},
+			Ports: []Port{
+				{"127.0.0.1", listenPort(cfg.Server.APIListen, 8050), listenPort(cfg.Server.APIListen, 8050)},
+				{"127.0.0.1", listenPort(cfg.Server.DashboardListen, 8051), listenPort(cfg.Server.DashboardListen, 8051)},
+			},
 		}
 		if capabilities.KVM {
 			runner.Devices = []string{"/dev/kvm"}
@@ -66,24 +74,15 @@ func Desired(cfg config.Config, goos string, capabilities HostCapabilities, inpu
 	return specs, nil
 }
 
-func hasIOS(cfg config.Config) bool {
-	for _, device := range cfg.Devices {
-		if device.Type == config.DeviceIOSSimulator {
-			return true
-		}
-	}
-	return false
-}
-
-func listenPort(address string) int {
+func listenPort(address string, fallback int) int {
 	_, port, err := net.SplitHostPort(address)
 	if err != nil {
-		return 8051
+		return fallback
 	}
 	var value int
 	_, _ = fmt.Sscanf(port, "%d", &value)
 	if value < 1 || value > 65535 {
-		return 8051
+		return fallback
 	}
 	return value
 }

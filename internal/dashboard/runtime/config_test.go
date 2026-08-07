@@ -59,12 +59,40 @@ func TestStoreLoadsAndSavesTypedTOML(t *testing.T) {
 	if reloaded.Values["CREDIMI_DEVICE_1_SERIAL"] != "two:5555" {
 		t.Fatalf("reloaded=%#v", reloaded.Values)
 	}
+	if got := reloaded.RuntimeConfigDevice(1); got.ID != "acme/runner/one" || got.Serial != "two:5555" {
+		t.Fatalf("runtime device = %#v", got)
+	}
+	if empty := reloaded.RuntimeConfigDevice(2); empty.ID != "" {
+		t.Fatalf("out-of-range runtime device = %#v", empty)
+	}
+	if err := reloaded.Save(reloaded.Values); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeConfigFromEnvironmentUsesTypedConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), testTOMLConfig(dir)); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", dir)
+	runtimeConfig, err := RuntimeConfigFromEnvironment()
+	if err != nil || len(runtimeConfig.Devices) != 1 {
+		t.Fatalf("runtime config = %#v err=%v", runtimeConfig, err)
+	}
 }
 
 func TestDefaultConfigDirHonorsOverride(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "/tmp/runner-config")
 	if got := DefaultConfigDir(); got != "/tmp/runner-config" {
 		t.Fatalf("dir=%q", got)
+	}
+}
+
+func TestDefaultConfigDirResolvesPlatformDefault(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
+	if got := DefaultConfigDir(); filepath.Base(got) != "runner" {
+		t.Fatalf("platform default config dir = %q", got)
 	}
 }
 
@@ -79,5 +107,81 @@ func TestValidateDeviceConstraintsExplainsConflicts(t *testing.T) {
 	err := ValidateDeviceConstraints([]DeviceRuntimeConfig{{Name: "One", Type: "android_phone", Serial: "same"}, {Name: "Two", Type: "redroid", Serial: "same"}})
 	if err == nil {
 		t.Fatal("duplicate serial accepted")
+	}
+}
+
+func TestRuntimeConfigValidationAndSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Snapshot()["ANDROID_RUNNER_IMAGE"]; got != DefaultAndroidRunnerImage {
+		t.Fatalf("default runner image = %q", got)
+	}
+	if err := ValidateDeviceRegistration(DeviceRuntimeConfig{Name: "Pixel", Type: "android_phone", Mode: "usb"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, device := range []DeviceRuntimeConfig{{Type: "android_phone", Mode: "usb"}, {Name: "Pixel", Mode: "usb"}, {Name: "Pixel", Type: "android_phone"}} {
+		if err := ValidateDeviceRegistration(device); err == nil {
+			t.Fatalf("invalid registration accepted: %#v", device)
+		}
+	}
+	if err := ValidateDeviceConstraints([]DeviceRuntimeConfig{{Name: "Emulator 1", Type: "android_emulator"}, {Name: "Emulator 2", Type: "android_emulator"}}); err == nil {
+		t.Fatal("multiple emulators accepted")
+	}
+}
+
+func TestParseRuntimeConfigPreservesMultiDeviceInventory(t *testing.T) {
+	values := Values{
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "3",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "wifi", "CREDIMI_DEVICE_1_SERIAL": "phone:5555", "CREDIMI_DEVICE_1_ENABLED": "true",
+		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_MODE": "emulator", "CREDIMI_DEVICE_2_AVD_NAME": "pixel", "CREDIMI_DEVICE_2_PORT": "5556",
+		"CREDIMI_DEVICE_3_ID": "acme/runner/redroid", "CREDIMI_DEVICE_3_TYPE": "redroid", "CREDIMI_DEVICE_3_MODE": "no_device", "CREDIMI_DEVICE_3_SERIAL": "redroid:5555", "CREDIMI_DEVICE_3_ENABLED": "false",
+	}
+	parsed, err := ParseRuntimeConfig(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Devices) != 3 || parsed.Devices[1].Values["AVD_NAME"] != "pixel" || parsed.Devices[2].Enabled {
+		t.Fatalf("parsed inventory = %#v", parsed.Devices)
+	}
+}
+
+func TestParseRuntimeConfigRejectsMalformedInventory(t *testing.T) {
+	cases := []struct {
+		name   string
+		values Values
+	}{
+		{"missing count", Values{}},
+		{"bad count", Values{"CREDIMI_DEVICE_COUNT": "zero"}},
+		{"missing runner", Values{"CREDIMI_DEVICE_COUNT": "1"}},
+		{"unindexed device", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_ID": "bad"}},
+		{"malformed key", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_x_ID": "bad"}},
+		{"beyond count", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_2_ID": "acme/runner/two"}},
+		{"unknown key", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_UNKNOWN": "bad"}},
+		{"missing block", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1"}},
+		{"wrong child", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "other/device"}},
+		{"bad enabled", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_ENABLED": "sometimes"}},
+		{"duplicate ID", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_2_ID": "acme/runner/one"}},
+		{"duplicate name", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_NAME": "same"}},
+		{"duplicate AVD", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_emulator", "CREDIMI_DEVICE_1_AVD_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_AVD_NAME": "same"}},
+		{"duplicate serial", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_SERIAL": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "redroid", "CREDIMI_DEVICE_2_SERIAL": "same"}},
+		{"duplicate port", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_PORT": "5555", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_PORT": "5555"}},
+		{"duplicate container", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_CONTAINER_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_CONTAINER_NAME": "same"}},
+		{"duplicate work path", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_WORK_DIR": "/same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_WORK_DIR": "/same"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ParseRuntimeConfig(tc.values); err == nil {
+				t.Fatal("malformed inventory accepted")
+			}
+		})
+	}
+}
+
+func TestLegacyValueFormattingIsDeterministic(t *testing.T) {
+	if quote("") != "" || quote("plain") != "plain" || quote("needs space") != `"needs space"` {
+		t.Fatalf("quote formatting failed")
 	}
 }

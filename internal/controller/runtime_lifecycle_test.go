@@ -64,6 +64,29 @@ func TestReadinessFailureExplainsUnauthorizedDevice(t *testing.T) {
 	}
 }
 
+func TestReadinessFailureExplainsDeviceStates(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		err        error
+	}{
+		{"missing", "not available", ErrDeviceMissing},
+		{"offline", "offline", ErrDeviceOffline},
+		{"unauthorized", "unauthorized", ErrDeviceUnauthorized},
+		{"deadline", "inspect runner logs", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := dashboardruntime.Values{}
+			if tc.err != nil {
+				values = dashboardruntime.Values{"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_1_ID": "acme/runner/device"}
+			}
+			got := ReadinessFailure(values, "127.0.0.1:8050", tc.err, context.DeadlineExceeded)
+			if !strings.Contains(got.Error(), tc.want) {
+				t.Fatalf("ReadinessFailure = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRuntimeLifecycleStartKeepsRuntimeWhenReadinessFails(t *testing.T) {
 	manager := &lifecycleManager{}
 	lifecycle := RuntimeLifecycle{
@@ -352,6 +375,27 @@ func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 		"RUNNER_HOST":             host,
 		"RUNNER_PORT":             port,
 	}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitForRunnerReadyUsesDefaultHTTPClient(t *testing.T) {
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/health":
+			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+		case "/readyz":
+			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1"}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer runner.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WaitForRunnerReady(context.Background(), dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "RUNNER_HOST": host, "RUNNER_PORT": port}); err != nil {
 		t.Fatal(err)
 	}
 }

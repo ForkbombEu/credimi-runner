@@ -6,8 +6,6 @@
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const TYPE_DEFAULTS = {
-    phoneImage: 'ghcr.io/forkbombeu/credimi-runner-phone:latest',
-    emulatorImage: 'ghcr.io/forkbombeu/credimi-runner-emulator:latest',
     baseName: 'credimi',
     goldenPath: '/avd-golden/credimi-golden',
     wifiPort: '5555',
@@ -33,8 +31,6 @@
     'HOST_AVD_HOME_PATH',
     'REDROID_DATA_DIR',
     'REDROID_DATA_TAR',
-    'RUNNER_IMAGE',
-    'RUNNER_IMAGE_PULL_POLICY',
   ];
 
   // ── Toast (driven by HX-Trigger {"toast":"…"}) ───────────────────────────
@@ -1268,7 +1264,6 @@
     const derived = deriveHomeDefaults(root);
     switch (type) {
       case 'android_emulator':
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.emulatorImage);
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
@@ -1287,7 +1282,6 @@
         setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
       case 'ios_simulator':
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
@@ -1305,7 +1299,6 @@
         setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
       case 'redroid':
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'no_device');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
@@ -1318,7 +1311,6 @@
         setFieldValue(root, 'REDROID_DATA_TAR', TYPE_DEFAULTS.redroidDataTar);
         break;
       default:
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'usb');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');

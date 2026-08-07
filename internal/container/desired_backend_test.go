@@ -25,12 +25,22 @@ func TestDesiredContainerBackendRoutesCaddyToRunner(t *testing.T) {
 	if runner.Image != "runner:latest" || runner.Network != "credimi-runner" {
 		t.Fatalf("runner=%#v", runner)
 	}
+	if len(runner.Ports) != 2 || runner.Ports[0].ContainerPort != 8050 || runner.Ports[1].ContainerPort != 8051 {
+		t.Fatalf("runner ports=%#v", runner.Ports)
+	}
 	caddy := byName["credimi-acme-runner-caddy"]
 	if len(caddy.Command) < 6 || caddy.Command[len(caddy.Command)-1] != "runner:8050" {
 		t.Fatalf("caddy command=%#v", caddy.Command)
 	}
 	if len(caddy.ExtraHosts) != 0 {
 		t.Fatalf("container caddy unexpectedly uses host bridge: %#v", caddy.ExtraHosts)
+	}
+}
+
+func TestDesiredRejectsIOSOnLinux(t *testing.T) {
+	cfg := config.Config{Runner: config.RunnerConfig{ID: "acme/runner"}, Devices: []config.DeviceConfig{{Type: config.DeviceIOSSimulator}}}
+	if _, err := Desired(cfg, "linux", HostCapabilities{Docker: true}, Inputs{}); err == nil {
+		t.Fatal("Linux iOS configuration should be rejected")
 	}
 }
 

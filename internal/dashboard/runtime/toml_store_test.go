@@ -17,6 +17,7 @@ func TestStoreUsesTypedTOMLForDeviceInventory(t *testing.T) {
 		Server:        config.ServerConfig{APIListen: "127.0.0.1:8050", DashboardListen: "127.0.0.1:8051", ReadHeaderTimeout: config.Duration(1), ShutdownTimeout: config.Duration(1)},
 		Exposure:      config.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
 		Storage:       config.StorageConfig{StateDir: filepath.Join(dir, "state"), ArtifactRetention: config.Duration(1)},
+		Android:       config.AndroidConfig{RunnerImage: "credimi-runner:local", PullPolicy: "never", Network: "runner-net", StateVolume: "state-volume", ToolCacheVolume: "tools-volume", SDKVolume: "sdk-volume", ADBKeysPath: filepath.Join(dir, "adb-keys")},
 		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "one:5555"}}},
 	}
 	if err := config.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
@@ -26,7 +27,7 @@ func TestStoreUsesTypedTOMLForDeviceInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Path != filepath.Join(dir, "config.toml") || store.Values["CREDIMI_DEVICE_1_SERIAL"] != "one:5555" {
+	if store.Path != filepath.Join(dir, "config.toml") || store.Values["CREDIMI_DEVICE_1_SERIAL"] != "one:5555" || store.Values["ANDROID_RUNNER_IMAGE"] != "credimi-runner:local" || store.Values["ANDROID_PULL_POLICY"] != "never" || store.Values["ANDROID_NETWORK"] != "runner-net" {
 		t.Fatalf("store=%#v", store)
 	}
 	parsed, err := store.RuntimeConfig()

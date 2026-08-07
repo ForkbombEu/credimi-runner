@@ -10,6 +10,7 @@ vars:
     sh: date -u +%Y-%m-%dT%H:%M:%SZ
   COVERAGE_FILE: coverage.out
   COVERAGE_MIN: "85"
+  LOCAL_DOCKER_IMAGE: credimi-runner:local
   GO_LDFLAGS: >-
     -s -w
     -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version={{.BUILD_VERSION}}
@@ -34,6 +35,18 @@ tasks:
         go build -tags=credimi_extra
         -ldflags "{{.GO_LDFLAGS}}"
         -o {{.BIN_PATH}}
+        .
+
+  "docker:build-local":
+    desc: Build the unified local runner image with a BuildKit secret
+    cmds:
+      - >-
+        test -n "${CREDIMI_EXTRA_PAT:-}" ||
+        (echo "CREDIMI_EXTRA_PAT is required to build the local runner image" >&2; exit 1)
+      - >-
+        docker build
+        --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT
+        -t {{.LOCAL_DOCKER_IMAGE}}
         .
 
   format:

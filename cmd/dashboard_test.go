@@ -40,6 +40,32 @@ func TestDashboardConfigPathHonorsOverride(t *testing.T) {
 	}
 }
 
+func TestDashboardDisplayURLUsesReachableHost(t *testing.T) {
+	if got := dashboardDisplayURL("127.0.0.1", 8051); got != "http://127.0.0.1:8051" {
+		t.Fatalf("local display URL = %q", got)
+	}
+	if got := dashboardDisplayURL("0.0.0.0", 8051); !strings.HasPrefix(got, "http://") || !strings.HasSuffix(got, ":8051") {
+		t.Fatalf("wildcard display URL = %q", got)
+	}
+	if got := dashboardDisplayURL("::", 8051); !strings.HasPrefix(got, "http://") || !strings.HasSuffix(got, ":8051") {
+		t.Fatalf("IPv6 wildcard display URL = %q", got)
+	}
+}
+
+func TestDashboardCanOpenBrowserEnvironment(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Setenv("DISPLAY", "")
+		t.Setenv("WAYLAND_DISPLAY", "")
+		if dashboardCanOpenBrowser() {
+			t.Fatal("browser reported available without a desktop display")
+		}
+		t.Setenv("DISPLAY", ":0")
+		if !dashboardCanOpenBrowser() {
+			t.Fatal("browser reported unavailable with DISPLAY")
+		}
+	}
+}
+
 func TestDashboardLoadStoreMissingConfig(t *testing.T) {
 	store, err := dashboardruntime.LoadStore(t.TempDir())
 	if err != nil {

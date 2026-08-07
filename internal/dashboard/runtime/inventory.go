@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -44,7 +42,6 @@ var DeviceKeys = map[string]struct{}{
 	"BASE_NAME": {}, "GOLDEN_PATH": {}, "HOST_AVD_HOME_PATH": {}, "HOST_AVD_GOLDEN_PATH": {},
 	"ANDROID_KEYS_DIR": {}, "REDROID_DATA_DIR": {}, "REDROID_DATA_TAR": {},
 	"AVD_NAME": {}, "AVDCTL_SSH_TARGET": {}, "AVDCTL_SSH_PASSWORD": {}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {}, "AVDCTL_SUDO": {}, "AVDCTL_SUDO_PASSWORD": {},
-	"RUNNER_IMAGE": {}, "RUNNER_IMAGE_PULL_POLICY": {},
 	"WORK_DIR": {}, "PORT": {}, "CONTAINER_NAME": {}, "IOS_UDID": {},
 }
 
@@ -54,6 +51,7 @@ var DeviceKeys = map[string]struct{}{
 var RunnerKeys = map[string]struct{}{
 	"CREDIMI_DEVICE_COUNT": {}, "CREDIMI_RUNNER_ID": {}, "CREDIMI_RUNNER_NAME": {}, "CREDIMI_RUNNER_ORGANIZATION": {}, "CREDIMI_RUNNER_DESCRIPTION": {}, "CREDIMI_RUNNER_PUBLISHED": {},
 	"CREDIMI_URL": {}, "CREDIMI_USER_API_KEY": {}, "CREDIMI_INTERNAL_ADMIN_KEY": {}, "CREDIMI_SERVICE_MODE": {}, "CREDIMI_TEMP_DIR": {}, "TEMPORAL_ADDRESS": {},
+	"ANDROID_RUNNER_IMAGE": {}, "ANDROID_PULL_POLICY": {}, "ANDROID_NETWORK": {}, "ANDROID_STATE_VOLUME": {}, "ANDROID_TOOL_CACHE_VOLUME": {}, "ANDROID_SDK_VOLUME": {}, "ANDROID_ADB_KEYS_PATH": {},
 	"DASHBOARD_HOST": {}, "DASHBOARD_PORT": {}, "DASHBOARD_TOKEN": {}, "RUNNER_HOST": {}, "RUNNER_PORT": {}, "RUNNER_PUBLIC_PORT": {}, "RUNNER_PUBLIC_URL": {}, "RUNNER_DOMAIN": {}, "RUNNER_CADDY_SITE": {},
 	"CLOUDFLARE_TUNNEL_TOKEN": {}, "OTEL_ENABLED": {}, "OTEL_EXPORTER_OTLP_ENDPOINT": {}, "OTEL_SERVICE_NAME": {},
 }
@@ -271,6 +269,11 @@ func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 		config.Host = Values{}
 	}
 	values := cloneValues(config.Host)
+	for key, defaultValue := range DefaultValues() {
+		if strings.TrimSpace(values[key]) == "" {
+			values[key] = defaultValue
+		}
+	}
 	for key := range values {
 		if strings.HasPrefix(key, "CREDIMI_DEVICE_") {
 			delete(values, key)
@@ -331,21 +334,6 @@ func SortedRunnerKeys() []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func (s *Store) write(content string, values Values) error {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
-		return err
-	}
-	tmpPath := s.Path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0o600); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, s.Path); err != nil {
-		return err
-	}
-	s.Values, s.exists = cloneValues(values), true
-	return nil
 }
 
 func (s *Store) RuntimeConfigDevice(index int) DeviceRuntimeConfig {

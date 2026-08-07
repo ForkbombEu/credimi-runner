@@ -98,6 +98,13 @@ func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
 		values["DASHBOARD_HOST"], values["DASHBOARD_PORT"] = host, port
 	}
 	values["CREDIMI_TEMP_DIR"] = cfg.Storage.TempDir
+	values["ANDROID_RUNNER_IMAGE"] = defaultIfEmpty(cfg.Android.RunnerImage, values["ANDROID_RUNNER_IMAGE"])
+	values["ANDROID_PULL_POLICY"] = defaultIfEmpty(cfg.Android.PullPolicy, values["ANDROID_PULL_POLICY"])
+	values["ANDROID_NETWORK"] = defaultIfEmpty(cfg.Android.Network, values["ANDROID_NETWORK"])
+	values["ANDROID_STATE_VOLUME"] = defaultIfEmpty(cfg.Android.StateVolume, values["ANDROID_STATE_VOLUME"])
+	values["ANDROID_TOOL_CACHE_VOLUME"] = defaultIfEmpty(cfg.Android.ToolCacheVolume, values["ANDROID_TOOL_CACHE_VOLUME"])
+	values["ANDROID_SDK_VOLUME"] = defaultIfEmpty(cfg.Android.SDKVolume, values["ANDROID_SDK_VOLUME"])
+	values["ANDROID_ADB_KEYS_PATH"] = cfg.Android.ADBKeysPath
 	switch cfg.Exposure.Mode {
 	case "named_tunnel":
 		values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
@@ -142,6 +149,13 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 	cfg.Temporal.Address = values["TEMPORAL_ADDRESS"]
 	cfg.Server.APIListen, cfg.Server.DashboardListen = net.JoinHostPort(values["RUNNER_HOST"], values["RUNNER_PORT"]), net.JoinHostPort(values["DASHBOARD_HOST"], values["DASHBOARD_PORT"])
 	cfg.Server.DashboardToken, cfg.Storage.TempDir = values["DASHBOARD_TOKEN"], values["CREDIMI_TEMP_DIR"]
+	cfg.Android.RunnerImage = values["ANDROID_RUNNER_IMAGE"]
+	cfg.Android.PullPolicy = values["ANDROID_PULL_POLICY"]
+	cfg.Android.Network = values["ANDROID_NETWORK"]
+	cfg.Android.StateVolume = values["ANDROID_STATE_VOLUME"]
+	cfg.Android.ToolCacheVolume = values["ANDROID_TOOL_CACHE_VOLUME"]
+	cfg.Android.SDKVolume = values["ANDROID_SDK_VOLUME"]
+	cfg.Android.ADBKeysPath = values["ANDROID_ADB_KEYS_PATH"]
 	switch values["CREDIMI_SERVICE_MODE"] {
 	case "cloudflare-managed":
 		cfg.Exposure.Mode = "named_tunnel"
@@ -205,14 +219,6 @@ func quote(value string) string {
 	}
 	if strings.ContainsAny(value, " \t#\"'") {
 		return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
-	}
-	return value
-}
-
-func unquote(value string) string {
-	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
-		value = value[1 : len(value)-1]
-		value = strings.ReplaceAll(value, `\"`, `"`)
 	}
 	return value
 }

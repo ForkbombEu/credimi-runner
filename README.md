@@ -5,8 +5,8 @@ Credimi runner. It reads one strict TOML file, exposes the generated GoA API,
 reconciles its own Docker resources when Android is configured, and reports
 each configured device independently.
 
-There is no `.env` runtime configuration, Docker Compose project, or separate
-phone/emulator runner image.
+There is no `.env` runtime configuration or per-device runner image. One
+Android-capable image is shared by every configured device.
 
 ## Install
 
@@ -121,7 +121,7 @@ as ready until the tunnel and runner health checks have succeeded.
 | Device type | Linux | macOS | Requirements |
 | --- | --- | --- | --- |
 | `android_physical` | USB or Wi-Fi ADB | Wi-Fi ADB only | Docker when enabled; unique serial |
-| `android_emulator` | Yes | No | Docker and `/dev/kvm`; one per runner |
+| `android_emulator` | Yes | Yes | Docker and `/dev/kvm`; one per runner |
 | `redroid` | Yes | No | Docker; unique serial; one managed Redroid resource per device |
 | `ios_simulator` | No | Yes | Xcode and an explicit Simulator UDID; one per runner |
 
@@ -130,15 +130,15 @@ as ready until the tunnel and runner health checks have succeeded.
 Every enabled Android device uses the unified runner image declared by
 `android.runner_image`. Persistent state, SDK/tool caches, AVD data and ADB
 keys live in configured volumes, so replacing the runner image does not discard
-provisioned assets. The runner container contains the dashboard, GoA server,
+provisioned assets. Missing SDK platform-tools and emulator packages are
+installed idempotently into the persistent SDK volume. The runner container contains the dashboard, GoA server,
 Temporal workers and common Android tools.
 
 Docker is required only if Android is enabled. An iOS-Simulator-only manual
 runner on macOS does not need Docker. On Linux, the user running
-`credimi-runner` must be allowed to access the Docker daemon. For USB Android
-devices, the runner bind-mounts `/dev/bus/usb`; grant the operator the normal
-udev/group permissions for the attached phone and reconnect it after changing
-rules. Do not run the agent privileged.
+`credimi-runner` must be allowed to access the Docker daemon. USB Android
+devices use the host ADB connection; grant the operator the normal udev/group
+permissions for the attached phone and reconnect it after changing rules.
 
 Android emulator devices require `/dev/kvm` on Linux. Verify it before
 enabling an emulator:

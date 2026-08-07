@@ -483,7 +483,7 @@ func TestUpgradeCommandsAreTopLevel(t *testing.T) {
 func TestUpgradeBinaryStopsRuntimeBeforeReplacingExecutable(t *testing.T) {
 	dir := t.TempDir()
 	setLifecycleConfigDir(t, dir)
-	writeTestTOMLConfig(t, dir)
+	writeTestTOMLConfigPortsURL(t, dir, lifecycleFreeListenAddress(t), lifecycleFreeListenAddress(t), "https://credimi.example")
 	manager := &lifecycleDirectFakeManager{}
 	originalExecutable, originalDownload, originalFactory := upgradeBinaryExecutable, upgradeBinaryDownload, lifecycleRuntimeManagerFactory
 	t.Cleanup(func() {

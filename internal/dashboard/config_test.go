@@ -87,3 +87,43 @@ func TestConfigAuthMode(t *testing.T) {
 		t.Fatal(runner.AuthMode())
 	}
 }
+
+func TestConfigBoolAndConfigDirUseCompatibilityDefaults(t *testing.T) {
+	cfg := &Config{values: map[string]string{"enabled": "yes", "disabled": "false"}}
+	if !cfg.Bool("enabled") || cfg.Bool("disabled") || cfg.Bool("missing") {
+		t.Fatalf("boolean compatibility values were not interpreted correctly")
+	}
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
+	if ConfigDir() == "" {
+		t.Fatal("ConfigDir returned empty path")
+	}
+}
+
+func TestConfigCompatibilityFormattingHelpers(t *testing.T) {
+	for _, tc := range []struct {
+		input, want string
+	}{
+		{"", ""}, {"plain", "plain"}, {"with space", `"with space"`}, {`with "quote"`, "\"with \\\"quote\\\"\""},
+	} {
+		if got := quote(tc.input); got != tc.want {
+			t.Fatalf("quote(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+	keys := sortedKeys(map[string]string{"z": "1", "a": "2", "m": "3"})
+	if strings.Join(keys, ",") != "a,m,z" {
+		t.Fatalf("sorted keys = %v", keys)
+	}
+}
+
+func TestTruthyCompatibilityValues(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on", " On "} {
+		if !isTruthyFormValue(value) {
+			t.Fatalf("truthy value %q rejected", value)
+		}
+	}
+	for _, value := range []string{"", "0", "false", "no", "off", "maybe"} {
+		if isTruthyFormValue(value) {
+			t.Fatalf("falsey value %q accepted", value)
+		}
+	}
+}
