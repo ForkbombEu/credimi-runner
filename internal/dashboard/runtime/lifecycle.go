@@ -943,14 +943,14 @@ func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
 // plain-text pull output.
 func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func(string)) error {
 	m.mu.Lock()
-	images := configuredRuntimeImages(m.values)
 	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
+	images := configuredRuntimeImages(m.values, m.goos)
 	m.mu.Unlock()
-	if len(images) == 0 {
-		return fmt.Errorf("the configured shared runner image is local-only or no container runtime is configured")
-	}
 	if !containsService(plan.ComposeServices, "runner") {
 		return fmt.Errorf("runner image upgrade requires the container backend")
+	}
+	if len(images) == 0 {
+		return fmt.Errorf("the configured shared runner image is local-only or no container runtime is configured")
 	}
 	updated := make(map[string][2]string, len(images))
 	for _, image := range images {
@@ -1017,8 +1017,8 @@ func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func
 // configuredRuntimeImages returns the one image used by the shared container.
 // A `never` policy means the operator owns a local image and it must not be
 // touched by the common dashboard maintenance action.
-func configuredRuntimeImages(values Values) []string {
-	spec, err := sharedRunnerSpec(values, runtime.GOOS)
+func configuredRuntimeImages(values Values, goos string) []string {
+	spec, err := sharedRunnerSpec(values, goos)
 	if err != nil || spec.Image == "" || spec.PullPolicy == "never" {
 		return nil
 	}

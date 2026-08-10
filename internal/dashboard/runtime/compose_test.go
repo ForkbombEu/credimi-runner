@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -33,6 +35,23 @@ func TestComposeBootstrapsWithoutConfiguredInventory(t *testing.T) {
 	}
 	if !strings.Contains(content, "command:\n      - internal-runtime") || !strings.Contains(content, ":/etc/credimi-runner") {
 		t.Fatalf("first-run compose bootstrap is incomplete:\n%s", content)
+	}
+}
+
+func TestWriteComposeFileUsesAtomicWritableConfigDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteComposeFile(dir, Values{"ANDROID_RUNNER_IMAGE": "runner:local", "ANDROID_PULL_POLICY": "never"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteComposeFileForOS(dir, Values{"ANDROID_RUNNER_IMAGE": "runner:local", "ANDROID_PULL_POLICY": "never"}, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "docker-compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), dir+":/etc/credimi-runner") || strings.Contains(string(content), dir+":/etc/credimi-runner:ro") {
+		t.Fatalf("compose config mount is not writable: %s", content)
 	}
 }
 
@@ -128,16 +147,16 @@ func TestComposeServicesFollowBackendSelection(t *testing.T) {
 
 func TestRuntimePlanServiceModesRemainExplicit(t *testing.T) {
 	cases := []struct {
-		name, backend, mode string
-		want, notWant       string
+		name, mode    string
+		want, notWant string
 	}{
-		{"container manual", DefaultContainerBackend, "manual", "runner", "runner_host"},
-		{"container quick tunnel", DefaultContainerBackend, "auto", "runner", "runner_host"},
-		{"container named tunnel", DefaultContainerBackend, "cloudflare-managed", "runner", "runner_host"},
+		{"container manual", "manual", "runner", "runner_host"},
+		{"container quick tunnel", "auto", "runner", "runner_host"},
+		{"container named tunnel", "cloudflare-managed", "runner", "runner_host"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			values := Values{"CREDIMI_RUNNER_BACKEND": tc.backend, "CREDIMI_SERVICE_MODE": tc.mode, "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/device"}
+			values := Values{"CREDIMI_SERVICE_MODE": tc.mode, "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/device"}
 			plan := BuildRuntimePlan(t.TempDir(), values)
 			joined := strings.Join(plan.ComposeServices, ",")
 			if !strings.Contains(joined, tc.want) || strings.Contains(joined, tc.notWant) {

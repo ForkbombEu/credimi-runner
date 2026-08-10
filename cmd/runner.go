@@ -23,6 +23,19 @@ import (
 var debugVerbose bool
 var configPath string
 
+type containerLauncherManager interface {
+	Start(context.Context) error
+	Stop(context.Context) error
+	Close() error
+}
+
+var newContainerLauncherManager = func(binaryPath, configDir string, values dashboardruntime.Values) containerLauncherManager {
+	return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
+}
+
+var runInternalDashboardFunc = runDashboardOwned
+var runInternalServerFunc = func(cmd *cobra.Command, args []string) error { return serverCmd.RunE(cmd, args) }
+
 var rootCmd = &cobra.Command{
 	Use:           "credimi-runner",
 	Short:         "Credimi mobile runner",
@@ -89,7 +102,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	if err != nil {
 		return err
 	}
-	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, normalized, nil)
+	manager := newContainerLauncherManager(binaryPath, configDir, normalized)
 	defer manager.Close()
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
@@ -139,14 +152,14 @@ func runInternalRuntime(cmd *cobra.Command, args []string) error {
 	host = serverHost
 	defer func() { host = previousHost }()
 	errCh := make(chan error, 2)
-	go func() { errCh <- runDashboardOwned(cmd, args) }()
+	go func() { errCh <- runInternalDashboardFunc(cmd, args) }()
 	serverStarted := false
 	startServer := func() {
 		if serverStarted {
 			return
 		}
 		serverStarted = true
-		go func() { errCh <- serverCmd.RunE(cmd, args) }()
+		go func() { errCh <- runInternalServerFunc(cmd, args) }()
 	}
 	if _, err := os.Stat(filepath.Join(configDir, "config.toml")); err == nil {
 		if err := prepareInternalRuntime(cmd.Context(), configDir); err != nil {
@@ -229,7 +242,11 @@ func configureInternalListeners(configDir string) error {
 }
 
 func provisionInternalRuntime(ctx context.Context, configDir string) error {
-	return provisionInternalRuntimeAt(ctx, configDir, "/opt/android-sdk")
+	sdkRoot := os.Getenv("ANDROID_SDK_ROOT")
+	if sdkRoot == "" {
+		sdkRoot = "/opt/android-sdk"
+	}
+	return provisionInternalRuntimeAt(ctx, configDir, sdkRoot)
 }
 
 func provisionInternalRuntimeAt(ctx context.Context, configDir, sdkRoot string) error {

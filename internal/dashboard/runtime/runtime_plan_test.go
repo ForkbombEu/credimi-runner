@@ -67,8 +67,7 @@ func TestRuntimePlanReadinessUsesIndexedDevices(t *testing.T) {
 	if DeviceReadinessRequired(managed, "linux") {
 		t.Fatal("managed device should not require an attached ADB target")
 	}
-	host := cloneValues(phone)
-	host["CREDIMI_RUNNER_BACKEND"] = "host"
+	host := Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/sim", "CREDIMI_DEVICE_1_TYPE": "ios_simulator", "CREDIMI_DEVICE_1_MODE": "no_device"}
 	if !RunnerAPIReachableFromHost(host, "darwin") || !RunnerReadinessRequiredBeforeRegistration(host, "darwin") {
 		t.Fatal("host runner should be reachable before registration")
 	}

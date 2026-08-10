@@ -92,14 +92,13 @@ func TestRuntimeLifecycleStartKeepsRuntimeWhenReadinessFails(t *testing.T) {
 	lifecycle := RuntimeLifecycle{
 		Manager: manager,
 		Values: dashboardruntime.Values{
-			"CREDIMI_RUNNER_ID":      "acme/runner",
-			"CREDIMI_DEVICE_COUNT":   "1",
-			"CREDIMI_DEVICE_1_ID":    "acme/runner/device",
-			"CREDIMI_DEVICE_1_TYPE":  "android_phone",
-			"CREDIMI_DEVICE_1_MODE":  "usb",
-			"CREDIMI_SERVICE_MODE":   "manual",
-			"RUNNER_PUBLIC_URL":      "https://runner.example",
-			"CREDIMI_RUNNER_BACKEND": "container",
+			"CREDIMI_RUNNER_ID":     "acme/runner",
+			"CREDIMI_DEVICE_COUNT":  "1",
+			"CREDIMI_DEVICE_1_ID":   "acme/runner/device",
+			"CREDIMI_DEVICE_1_TYPE": "android_phone",
+			"CREDIMI_DEVICE_1_MODE": "usb",
+			"CREDIMI_SERVICE_MODE":  "manual",
+			"RUNNER_PUBLIC_URL":     "https://runner.example",
 		},
 		GOOS: "linux",
 		WaitReady: func(context.Context, dashboardruntime.Values) error {
@@ -126,8 +125,7 @@ func TestRuntimeLifecycleStartReportsRunnerExitDuringReadiness(t *testing.T) {
 	lifecycle := RuntimeLifecycle{
 		Manager: manager,
 		Values: dashboardruntime.Values{
-			"CREDIMI_SERVICE_MODE":   "auto",
-			"CREDIMI_RUNNER_BACKEND": "container",
+			"CREDIMI_SERVICE_MODE": "auto",
 		},
 		GOOS: "linux",
 	}
@@ -226,7 +224,6 @@ func TestRuntimeLifecycleStartRegistersFreshAutoURL(t *testing.T) {
 			"CREDIMI_RUNNER_TYPE":         "android_phone",
 			"CREDIMI_RUNNER_PUBLISHED":    "true",
 			"CREDIMI_SERVICE_MODE":        "auto",
-			"CREDIMI_RUNNER_BACKEND":      "container",
 		},
 		GOOS:      "linux",
 		WaitReady: func(context.Context, dashboardruntime.Values) error { return nil },
@@ -249,14 +246,13 @@ func TestRuntimeLifecycleRestartUsesStopStartAndRegister(t *testing.T) {
 	lifecycle := RuntimeLifecycle{
 		Manager: manager,
 		Values: dashboardruntime.Values{
-			"CREDIMI_URL":            api.URL,
-			"CREDIMI_USER_API_KEY":   "key",
-			"CREDIMI_RUNNER_ID":      "acme/runner",
-			"CREDIMI_RUNNER_NAME":    "runner",
-			"CREDIMI_SERVICE_MODE":   "manual",
-			"RUNNER_PUBLIC_URL":      "https://runner.example",
-			"CREDIMI_RUNNER_BACKEND": "container",
-			"CREDIMI_RUNNER_TYPE":    "android_phone",
+			"CREDIMI_URL":          api.URL,
+			"CREDIMI_USER_API_KEY": "key",
+			"CREDIMI_RUNNER_ID":    "acme/runner",
+			"CREDIMI_RUNNER_NAME":  "runner",
+			"CREDIMI_SERVICE_MODE": "manual",
+			"RUNNER_PUBLIC_URL":    "https://runner.example",
+			"CREDIMI_RUNNER_TYPE":  "android_phone",
 		},
 		GOOS:      "linux",
 		WaitReady: func(context.Context, dashboardruntime.Values) error { return nil },
@@ -328,19 +324,18 @@ func TestRuntimeLifecycleRegisterRunningWaitsForRunnerReadiness(t *testing.T) {
 	lifecycle := RuntimeLifecycle{
 		Manager: &lifecycleManager{},
 		Values: dashboardruntime.Values{
-			"CREDIMI_URL":            api.URL,
-			"CREDIMI_USER_API_KEY":   "key",
-			"CREDIMI_RUNNER_ID":      "acme/runner",
-			"CREDIMI_RUNNER_NAME":    "runner",
-			"CREDIMI_SERVICE_MODE":   "manual",
-			"CREDIMI_DEVICE_COUNT":   "1",
-			"CREDIMI_DEVICE_1_ID":    "acme/runner/ios",
-			"CREDIMI_DEVICE_1_TYPE":  "ios_simulator",
-			"CREDIMI_DEVICE_1_MODE":  "no_device",
-			"RUNNER_PUBLIC_URL":      "https://runner.example",
-			"RUNNER_HOST":            host,
-			"RUNNER_PORT":            port,
-			"CREDIMI_RUNNER_BACKEND": "host",
+			"CREDIMI_URL":           api.URL,
+			"CREDIMI_USER_API_KEY":  "key",
+			"CREDIMI_RUNNER_ID":     "acme/runner",
+			"CREDIMI_RUNNER_NAME":   "runner",
+			"CREDIMI_SERVICE_MODE":  "manual",
+			"CREDIMI_DEVICE_COUNT":  "1",
+			"CREDIMI_DEVICE_1_ID":   "acme/runner/ios",
+			"CREDIMI_DEVICE_1_TYPE": "ios_simulator",
+			"CREDIMI_DEVICE_1_MODE": "no_device",
+			"RUNNER_PUBLIC_URL":     "https://runner.example",
+			"RUNNER_HOST":           host,
+			"RUNNER_PORT":           port,
 		},
 		GOOS: "darwin",
 	}
@@ -504,7 +499,7 @@ func TestRuntimeLifecycleGuardsManagerFailuresAndEndpoints(t *testing.T) {
 		t.Fatalf("nil manager registration error = %v", err)
 	}
 
-	failing := RuntimeLifecycle{Manager: &failingLifecycleManager{}, Values: dashboardruntime.Values{"CREDIMI_RUNNER_BACKEND": "container"}, GOOS: "linux"}
+	failing := RuntimeLifecycle{Manager: &failingLifecycleManager{}, Values: dashboardruntime.Values{}, GOOS: "linux"}
 	if err := failing.Start(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "start failed") {
 		t.Fatalf("failed manager start error = %v", err)
 	}
@@ -514,7 +509,7 @@ func TestRuntimeLifecycleGuardsManagerFailuresAndEndpoints(t *testing.T) {
 		Manager: progressManager,
 		Values: dashboardruntime.Values{
 			"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "key", "CREDIMI_RUNNER_ID": "acme/runner",
-			"CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example", "CREDIMI_RUNNER_BACKEND": "container",
+			"CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
 		},
 		GOOS: "linux", WaitReady: func(context.Context, dashboardruntime.Values) error { return nil },
 		HTTPClient: &http.Client{Transport: lifecycleRoundTripFunc(func(request *http.Request) (*http.Response, error) {

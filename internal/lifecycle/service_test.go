@@ -159,3 +159,53 @@ func TestStartSendsImmediateHeartbeat(t *testing.T) {
 	stop()
 	cancel()
 }
+
+func TestStartReturnsInitialHeartbeatFailure(t *testing.T) {
+	client := &recordingClient{failed: map[string]int{"/api/mobile-runner/lifecycle/heartbeat": 1}}
+	service := newTestService(t, client, nil)
+	stop, err := service.Start(context.Background())
+	if stop != nil {
+		t.Fatal("failed start returned a stop function")
+	}
+	require.ErrorContains(t, err, "unexpected status")
+}
+
+func TestStartSendsPeriodicHeartbeatsUntilStopped(t *testing.T) {
+	client := &recordingClient{}
+	service := newTestService(t, client, nil)
+	service.config.HeartbeatInterval = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stop, err := service.Start(ctx)
+	require.NoError(t, err)
+	deadline := time.After(time.Second)
+	for {
+		client.mu.Lock()
+		count := len(client.requests)
+		client.mu.Unlock()
+		if count >= 2 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("periodic heartbeat was not sent")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	stop()
+}
+
+func TestDefaultProbeTreatsIdleRedroidAsReady(t *testing.T) {
+	registry, err := device.NewRegistry([]config.DeviceConfig{{
+		ID: "acme/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true,
+		Redroid: &config.RedroidConfig{Serial: "10.0.0.4:5555"},
+	}})
+	require.NoError(t, err)
+	service, err := New(Config{CredimiURL: "https://credimi.example", APIKey: "key", Host: Host{ID: "acme/runner"}}, registry, nil, nil)
+	require.NoError(t, err)
+	states := service.DeviceStates(context.Background())
+	require.Len(t, states, 1)
+	require.True(t, states[0].Online)
+	require.True(t, states[0].Ready)
+	require.Equal(t, "configured; idle runtime", states[0].Reason)
+}

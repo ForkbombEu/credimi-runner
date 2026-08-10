@@ -189,12 +189,6 @@ func RunnerAPIReachableFromHost(values Values, goos string) bool {
 }
 
 func derivedBackend(values Values, goos string) string {
-	// This only tolerates old in-memory test/migration values. The typed TOML
-	// adapter never emits this key; configured placement is always inventory-
-	// derived.
-	if compatibility := strings.TrimSpace(values["CREDIMI_RUNNER_BACKEND"]); compatibility == DefaultHostBackend || compatibility == DefaultContainerBackend {
-		return compatibility
-	}
 	backend, err := legacyBackend(values, goos)
 	if err != nil {
 		return DefaultContainerBackend

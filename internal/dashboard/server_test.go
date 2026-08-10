@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -198,6 +199,65 @@ func TestNewHandlerWithManagerWrapper(t *testing.T) {
 	defer cancel()
 	if handler == nil {
 		t.Fatal("handler is nil")
+	}
+}
+
+func TestRuntimeOwnedHandlerDoesNotCreateHostLifecycleManager(t *testing.T) {
+	handler, cancel, err := NewRuntimeOwnedHandler(context.Background(), t.TempDir(), "controller", "token", "fingerprint", controller.NewCoordinator(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusOK && response.Code != http.StatusFound {
+		t.Fatalf("runtime-owned dashboard status = %d", response.Code)
+	}
+}
+
+func TestRuntimeOwnedRegistrationUsesCredimiWithoutLifecycleManager(t *testing.T) {
+	var paths []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api/mobile-runner" || r.URL.Path == "/api/mobile-device" || r.URL.Path == "/api/mobile-device/reconcile" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	s.cfg.values["CREDIMI_URL"] = api.URL
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.cfg.values["CREDIMI_DEVICE_COUNT"] = "1"
+	s.cfg.values["CREDIMI_DEVICE_1_ID"] = "acme/runner/phone"
+	s.cfg.values["CREDIMI_DEVICE_1_NAME"] = "Phone"
+	s.cfg.values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	s.cfg.values["CREDIMI_DEVICE_1_MODE"] = "usb"
+	s.cfg.values["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
+
+	s.startRuntimeOwnedRegistration(s.cfg.Snapshot())
+	operation := s.operations.Current()
+	if operation.ID == "" {
+		t.Fatal("runtime-owned registration did not create an operation")
+	}
+	completed, err := s.operations.Wait(context.Background(), operation.ID)
+	if err != nil || completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("runtime-owned registration = %#v err=%v", completed, err)
+	}
+	if err := s.applyRuntimeOwnedRegistration(s.cfg.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(paths, "/api/mobile-runner") || !slices.Contains(paths, "/api/mobile-device/reconcile") {
+		t.Fatalf("Credimi registration paths = %v", paths)
 	}
 }
 
@@ -951,7 +1011,6 @@ func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) 
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
 	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.cfg.values["CREDIMI_RUNNER_BACKEND"] = "container"
 	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
 	s.maintenance.Image.UpdateAvailable = true
 	recorder := httptest.NewRecorder()
@@ -1361,11 +1420,10 @@ func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
 	}
 
 	values := map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
-		"RUNNER_HOST":            host,
-		"RUNNER_PORT":            port,
+		"CREDIMI_SERVICE_MODE": "manual",
+		"CREDIMI_RUNNER_TYPE":  "ios_simulator",
+		"RUNNER_HOST":          host,
+		"RUNNER_PORT":          port,
 	}
 	if err := s.runnerReady(context.Background(), values); err != nil {
 		t.Fatalf("waitForRunnerReady = %v", err)
@@ -1863,7 +1921,6 @@ func TestServerSaveDevicesConfigUpdatesRunningRunnerWithoutRestart(t *testing.T)
 		"CREDIMI_RUNNER_ORGANIZATION": "acme",
 		"CREDIMI_SERVICE_MODE":        "manual",
 		"RUNNER_PUBLIC_URL":           "https://runner.example",
-		"CREDIMI_RUNNER_BACKEND":      "container",
 		"TEMPORAL_ADDRESS":            "temporal.example:7233",
 		"RUNNER_HOST":                 "127.0.0.1",
 		"RUNNER_PORT":                 "8050",

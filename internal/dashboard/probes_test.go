@@ -186,8 +186,7 @@ printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","I
 	t.Setenv("PATH", bin)
 
 	plan := dashboardruntime.BuildRuntimePlan(t.TempDir(), dashboardruntime.Values{
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "auto",
+		"CREDIMI_SERVICE_MODE": "auto",
 	})
 	services := probeServices(context.Background(), t.TempDir(), plan, true)
 	if len(services) != 4 {
@@ -209,10 +208,10 @@ printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","I
 
 func TestProbeServicesWithoutDocker(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
-	plan := dashboardruntime.BuildRuntimePlan("", dashboardruntime.Values{
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-	})
+	plan := dashboardruntime.BuildRuntimePlanForOS("", dashboardruntime.Values{
+		"CREDIMI_RUNNER_TYPE":  "ios_simulator",
+		"CREDIMI_SERVICE_MODE": "manual",
+	}, "darwin")
 	services := probeServices(context.Background(), "", plan, false)
 	for _, svc := range services {
 		if svc.ID == "temporal" {

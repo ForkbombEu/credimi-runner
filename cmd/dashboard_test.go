@@ -137,6 +137,43 @@ func TestRunDashboardGracefullyStopsFromInjectedSignal(t *testing.T) {
 	}
 }
 
+func TestRunDashboardOwnedGracefullyStopsWithoutHostLifecycleManager(t *testing.T) {
+	dir := t.TempDir()
+	oldSource, oldReserve, oldOpen, oldConfigDir, oldHost, oldPort := dashboardSignalSource, dashboardListenerReservation, dashboardOpen, dashboardConfigDir, dashboardHost, dashboardPort
+	dashboardSignalSource = func() (<-chan os.Signal, func()) {
+		signals := make(chan os.Signal, 1)
+		signals <- syscall.SIGTERM
+		return signals, func() {}
+	}
+	dashboardOpen = false
+	dashboardListenerReservation = func(string, int) (net.Listener, error) {
+		return &dashboardTestListener{closed: make(chan struct{})}, nil
+	}
+	dashboardConfigDir = dir
+	dashboardHost = "127.0.0.1"
+	dashboardPort = 0
+	t.Cleanup(func() {
+		dashboardSignalSource = oldSource
+		dashboardListenerReservation = oldReserve
+		dashboardOpen = oldOpen
+		dashboardConfigDir = oldConfigDir
+		dashboardHost = oldHost
+		dashboardPort = oldPort
+	})
+	command := &cobra.Command{}
+	command.Flags().String("host", "127.0.0.1", "")
+	command.Flags().Int("port", 0, "")
+	if err := command.Flags().Set("host", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Flags().Set("port", "0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runDashboardOwned(command, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDashboardConfiguredStoreExists(t *testing.T) {
 	dir := t.TempDir()
 	writeTestTOMLConfig(t, dir)

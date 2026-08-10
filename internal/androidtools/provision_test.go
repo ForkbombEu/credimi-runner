@@ -117,6 +117,13 @@ func TestEnsureReportsMissingSDKManager(t *testing.T) {
 	}
 }
 
+func TestEnsureCapabilitiesUsesCommandWrapper(t *testing.T) {
+	installFakeSDKManager(t)
+	if err := EnsureCapabilities(context.Background(), t.TempDir(), false, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEnsureRejectsEmptySDKRoot(t *testing.T) {
 	if err := Ensure(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "SDK root is required") {
 		t.Fatalf("empty SDK root error = %v", err)

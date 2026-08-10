@@ -111,3 +111,23 @@ func TestInventoryStoreScopesActivityEnvironmentPerDevice(t *testing.T) {
 		t.Fatal("removed device remained addressable after inventory update")
 	}
 }
+
+func TestInventoryStoreUsesFallbacksAndRejectsInvalidUpdates(t *testing.T) {
+	store, err := NewInventoryStore(RunnerRuntimeConfig{RunnerID: "acme/runner", Host: map[string]string{"HOST_VALUE": "host"}, Devices: []DeviceRuntimeConfig{{ID: "acme/runner/a", Enabled: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	getter, err := store.Environment("acme/runner/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getter("HOST_VALUE") != "host" || getter("missing", "fallback") != "fallback" || getter("missing") != "" {
+		t.Fatalf("environment fallback behavior is incorrect")
+	}
+	if _, err := store.Environment("acme/runner/missing"); err == nil {
+		t.Fatal("unknown device environment lookup succeeded")
+	}
+	if err := store.Update(RunnerRuntimeConfig{RunnerID: "acme/runner"}); err == nil {
+		t.Fatal("invalid inventory update succeeded")
+	}
+}

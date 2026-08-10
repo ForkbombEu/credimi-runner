@@ -145,7 +145,9 @@ func runDashboardMode(cmd *cobra.Command, args []string, runtimeOwned bool) erro
 	}); err != nil {
 		return err
 	}
-	manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.started", Message: "dashboard controller started", Component: "controller", Phase: "running", Fields: map[string]any{"pid": os.Getpid(), "listen_host": listenHost, "listen_port": listenPort}})
+	if manager != nil {
+		manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.started", Message: "dashboard controller started", Component: "controller", Phase: "running", Fields: map[string]any{"pid": os.Getpid(), "listen_host": listenHost, "listen_port": listenPort}})
+	}
 
 	server := &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", listenHost, listenPort),
@@ -179,7 +181,9 @@ func runDashboardMode(cmd *cobra.Command, args []string, runtimeOwned bool) erro
 	}
 
 	cancelDashboard()
-	manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.stopped", Message: "dashboard controller stopped", Component: "controller", Phase: "stopped"})
+	if manager != nil {
+		manager.EmitLifecycle(lifecyclelog.Event{Level: lifecyclelog.LevelInfo, Event: "controller.stopped", Message: "dashboard controller stopped", Component: "controller", Phase: "stopped"})
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {

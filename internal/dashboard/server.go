@@ -198,7 +198,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	cfg.mu.Unlock()
 	if manager == nil && !owned {
 		manager = dashboardruntime.NewLifecycleManager(executable, composeDir, normalized, nil)
-	} else {
+	} else if manager != nil {
 		manager.Configure(normalized)
 	}
 
