@@ -123,14 +123,6 @@ jobs:
     needs: semantic-release
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - target: phone
-            platforms: linux/amd64,linux/arm64
-          - target: emulator
-            platforms: linux/amd64
     permissions:
       contents: read
       packages: write
@@ -163,33 +155,32 @@ jobs:
           username: ${{ env.DOCKERHUB_USERNAME }}
           password: ${{ env.DOCKERHUB_TOKEN }}
 
-      - name: Extract Docker metadata (${{ matrix.target }})
+      - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository_owner }}/credimi-runner-${{ matrix.target }}
+          images: ghcr.io/${{ github.repository_owner }}/credimi-runner
           tags: |
             type=raw,value=latest
             type=sha
 
-      - name: Extract Docker metadata for Docker Hub (${{ matrix.target }}) (optional)
+      - name: Extract Docker metadata for Docker Hub (optional)
         id: meta_dockerhub
         if: env.DOCKERHUB_NAMESPACE != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         uses: docker/metadata-action@v5
         with:
-          images: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/credimi-runner-${{ matrix.target }}
+          images: docker.io/${{ env.DOCKERHUB_NAMESPACE }}/credimi-runner
           tags: |
             type=raw,value=latest
             type=sha
 
-      - name: Build and push (${{ matrix.target }})
+      - name: Build and push unified runner image
         uses: docker/build-push-action@v6
         id: push
         with:
           context: .
-          target: ${{ matrix.target }}
           push: true
-          platforms: ${{ matrix.platforms }}
+          platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ needs.semantic-release.outputs.release_created == 'true' && needs.semantic-release.outputs.tag || format('main-{0}', github.sha) }}
           tags: |
@@ -199,15 +190,15 @@ jobs:
           secret-envs: |
             credimi_extra_pat=CREDIMI_EXTRA_PAT
 
-      - name: Attest Docker image (${{ matrix.target }})
+      - name: Attest Docker image
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/credimi-runner-${{ matrix.target }}
+          subject-name: ghcr.io/${{ github.repository_owner }}/credimi-runner
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-      - name: Trigger Coolify deploy (emulator)
-        if: success() && matrix.target == 'emulator'
+      - name: Trigger Coolify deploy
+        if: success()
         shell: bash
         env:
           COOLIFY_WEBHOOK_URL: ${{ secrets.COOLIFY_WEBHOOK_URL }}
