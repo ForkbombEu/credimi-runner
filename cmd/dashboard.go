@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -49,13 +48,7 @@ func runDashboardOwned(cmd *cobra.Command, args []string) error {
 }
 
 func runDashboardMode(cmd *cobra.Command, args []string, runtimeOwned bool) error {
-	configDir := dashboardConfigDir
-	if configPath != "" {
-		configDir = filepath.Dir(configPath)
-	}
-	if configDir == "" {
-		configDir = dashboard.ConfigDir()
-	}
+	configDir := effectiveConfigDir()
 	closeVerboseLog, err := enableVerboseLog(cmd, configDir)
 	if err != nil {
 		return err

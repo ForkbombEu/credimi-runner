@@ -35,6 +35,7 @@
   <section class="card">
     <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">runner host and device runtimes</div></div>
       <div class="right" style="display:flex;align-items:center;gap:10px">
+        {{if .RuntimeControlsAvailable}}
         <button class="btn {{if .RuntimeRunning}}btn-danger{{else}}btn-pri{{end}} runtime-cta"
                 hx-post="{{.RuntimeTogglePath}}"
                 hx-target="main"
@@ -45,6 +46,7 @@
                 data-busy-message="{{.RuntimeToggleBusyMessage}}">
           {{if .RuntimeRunning}}{{icon "x"}}{{else}}{{icon "check"}}{{end}} {{.RuntimeToggleLabel}}
         </button>
+        {{end}}
       </div></header>
     <div class="card-b">
       <div id="runtime-status" hx-ext="sse" sse-connect="/events/runtime" sse-swap="runtime">{{template "runtime_status" .}}</div>
@@ -71,10 +73,10 @@
     <div class="card-b">
       <div class="maintenance-grid">
         <div class="maintenance-detail"><span>Runner version</span><b>{{.RunnerVersion}}</b><strong>{{.RunnerVersionState}}</strong><small>Installed build: {{.RunnerCurrentBuiltAt}}</small><small>Latest: {{.LatestRunnerVersion}} · {{.RunnerLatestBuiltAt}}</small></div>
-        <div class="maintenance-detail"><span>Docker image</span><b class="mono">{{.RunnerImage}}</b><strong>{{.ImageVersionState}}</strong><small>Installed build: {{.ImageCurrentBuiltAt}}</small><small>Latest: {{.LatestImageVersion}} · {{.ImageLatestBuiltAt}}</small></div>
+        {{if .RuntimeImageVisible}}<div class="maintenance-detail"><span>Docker image</span><b class="mono">{{.RunnerImage}}</b><strong>{{.ImageVersionState}}</strong><small>Installed build: {{.ImageCurrentBuiltAt}}</small><small>Latest: {{.LatestImageVersion}} · {{.ImageLatestBuiltAt}}</small></div>{{end}}
       </div>
       {{if .MaintenanceError}}<div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Update check incomplete: {{.MaintenanceError}}</div></div>{{end}}
-      <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Upgrade replaces available Runner binary and Docker image updates, then restarts Credimi Runner. The Dashboard reconnects automatically.</div></div>
+      <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Upgrade replaces the available Runner binary{{if .RuntimeImageVisible}} and Docker image{{end}} updates, then restarts Credimi Runner. The Dashboard reconnects automatically.</div></div>
     </div>
   </section>
 </main>

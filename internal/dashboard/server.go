@@ -20,7 +20,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -409,6 +411,10 @@ func (s *Server) setDeviceEnabled(w http.ResponseWriter, r *http.Request, enable
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
+	if err := s.provisionRuntimeCapabilities(r.Context()); err != nil {
+		http.Error(w, "device state saved, but Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	// These controls are ordinary dashboard forms as well as API endpoints.
 	// Returning JSON to a browser form produced a blank page, which made the
 	// enable/disable action look broken even though the file had changed.
@@ -471,6 +477,10 @@ func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
+	if err := s.provisionRuntimeCapabilities(r.Context()); err != nil {
+		http.Error(w, "device removed, but Android capabilities could not be reconciled: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	// Device actions are submitted from the dashboard, not a raw API client.
 	// Redirecting keeps the user inside the dashboard instead of rendering a
 	// transport JSON response after removal.
@@ -489,6 +499,14 @@ func loadConfigSnapshot(store *dashboardruntime.Store, current *Config) *Config 
 		current.values[key] = value
 	}
 	return current
+}
+
+func (s *Server) provisionRuntimeCapabilities(ctx context.Context) error {
+	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
+	if err != nil {
+		return fmt.Errorf("load typed runtime configuration: %w", err)
+	}
+	return androidtools.EnsureRuntimeCapabilities(ctx, cfg, runtime.GOOS)
 }
 
 // staticHTTPHandler returns a handler for the embedded static directory.
@@ -545,6 +563,7 @@ func (s *Server) pageData(active string, payload any) PageData {
 	s.mu.RUnlock()
 	payloadMap := map[string]any{
 		"RuntimeStatus": runtimeStatus,
+		"RuntimeOwned":  s.runtimeOwned,
 		"Startup":       s.startupSnapshot(),
 		"RunnerVersion": buildinfo.String(),
 		"Maintenance":   maintenanceStatus,
@@ -605,9 +624,14 @@ func (s *Server) ensureMaintenanceChecked(ctx context.Context, force bool) {
 	if checker == nil {
 		return
 	}
-	image, pullPolicy, err := dashboardruntime.SharedRunnerImage(s.cfg.Snapshot(), runtime.GOOS)
-	if err != nil || pullPolicy == "never" {
-		image = ""
+	image := ""
+	if runtime.GOOS != "darwin" {
+		var pullPolicy string
+		var err error
+		image, pullPolicy, err = dashboardruntime.SharedRunnerImage(s.cfg.Snapshot(), runtime.GOOS)
+		if err != nil || pullPolicy == "never" {
+			image = ""
+		}
 	}
 	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt(), image)
 	s.mu.Lock()
@@ -766,6 +790,10 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
+	if err := s.provisionRuntimeCapabilities(r.Context()); err != nil {
+		http.Error(w, "device configuration was saved, but Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
 	runtimeRunning := false
@@ -879,6 +907,10 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 		return
 	}
 	newSnapshot := s.cfg.Snapshot()
+	if err := s.provisionRuntimeCapabilities(r.Context()); err != nil {
+		http.Error(w, "configuration saved, but Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
 	if s.manager != nil {
 		s.manager.Configure(dashboardruntime.Values(newSnapshot))
@@ -1094,6 +1126,10 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	values = dashboardruntime.Values(s.cfg.Snapshot())
+	if err := s.provisionRuntimeCapabilities(setupCtx); err != nil {
+		s.renderSetupError(w, map[string]string(values), "Android capabilities are unavailable: "+err.Error())
+		return
+	}
 	if err := s.validateRuntimeRequirements(values); err != nil {
 		s.renderSetupError(w, map[string]string(values), "runtime requirement check failed: "+err.Error())
 		return

@@ -93,7 +93,15 @@ func (s *Server) handle(connection net.Conn) {
 		return
 	}
 	writeResponse(connection, response{Accepted: true})
-	go func() { _ = s.upgrade(context.Background()) }()
+	go func() {
+		// The dashboard request is only an admission check. Re-read busy state
+		// immediately before the destructive lifecycle operation so work that
+		// started during the request cannot be interrupted by an upgrade.
+		if s.busy != nil && s.busy() {
+			return
+		}
+		_ = s.upgrade(context.Background())
+	}()
 }
 
 func writeResponse(connection net.Conn, response response) {

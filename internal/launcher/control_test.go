@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -81,5 +82,31 @@ func TestLauncherRejectsUpgradeWhileBusy(t *testing.T) {
 
 	if err := RequestUpgrade(context.Background(), server.listener.Addr().String()); err == nil {
 		t.Fatal("busy launcher accepted upgrade")
+	}
+}
+
+func TestLauncherRechecksBusyStateBeforeReplacement(t *testing.T) {
+	var checks atomic.Int32
+	called := make(chan struct{}, 1)
+	server, err := Serve(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error {
+		called <- struct{}{}
+		return nil
+	}, func() bool {
+		return checks.Add(1) > 1
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := RequestUpgrade(context.Background(), server.listener.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+		t.Fatal("upgrade ran after the final busy check")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := checks.Load(); got < 2 {
+		t.Fatalf("busy checks = %d, want an admission and final check", got)
 	}
 }

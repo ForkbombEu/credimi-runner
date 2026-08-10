@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
 
 type CommandRunner func(context.Context, string, ...string) error
@@ -24,6 +26,79 @@ var (
 	androidToolsHTTP     = http.DefaultClient
 	androidToolsDownload = downloadCommandLineTools
 )
+
+type CapabilityEnsurer func(context.Context, string, bool, string) error
+
+// EnsureRuntimeCapabilities provisions only the Android capabilities needed by
+// the current typed inventory. It is safe to call after every dashboard save.
+func EnsureRuntimeCapabilities(ctx context.Context, cfg runnerconfig.Config, goos string) error {
+	return EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, "", EnsureCapabilities)
+}
+
+func EnsureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer) error {
+	if ensure == nil {
+		ensure = EnsureCapabilities
+	}
+	needsAndroid, needsEmulator, systemImage := requiredCapabilities(cfg)
+	if !needsAndroid {
+		return nil
+	}
+	sdkRoot = strings.TrimSpace(sdkRoot)
+	if sdkRoot == "" {
+		sdkRoot = strings.TrimSpace(os.Getenv("ANDROID_SDK_ROOT"))
+	}
+	if sdkRoot == "" {
+		if goos == "darwin" {
+			sdkRoot = filepath.Join(cfg.Storage.StateDir, "android", "sdk")
+		} else {
+			sdkRoot = "/opt/android-sdk"
+		}
+	}
+	if err := ensure(ctx, sdkRoot, needsEmulator, systemImage); err != nil {
+		return err
+	}
+	avdHome := strings.TrimSpace(os.Getenv("ANDROID_AVD_HOME"))
+	if avdHome == "" {
+		avdHome = strings.TrimSpace(os.Getenv("HOST_AVD_HOME_PATH"))
+	}
+	if avdHome == "" {
+		avdHome = filepath.Join(cfg.Storage.StateDir, "android", "avd")
+	}
+	if err := ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome); err != nil {
+		return err
+	}
+	if !needsEmulator {
+		return nil
+	}
+	for _, device := range cfg.Devices {
+		if !device.Enabled || device.Type != runnerconfig.DeviceAndroidEmulator || device.AndroidEmulator == nil {
+			continue
+		}
+		if err := EnsureAVD(ctx, sdkRoot, avdHome, device.AndroidEmulator.AVDName, device.AndroidEmulator.SystemImage, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func requiredCapabilities(cfg runnerconfig.Config) (needsAndroid, needsEmulator bool, systemImage string) {
+	for _, device := range cfg.Devices {
+		if !device.Enabled {
+			continue
+		}
+		switch device.Type {
+		case runnerconfig.DeviceAndroidPhysical, runnerconfig.DeviceRedroid:
+			needsAndroid = true
+		case runnerconfig.DeviceAndroidEmulator:
+			needsAndroid = true
+			needsEmulator = true
+			if device.AndroidEmulator != nil && strings.TrimSpace(device.AndroidEmulator.SystemImage) != "" {
+				systemImage = device.AndroidEmulator.SystemImage
+			}
+		}
+	}
+	return needsAndroid, needsEmulator, systemImage
+}
 
 func Ensure(ctx context.Context, sdkRoot string) error {
 	return EnsureCapabilities(ctx, sdkRoot, true, "")
@@ -77,12 +152,6 @@ func EnsureCapabilitiesWithRunner(ctx context.Context, sdkRoot string, needsEmul
 		return fmt.Errorf("install Android SDK packages %v: %w", packages, err)
 	}
 	return nil
-}
-
-// ConfigureStableEnvironment exposes runner-owned Android tooling paths once
-// at process startup. These are tool locations, not device-specific values.
-func ConfigureStableEnvironment(sdkRoot string) error {
-	return ConfigureStableEnvironmentWithAVD(sdkRoot, filepath.Join(filepath.Dir(sdkRoot), "avd"))
 }
 
 // ConfigureStableEnvironmentWithAVD adds runner-owned SDK and emulator paths

@@ -55,7 +55,7 @@ var serverCmd = &cobra.Command{
 			return fmt.Errorf("failed to setup opentelemetry: %w", err)
 		}
 		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			if err := otelShutdown(shutdownCtx); err != nil {
 				cluelog.Printf(ctx, "failed to shutdown opentelemetry: %v", err)

@@ -189,6 +189,100 @@ func TestRunPublicUsesContainerLauncherForFirstRun(t *testing.T) {
 	}
 }
 
+func TestApplyBootstrapValuesUsesLocalImageAndValidatesPolicy(t *testing.T) {
+	oldImage, oldPolicy := bootstrapImage, bootstrapPullPolicy
+	t.Cleanup(func() { bootstrapImage, bootstrapPullPolicy = oldImage, oldPolicy })
+	bootstrapImage = "credimi-runner:local"
+	bootstrapPullPolicy = "never"
+	values := map[string]string{"ANDROID_RUNNER_IMAGE": "published", "ANDROID_PULL_POLICY": "always"}
+	if err := applyBootstrapValues(values); err != nil {
+		t.Fatal(err)
+	}
+	if values["ANDROID_RUNNER_IMAGE"] != "credimi-runner:local" || values["ANDROID_PULL_POLICY"] != "never" {
+		t.Fatalf("bootstrap values = %#v", values)
+	}
+	bootstrapPullPolicy = "sometimes"
+	if err := applyBootstrapValues(values); err == nil || !strings.Contains(err.Error(), "invalid bootstrap pull policy") {
+		t.Fatalf("invalid policy error = %v", err)
+	}
+}
+
+func TestReadActiveMobileActivitiesReadsLauncherGuardState(t *testing.T) {
+	dir := t.TempDir()
+	if readActiveMobileActivities(dir) {
+		t.Fatal("missing activity state reported as busy")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "active-mobile-activities"), []byte("2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !readActiveMobileActivities(dir) {
+		t.Fatal("active activity state was not reported as busy")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "active-mobile-activities"), []byte("not-a-count\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if readActiveMobileActivities(dir) {
+		t.Fatal("invalid activity state reported as busy")
+	}
+}
+
+func TestRuntimeValuesFromConfigNormalizesTypedValues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner.ID, cfg.Runner.Name, cfg.Runner.Organization = "acme/runner", "runner", "acme"
+	cfg.Credimi.URL = "https://credimi.example"
+	cfg.Credimi.AuthMode, cfg.Credimi.UserAPIKey = "user", "key"
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Android.RunnerImage = "credimi-runner:local"
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"}}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	values, err := runtimeValuesFromConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if values["ANDROID_RUNNER_IMAGE"] != "credimi-runner:local" || values["CREDIMI_RUNNER_ID"] != "acme/runner" {
+		t.Fatalf("normalized runtime values = %#v", values)
+	}
+}
+
+func TestRunPublicUsesTypedImageAfterSetupEvenWithBootstrapFlags(t *testing.T) {
+	oldDir, oldImage, oldPolicy, oldOpen, oldSignals, oldFactory := dashboardConfigDir, bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		dashboardConfigDir, bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldDir, oldImage, oldPolicy, oldOpen, oldSignals, oldFactory
+	})
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner.ID, cfg.Runner.Name, cfg.Runner.Organization = "acme/runner", "runner", "acme"
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Android.RunnerImage, cfg.Android.PullPolicy = "published:stable", "if-not-present"
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"}}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	dashboardConfigDir, bootstrapImage, bootstrapPullPolicy = dir, "credimi-runner:local", "never"
+	dashboardOpen = false
+	dashboardSignalSource = func() (<-chan os.Signal, func()) {
+		c := make(chan os.Signal, 1)
+		c <- os.Interrupt
+		return c, func() {}
+	}
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, values dashboardruntime.Values) containerLauncherManager {
+		if values["ANDROID_RUNNER_IMAGE"] != "published:stable" || values["ANDROID_PULL_POLICY"] != "if-not-present" {
+			t.Fatalf("bootstrap flags overrode TOML: %#v", values)
+		}
+		return manager
+	}
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := runPublicForOS(command, nil, "linux"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRunPublicUsesNativeApplicationOnMacFirstRun(t *testing.T) {
 	oldConfigDir, oldConfigPath, oldDashboard := dashboardConfigDir, configPath, runInternalDashboardFunc
 	t.Cleanup(func() {

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
 
 func TestEnsureWithRunnerReusesCompleteSDK(t *testing.T) {
@@ -234,6 +236,110 @@ func TestEnsureCapabilitiesUsesCommandWrapper(t *testing.T) {
 func TestEnsureRejectsEmptySDKRoot(t *testing.T) {
 	if err := Ensure(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "SDK root is required") {
 		t.Fatalf("empty SDK root error = %v", err)
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesSkipsIOSOnlyInventory(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/ios", Type: runnerconfig.DeviceIOSSimulator, Enabled: true,
+		IOSSimulator: &runnerconfig.IOSSimulatorConfig{UDID: "ios-1"},
+	}}
+	called := false
+	err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", filepath.Join(t.TempDir(), "sdk"), func(context.Context, string, bool, string) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("iOS-only inventory bootstrapped Android tooling")
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesUsesTypedCapabilityDetector(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/ios", Type: runnerconfig.DeviceIOSSimulator, Enabled: true,
+		IOSSimulator: &runnerconfig.IOSSimulatorConfig{UDID: "ios-1"},
+	}}
+	if err := EnsureRuntimeCapabilities(context.Background(), cfg, "darwin"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesProvisionsPhysicalAndroid(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("ANDROID_SDK_ROOT", root)
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+	}}
+	if err := EnsureRuntimeCapabilities(context.Background(), cfg, "darwin"); err != nil {
+		t.Fatal(err)
+	}
+	if os.Getenv("ANDROID_SDK_ROOT") != root || !strings.Contains(os.Getenv("PATH"), filepath.Join(root, "platform-tools")) {
+		t.Fatalf("stable Android environment = root:%q path:%q", os.Getenv("ANDROID_SDK_ROOT"), os.Getenv("PATH"))
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesProvisionsConfiguredEmulatorAssets(t *testing.T) {
+	root := t.TempDir()
+	managerDir := filepath.Join(root, "cmdline-tools", "latest", "bin")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managerDir, "avdmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "pixel", SystemImage: "system-images;android-35;google_apis;arm64-v8a"},
+	}}
+	needsEmulator := false
+	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", root, func(_ context.Context, _ string, emulator bool, image string) error {
+		needsEmulator, _ = emulator, image
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !needsEmulator {
+		t.Fatal("emulator inventory did not request emulator capability provisioning")
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesTreatsRedroidAsAndroidCapability(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/redroid", Type: runnerconfig.DeviceRedroid, Enabled: true,
+		Redroid: &runnerconfig.RedroidConfig{Serial: "redroid:5555"},
+	}}
+	called := false
+	err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", filepath.Join(t.TempDir(), "sdk"), func(_ context.Context, _ string, emulator bool, _ string) error {
+		called = true
+		if emulator {
+			t.Fatal("redroid requested emulator tooling")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("redroid did not request required local Android tooling")
 	}
 }
 

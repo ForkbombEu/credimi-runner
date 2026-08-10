@@ -19,11 +19,14 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/launcher"
 	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
+	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 	"github.com/spf13/cobra"
 )
 
 var debugVerbose bool
 var configPath string
+var bootstrapImage string
+var bootstrapPullPolicy string
 
 type containerLauncherManager interface {
 	Start(context.Context) error
@@ -46,7 +49,7 @@ var rootCmd = &cobra.Command{
 	Short:         "Credimi mobile runner",
 	Version:       buildinfo.String(),
 	SilenceErrors: true,
-	SilenceUsage:  false,
+	SilenceUsage:  true,
 	RunE:          runPublic,
 }
 
@@ -59,6 +62,8 @@ func Execute() {
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&debugVerbose, "debug-verbose", false, "Write detailed dashboard, runtime, and container diagnostics to a private log file")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to config.toml")
+	rootCmd.PersistentFlags().StringVar(&bootstrapImage, "bootstrap-image", "", "Runner image to use before the first config.toml is saved")
+	rootCmd.PersistentFlags().StringVar(&bootstrapPullPolicy, "bootstrap-pull-policy", "", "Runner image pull policy to use before the first config.toml is saved (always, if-not-present, never)")
 	rootCmd.AddCommand(&cobra.Command{
 		Use:    "internal-runtime",
 		Short:  "Run the foreground runtime inside the managed container",
@@ -75,13 +80,7 @@ func runPublic(cmd *cobra.Command, args []string) error {
 }
 
 func runPublicForOS(cmd *cobra.Command, args []string, goos string) error {
-	configDir := dashboardConfigDir
-	if configPath != "" {
-		configDir = filepath.Dir(configPath)
-	}
-	if configDir == "" {
-		configDir = dashboard.ConfigDir()
-	}
+	configDir := effectiveConfigDir()
 	config, err := dashboard.LoadConfig(configDir)
 	if err != nil {
 		return err
@@ -99,7 +98,38 @@ func runPublicForOS(cmd *cobra.Command, args []string, goos string) error {
 	if backend == runnerplacement.Native {
 		return runApplicationRuntime(cmd, args)
 	}
-	return runContainerLauncher(cmd, configDir, config.Snapshot())
+	values := config.Snapshot()
+	if !config.Exists() {
+		if err := applyBootstrapValues(values); err != nil {
+			return err
+		}
+	}
+	return runContainerLauncher(cmd, configDir, values)
+}
+
+func effectiveConfigDir() string {
+	if strings.TrimSpace(dashboardConfigDir) != "" {
+		return dashboardConfigDir
+	}
+	if configPath != "" {
+		return filepath.Dir(configPath)
+	}
+	return dashboard.ConfigDir()
+}
+
+func applyBootstrapValues(values map[string]string) error {
+	if image := strings.TrimSpace(bootstrapImage); image != "" {
+		values["ANDROID_RUNNER_IMAGE"] = image
+	}
+	if policy := strings.TrimSpace(bootstrapPullPolicy); policy != "" {
+		switch policy {
+		case "always", "if-not-present", "never":
+			values["ANDROID_PULL_POLICY"] = policy
+		default:
+			return fmt.Errorf("invalid bootstrap pull policy %q: use always, if-not-present, or never", policy)
+		}
+	}
+	return nil
 }
 
 func runContainerLauncher(cmd *cobra.Command, configDir string, values map[string]string) error {
@@ -115,7 +145,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	defer manager.Close()
 	control, err := launcher.Serve(filepath.Join(configDir, "control.sock"), manager.UpdateImage, func() bool {
 		status := manager.Status(context.Background())
-		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate
+		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate || readActiveMobileActivities(configDir)
 	})
 	if err != nil {
 		return err
@@ -147,16 +177,19 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	}
 }
 
+func readActiveMobileActivities(configDir string) bool {
+	raw, err := os.ReadFile(filepath.Join(configDir, "active-mobile-activities"))
+	if err != nil {
+		return false
+	}
+	count, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	return err == nil && count > 0
+}
+
 // runApplicationRuntime is the one foreground application unit used by both
 // native macOS startup and the Linux managed container.
 func runApplicationRuntime(cmd *cobra.Command, args []string) error {
-	configDir := dashboardConfigDir
-	if configPath != "" {
-		configDir = filepath.Dir(configPath)
-	}
-	if configDir == "" {
-		configDir = dashboard.ConfigDir()
-	}
+	configDir := effectiveConfigDir()
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
 	}
@@ -170,6 +203,29 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 	errCh := make(chan error, 2)
 	go func() { errCh <- runInternalDashboardFunc(cmd, args) }()
 	serverStarted := false
+	var edgeManager *dashboardruntime.LifecycleManager
+	defer func() {
+		if edgeManager != nil {
+			_ = edgeManager.Stop(context.Background())
+			_ = edgeManager.Close()
+		}
+	}()
+	startNativeEdges := func() error {
+		if stdruntime.GOOS != "darwin" || edgeManager != nil {
+			return nil
+		}
+		values, err := runtimeValuesFromConfig(configDir)
+		if err != nil {
+			return err
+		}
+		manager := dashboardruntime.NewLifecycleManagerForOS("", configDir, values, nil, "darwin")
+		if err := manager.Start(cmd.Context()); err != nil {
+			_ = manager.Close()
+			return fmt.Errorf("start macOS edge services: %w", err)
+		}
+		edgeManager = manager
+		return nil
+	}
 	startServer := func() {
 		if serverStarted {
 			return
@@ -179,6 +235,9 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 	}
 	if _, err := os.Stat(filepath.Join(configDir, "config.toml")); err == nil {
 		if err := prepareInternalRuntime(cmd.Context(), configDir); err != nil {
+			return err
+		}
+		if err := startNativeEdges(); err != nil {
 			return err
 		}
 		startServer()
@@ -195,6 +254,9 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 					if err := prepareInternalRuntime(cmd.Context(), configDir); err != nil {
 						return err
 					}
+					if err := startNativeEdges(); err != nil {
+						return err
+					}
 				}
 				startServer()
 			}
@@ -204,7 +266,20 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 	}
 }
 
+func runtimeValuesFromConfig(configDir string) (dashboardruntime.Values, error) {
+	config, err := dashboard.LoadConfig(configDir)
+	if err != nil {
+		return nil, err
+	}
+	values, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(config.Snapshot()), stdruntime.GOOS)
+	if err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
 func prepareInternalRuntime(ctx context.Context, configDir string) error {
+	workermanager.ConfigureMobileActivityStateFile(filepath.Join(configDir, "active-mobile-activities"))
 	if err := configureInternalListeners(configDir); err != nil {
 		return err
 	}
@@ -288,41 +363,7 @@ func provisionInternalRuntimeAtForOS(ctx context.Context, configDir, sdkRoot, go
 	if err := runnerplacement.ValidateDeviceTypes(deviceTypes(cfg), goos); err != nil {
 		return err
 	}
-	needsEmulator := false
-	systemImage := ""
-	for _, device := range cfg.Devices {
-		if !device.Enabled || device.Type != runnerconfig.DeviceAndroidEmulator {
-			continue
-		}
-		needsEmulator = true
-		if device.AndroidEmulator != nil {
-			systemImage = device.AndroidEmulator.SystemImage
-		}
-	}
-	if err := ensureAndroidCapabilities(ctx, sdkRoot, needsEmulator, systemImage); err != nil {
-		return err
-	}
-	avdHome := os.Getenv("ANDROID_AVD_HOME")
-	if avdHome == "" {
-		avdHome = os.Getenv("HOST_AVD_HOME_PATH")
-	}
-	if avdHome == "" {
-		avdHome = filepath.Join(cfg.Storage.StateDir, "android", "avd")
-	}
-	if err := androidtools.ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome); err != nil {
-		return err
-	}
-	if needsEmulator {
-		for _, device := range cfg.Devices {
-			if !device.Enabled || device.Type != runnerconfig.DeviceAndroidEmulator || device.AndroidEmulator == nil {
-				continue
-			}
-			if err := androidtools.EnsureAVD(ctx, sdkRoot, avdHome, device.AndroidEmulator.AVDName, device.AndroidEmulator.SystemImage, nil); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return androidtools.EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, ensureAndroidCapabilities)
 }
 
 func deviceTypes(cfg runnerconfig.Config) []runnerconfig.DeviceType {

@@ -24,9 +24,6 @@ func TestComposeUsesOneGlobalRunnerImageAndForegroundRuntime(t *testing.T) {
 			t.Fatalf("compose missing %q:\n%s", want, content)
 		}
 	}
-	if strings.Contains(content, "--inventory") || strings.Contains(content, "credimi-runner-phone") || strings.Contains(content, "credimi-runner-emulator") {
-		t.Fatalf("compose contains obsolete runtime architecture:\n%s", content)
-	}
 	_, source, _, ok := stdruntime.Caller(0)
 	if !ok {
 		t.Fatal("resolve compose test source path")

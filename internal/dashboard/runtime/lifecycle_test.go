@@ -108,6 +108,13 @@ func TestLifecycleManagerLifecycleLogCanBeEmittedAndClosed(t *testing.T) {
 	}
 }
 
+func TestCommandErrorPreservesDockerDiagnostics(t *testing.T) {
+	err := commandError(CommandSpec{Name: "docker", Args: []string{"compose", "up"}}, []byte("Cannot connect to the Docker daemon\n"), errors.New("exit status 1"))
+	if !strings.Contains(err.Error(), "Cannot connect to the Docker daemon") || !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("command error = %v", err)
+	}
+}
+
 func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "123-verbose.log")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {

@@ -257,6 +257,13 @@ func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
 	return dashboardruntime.RuntimeStatus{}
 }
 
+func (d PageData) RuntimeControlsAvailable() bool {
+	owned, _ := d.payload()["RuntimeOwned"].(bool)
+	return !owned
+}
+
+func (d PageData) RuntimeImageVisible() bool { return goruntime.GOOS != "darwin" }
+
 func (d PageData) StartupPhase() StartupPhase {
 	if startup, ok := d.payload()["Startup"].(startupState); ok {
 		return startup.Phase
@@ -279,6 +286,9 @@ func (d PageData) RunnerVersion() string {
 }
 
 func (d PageData) RunnerImage() string {
+	if !d.RuntimeImageVisible() {
+		return "—"
+	}
 	for _, service := range d.Snapshot.Services {
 		if service.ID == "runner" && strings.TrimSpace(service.Image) != "" {
 			return service.Image
@@ -317,7 +327,7 @@ func (d PageData) MaintenanceStatus() maintenance.Status {
 
 func (d PageData) UpgradeAvailable() bool {
 	status := d.MaintenanceStatus()
-	return status.Runner.UpdateAvailable || status.Image.UpdateAvailable
+	return status.Runner.UpdateAvailable || (d.RuntimeImageVisible() && status.Image.UpdateAvailable)
 }
 
 func componentState(component maintenance.Component) string {
@@ -332,6 +342,9 @@ func componentState(component maintenance.Component) string {
 
 func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
 func (d PageData) ImageVersionState() string {
+	if !d.RuntimeImageVisible() {
+		return "Not applicable on macOS"
+	}
 	if d.Runner != nil {
 		if _, pullPolicy, err := dashboardruntime.SharedRunnerImage(d.Runner.Snapshot(), goruntime.GOOS); err == nil && pullPolicy == "never" {
 			return "Registry check disabled"
