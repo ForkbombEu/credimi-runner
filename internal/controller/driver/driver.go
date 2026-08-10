@@ -11,10 +11,20 @@ type CommandRunner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
 }
 
+type EnvironmentCommandRunner interface {
+	RunWithEnv(context.Context, []string, string, ...string) ([]byte, error)
+}
+
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+func (ExecRunner) RunWithEnv(ctx context.Context, environment []string, name string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	command.Env = environment
+	return command.CombinedOutput()
 }
 
 // Driver is intentionally read-only. Lifecycle mutations belong to the

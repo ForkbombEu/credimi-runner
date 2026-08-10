@@ -85,6 +85,15 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+func runWithEnv(ctx context.Context, environment []string, name string, args ...string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	command := exec.CommandContext(cctx, name, args...)
+	command.Env = environment
+	out, err := command.Output()
+	return string(out), err
+}
+
 // ── ADB ──────────────────────────────────────────────────────────────────────
 
 var adbModelRe = mustCompile(`model:(\S+)`)
@@ -215,7 +224,7 @@ func probeIOS(ctx context.Context) []Device {
 
 // ── Docker compose services ──────────────────────────────────────────────────
 
-func probeServices(ctx context.Context, composeDir string, plan dashboardruntime.RuntimePlan, runtimeRunning bool) []Service {
+func probeServices(ctx context.Context, composeDir string, plan dashboardruntime.RuntimePlan, values dashboardruntime.Values, runtimeRunning bool) []Service {
 	want := make([]Service, 0, len(plan.ExpectedServices))
 	for _, planned := range plan.ExpectedServices {
 		want = append(want, Service{
@@ -237,12 +246,12 @@ func probeServices(ctx context.Context, composeDir string, plan dashboardruntime
 		}
 		return want
 	}
-	args := []string{"compose"}
-	if composeDir != "" {
-		args = append(args, "--project-directory", composeDir)
+	configDir := plan.ConfigDir
+	if configDir == "" {
+		configDir = composeDir
 	}
-	args = append(args, "ps", "--format", "json")
-	out, err := run(ctx, "docker", args...)
+	args := []string{"compose", "--project-name", plan.ComposeProject, "--project-directory", configDir, "-f", plan.ComposePath, "ps", "--format", "json"}
+	out, err := runWithEnv(ctx, dashboardruntime.ComposeEnvironment(values, plan, runtimeGOOS()), "docker", args...)
 	byName := map[string]struct {
 		state, status, image string
 	}{}

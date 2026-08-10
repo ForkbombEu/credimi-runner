@@ -12,6 +12,7 @@ import (
 type Request struct {
 	ComposeProject  string
 	EnvPath         string
+	ComposeEnv      []string
 	ComposePath     string
 	ComposeServices []ExpectedService
 }
@@ -46,8 +47,18 @@ func (d Compose) Observe(ctx context.Context, request Request) Result {
 	if len(request.ComposeServices) == 0 {
 		return Result{}
 	}
-	args := []string{"compose", "--project-name", request.ComposeProject, "--env-file", request.EnvPath, "-f", request.ComposePath, "ps", "--format", "json"}
-	output, err := d.Runner.Run(ctx, "docker", args...)
+	args := []string{"compose", "--project-name", request.ComposeProject}
+	if len(request.ComposeEnv) == 0 && request.EnvPath != "" {
+		args = append(args, "--env-file", request.EnvPath)
+	}
+	args = append(args, "-f", request.ComposePath, "ps", "--format", "json")
+	var output []byte
+	var err error
+	if runner, ok := d.Runner.(EnvironmentCommandRunner); ok && len(request.ComposeEnv) > 0 {
+		output, err = runner.RunWithEnv(ctx, request.ComposeEnv, "docker", args...)
+	} else {
+		output, err = d.Runner.Run(ctx, "docker", args...)
+	}
 	if err != nil {
 		return Result{Error: fmt.Errorf("observe compose runtime: %w", err)}
 	}

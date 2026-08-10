@@ -115,6 +115,33 @@ func TestCommandErrorPreservesDockerDiagnostics(t *testing.T) {
 	}
 }
 
+func TestLifecycleComposeCommandsUseOneResolvedEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	values := Values{"CREDIMI_SERVICE_MODE": "manual", "ANDROID_PULL_POLICY": "never"}
+	runner := &fakeRunner{}
+	manager := NewLifecycleManagerForOS("credimi-runner", dir, values, runner, "linux")
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	plan := BuildRuntimePlanForOS(dir, values, "linux")
+	want := composeEnv(values, plan, "linux")
+	composeCalls := 0
+	for _, call := range runner.runs {
+		if len(call.Args) == 0 || call.Args[0] != "compose" {
+			continue
+		}
+		composeCalls++
+		if !slices.Equal(call.Env, want) {
+			t.Fatalf("Compose call %q received a different environment", strings.Join(call.Args, " "))
+		}
+	}
+	if composeCalls < 2 {
+		t.Fatalf("expected multiple Compose lifecycle calls, got %d: %#v", composeCalls, runner.runs)
+	}
+}
+
 func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "123-verbose.log")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {

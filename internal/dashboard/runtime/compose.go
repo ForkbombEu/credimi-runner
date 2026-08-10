@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -45,7 +46,14 @@ func ComposeYAML(values Values, goos string) (string, error) {
 		if plan.Backend != DefaultNativeBackend {
 			return "", err
 		}
-		spec = sharedRunnerRuntime{Image: normalized["ANDROID_RUNNER_IMAGE"], PullPolicy: normalized["ANDROID_PULL_POLICY"], NetworkMode: "bridge"}
+		spec = sharedRunnerRuntime{
+			Image:           normalized["ANDROID_RUNNER_IMAGE"],
+			PullPolicy:      normalized["ANDROID_PULL_POLICY"],
+			NetworkMode:     "bridge",
+			StateVolume:     defaultIfEmpty(normalized["ANDROID_STATE_VOLUME"], "credimi-runner-state"),
+			ToolCacheVolume: defaultIfEmpty(normalized["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"),
+			SDKVolume:       defaultIfEmpty(normalized["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"),
+		}
 	}
 
 	var builder strings.Builder
@@ -61,16 +69,22 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	writeCaddyService(&builder, caddyOnHost, plan.Backend == DefaultNativeBackend)
 	writeTunnelService(&builder, caddyOnHost)
 	writeNamedTunnelService(&builder)
-	builder.WriteString(`
+	fmt.Fprintf(&builder, `
 networks:
   ingress:
     name: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
 
 volumes:
+  runner_state:
+    name: %s
+  runner_tools:
+    name: %s
+  android_sdk:
+    name: %s
   adbkeys:
   caddy_data:
   caddy_config:
-`)
+`, composeScalar(spec.StateVolume), composeScalar(spec.ToolCacheVolume), composeScalar(spec.SDKVolume))
 	return builder.String(), nil
 }
 
@@ -98,7 +112,7 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	} else {
 		builder.WriteString("      - adbkeys:/root/.android\n")
 	}
-	fmt.Fprintf(builder, "      - %s:/var/lib/credimi-runner\n      - %s:/opt/credimi-runner/tools\n      - %s:/opt/android-sdk\n", spec.StateVolume, spec.ToolCacheVolume, spec.SDKVolume)
+	builder.WriteString("      - runner_state:/var/lib/credimi-runner\n      - runner_tools:/opt/credimi-runner/tools\n      - android_sdk:/opt/android-sdk\n")
 	if spec.NetworkMode == "host" {
 		builder.WriteString("    network_mode: host\n")
 	} else {
@@ -215,6 +229,67 @@ func composePath(path string) string {
 		return `"` + strings.ReplaceAll(path, `"`, `\\"`) + `"`
 	}
 	return path
+}
+
+func composeScalar(value string) string {
+	return strconv.Quote(value)
+}
+
+// composeEnv is the single interpolation environment for every Docker
+// Compose invocation. The generated file intentionally keeps secrets such as
+// the tunnel token as Compose variables, while this environment resolves all
+// runner-owned values from normalized typed configuration.
+func composeEnv(values Values, plan RuntimePlan, goos string) []string {
+	normalized, err := NormalizeValues(values, goos)
+	if err != nil {
+		normalized = cloneValues(values)
+	}
+
+	caddyOnHost := plan.Backend == DefaultNativeBackend
+	if spec, err := sharedRunnerSpec(normalized, goos); err == nil {
+		caddyOnHost = caddyOnHost || spec.NetworkMode == "host"
+	}
+	tunnelURL := "http://caddy:80"
+	if caddyOnHost {
+		tunnelURL = "http://127.0.0.1:80"
+	}
+
+	overrides := []string{
+		"RUNNER_PORT=" + defaultIfEmpty(normalized["RUNNER_PORT"], DefaultRunnerPort),
+		"DASHBOARD_PORT=" + defaultIfEmpty(normalized["DASHBOARD_PORT"], DefaultDashboardPort),
+		"RUNNER_CADDY_SITE=" + defaultIfEmpty(normalized["RUNNER_CADDY_SITE"], DefaultRunnerCaddySite),
+		"CLOUDFLARE_TUNNEL_TOKEN=" + normalized["CLOUDFLARE_TUNNEL_TOKEN"],
+		"CREDIMI_COMPOSE_PROJECT=" + defaultIfEmpty(plan.ComposeProject, "credimi-runner"),
+		"CREDIMI_CONFIG_FINGERPRINT=" + defaultIfEmpty(plan.ConfigFingerprint, "unknown"),
+		"CREDIMI_TUNNEL_URL=" + tunnelURL,
+		"CADDY_INGRESS_NETWORKS=credimi-runner-ingress",
+		"ADB_SERVER_SOCKET=" + defaultIfEmpty(normalized["ADB_SERVER_SOCKET"], "tcp:host.docker.internal:5037"),
+		"COMPOSE_PROGRESS=plain",
+		"DOCKER_CLI_HINTS=false",
+	}
+	return replaceEnvironment(os.Environ(), overrides...)
+}
+
+// ComposeEnvironment exposes the resolved environment to the read-only
+// controller observer, which invokes Docker Compose outside LifecycleManager.
+func ComposeEnvironment(values Values, plan RuntimePlan, goos string) []string {
+	return composeEnv(values, plan, goos)
+}
+
+func replaceEnvironment(environment []string, overrides ...string) []string {
+	managed := make(map[string]struct{}, len(overrides))
+	for _, override := range overrides {
+		key, _, _ := strings.Cut(override, "=")
+		managed[key] = struct{}{}
+	}
+	result := make([]string, 0, len(environment)+len(overrides))
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, ok := managed[key]; !ok {
+			result = append(result, entry)
+		}
+	}
+	return append(result, overrides...)
 }
 
 func writeCaddyService(builder *strings.Builder, caddyOnHost, native bool) {

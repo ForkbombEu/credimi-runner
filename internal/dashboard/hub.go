@@ -140,7 +140,7 @@ func (h *Hub) poll(ctx context.Context) {
 			}
 		}
 	} else {
-		services = probeServices(ctx, h.composeDir, plan, runtimeRunning)
+		services = probeServices(ctx, h.composeDir, plan, values, runtimeRunning)
 	}
 	temporalAddr := h.cfg.Get("TEMPORAL_ADDRESS")
 	for i := range services {

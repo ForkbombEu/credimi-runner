@@ -19,7 +19,7 @@ func TestComposeUsesOneGlobalRunnerImageAndForegroundRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"image: credimi-runner:local", "pull_policy: never", "command:\n      - internal-runtime", "CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner", ".:/etc/credimi-runner", "credimi-runner-state:/var/lib/credimi-runner"} {
+	for _, want := range []string{"image: credimi-runner:local", "pull_policy: never", "command:\n      - internal-runtime", "CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner", ".:/etc/credimi-runner", "runner_state:/var/lib/credimi-runner", "runner_state:\n    name: \"credimi-runner-state\"", "runner_tools:\n    name: \"credimi-runner-tools\"", "android_sdk:\n    name: \"credimi-runner-sdk\""} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("compose missing %q:\n%s", want, content)
 		}
@@ -38,12 +38,21 @@ func TestComposeUsesOneGlobalRunnerImageAndForegroundRuntime(t *testing.T) {
 }
 
 func TestComposeBootstrapsWithoutConfiguredInventory(t *testing.T) {
-	content, err := ComposeYAML(Values{"ANDROID_RUNNER_IMAGE": "credimi-runner:local", "ANDROID_PULL_POLICY": "never"}, "linux")
+	dir := t.TempDir()
+	values := Values{"ANDROID_RUNNER_IMAGE": "credimi-runner:local", "ANDROID_PULL_POLICY": "never"}
+	if err := WriteComposeFileForOS(dir, values, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "docker-compose.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content, "command:\n      - internal-runtime") || !strings.Contains(content, ":/etc/credimi-runner") {
+	content := string(raw)
+	if !strings.Contains(content, "image: credimi-runner:local") || !strings.Contains(content, "pull_policy: never") || !strings.Contains(content, "command:\n      - internal-runtime") || !strings.Contains(content, ":/etc/credimi-runner") {
 		t.Fatalf("first-run compose bootstrap is incomplete:\n%s", content)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("Compose generation must not persist bootstrap values: err=%v", err)
 	}
 }
 
@@ -111,13 +120,93 @@ func TestComposeUsesPersistentAndroidToolingAndConfiguredADBKeys(t *testing.T) {
 	}
 	for _, want := range []string{
 		"/home/tester/.android:/root/.android:ro",
-		"state-volume:/var/lib/credimi-runner",
-		"tool-volume:/opt/credimi-runner/tools",
-		"sdk-volume:/opt/android-sdk",
+		"runner_state:/var/lib/credimi-runner",
+		"runner_tools:/opt/credimi-runner/tools",
+		"android_sdk:/opt/android-sdk",
+		"runner_state:\n    name: \"state-volume\"",
+		"runner_tools:\n    name: \"tool-volume\"",
+		"android_sdk:\n    name: \"sdk-volume\"",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("compose missing persistent tooling mount %q:\n%s", want, content)
 		}
+	}
+}
+
+func TestComposeDeclaresEveryPersistentRunnerMount(t *testing.T) {
+	content, err := ComposeYAML(Values{
+		"ANDROID_STATE_VOLUME":      "custom-state",
+		"ANDROID_TOOL_CACHE_VOLUME": "custom-tools",
+		"ANDROID_SDK_VOLUME":        "custom-sdk",
+	}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, volume := range []struct {
+		alias, mount, name string
+	}{
+		{"runner_state", "runner_state:/var/lib/credimi-runner", "custom-state"},
+		{"runner_tools", "runner_tools:/opt/credimi-runner/tools", "custom-tools"},
+		{"android_sdk", "android_sdk:/opt/android-sdk", "custom-sdk"},
+	} {
+		if !strings.Contains(content, "- "+volume.mount) {
+			t.Fatalf("runner mount %q is missing:\n%s", volume.mount, content)
+		}
+		declaration := volume.alias + ":\n    name: \"" + volume.name + "\""
+		if !strings.Contains(content, declaration) {
+			t.Fatalf("volume declaration %q is missing:\n%s", declaration, content)
+		}
+	}
+	for _, alias := range []string{"adbkeys", "caddy_data", "caddy_config"} {
+		if !strings.Contains(content, "  "+alias+":\n") {
+			t.Fatalf("named volume %q is referenced but not declared:\n%s", alias, content)
+		}
+	}
+}
+
+func TestComposeEnvironmentUsesTypedValues(t *testing.T) {
+	t.Setenv("RUNNER_PORT", "shell-runner-port")
+	t.Setenv("CREDIMI_COMPOSE_PROJECT", "shell-project")
+	values := Values{
+		"RUNNER_PORT":             "18050",
+		"DASHBOARD_PORT":          "18051",
+		"RUNNER_CADDY_SITE":       "runner.example",
+		"CLOUDFLARE_TUNNEL_TOKEN": "secret-token",
+		"ANDROID_PULL_POLICY":     "never",
+		"CREDIMI_SERVICE_MODE":    "cloudflare-managed",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_RUNNER_ID":       "acme/runner",
+		"CREDIMI_DEVICE_1_ID":     "acme/runner/device",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "wifi",
+		"CREDIMI_DEVICE_1_SERIAL": "device-1",
+	}
+	plan := BuildRuntimePlanForOS(t.TempDir(), values, "linux")
+	environment := composeEnv(values, plan, "linux")
+	got := make(map[string]string, len(environment))
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			got[key] = value
+		}
+	}
+	for key, want := range map[string]string{
+		"RUNNER_PORT":                "18050",
+		"DASHBOARD_PORT":             "18051",
+		"RUNNER_CADDY_SITE":          "runner.example",
+		"CLOUDFLARE_TUNNEL_TOKEN":    "secret-token",
+		"CREDIMI_COMPOSE_PROJECT":    plan.ComposeProject,
+		"CREDIMI_CONFIG_FINGERPRINT": plan.ConfigFingerprint,
+		"CREDIMI_TUNNEL_URL":         "http://caddy:80",
+		"CADDY_INGRESS_NETWORKS":     "credimi-runner-ingress",
+		"ADB_SERVER_SOCKET":          "tcp:host.docker.internal:5037",
+	} {
+		if got[key] != want {
+			t.Fatalf("compose environment %s=%q, want %q", key, got[key], want)
+		}
+	}
+	if got["CREDIMI_COMPOSE_PROJECT"] == "shell-project" || got["RUNNER_PORT"] == "shell-runner-port" {
+		t.Fatalf("shell interpolation values were not replaced: %#v", got)
 	}
 }
 

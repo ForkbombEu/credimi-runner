@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	goruntime "runtime"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
@@ -29,6 +30,7 @@ func (o Observer) Observe(ctx context.Context, configDir string, values dashboar
 	request := driver.Request{
 		ComposeProject: plan.ComposeProject,
 		EnvPath:        plan.EnvPath,
+		ComposeEnv:     dashboardruntime.ComposeEnvironment(values, plan, goruntime.GOOS),
 		ComposePath:    plan.ComposePath,
 	}
 	for _, expected := range plan.ExpectedServices {
