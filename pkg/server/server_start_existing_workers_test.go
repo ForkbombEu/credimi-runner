@@ -142,7 +142,7 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 	proc.Stop()
 }
 
-func TestStartExistingWorkersPassesWholeInventoryToEachNamespaceWorker(t *testing.T) {
+func TestStartExistingWorkersGivesEachNamespaceWorkerLiveInventoryProvider(t *testing.T) {
 	store := NewProcessStore()
 	client := &startWorkersHTTPClient{responder: func(req *http.Request) (*http.Response, error) {
 		require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
@@ -152,8 +152,14 @@ func TestStartExistingWorkersPassesWholeInventoryToEachNamespaceWorker(t *testin
 	deps := Deps{
 		HTTPClient:    client,
 		RuntimeConfig: &dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/lab"}, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/lab/a", Type: "android_phone"}, {ID: "acme/lab/b", Type: "android_emulator"}}},
-		InventoryWorkerRunnerFactory: func(namespace string, inventory workermanager.RunnerRuntimeConfig) func(context.Context) error {
-			return func(ctx context.Context) error { inventories <- inventory; <-ctx.Done(); return nil }
+		InventoryWorkerRunnerFactory: func(namespace string, provider workermanager.RuntimeConfigProvider) func(context.Context) error {
+			return func(ctx context.Context) error {
+				inventory, err := provider()
+				require.NoError(t, err)
+				inventories <- inventory
+				<-ctx.Done()
+				return nil
+			}
 		},
 	}
 	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local"}, deps)

@@ -33,15 +33,13 @@ func TestGetTemporalClientWithNamespace_Cache(t *testing.T) {
 	require.NotSame(t, c1, c3)
 }
 
-func TestRunTemporalWorker_MissingRunnerIDPanics(t *testing.T) {
+func TestRunTemporalWorker_MissingRunnerIDReturnsError(t *testing.T) {
 	resetClientCacheForTest()
 	t.Setenv("TEMPORAL_ADDRESS", client.DefaultHostPort)
 	require.NoError(t, os.Unsetenv("CREDIMI_RUNNER_ID"))
 
 	run := RunTemporalWorker("namespace-a")
-	require.Panics(t, func() {
-		_ = run(context.Background())
-	})
+	require.ErrorContains(t, run(context.Background()), "runner ID is required")
 }
 
 func TestRunTemporalWorker_ReturnsOnCanceledContext(t *testing.T) {

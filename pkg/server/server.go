@@ -13,6 +13,7 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
+	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -255,8 +256,17 @@ func (s *runnerService) startWorkerIfNeeded(
 		observability.String("namespace", namespace),
 	)
 	run := s.Deps.WorkerRunnerFactory(namespace)
-	if config, err := s.currentRuntimeConfig(); err == nil && s.Deps.InventoryWorkerRunnerFactory != nil {
-		run = s.Deps.InventoryWorkerRunnerFactory(namespace, workerInventory(config))
+	if (s.Deps.RuntimeConfigLoader != nil || s.Deps.RuntimeConfig != nil) && s.Deps.InventoryWorkerRunnerFactory != nil {
+		if _, err := s.currentRuntimeConfig(); err == nil {
+			provider := func() (workermanager.RunnerRuntimeConfig, error) {
+				config, err := s.currentRuntimeConfig()
+				if err != nil {
+					return workermanager.RunnerRuntimeConfig{}, err
+				}
+				return workerInventory(config), nil
+			}
+			run = s.Deps.InventoryWorkerRunnerFactory(namespace, provider)
+		}
 	}
 	proc := NewProcess(namespace, run)
 	s.Store.Add(proc)

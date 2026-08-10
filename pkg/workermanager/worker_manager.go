@@ -56,31 +56,34 @@ func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute
 
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
-		return runTemporalWorker(namespace, runnerID)(ctx)
-	}
+	return runTemporalWorker(namespace, nil)
 }
 
-// RunTemporalWorkerWithInventory starts the one namespace worker for the
-// supplied host inventory. The inventory is captured once and never resolved
-// by mutating environment variables during activity execution.
-func RunTemporalWorkerWithInventory(namespace string, inventory RunnerRuntimeConfig) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		if err := inventory.Validate(); err != nil {
-			return fmt.Errorf("invalid runner device inventory: %w", err)
-		}
-		return runTemporalWorker(namespace, inventory.RunnerID, inventory)(ctx)
-	}
+// RunTemporalWorkerWithConfigProvider starts a namespace worker whose mobile
+// activities resolve the latest typed device inventory at activity start.
+func RunTemporalWorkerWithConfigProvider(namespace string, provider RuntimeConfigProvider) func(ctx context.Context) error {
+	return runTemporalWorker(namespace, provider)
 }
 
-func runTemporalWorker(namespace, configuredRunnerID string, inventories ...RunnerRuntimeConfig) func(ctx context.Context) error {
+func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		temporalInterceptor, err := observability.NewTemporalInterceptor()
 		if err != nil {
 			return fmt.Errorf("unable to create temporal tracing interceptor: %w", err)
 		}
-		runnerID := strings.TrimLeft(strings.TrimSpace(configuredRunnerID), "/")
+		runnerID := ""
+		if provider != nil {
+			config, err := provider()
+			if err != nil {
+				return fmt.Errorf("load runner device inventory: %w", err)
+			}
+			runnerID = strings.TrimLeft(strings.TrimSpace(config.RunnerID), "/")
+		} else {
+			runnerID = strings.TrimLeft(strings.TrimSpace(utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "")), "/")
+		}
+		if runnerID == "" {
+			return errors.New("runner ID is required")
+		}
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
 		ctx, span := observability.Tracer("credimi-runner.temporal").Start(ctx, "temporal_worker.run", trace.WithAttributes(temporalWorkerTraceAttrs(namespace, taskqueue, runnerID)...))
 		defer span.End()
@@ -119,19 +122,8 @@ func runTemporalWorker(namespace, configuredRunnerID string, inventories ...Runn
 				continue
 			}
 
-			// Temporal owns concurrency across activities. Credimi's device gate
-			// serializes work touching one device; the runner must not turn that
-			// per-device contract into a global lock.
-			maxActivities := 2
-			if len(inventories) > 0 {
-				maxActivities = len(inventories[0].Devices)
-				if maxActivities < 2 {
-					maxActivities = 2
-				}
-			}
 			w := temporalWorkerFactory(c, taskqueue, worker.Options{
-				Interceptors:                       []interceptor.WorkerInterceptor{temporalInterceptor},
-				MaxConcurrentActivityExecutionSize: maxActivities,
+				Interceptors: []interceptor.WorkerInterceptor{temporalInterceptor},
 			})
 
 			// Register activities
@@ -153,7 +145,11 @@ func runTemporalWorker(namespace, configuredRunnerID string, inventories ...Runn
 				activities.NewDisableAndroidPlayStoreActivity(),
 				activities.NewCleanupDeviceActivity(),
 			} {
-				w.RegisterActivityWithOptions(act.Execute, activity.RegisterOptions{Name: act.Name()})
+				executor := act.Execute
+				if isMobileActivity(act.Name()) {
+					executor = mobileActivityExecutor(act, provider)
+				}
+				w.RegisterActivityWithOptions(executor, activity.RegisterOptions{Name: act.Name()})
 			}
 
 			// Shutdown channel

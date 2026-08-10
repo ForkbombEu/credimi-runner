@@ -37,7 +37,7 @@ type CommandRunner interface {
 }
 
 type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
-type InventoryWorkerRunnerFactory func(namespace string, inventory workermanager.RunnerRuntimeConfig) func(ctx context.Context) error
+type InventoryWorkerRunnerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) func(ctx context.Context) error
 type RuntimeConfigLoader func() (dashboardruntime.RunnerRuntimeConfig, error)
 
 type Deps struct {
@@ -66,7 +66,7 @@ func (d *Deps) WithDefaults() {
 		d.WorkerRunnerFactory = workermanager.RunTemporalWorker
 	}
 	if d.InventoryWorkerRunnerFactory == nil {
-		d.InventoryWorkerRunnerFactory = workermanager.RunTemporalWorkerWithInventory
+		d.InventoryWorkerRunnerFactory = workermanager.RunTemporalWorkerWithConfigProvider
 	}
 	if d.Sleeper == nil {
 		d.Sleeper = time.Sleep

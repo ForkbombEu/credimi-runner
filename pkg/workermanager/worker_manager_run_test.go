@@ -3,7 +3,6 @@ package workermanager
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -198,28 +197,35 @@ func TestRunTemporalWorker_NonRetryableInitErrorReturnsError(t *testing.T) {
 	require.ErrorContains(t, err, "bad namespace")
 }
 
-func TestRunTemporalWorkerWithInventoryValidatesAndSizesConcurrency(t *testing.T) {
+func TestRunTemporalWorkerWithConfigProviderUsesLiveConfigurationBoundary(t *testing.T) {
 	setWorkerManagerTestHooks(t)
-	invalid := RunTemporalWorkerWithInventory("namespace", RunnerRuntimeConfig{})
-	if err := invalid(context.Background()); err == nil || !strings.Contains(err.Error(), "runner ID is required") {
-		t.Fatalf("invalid inventory error = %v", err)
+	invalid := RunTemporalWorkerWithConfigProvider("namespace", func() (RunnerRuntimeConfig, error) {
+		return RunnerRuntimeConfig{}, errors.New("config not ready")
+	})
+	if err := invalid(context.Background()); err == nil || err.Error() != "load runner device inventory: config not ready" {
+		t.Fatalf("invalid provider error = %v", err)
 	}
 
 	temporalClientGetter = func(string) (client.Client, error) { return nil, nil }
 	fake := &fakeTemporalWorker{}
-	maxActivities := 0
 	temporalWorkerFactory = func(_ client.Client, _ string, options worker.Options) temporalWorker {
-		maxActivities = options.MaxConcurrentActivityExecutionSize
+		if options.MaxConcurrentActivityExecutionSize != 0 {
+			t.Fatalf("worker must use Temporal's normal concurrency instead of stale inventory sizing: %d", options.MaxConcurrentActivityExecutionSize)
+		}
 		return fake
 	}
-	inventory := RunnerRuntimeConfig{RunnerID: "acme/runner", Devices: []DeviceRuntimeConfig{
-		{ID: "acme/runner/one", Enabled: true},
-		{ID: "acme/runner/two", Enabled: true},
-	}}
-	if err := RunTemporalWorkerWithInventory("namespace", inventory)(context.Background()); err != nil {
+	providerCalls := 0
+	provider := func() (RunnerRuntimeConfig, error) {
+		providerCalls++
+		return RunnerRuntimeConfig{RunnerID: "acme/runner", Devices: []DeviceRuntimeConfig{
+			{ID: "acme/runner/one", Enabled: true},
+			{ID: "acme/runner/two", Enabled: true},
+		}}, nil
+	}
+	if err := RunTemporalWorkerWithConfigProvider("namespace", provider)(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if maxActivities != 2 || fake.activityRegistrations == 0 {
-		t.Fatalf("worker concurrency=%d registrations=%d", maxActivities, fake.activityRegistrations)
+	if providerCalls != 1 || fake.activityRegistrations == 0 {
+		t.Fatalf("provider calls=%d registrations=%d", providerCalls, fake.activityRegistrations)
 	}
 }
