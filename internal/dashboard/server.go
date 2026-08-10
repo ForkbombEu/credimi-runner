@@ -81,6 +81,7 @@ type Server struct {
 	downloadBinary          func(context.Context, *http.Client, string, func(string)) error
 	restartDashboard        func(string) error
 	startupProgress         func(string)
+	runtimeOwned            bool
 	mu                      sync.RWMutex
 }
 
@@ -154,7 +155,16 @@ func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(p
 	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, progress)
 }
 
-func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool, progress func(string)) (http.Handler, context.CancelFunc, error) {
+// NewRuntimeOwnedHandler starts the dashboard as part of the already-running
+// runner application. It deliberately has no lifecycle manager: container
+// ownership belongs to the outer launcher, so dashboard actions cannot create
+// a second runner container from inside the managed container.
+func NewRuntimeOwnedHandler(parent context.Context, composeDir string, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, nil, controllerID, identityToken, fingerprint, operations, false, nil, true)
+}
+
+func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool, progress func(string), runtimeOwned ...bool) (http.Handler, context.CancelFunc, error) {
+	owned := len(runtimeOwned) > 0 && runtimeOwned[0]
 	cfg, err := LoadConfig(composeDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -165,8 +175,11 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	}
 	observer := controller.Observer{Drivers: []driver.Driver{driver.Compose{}, driver.Host{}}}
 	hub := NewHubWithObservation(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
-		if manager == nil {
+		if manager == nil && !owned {
 			return dashboardruntime.RuntimeStatus{}
+		}
+		if owned {
+			return dashboardruntime.RuntimeStatus{Configured: cfg.Exists(), RunnerRunning: true}
 		}
 		return manager.Status(context.Background())
 	}, func(ctx context.Context, values dashboardruntime.Values) controller.ObservedRuntime {
@@ -183,7 +196,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	cfg.mu.Lock()
 	cfg.values = map[string]string(normalized)
 	cfg.mu.Unlock()
-	if manager == nil {
+	if manager == nil && !owned {
 		manager = dashboardruntime.NewLifecycleManager(executable, composeDir, normalized, nil)
 	} else {
 		manager.Configure(normalized)
@@ -200,6 +213,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 		controllerIdentityToken: identityToken,
 		controllerFingerprint:   fingerprint,
 		manager:                 manager,
+		runtimeOwned:            owned,
 		operations:              operations,
 		lookupPath:              lookupPath,
 		statPath:                statPath,
@@ -226,7 +240,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
-	if bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
+	if !owned && bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
 		if !srv.bootstrapConfiguredRuntime() {
 			srv.startHub()
 		}
@@ -752,18 +766,26 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValues(oldValues, newValues)
 	runtimeRunning := false
+	if s.runtimeOwned {
+		runtimeRunning = true
+	}
 	if s.manager != nil {
 		status := s.manager.Status(r.Context())
 		runtimeRunning = status.RunnerRunning || status.ComposeRunning
 		s.manager.Configure(newValues)
 	}
-	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) {
+	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := dashboardruntime.WriteComposeFile(s.composeDir, newValues); err != nil {
 			http.Error(w, "device configuration was saved, but compose generation failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
-	if runtimeRunning {
+	if s.runtimeOwned {
+		if err := s.applyRuntimeOwnedRegistration(newValues); err != nil {
+			http.Error(w, "device configuration was saved, but applying it to the running runner failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+	} else if runtimeRunning {
 		// The runner loads its inventory only at process startup. Restarting here
 		// both applies the indexed block and sends a resume/heartbeat containing
 		// every device, which is what makes a newly added child schedulable.
@@ -859,7 +881,7 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 	if s.manager != nil {
 		s.manager.Configure(dashboardruntime.Values(newSnapshot))
 	}
-	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) {
+	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := WriteComposeFile(s.composeDir, newSnapshot); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -873,6 +895,11 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 			appliedCleanly = false
 		} else if outcome.Restarted {
 			message = "Runner restarted with the new configuration."
+		}
+	} else if s.runtimeOwned && len(diff.ChangedKeys) > 0 {
+		if err := s.applyRuntimeOwnedRegistration(newSnapshot); err != nil {
+			message = "Configuration saved, but Credimi registration failed: " + err.Error()
+			appliedCleanly = false
 		}
 	} else {
 		message = saveSuccessMessage(applyOutcome{})
@@ -1072,11 +1099,17 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 	if s.manager != nil {
 		s.manager.Configure(values)
 	}
-	if err := dashboardruntime.WriteComposeFile(s.composeDir, values); err != nil {
-		s.renderSetupError(w, map[string]string(values), "compose generation failed: "+err.Error())
-		return
+	if !s.runtimeOwned {
+		if err := dashboardruntime.WriteComposeFile(s.composeDir, values); err != nil {
+			s.renderSetupError(w, map[string]string(values), "compose generation failed: "+err.Error())
+			return
+		}
 	}
-	s.startStartupJob(map[string]string(values))
+	if s.runtimeOwned {
+		s.startRuntimeOwnedRegistration(map[string]string(values))
+	} else {
+		s.startStartupJob(map[string]string(values))
+	}
 	s.renderSetupComplete(w, r)
 }
 
@@ -1187,6 +1220,28 @@ func (s *Server) startStartupJob(values map[string]string) {
 		s.mu.Unlock()
 		s.setStartupState(StartupReady, "Setup complete. Runner started and registered with Credimi.")
 		return nil
+	})
+}
+
+func (s *Server) startRuntimeOwnedRegistration(values map[string]string) {
+	s.startTrackedStartupOperation(controller.OperationRegistration, startupState{
+		Phase:     StartupRegistering,
+		Message:   "Setup saved. Registering the in-container runner.",
+		LogBase:   1,
+		LogNextID: 1,
+	}, func(ctx context.Context) error {
+		if err := s.registerCurrent(ctx, values); err != nil {
+			s.setStartupState(StartupNeedsAttention, "Setup saved, but runner registration failed: "+err.Error())
+			return err
+		}
+		s.setStartupState(StartupReady, "Setup complete. Runner registered with Credimi.")
+		return nil
+	})
+}
+
+func (s *Server) applyRuntimeOwnedRegistration(values map[string]string) error {
+	return s.runLifecycleOperation(controller.OperationRegistration, func(ctx context.Context) error {
+		return s.registerCurrent(ctx, values)
 	})
 }
 
@@ -1360,7 +1415,7 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 		return err
 	}
 	plan := dashboardruntime.BuildRuntimePlan(s.composeDir, normalized)
-	if plan.RequiresDocker {
+	if plan.RequiresDocker && !s.runtimeOwned {
 		if _, err := s.lookupPath("docker"); err != nil {
 			return errors.New("docker is required for this runner mode")
 		}

@@ -500,7 +500,7 @@ func TestRuntimeLifecycleGuardsManagerFailuresAndEndpoints(t *testing.T) {
 	if err := (RuntimeLifecycle{}).Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "manager unavailable") {
 		t.Fatalf("nil manager stop error = %v", err)
 	}
-	if err := (RuntimeLifecycle{}).Register(context.Background()); err == nil || !strings.Contains(err.Error(), "manager unavailable") {
+	if err := (RuntimeLifecycle{}).Register(context.Background()); err == nil || !strings.Contains(err.Error(), "missing Credimi API key") {
 		t.Fatalf("nil manager registration error = %v", err)
 	}
 

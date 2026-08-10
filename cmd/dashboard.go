@@ -42,6 +42,14 @@ var dashboardSignalSource = func() (<-chan os.Signal, func()) {
 }
 
 func runDashboard(cmd *cobra.Command, args []string) error {
+	return runDashboardMode(cmd, args, false)
+}
+
+func runDashboardOwned(cmd *cobra.Command, args []string) error {
+	return runDashboardMode(cmd, args, true)
+}
+
+func runDashboardMode(cmd *cobra.Command, args []string, runtimeOwned bool) error {
 	configDir := dashboardConfigDir
 	if configPath != "" {
 		configDir = filepath.Dir(configPath)
@@ -88,13 +96,19 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	}
 	defer lease.Close()
 	listenHost, listenPort := resolveDashboardListenAddress(cmd, values)
+	if runtimeOwned {
+		listenHost = "0.0.0.0"
+	}
 	listener, err := dashboardListenerReservation(listenHost, listenPort)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	manager := dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
-	defer manager.Close()
+	var manager *dashboardruntime.LifecycleManager
+	if !runtimeOwned {
+		manager = dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
+		defer manager.Close()
+	}
 	controllerID := fmt.Sprintf("controller-%d", time.Now().UnixNano())
 	identityToken, err := controller.NewIdentityToken()
 	if err != nil {
@@ -105,9 +119,15 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	dashboardCtx, cancelDashboard := context.WithCancel(context.Background())
 	defer cancelDashboard()
 	operations := controller.NewCoordinator(dashboardCtx)
-	handler, cancelHandler, err := dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations, func(message string) {
-		cmd.Println(message)
-	})
+	var handler http.Handler
+	var cancelHandler context.CancelFunc
+	if runtimeOwned {
+		handler, cancelHandler, err = dashboard.NewRuntimeOwnedHandler(dashboardCtx, configDir, controllerID, identityToken, plan.ConfigFingerprint, operations)
+	} else {
+		handler, cancelHandler, err = dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations, func(message string) {
+			cmd.Println(message)
+		})
+	}
 	if err != nil {
 		return err
 	}

@@ -16,7 +16,7 @@ func TestComposeUsesOneGlobalRunnerImageAndForegroundRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"image: credimi-runner:local", "pull_policy: never", "- internal-runtime", "./config.toml:/etc/credimi-runner/config.toml:ro", "credimi-runner-state:/var/lib/credimi-runner"} {
+	for _, want := range []string{"image: credimi-runner:local", "pull_policy: never", "command:\n      - internal-runtime", "CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner", ".:/etc/credimi-runner", "credimi-runner-state:/var/lib/credimi-runner"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("compose missing %q:\n%s", want, content)
 		}

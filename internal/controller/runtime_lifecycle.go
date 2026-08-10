@@ -112,9 +112,6 @@ func (l RuntimeLifecycle) RegisterRunning(ctx context.Context) error {
 }
 
 func (l RuntimeLifecycle) Register(ctx context.Context) error {
-	if l.Manager == nil {
-		return errors.New("runtime manager unavailable")
-	}
 	apiKey := strings.TrimSpace(l.Values["CREDIMI_USER_API_KEY"])
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(l.Values["CREDIMI_INTERNAL_ADMIN_KEY"])
@@ -126,7 +123,9 @@ func (l RuntimeLifecycle) Register(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	l.Manager.SetPublicURL(publicURL)
+	if l.Manager != nil {
+		l.Manager.SetPublicURL(publicURL)
+	}
 	client := &dashboardruntime.CredimiClient{
 		BaseURL:    strings.TrimSpace(l.Values["CREDIMI_URL"]),
 		APIKey:     apiKey,

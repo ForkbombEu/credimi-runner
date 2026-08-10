@@ -13,6 +13,7 @@ func WriteComposeFile(dir string, values Values) error {
 	plan := BuildRuntimePlan(dir, values)
 	values["CREDIMI_COMPOSE_PROJECT"] = plan.ComposeProject
 	values["CREDIMI_CONFIG_FINGERPRINT"] = plan.ConfigFingerprint
+	values["CREDIMI_CONFIG_DIR"] = dir
 	content, err := ComposeYAML(values, runtime.GOOS)
 	if err != nil {
 		return err
@@ -49,7 +50,7 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	// reliable route back to a host-networked runner on every Docker setup.
 	caddyOnHost := goos == "linux" && (spec.NetworkMode == "host" || BuildRuntimePlan("", normalized).Backend == DefaultHostBackend)
 	builder.WriteString("services:\n")
-	writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost)
+	writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost, normalized["CREDIMI_CONFIG_DIR"], normalized["DASHBOARD_PORT"])
 	writeRunnerHostService(&builder, caddyOnHost)
 	writeCaddyService(&builder, caddyOnHost)
 	writeTunnelService(&builder, caddyOnHost)
@@ -67,21 +68,25 @@ volumes:
 	return builder.String(), nil
 }
 
-func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec sharedRunnerRuntime, caddyOnHost bool) {
+func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec sharedRunnerRuntime, caddyOnHost bool, configDir, dashboardPort string) {
 	fmt.Fprintf(builder, "  runner:\n    image: %s\n    pull_policy: %s\n    restart: \"no\"\n", spec.Image, spec.PullPolicy)
-	builder.WriteString("    command:\n      - credimi-runner\n      - internal-runtime\n")
+	builder.WriteString("    command:\n      - internal-runtime\n")
 	// Configuration is TOML and is mounted by the unified runner container;
 	// Compose must not treat it as a dotenv file.
-	fmt.Fprintf(builder, "    environment:\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	fmt.Fprintf(builder, "    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	if spec.HasADB && spec.NetworkMode != "host" {
 		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
 	}
-	if spec.HasEmulator {
+	if spec.HasKVM {
 		builder.WriteString("    devices:\n      - /dev/kvm:/dev/kvm\n")
 	} else if spec.HasUSB && goos == "linux" && spec.NetworkMode != "host" {
 		builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n")
 	}
-	builder.WriteString("    volumes:\n      - ./config.toml:/etc/credimi-runner/config.toml:ro\n")
+	if strings.TrimSpace(configDir) == "" {
+		configDir = "."
+	}
+	builder.WriteString("    volumes:\n")
+	fmt.Fprintf(builder, "      - %s:/etc/credimi-runner\n", composePath(configDir))
 	if spec.ADBKeysPath != "" {
 		fmt.Fprintf(builder, "      - %s:/root/.android:ro\n", spec.ADBKeysPath)
 	} else {
@@ -99,6 +104,7 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 		} else {
 			fmt.Fprintf(builder, "      - \"127.0.0.1:${RUNNER_PORT:-%s}:${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort, DefaultRunnerPort)
 		}
+		fmt.Fprintf(builder, "      - \"127.0.0.1:${DASHBOARD_PORT:-%s}:${DASHBOARD_PORT:-%s}\"\n", defaultIfEmpty(dashboardPort, DefaultDashboardPort), defaultIfEmpty(dashboardPort, DefaultDashboardPort))
 	}
 	builder.WriteString("    labels:\n      caddy: \"${RUNNER_CADDY_SITE:-:80}\"\n")
 	writeControllerLabels(builder)
@@ -121,6 +127,7 @@ type sharedRunnerRuntime struct {
 	HasADB          bool
 	HasUSB          bool
 	HasEmulator     bool
+	HasKVM          bool
 	StateVolume     string
 	ToolCacheVolume string
 	SDKVolume       string
@@ -177,7 +184,19 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 	if goos == "linux" && spec.HasUSB {
 		spec.NetworkMode = "host"
 	}
+	if goos == "linux" {
+		_, err := os.Stat("/dev/kvm")
+		spec.HasKVM = err == nil
+	}
 	return spec, nil
+}
+
+func composePath(path string) string {
+	path = filepath.Clean(path)
+	if strings.ContainsAny(path, " \t:\"") {
+		return `"` + strings.ReplaceAll(path, `"`, `\\"`) + `"`
+	}
+	return path
 }
 
 func writeRunnerHostService(builder *strings.Builder, caddyOnHost bool) {
