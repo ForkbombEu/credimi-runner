@@ -48,8 +48,8 @@ jobs:
           set -euo pipefail
           go generate ./...
           PKGS="$(go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' ')"
-          go test ${PKGS} -covermode=atomic -coverprofile=coverage.out
-          go tool cover -func=coverage.out | awk -v min="85" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
+          go test -tags=credimi_extra ${PKGS} -covermode=atomic -coverprofile=coverage.out
+          go tool cover -func=coverage.out | awk -v min="85" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: >%s%%)\n", $3, min); if (($3 + 0) <= (min + 0)) exit 1 }'
 
       - name: Cleanup git auth
         if: always()
