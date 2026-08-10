@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"strings"
 	"testing"
 )
@@ -25,6 +26,17 @@ func TestComposeUsesOneGlobalRunnerImageAndForegroundRuntime(t *testing.T) {
 	}
 	if strings.Contains(content, "--inventory") || strings.Contains(content, "credimi-runner-phone") || strings.Contains(content, "credimi-runner-emulator") {
 		t.Fatalf("compose contains obsolete runtime architecture:\n%s", content)
+	}
+	_, source, _, ok := stdruntime.Caller(0)
+	if !ok {
+		t.Fatal("resolve compose test source path")
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(filepath.Dir(source), "..", "..", "..", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerfile), `ENTRYPOINT ["/usr/local/bin/credimi-runner"]`) || !strings.Contains(content, "command:\n      - internal-runtime") {
+		t.Fatalf("container invocation does not compose the binary entrypoint with internal-runtime:\nDockerfile=%s\nCompose=%s", dockerfile, content)
 	}
 }
 
