@@ -111,7 +111,7 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 		if block == nil {
 			return RunnerRuntimeConfig{Host: host}, fmt.Errorf("device index %d is missing", index)
 		}
-		// The serve process is deliberately configured only with its execution
+		// The runtime is deliberately configured only with its execution
 		// inventory. A device ID establishes that inventory; display and setup
 		// metadata belongs to the dashboard registration flow and is validated
 		// there immediately before it is sent to Credimi.

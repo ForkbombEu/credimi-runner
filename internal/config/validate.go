@@ -134,16 +134,13 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if err := required(label+".android_physical.serial", device.AndroidPhysical.Serial); err != nil {
 			return err
 		}
-		if goos == "darwin" && device.AndroidPhysical.Transport == "usb" {
-			return errorsf("macOS does not support Android USB devices")
-		}
 		return unique(serials, device.AndroidPhysical.Serial, label+".android_physical.serial")
 	case DeviceAndroidEmulator:
 		if device.AndroidEmulator == nil {
 			return fmt.Errorf("%s.type android_emulator requires [devices.android_emulator]", label)
 		}
 		if goos != "linux" && goos != "darwin" {
-			return errorsf("Android emulator devices require Linux or macOS Docker")
+			return errorsf("Android emulator devices require Linux or macOS")
 		}
 		for name, value := range map[string]string{"avd_name": device.AndroidEmulator.AVDName, "abi": device.AndroidEmulator.ABI, "system_image": device.AndroidEmulator.SystemImage, "base_name": device.AndroidEmulator.BaseName, "golden_source": device.AndroidEmulator.GoldenSource} {
 			if err := required(label+".android_emulator."+name, value); err != nil {
@@ -158,8 +155,8 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if device.Redroid == nil {
 			return fmt.Errorf("%s.type redroid requires [devices.redroid]", label)
 		}
-		if goos != "linux" {
-			return errorsf("Redroid devices require Linux")
+		if goos != "linux" && goos != "darwin" {
+			return errorsf("Redroid devices require Linux or macOS")
 		}
 		for name, value := range map[string]string{"image": device.Redroid.Image, "serial": device.Redroid.Serial, "data_dir": device.Redroid.DataDir, "data_archive": device.Redroid.DataArchive} {
 			if err := required(label+".redroid."+name, value); err != nil {

@@ -10,6 +10,7 @@ vars:
     sh: date -u +%Y-%m-%dT%H:%M:%SZ
   COVERAGE_FILE: coverage.out
   COVERAGE_MIN: "85"
+  GO_TAGS: credimi_extra
   LOCAL_DOCKER_IMAGE: credimi-runner:local
   GO_LDFLAGS: >-
     -s -w
@@ -90,7 +91,7 @@ tasks:
       TEST_PKGS:
         sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
     cmds:
-      - go test {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
+      - go test -tags={{.GO_TAGS}} {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
       - >-
         go tool cover -func={{.COVERAGE_FILE}} |
         awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: > %s%%)\n", $3, min); if (($3 + 0) <= (min + 0)) exit 1 }'
@@ -102,7 +103,7 @@ tasks:
       TEST_PKGS:
         sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
     cmds:
-      - go test -race {{.TEST_PKGS}}
+      - go test -tags={{.GO_TAGS}} -race {{.TEST_PKGS}}
 
   clean:
     desc: Remove generated Go code and local build artifacts

@@ -255,7 +255,7 @@ func (h *Hub) deriveWorkers(services []Service) []Worker {
 	temporalUp := false
 	for _, s := range services {
 		switch s.ID {
-		case "runner", "runner_host_process":
+		case "runner":
 			runtimeUp = runtimeUp || s.Status == Online
 		case "temporal":
 			temporalUp = s.Status == Online

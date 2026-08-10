@@ -10,7 +10,7 @@ func TestBuildRuntimePlanExpectedServices(t *testing.T) {
 	}{
 		{"container-auto", Values{}, []string{"runner", "caddy", "tunnel", "temporal"}},
 		{"container-managed", Values{"CREDIMI_SERVICE_MODE": "cloudflare-managed"}, []string{"runner", "caddy", "tunnel_named", "temporal"}},
-		{"native-manual", Values{"CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, []string{"runner_host_process", "temporal"}},
+		{"native-manual", Values{"CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, []string{"temporal"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -73,14 +73,14 @@ func TestRuntimePlanReadinessUsesIndexedDevices(t *testing.T) {
 	}
 }
 
-func TestBackendSelectionFollowsInventoryAndHostPlatform(t *testing.T) {
+func TestBackendSelectionFollowsHostPlatform(t *testing.T) {
 	cases := []struct {
 		name, goos, deviceType, want string
 	}{
 		{"linux android", "linux", "android_phone", DefaultContainerBackend},
-		{"mac android", "darwin", "android_phone", DefaultContainerBackend},
-		{"mac ios", "darwin", "ios_simulator", DefaultHostBackend},
-		{"mac mixed", "darwin", "android_phone", DefaultHostBackend},
+		{"mac android", "darwin", "android_phone", DefaultNativeBackend},
+		{"mac ios", "darwin", "ios_simulator", DefaultNativeBackend},
+		{"mac mixed", "darwin", "android_phone", DefaultNativeBackend},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,15 +98,6 @@ func TestBackendSelectionFollowsInventoryAndHostPlatform(t *testing.T) {
 				t.Fatalf("backend=%q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestBackendTransitionIsExplicitlyDetected(t *testing.T) {
-	oldValues := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone"})
-	newValues := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "ios_simulator"})
-	diff := DiffValuesForOS(oldValues, newValues, "darwin")
-	if !diff.BackendTransition || !containsApplyClass(diff.Classes, ApplyRestartRequired) {
-		t.Fatalf("backend transition diff = %#v", diff)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/launcher"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
@@ -1251,6 +1252,37 @@ func TestControllerImageUpgradeUsesLifecycleRegistration(t *testing.T) {
 	s.controllerUpgradeImage(rec, httptest.NewRequest(http.MethodPost, "/api/controller/maintenance/upgrade-image", nil))
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unavailable") {
 		t.Fatalf("unavailable upgrade = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRuntimeOwnedDashboardDelegatesImageUpgradeToLauncher(t *testing.T) {
+	started := make(chan struct{})
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	control, err := launcher.Serve(socket, func(context.Context) error {
+		close(started)
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+
+	s := newTestServer(t)
+	s.manager = nil
+	s.launcherSocket = socket
+	recorder := httptest.NewRecorder()
+	s.controllerUpgradeImage(recorder, httptest.NewRequest(http.MethodPost, "/api/controller/maintenance/upgrade-image", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("delegated image upgrade = %d %s", recorder.Code, recorder.Body.String())
+	}
+	operation := s.operations.Current()
+	if completed, err := s.operations.Wait(context.Background(), operation.ID); err != nil || completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("delegated upgrade operation = %#v err=%v", completed, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("outer launcher did not receive delegated upgrade")
 	}
 }
 

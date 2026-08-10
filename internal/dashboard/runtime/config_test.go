@@ -30,6 +30,23 @@ func TestLoadStoreMissingTOML(t *testing.T) {
 	}
 }
 
+func TestDefaultEmulatorABIFollowsNativeHostArchitecture(t *testing.T) {
+	for _, test := range []struct {
+		goos, goarch, want string
+	}{
+		{"darwin", "arm64", "arm64-v8a"},
+		{"darwin", "amd64", "x86_64"},
+		{"linux", "arm64", "x86_64"},
+		{"linux", "amd64", "x86_64"},
+	} {
+		t.Run(test.goos+"/"+test.goarch, func(t *testing.T) {
+			if got := DefaultEmulatorABI(test.goos, test.goarch); got != test.want {
+				t.Fatalf("DefaultEmulatorABI() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestStoreLoadsAndSavesTypedTOML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

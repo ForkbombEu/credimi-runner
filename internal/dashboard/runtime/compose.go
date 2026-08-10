@@ -42,7 +42,7 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	if err != nil {
 		// Host runners do not use the generated runner service; they retain a
 		// Compose file only for Caddy/tunnel services.
-		if plan.Backend != DefaultHostBackend {
+		if plan.Backend != DefaultNativeBackend {
 			return "", err
 		}
 		spec = sharedRunnerRuntime{Image: normalized["ANDROID_RUNNER_IMAGE"], PullPolicy: normalized["ANDROID_PULL_POLICY"], NetworkMode: "bridge"}
@@ -53,12 +53,12 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	// daemon. Caddy must use that namespace too: reaching the host through
 	// host.docker.internal resolves to Docker's bridge gateway, which is not a
 	// reliable route back to a host-networked runner on every Docker setup.
-	caddyOnHost := spec.NetworkMode == "host" || plan.Backend == DefaultHostBackend
+	caddyOnHost := spec.NetworkMode == "host" || plan.Backend == DefaultNativeBackend
 	builder.WriteString("services:\n")
-	if plan.Backend != DefaultHostBackend {
+	if plan.Backend != DefaultNativeBackend {
 		writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost, normalized["CREDIMI_CONFIG_DIR"], normalized["DASHBOARD_PORT"])
 	}
-	writeCaddyService(&builder, caddyOnHost, plan.Backend == DefaultHostBackend)
+	writeCaddyService(&builder, caddyOnHost, plan.Backend == DefaultNativeBackend)
 	writeTunnelService(&builder, caddyOnHost)
 	writeNamedTunnelService(&builder)
 	builder.WriteString(`
@@ -79,7 +79,7 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	builder.WriteString("    command:\n      - internal-runtime\n")
 	// Configuration is TOML and is mounted by the unified runner container;
 	// Compose must not treat it as a dotenv file.
-	fmt.Fprintf(builder, "    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	fmt.Fprintf(builder, "    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n      CREDIMI_RUNNER_LAUNCHER_SOCKET: /etc/credimi-runner/control.sock\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
 	if spec.HasADB && spec.NetworkMode != "host" {
 		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
 	}

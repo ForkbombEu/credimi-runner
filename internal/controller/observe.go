@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
@@ -27,21 +26,10 @@ func (o Observer) Observe(ctx context.Context, configDir string, values dashboar
 	}
 	observed := ObservedRuntime{State: StateStopped, ObservedAt: now().UTC()}
 	plan := dashboardruntime.BuildRuntimePlan(configDir, values)
-	host := strings.TrimSpace(values["RUNNER_HOST"])
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = dashboardruntime.DefaultRunnerHost
-	}
-	port := strings.TrimSpace(values["RUNNER_PORT"])
-	if port == "" {
-		port = dashboardruntime.DefaultRunnerPort
-	}
 	request := driver.Request{
 		ComposeProject: plan.ComposeProject,
 		EnvPath:        plan.EnvPath,
 		ComposePath:    plan.ComposePath,
-		HostBackend:    plan.Backend == dashboardruntime.DefaultHostBackend,
-		RunnerHost:     host,
-		RunnerPort:     port,
 	}
 	for _, expected := range plan.ExpectedServices {
 		request.ComposeServices = append(request.ComposeServices, driver.ExpectedService{ID: expected.ID, Name: expected.Name, Role: expected.Role, Kind: expected.Kind, Critical: expected.Critical})

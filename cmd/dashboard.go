@@ -22,7 +22,6 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/lifecyclelog"
-	runnerruntime "github.com/forkbombeu/credimi-runner/internal/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -71,11 +70,8 @@ func runDashboardMode(cmd *cobra.Command, args []string, runtimeOwned bool) erro
 		return err
 	}
 	if config.Exists() {
-		typed, err := runnerconfig.LoadFile(config.Path())
+		_, err := runnerconfig.LoadFile(config.Path())
 		if err != nil {
-			return err
-		}
-		if _, err := runnerruntime.Select(typed, runtime.GOOS); err != nil {
 			return err
 		}
 	}

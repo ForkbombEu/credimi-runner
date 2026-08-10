@@ -31,13 +31,6 @@ func TestObserverReportsStoppedWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestObserverNeverAdoptsForeignListener(t *testing.T) {
-	observed := Observer{Drivers: []driver.Driver{observationDriver{result: driver.Result{Services: []driver.Service{{ID: "runner_host_process", Detail: "foreign listener", Critical: true}}}}}}.Observe(context.Background(), t.TempDir(), dashboardruntime.Values{})
-	if observed.State != StateForeign || observed.Services[0].Owned {
-		t.Fatalf("foreign listener was adopted: %#v", observed)
-	}
-}
-
 func TestObservedRuntimeStale(t *testing.T) {
 	now := time.Now()
 	if !(ObservedRuntime{}).Stale(now, time.Second) {

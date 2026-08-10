@@ -228,15 +228,6 @@ func probeServices(ctx context.Context, composeDir string, plan dashboardruntime
 	}
 	if !has("docker") {
 		for i := range want {
-			if want[i].ID == "runner_host_process" {
-				if runtimeRunning {
-					want[i].Status = Online
-					want[i].Uptime = "running"
-				} else {
-					want[i].Status = Offline
-				}
-				continue
-			}
 			if want[i].ID == "temporal" {
 				want[i].Status = Idle
 				want[i].Reason = "external check pending"
@@ -273,13 +264,6 @@ func probeServices(ctx context.Context, composeDir string, plan dashboardruntime
 	}
 	for i := range want {
 		switch want[i].ID {
-		case "runner_host_process":
-			if runtimeRunning {
-				want[i].Status = Online
-				want[i].Uptime = "running"
-			} else {
-				want[i].Status = Offline
-			}
 		case "temporal":
 			want[i].Status = Idle
 			want[i].Reason = "external workflow backend"

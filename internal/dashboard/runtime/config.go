@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	stdruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -175,7 +176,8 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 		case "android_phone":
 			entry.Type, entry.AndroidPhysical = runnerconfig.DeviceAndroidPhysical, &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode, Serial: device.Serial}
 		case "android_emulator":
-			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, MemoryMB: 2048, Cores: 2}
+			abi := DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
+			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, MemoryMB: 2048, Cores: 2}
 		case "redroid":
 			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{Image: "redroid:latest", Serial: device.Serial, DataDir: "/var/lib/credimi-runner/redroid", DataArchive: "/var/lib/credimi-runner/redroid.tar", ADBPort: 5555}
 		case "ios_simulator":
@@ -186,6 +188,13 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 		cfg.Devices = append(cfg.Devices, entry)
 	}
 	return cfg, nil
+}
+
+func DefaultEmulatorABI(goos, goarch string) string {
+	if goos == "darwin" && goarch == "arm64" {
+		return "arm64-v8a"
+	}
+	return "x86_64"
 }
 
 func (s *Store) Snapshot() Values {

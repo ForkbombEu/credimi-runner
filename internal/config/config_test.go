@@ -71,7 +71,6 @@ func TestValidateForPlatformRejectsInvalidCombinations(t *testing.T) {
 		{"missing state volume", "linux", "android.state_volume", func(c *Config) { c.Android.StateVolume = "" }},
 		{"missing tool cache volume", "linux", "android.tool_cache_volume", func(c *Config) { c.Android.ToolCacheVolume = "" }},
 		{"missing sdk volume", "linux", "android.sdk_volume", func(c *Config) { c.Android.SDKVolume = "" }},
-		{"mac USB", "darwin", "does not support Android USB", func(c *Config) { c.Devices = []DeviceConfig{physical("acme/runner/p", "P", "usb", "usb")} }},
 		{"linux ios", "linux", "require macOS", func(c *Config) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/i", Name: "I", Type: DeviceIOSSimulator, IOSSimulator: &IOSSimulatorConfig{UDID: "id"}}}
 		}},

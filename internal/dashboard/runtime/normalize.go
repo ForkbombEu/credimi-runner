@@ -30,7 +30,7 @@ const (
 	DefaultHostAVDHome        = ".android/avd"
 	DefaultHostAVDGolden      = "avd-golden"
 	DefaultContainerBackend   = "container"
-	DefaultHostBackend        = "host"
+	DefaultNativeBackend      = "native"
 )
 
 var KnownKeys = RunnerKeys
@@ -72,7 +72,7 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 		normalized[key] = strings.TrimSpace(value)
 	}
 
-	if _, err := legacyBackend(normalized, goos); err != nil {
+	if err := validateLegacyDeviceTypes(normalized, goos); err != nil {
 		return nil, err
 	}
 	normalized["CREDIMI_SERVICE_MODE"] = normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"])
@@ -93,13 +93,13 @@ func normalizeIndexedValues(values Values, goos string) (Values, error) {
 	if _, err := ParseRuntimeConfig(normalized); err != nil {
 		return nil, err
 	}
-	if _, err := legacyBackend(normalized, goos); err != nil {
+	if err := validateLegacyDeviceTypes(normalized, goos); err != nil {
 		return nil, err
 	}
 	return normalized, nil
 }
 
-func legacyBackend(values Values, goos string) (runnerplacement.Backend, error) {
+func validateLegacyDeviceTypes(values Values, goos string) error {
 	types := []runnerconfig.DeviceType{}
 	if count := strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]); count != "" {
 		for index := 1; ; index++ {
@@ -116,14 +116,7 @@ func legacyBackend(values Values, goos string) (runnerplacement.Backend, error) 
 	} else if value := strings.TrimSpace(values["CREDIMI_RUNNER_TYPE"]); value != "" {
 		types = append(types, legacyDeviceType(value))
 	}
-	backend, err := runnerplacement.SelectTypes(types, goos)
-	if err != nil {
-		return "", err
-	}
-	if backend == runnerplacement.Native {
-		return DefaultHostBackend, nil
-	}
-	return backend, nil
+	return runnerplacement.ValidateDeviceTypes(types, goos)
 }
 
 func legacyDeviceType(value string) runnerconfig.DeviceType {

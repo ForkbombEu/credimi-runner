@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	stdruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -417,7 +418,8 @@ func configFromValues(values map[string]string) (runnerconfig.Config, error) {
 			entry.AndroidPhysical = &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode, Serial: device.Serial}
 		case "android_emulator":
 			entry.Type = runnerconfig.DeviceAndroidEmulator
-			entry.AndroidEmulator = &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], BaseName: device.Values["BASE_NAME"], GoldenSource: device.Values["GOLDEN_PATH"], ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", APILevel: 35, MemoryMB: 2048, Cores: 2}
+			abi := dashboardruntime.DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
+			entry.AndroidEmulator = &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], BaseName: device.Values["BASE_NAME"], GoldenSource: device.Values["GOLDEN_PATH"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, APILevel: 35, MemoryMB: 2048, Cores: 2}
 		case "redroid":
 			entry.Type = runnerconfig.DeviceRedroid
 			entry.Redroid = &runnerconfig.RedroidConfig{Serial: device.Serial, DataDir: device.Values["REDROID_DATA_DIR"], DataArchive: device.Values["REDROID_DATA_TAR"], Image: "redroid:latest", ADBPort: 5555}

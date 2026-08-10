@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
+
+	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
 )
 
 type RuntimePlan struct {
@@ -20,7 +22,6 @@ type RuntimePlan struct {
 	ComposeServices   []string
 	PublicMode        string
 	RequiresDocker    bool
-	RequiresHostRun   bool
 	ExpectedServices  []PlannedService
 }
 
@@ -42,9 +43,8 @@ const (
 )
 
 type ConfigDiff struct {
-	ChangedKeys       []string
-	Classes           []ApplyClass
-	BackendTransition bool
+	ChangedKeys []string
+	Classes     []ApplyClass
 }
 
 type FieldImpact struct {
@@ -86,11 +86,10 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	return BuildRuntimePlanForOS(configDir, values, goruntime.GOOS)
 }
 
-// BuildRuntimePlanForOS derives placement from the typed inventory adapter
-// and the host platform.
+// BuildRuntimePlanForOS derives application placement from the host platform.
 func BuildRuntimePlanForOS(configDir string, values Values, goos string) RuntimePlan {
 	serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
-	backend := derivedBackend(values, goos)
+	backend := backendForOS(goos)
 
 	canonicalDir, err := filepath.Abs(configDir)
 	if err != nil {
@@ -107,15 +106,14 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 		ServiceMode:       serviceMode,
 		PublicMode:        serviceMode,
 		RequiresDocker:    backend == DefaultContainerBackend || serviceMode != "manual",
-		RequiresHostRun:   backend == DefaultHostBackend,
 	}
 
 	switch {
-	case backend == DefaultHostBackend && serviceMode == "manual":
+	case backend == DefaultNativeBackend && serviceMode == "manual":
 		plan.ComposeServices = nil
-	case backend == DefaultHostBackend && serviceMode == "cloudflare-managed":
+	case backend == DefaultNativeBackend && serviceMode == "cloudflare-managed":
 		plan.ComposeServices = []string{"caddy", "tunnel_named"}
-	case backend == DefaultHostBackend:
+	case backend == DefaultNativeBackend:
 		plan.ComposeServices = []string{"caddy", "tunnel"}
 	case serviceMode == "manual":
 		plan.ComposeServices = []string{"runner"}
@@ -164,9 +162,6 @@ func expectedServices(plan RuntimePlan) []PlannedService {
 			services = append(services, PlannedService{ID: "tunnel_named", Name: "tunnel_named", Role: "managed tunnel", Critical: true, Kind: "compose"})
 		}
 	}
-	if plan.RequiresHostRun {
-		services = append(services, PlannedService{ID: "runner_host_process", Name: "runner host", Role: "local runner process", Critical: true, Kind: "process"})
-	}
 	if strings.TrimSpace(plan.ServiceMode) != "" {
 		services = append(services, PlannedService{ID: "temporal", Name: "temporal", Role: "workflow backend", Critical: false, Kind: "external"})
 	}
@@ -182,19 +177,19 @@ func RunnerAPIReachableFromHost(values Values, goos string) bool {
 		return false
 	}
 	plan := BuildRuntimePlanForOS("", normalized, goos)
-	if plan.Backend == DefaultHostBackend {
+	if plan.Backend == DefaultNativeBackend {
 		return true
 	}
 	return plan.Backend == DefaultContainerBackend
 }
 
-func derivedBackend(values Values, goos string) string {
-	backend, err := legacyBackend(values, goos)
+func backendForOS(goos string) string {
+	backend, err := runnerplacement.Select(goos)
 	if err != nil {
 		return DefaultContainerBackend
 	}
-	if string(backend) == DefaultHostBackend {
-		return DefaultHostBackend
+	if backend == runnerplacement.Native {
+		return DefaultNativeBackend
 	}
 	return DefaultContainerBackend
 }
@@ -238,18 +233,11 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 	return DiffValuesForOS(oldValues, newValues, goruntime.GOOS)
 }
 
-// DiffValuesForOS classifies persistent configuration changes and separately
-// records when the device inventory moves the complete application between
-// container and native backends.
+// DiffValuesForOS classifies persistent configuration changes. Device edits
+// remain registration updates; placement is fixed by the host platform.
 func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 	var diff ConfigDiff
 	classSet := map[ApplyClass]struct{}{}
-	oldBackend, oldErr := backendFromValues(oldValues, goos)
-	newBackend, newErr := backendFromValues(newValues, goos)
-	if oldErr == nil && newErr == nil && oldBackend != newBackend {
-		diff.BackendTransition = true
-		classSet[ApplyRestartRequired] = struct{}{}
-	}
 	for _, key := range SortedKnownKeys() {
 		if oldValues[key] == newValues[key] {
 			continue
@@ -306,12 +294,4 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		}
 	}
 	return diff
-}
-
-func backendFromValues(values Values, goos string) (string, error) {
-	normalized, err := NormalizeValues(values, goos)
-	if err != nil {
-		return "", err
-	}
-	return derivedBackend(normalized, goos), nil
 }

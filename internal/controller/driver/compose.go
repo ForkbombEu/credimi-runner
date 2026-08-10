@@ -14,9 +14,6 @@ type Request struct {
 	EnvPath         string
 	ComposePath     string
 	ComposeServices []ExpectedService
-	HostBackend     bool
-	RunnerHost      string
-	RunnerPort      string
 }
 
 type ExpectedService struct {

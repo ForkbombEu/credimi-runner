@@ -3,15 +3,27 @@
 package androidtools
 
 import (
+	"archive/zip"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
 type CommandRunner func(context.Context, string, ...string) error
+
+const commandLineToolsVersion = "11076708"
+
+var (
+	androidToolsGOOS     = runtime.GOOS
+	androidToolsHTTP     = http.DefaultClient
+	androidToolsDownload = downloadCommandLineTools
+)
 
 func Ensure(ctx context.Context, sdkRoot string) error {
 	return EnsureCapabilities(ctx, sdkRoot, true, "")
@@ -41,9 +53,9 @@ func EnsureCapabilitiesWithRunner(ctx context.Context, sdkRoot string, needsEmul
 	if err := os.MkdirAll(sdkRoot, 0o755); err != nil {
 		return fmt.Errorf("create Android SDK root: %w", err)
 	}
-	manager, err := exec.LookPath("sdkmanager")
+	manager, err := ensureSDKManager(ctx, sdkRoot)
 	if err != nil {
-		return fmt.Errorf("Android sdkmanager is unavailable: %w", err)
+		return err
 	}
 	packages := []string{}
 	if !platformToolsAvailable(sdkRoot) {
@@ -65,6 +77,197 @@ func EnsureCapabilitiesWithRunner(ctx context.Context, sdkRoot string, needsEmul
 		return fmt.Errorf("install Android SDK packages %v: %w", packages, err)
 	}
 	return nil
+}
+
+// ConfigureStableEnvironment exposes runner-owned Android tooling paths once
+// at process startup. These are tool locations, not device-specific values.
+func ConfigureStableEnvironment(sdkRoot string) error {
+	return ConfigureStableEnvironmentWithAVD(sdkRoot, filepath.Join(filepath.Dir(sdkRoot), "avd"))
+}
+
+// ConfigureStableEnvironmentWithAVD adds runner-owned SDK and emulator paths
+// once at startup. The AVD directory may be supplied by the typed dashboard
+// compatibility adapter when existing Credimi assets use another location.
+func ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome string) error {
+	if strings.TrimSpace(sdkRoot) == "" {
+		return fmt.Errorf("Android SDK root is required")
+	}
+	if err := os.Setenv("ANDROID_SDK_ROOT", sdkRoot); err != nil {
+		return err
+	}
+	if err := os.Setenv("ANDROID_HOME", sdkRoot); err != nil {
+		return err
+	}
+	if strings.TrimSpace(avdHome) != "" {
+		if err := os.Setenv("ANDROID_AVD_HOME", avdHome); err != nil {
+			return err
+		}
+	}
+	paths := []string{
+		filepath.Join(sdkRoot, "cmdline-tools", "latest", "bin"),
+		filepath.Join(sdkRoot, "platform-tools"),
+		filepath.Join(sdkRoot, "emulator"),
+	}
+	current := os.Getenv("PATH")
+	for _, path := range paths {
+		if !strings.Contains(string(filepath.ListSeparator)+current+string(filepath.ListSeparator), string(filepath.ListSeparator)+path+string(filepath.ListSeparator)) {
+			current = path + string(filepath.ListSeparator) + current
+		}
+	}
+	return os.Setenv("PATH", current)
+}
+
+// EnsureAVD creates the configured local AVD only when its persistent assets
+// are absent. Existing dashboard-downloaded AVDs are reused unchanged.
+func EnsureAVD(ctx context.Context, sdkRoot, avdHome, avdName, systemImage string, run CommandRunner) error {
+	avdName = strings.TrimSpace(avdName)
+	systemImage = strings.TrimSpace(systemImage)
+	if avdName == "" || systemImage == "" {
+		return fmt.Errorf("Android emulator AVD name and system image are required")
+	}
+	if strings.TrimSpace(avdHome) == "" {
+		avdHome = filepath.Join(filepath.Dir(sdkRoot), "avd")
+	}
+	if fileExists(filepath.Join(avdHome, avdName+".ini")) && fileExists(filepath.Join(avdHome, avdName+".avd")) {
+		return nil
+	}
+	if run == nil {
+		run = func(ctx context.Context, name string, args ...string) error {
+			return exec.CommandContext(ctx, name, args...).Run()
+		}
+	}
+	manager := filepath.Join(sdkRoot, "cmdline-tools", "latest", "bin", "avdmanager")
+	if _, err := os.Stat(manager); err != nil {
+		if found, lookErr := exec.LookPath("avdmanager"); lookErr == nil {
+			manager = found
+		} else {
+			return fmt.Errorf("Android avdmanager is unavailable: %w", err)
+		}
+	}
+	if err := os.MkdirAll(avdHome, 0o755); err != nil {
+		return fmt.Errorf("create Android AVD home: %w", err)
+	}
+	if err := run(ctx, manager, "create", "avd", "--force", "--name", avdName, "--package", systemImage, "--device", "pixel"); err != nil {
+		return fmt.Errorf("create Android AVD %q: %w", avdName, err)
+	}
+	return nil
+}
+
+func ensureSDKManager(ctx context.Context, sdkRoot string) (string, error) {
+	candidates := []string{
+		filepath.Join(sdkRoot, "cmdline-tools", "latest", "bin", "sdkmanager"),
+	}
+	if bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP")); bootstrap != "" {
+		candidates = append(candidates, filepath.Join(bootstrap, "cmdline-tools", "latest", "bin", "sdkmanager"))
+	}
+	if manager, err := exec.LookPath("sdkmanager"); err == nil {
+		candidates = append(candidates, manager)
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	if err := androidToolsDownload(ctx, sdkRoot); err != nil {
+		return "", fmt.Errorf("Android sdkmanager is unavailable and command-line tools bootstrap failed: %w", err)
+	}
+	manager := filepath.Join(sdkRoot, "cmdline-tools", "latest", "bin", "sdkmanager")
+	if info, err := os.Stat(manager); err != nil || info.IsDir() {
+		return "", fmt.Errorf("Android sdkmanager bootstrap completed without %s", manager)
+	}
+	return manager, nil
+}
+
+func downloadCommandLineTools(ctx context.Context, sdkRoot string) error {
+	name := "commandlinetools-linux-" + commandLineToolsVersion + "_latest.zip"
+	if androidToolsGOOS == "darwin" {
+		name = "commandlinetools-mac-" + commandLineToolsVersion + "_latest.zip"
+	}
+	url := "https://dl.google.com/android/repository/" + name
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	response, err := androidToolsHTTP.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("download command-line tools: %s", response.Status)
+	}
+	temporary, err := os.CreateTemp("", "credimi-android-tools-*.zip")
+	if err != nil {
+		return err
+	}
+	path := temporary.Name()
+	defer os.Remove(path)
+	if _, err := io.Copy(temporary, response.Body); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	archive, err := zip.OpenReader(path)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	root := filepath.Join(sdkRoot, "cmdline-tools", "latest")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	for _, file := range archive.File {
+		name := filepath.ToSlash(file.Name)
+		name = strings.TrimPrefix(name, "cmdline-tools/")
+		if name == "" || name == "." {
+			continue
+		}
+		target := filepath.Join(root, filepath.FromSlash(name))
+		if !withinDirectory(root, target) {
+			return fmt.Errorf("command-line tools archive contains unsafe path %q", file.Name)
+		}
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		input, err := file.Open()
+		if err != nil {
+			return err
+		}
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fileMode(file.Mode()))
+		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		_, err = io.Copy(output, input)
+		_ = input.Close()
+		if closeErr := output.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func withinDirectory(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func fileMode(mode os.FileMode) os.FileMode {
+	if mode&0o111 != 0 {
+		return 0o755
+	}
+	return 0o644
 }
 
 func sdkPackageInstalled(sdkRoot, packageName string) bool {

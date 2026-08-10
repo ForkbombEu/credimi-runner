@@ -73,6 +73,9 @@ func TestComposeEmulatorAndPhoneShareTheGlobalImage(t *testing.T) {
 	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
 	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
 	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	previous := hostKVMAvailable
+	hostKVMAvailable = func(string) bool { return true }
+	t.Cleanup(func() { hostKVMAvailable = previous })
 	content, err := ComposeYAML(values, "linux")
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +155,7 @@ func TestComposeServicesFollowBackendSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := BuildRuntimePlanForOS(t.TempDir(), values, "darwin")
-	if plan.Backend != DefaultHostBackend || len(plan.ComposeServices) != 0 {
+	if plan.Backend != DefaultNativeBackend || len(plan.ComposeServices) != 0 {
 		t.Fatalf("native manual plan = %#v", plan)
 	}
 }

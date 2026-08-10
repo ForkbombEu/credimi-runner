@@ -4,17 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -176,12 +172,10 @@ func (ExecRunner) Start(ctx context.Context, spec CommandSpec) (*exec.Cmd, error
 
 type LifecycleManager struct {
 	mu        sync.Mutex
-	binary    string
 	configDir string
 	goos      string
 	values    Values
 	runner    Runner
-	cmd       *exec.Cmd
 	logCmd    *exec.Cmd
 	logDone   chan struct{}
 	status    RuntimeStatus
@@ -194,6 +188,7 @@ func NewLifecycleManager(binary, configDir string, values Values, runner Runner)
 }
 
 func NewLifecycleManagerForOS(binary, configDir string, values Values, runner Runner, goos string) *LifecycleManager {
+	_ = binary // native application ownership no longer belongs to this manager
 	if runner == nil {
 		runner = ExecRunner{}
 	}
@@ -202,7 +197,6 @@ func NewLifecycleManagerForOS(binary, configDir string, values Values, runner Ru
 		lifecycle, _ = lifecyclelog.New(filepath.Join(configDir, "lifecycle.jsonl"), lifecyclelog.Options{})
 	}
 	return &LifecycleManager{
-		binary:    binary,
 		configDir: configDir,
 		goos:      goos,
 		values:    cloneValues(values),
@@ -274,39 +268,6 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 			Message: "runtime start completed", Component: "runtime", Phase: "running",
 		})
 	}()
-	if plan.Backend == DefaultHostBackend {
-		if runnerAddressReachable(m.values, 500*time.Millisecond) {
-			if err := validateReachableHostRunner(ctx, m.values); err != nil {
-				m.status.LastError = err.Error()
-				return fmt.Errorf("cannot adopt existing host runner: %w", err)
-			}
-			emitProgress(progress, "Existing host runner is already reachable.")
-			m.status.RunnerRunning = true
-			m.status.LastStartedAt = time.Now()
-		} else if m.cmd == nil {
-			emitProgress(progress, "Starting detached host runner process.")
-			cmd, err := m.runner.Start(context.WithoutCancel(ctx), CommandSpec{
-				Name: m.binary,
-				Args: []string{
-					"serve",
-					"--host", defaultIfEmpty(m.values["RUNNER_HOST"], DefaultRunnerHost),
-					"--port", defaultIfEmpty(m.values["RUNNER_PORT"], DefaultRunnerPort),
-				},
-				Dir:      m.configDir,
-				Env:      append(os.Environ(), "CREDIMI_RUNNER_CONFIG_DIR="+m.configDir),
-				Detached: true,
-				LogPath:  filepath.Join(m.configDir, "runner.log"),
-			})
-			if err != nil {
-				m.status.LastError = err.Error()
-				return err
-			}
-			m.cmd = cmd
-			m.status.RunnerRunning = true
-			m.status.LastStartedAt = time.Now()
-		}
-	}
-
 	if len(plan.ComposeServices) > 0 {
 		emitProgress(progress, "Writing docker-compose.yaml.")
 		if err := WriteComposeFileForOS(m.configDir, m.values, m.goos); err != nil {
@@ -458,18 +419,6 @@ func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 			Message: "runtime stop completed", Component: "runtime", Phase: "stopped",
 		})
 	}()
-	if plan.Backend == DefaultHostBackend {
-		if err := m.stopHostRunnerLocked(ctx); err != nil {
-			m.status.LastError = err.Error()
-			return err
-		}
-		if runnerAddressReachable(m.values, 500*time.Millisecond) {
-			err := errors.New("host runner listener is still reachable after stop")
-			m.status.LastError = err.Error()
-			return err
-		}
-	}
-
 	if len(plan.ComposeServices) > 0 {
 		m.stopComposeLogFollowerLocked()
 		args := composeArgs(plan, "down", "--remove-orphans")
@@ -514,357 +463,18 @@ func looksLikeContainerID(value string) bool {
 	return true
 }
 
-func (m *LifecycleManager) stopHostRunnerLocked(ctx context.Context) error {
-	if m.cmd != nil && m.cmd.Process != nil {
-		err := stopStartedCommand(ctx, m.cmd)
-		m.cmd = nil
-		return err
-	}
-	m.cmd = nil
-	pid, err := discoverRunnerPID(m.values)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	return stopPID(ctx, pid)
-}
-
-func stopStartedCommand(ctx context.Context, cmd *exec.Cmd) error {
-	_ = cmd.Process.Signal(syscall.SIGTERM)
-	waitDone := make(chan error, 1)
-	go func() {
-		waitDone <- cmd.Wait()
-	}()
-	select {
-	case err := <-waitDone:
-		if err != nil && !strings.Contains(err.Error(), "signal") {
-			return err
-		}
-	case <-time.After(10 * time.Second):
-		if err := cmd.Process.Kill(); err != nil {
-			return err
-		}
-		_, _ = cmd.Process.Wait()
-	case <-ctx.Done():
-		if err := cmd.Process.Kill(); err != nil {
-			return err
-		}
-		_, _ = cmd.Process.Wait()
-		return ctx.Err()
-	}
-	return nil
-}
-
-func stopPID(ctx context.Context, pid int) error {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	if !processRunning(pid) {
-		return nil
-	}
-	if !processCommandMatches(pid) {
-		return fmt.Errorf("refusing to stop PID %d because it is not credimi-runner serve", pid)
-	}
-	_ = process.Signal(syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() {
-		for {
-			if !processRunning(pid) {
-				done <- nil
-				return
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Second):
-		return process.Kill()
-	case <-ctx.Done():
-		_ = process.Kill()
-		return ctx.Err()
-	}
-}
-
-func processRunning(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return process.Signal(syscall.Signal(0)) == nil
-}
-
-func runnerAddressReachable(values Values, timeout time.Duration) bool {
-	host, port := runnerListenTarget(values)
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), timeout)
-	if err != nil {
-		return false
-	}
-	_ = conn.Close()
-	return true
-}
+// Native application lifecycle is owned by runApplicationRuntime. This
+// manager only reconciles Docker and edge services.
 
 // validateReachableHostRunner proves that the process already listening on the
 // configured host port is the configured credimi-runner. A TCP connection is
 // intentionally insufficient: the port can belong to a stale or unrelated
 // process, and adopting it would make later dashboard operations unsafe.
-func validateReachableHostRunner(ctx context.Context, values Values) error {
-	host, port := runnerListenTarget(values)
-	endpoint := "http://" + net.JoinHostPort(host, port) + "/readyz"
-	requestCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return fmt.Errorf("create readiness request: %w", err)
-	}
-	response, err := (&http.Client{Timeout: 2 * time.Second}).Do(request)
-	if err != nil {
-		return fmt.Errorf("request runner readiness: %w", err)
-	}
-	defer response.Body.Close()
-
-	var ready struct {
-		Service  string `json:"service"`
-		RunnerID string `json:"runner_id"`
-		BootID   string `json:"boot_id"`
-		Devices  map[string]struct {
-			Serial string `json:"serial"`
-			State  string `json:"state"`
-			Ready  bool   `json:"ready"`
-		} `json:"devices"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&ready); err != nil {
-		return fmt.Errorf("decode runner readiness: %w", err)
-	}
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("runner readiness returned HTTP %d", response.StatusCode)
-	}
-	if ready.Service != "credimi-runner" || strings.TrimSpace(ready.BootID) == "" {
-		return errors.New("listener is not an identified credimi-runner")
-	}
-	if expected := strings.TrimSpace(values["CREDIMI_RUNNER_ID"]); expected != "" && ready.RunnerID != expected {
-		return fmt.Errorf("runner ID %q does not match configured runner %q", ready.RunnerID, expected)
-	}
-	inventory, err := ParseRuntimeConfig(values)
-	if err != nil {
-		return err
-	}
-	for _, device := range inventory.Devices {
-		if !device.Enabled {
-			continue
-		}
-		state, ok := ready.Devices[device.ID]
-		if !ok {
-			return fmt.Errorf("configured device %q is missing from readiness", device.ID)
-		}
-		if device.Serial != "" && state.Serial != "" && device.Serial != state.Serial {
-			return fmt.Errorf("device serial %q does not match configured device %q", state.Serial, device.Serial)
-		}
-		if !state.Ready {
-			return fmt.Errorf("configured device %q is %s", device.ID, state.State)
-		}
-	}
-	return nil
-}
-
-func runnerListenTarget(values Values) (string, string) {
-	host := strings.TrimSpace(values["RUNNER_HOST"])
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	port := strings.TrimSpace(values["RUNNER_PORT"])
-	if port == "" {
-		port = DefaultRunnerPort
-	}
-	return host, port
-}
-
-func discoverRunnerPID(values Values) (int, error) {
-	_, port := runnerListenTarget(values)
-	portNumber, err := strconv.ParseInt(port, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	if portNumber < 1 || portNumber > 65535 {
-		return 0, fmt.Errorf("invalid runner port %q", port)
-	}
-	if runtime.GOOS == "linux" {
-		pid, err := discoverRunnerPIDFromProc(uint16(portNumber))
-		if err == nil {
-			return pid, nil
-		}
-		if !os.IsNotExist(err) {
-			return 0, err
-		}
-	}
-	return discoverRunnerPIDFromLsof(port)
-}
-
-func discoverRunnerPIDFromProc(port uint16) (int, error) {
-	inodes, err := listeningSocketInodes(port)
-	if err != nil {
-		return 0, err
-	}
-	for inode := range inodes {
-		pid, err := pidForSocketInode(inode)
-		if err == nil {
-			return pid, nil
-		}
-	}
-	return 0, os.ErrNotExist
-}
-
-func discoverRunnerPIDFromLsof(port string) (int, error) {
-	output, err := exec.Command("lsof", "-nP", "-tiTCP:"+port, "-sTCP:LISTEN").Output()
-	if err != nil {
-		return 0, os.ErrNotExist
-	}
-	for _, line := range strings.Split(string(output), "\n") {
-		pid, err := strconv.Atoi(strings.TrimSpace(line))
-		if err != nil {
-			continue
-		}
-		if processCommandMatches(pid) {
-			return pid, nil
-		}
-	}
-	return 0, os.ErrNotExist
-}
-
-func listeningSocketInodes(port uint16) (map[string]struct{}, error) {
-	inodes := map[string]struct{}{}
-	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(raw), "\n")[1:] {
-			fields := strings.Fields(line)
-			if len(fields) < 10 || fields[3] != "0A" {
-				continue
-			}
-			_, rawPort, ok := strings.Cut(fields[1], ":")
-			if !ok {
-				continue
-			}
-			parsedPort, err := strconv.ParseUint(rawPort, 16, 16)
-			if err == nil && uint16(parsedPort) == port {
-				inodes[fields[9]] = struct{}{}
-			}
-		}
-	}
-	if len(inodes) == 0 {
-		return nil, os.ErrNotExist
-	}
-	return inodes, nil
-}
-
-func pidForSocketInode(inode string) (int, error) {
-	procs, err := os.ReadDir("/proc")
-	if err != nil {
-		return 0, err
-	}
-	want := "socket:[" + inode + "]"
-	for _, proc := range procs {
-		if !proc.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(proc.Name())
-		if err != nil {
-			continue
-		}
-		fdDir := filepath.Join("/proc", proc.Name(), "fd")
-		fds, err := os.ReadDir(fdDir)
-		if err != nil {
-			continue
-		}
-		for _, fd := range fds {
-			target, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
-			if err != nil || target != want {
-				continue
-			}
-			if processCommandMatches(pid) {
-				return pid, nil
-			}
-		}
-	}
-	return 0, os.ErrNotExist
-}
-
-func processCommandMatches(pid int) bool {
-	cmdline, err := processCommandLine(pid)
-	if err != nil {
-		return false
-	}
-	return strings.Contains(cmdline, "credimi-runner") && strings.Contains(" "+cmdline+" ", " serve ")
-}
-
-func processCommandLine(pid int) (string, error) {
-	if runtime.GOOS != "linux" {
-		return processCommandLineFromPS(pid)
-	}
-	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
-	if err != nil {
-		return processCommandLineFromPS(pid)
-	}
-	cmdline := strings.ReplaceAll(string(raw), "\x00", " ")
-	if strings.TrimSpace(cmdline) == "" {
-		return processCommandLineFromPS(pid)
-	}
-	return cmdline, nil
-}
-
-func processCommandLineFromPS(pid int) (string, error) {
-	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
 func (m *LifecycleManager) Restart(ctx context.Context) error {
 	if err := m.Stop(ctx); err != nil {
 		return err
 	}
 	return m.Start(ctx)
-}
-
-// TransitionBackend stops the currently managed topology before applying a
-// device-driven backend change. It intentionally introduces a controlled
-// boundary because a running container cannot become the native macOS
-// application (or vice versa) without replacing the application process.
-func (m *LifecycleManager) TransitionBackend(ctx context.Context, values Values) error {
-	if m == nil {
-		return errors.New("runtime lifecycle manager is unavailable")
-	}
-	m.mu.Lock()
-	oldValues := cloneValues(m.values)
-	oldPlan := BuildRuntimePlanForOS(m.configDir, oldValues, m.goos)
-	newPlan := BuildRuntimePlanForOS(m.configDir, values, m.goos)
-	running := m.status.RunnerRunning || m.status.ComposeRunning
-	m.mu.Unlock()
-	if oldPlan.Backend == newPlan.Backend {
-		m.Configure(values)
-		return nil
-	}
-	if running {
-		if err := m.Stop(ctx); err != nil {
-			return fmt.Errorf("stop old %s backend: %w", oldPlan.Backend, err)
-		}
-	}
-	m.Configure(values)
-	if !running {
-		return nil
-	}
-	if err := m.Start(ctx); err != nil {
-		return fmt.Errorf("start new %s backend: %w", newPlan.Backend, err)
-	}
-	return nil
 }
 
 // StartLogFollower attaches the owning dashboard process to managed runtime
@@ -1148,9 +758,6 @@ func observeRuntimeForOS(ctx context.Context, runner Runner, configDir string, v
 	defer cancel()
 	plan := BuildRuntimePlanForOS(configDir, values, goos)
 	result := observedRuntime{deviceReady: configuredDeviceReady(ctx, values)}
-	if plan.Backend == DefaultHostBackend {
-		result.runnerRunning = runnerAddressReachable(values, 500*time.Millisecond)
-	}
 	if len(plan.ComposeServices) == 0 {
 		return result
 	}

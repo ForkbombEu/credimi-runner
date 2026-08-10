@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +26,12 @@ func (m *fakeContainerLauncherManager) Start(context.Context) error {
 func (m *fakeContainerLauncherManager) Stop(context.Context) error {
 	m.stopped++
 	return nil
+}
+
+func (m *fakeContainerLauncherManager) UpdateImage(context.Context) error { return nil }
+
+func (m *fakeContainerLauncherManager) Status(context.Context) dashboardruntime.RuntimeStatus {
+	return dashboardruntime.RuntimeStatus{}
 }
 
 func (m *fakeContainerLauncherManager) Close() error {
@@ -66,12 +73,16 @@ func TestProvisionInternalRuntimeReportsMissingSDKManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", t.TempDir())
+	previousEnsure := ensureAndroidCapabilities
+	ensureAndroidCapabilities = func(context.Context, string, bool, string) error { return errors.New("sdkmanager is unavailable") }
+	t.Cleanup(func() { ensureAndroidCapabilities = previousEnsure })
 	if err := provisionInternalRuntimeAt(context.Background(), dir, filepath.Join(dir, "sdk")); err == nil || !strings.Contains(err.Error(), "sdkmanager is unavailable") {
 		t.Fatalf("provisioning error = %v", err)
 	}
 }
 
 func TestHydrateTypedRuntimeEnvironmentUsesTOMLAsSource(t *testing.T) {
+	t.Setenv("CREDIMI_DEVICE_1_SERIAL", "")
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()
 	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
@@ -88,11 +99,14 @@ func TestHydrateTypedRuntimeEnvironmentUsesTOMLAsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		"CREDIMI_RUNNER_ID": "acme/runner", "ANDROID_RUNNER_IMAGE": "credimi-runner:local", "CREDIMI_DEVICE_1_SERIAL": "phone:5555",
+		"CREDIMI_RUNNER_ID": "acme/runner", "ANDROID_RUNNER_IMAGE": "credimi-runner:local",
 	} {
 		if got := os.Getenv(key); got != want {
 			t.Fatalf("%s=%q, want %q", key, got, want)
 		}
+	}
+	if got := os.Getenv("CREDIMI_DEVICE_1_SERIAL"); got == "phone:5555" {
+		t.Fatal("device-specific serial was hydrated into process-global environment")
 	}
 }
 
@@ -175,6 +189,22 @@ func TestRunPublicUsesContainerLauncherForFirstRun(t *testing.T) {
 	}
 }
 
+func TestRunPublicUsesNativeApplicationOnMacFirstRun(t *testing.T) {
+	oldConfigDir, oldConfigPath, oldDashboard := dashboardConfigDir, configPath, runInternalDashboardFunc
+	t.Cleanup(func() {
+		dashboardConfigDir, configPath, runInternalDashboardFunc = oldConfigDir, oldConfigPath, oldDashboard
+	})
+	dashboardConfigDir = t.TempDir()
+	configPath = ""
+	want := errors.New("native application selected")
+	runInternalDashboardFunc = func(*cobra.Command, []string) error { return want }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := runPublicForOS(command, nil, "darwin"); !errors.Is(err, want) {
+		t.Fatalf("macOS startup error = %v, want native application path", err)
+	}
+}
+
 func TestRunInternalRuntimePreparesTypedConfigBeforeStartingServer(t *testing.T) {
 	oldConfigDir, oldConfigPath, oldDashboard, oldServer, oldHost := dashboardConfigDir, configPath, runInternalDashboardFunc, runInternalServerFunc, host
 	t.Cleanup(func() {
@@ -210,7 +240,7 @@ func TestRunInternalRuntimePreparesTypedConfigBeforeStartingServer(t *testing.T)
 	command := &cobra.Command{}
 	ctx, cancel := context.WithCancel(context.Background())
 	command.SetContext(ctx)
-	err := runInternalRuntime(command, nil)
+	err := runApplicationRuntime(command, nil)
 	cancel()
 	if err != nil {
 		t.Fatal(err)

@@ -24,6 +24,7 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/launcher"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
@@ -82,6 +83,7 @@ type Server struct {
 	restartDashboard        func(string) error
 	startupProgress         func(string)
 	runtimeOwned            bool
+	launcherSocket          string
 	mu                      sync.RWMutex
 }
 
@@ -173,7 +175,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 	if err != nil {
 		return nil, nil, fmt.Errorf("templates: %w", err)
 	}
-	observer := controller.Observer{Drivers: []driver.Driver{driver.Compose{}, driver.Host{}}}
+	observer := controller.Observer{Drivers: []driver.Driver{driver.Compose{}}}
 	hub := NewHubWithObservation(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
 		if manager == nil && !owned {
 			return dashboardruntime.RuntimeStatus{}
@@ -214,6 +216,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 		controllerFingerprint:   fingerprint,
 		manager:                 manager,
 		runtimeOwned:            owned,
+		launcherSocket:          strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_LAUNCHER_SOCKET")),
 		operations:              operations,
 		lookupPath:              lookupPath,
 		statPath:                statPath,
@@ -772,9 +775,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	if s.manager != nil {
 		status := s.manager.Status(r.Context())
 		runtimeRunning = status.RunnerRunning || status.ComposeRunning
-		if !diff.BackendTransition {
-			s.manager.Configure(newValues)
-		}
+		s.manager.Configure(newValues)
 	}
 	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := dashboardruntime.WriteComposeFile(s.composeDir, newValues); err != nil {
@@ -788,9 +789,8 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if runtimeRunning {
-		// The runner loads its inventory only at process startup. Restarting here
-		// both applies the indexed block and sends a resume/heartbeat containing
-		// every device, which is what makes a newly added child schedulable.
+		// The live activity provider reads the saved inventory on each target
+		// activity; registration is the only immediate runtime action needed.
 		if _, err := s.applySavedConfig(diff, map[string]string(newValues)); err != nil {
 			http.Error(w, "device configuration was saved, but applying it to the running runner failed: "+err.Error(), http.StatusBadGateway)
 			return
@@ -881,9 +881,7 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 	newSnapshot := s.cfg.Snapshot()
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
 	if s.manager != nil {
-		if !diff.BackendTransition {
-			s.manager.Configure(dashboardruntime.Values(newSnapshot))
-		}
+		s.manager.Configure(dashboardruntime.Values(newSnapshot))
 	}
 	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := WriteComposeFile(s.composeDir, newSnapshot); err != nil {
@@ -976,24 +974,6 @@ func (s *Server) applySavedConfig(diff dashboardruntime.ConfigDiff, values map[s
 	status := s.manager.Status(context.Background())
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
 	restartRequired := runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate))
-	if diff.BackendTransition {
-		err := s.runLifecycleOperation(controller.OperationRuntimeRestart, func(ctx context.Context) error {
-			transitioner, ok := s.manager.(interface {
-				TransitionBackend(context.Context, dashboardruntime.Values) error
-			})
-			if !ok {
-				return errors.New("runtime manager does not support backend transitions")
-			}
-			if err := transitioner.TransitionBackend(ctx, dashboardruntime.Values(values)); err != nil {
-				return err
-			}
-			if err := s.registerCurrent(ctx, values); err != nil {
-				return err
-			}
-			return nil
-		})
-		return applyOutcome{Restarted: true, CredimiUpdated: err == nil}, err
-	}
 	registerRequired := shouldRegisterAfterApply(diff, values, restartRequired)
 	if !restartRequired && !registerRequired {
 		return outcome, nil
@@ -1693,7 +1673,8 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 
 func (s *Server) submitImageUpgrade() (controller.Snapshot, error) {
 	upgrader, ok := s.manager.(managerImageUpgrader)
-	if !ok {
+	delegated := !ok && s.launcherSocket != ""
+	if !ok && !delegated {
 		return controller.Snapshot{}, errors.New("runner image upgrade is unavailable")
 	}
 	if s.operations == nil {
@@ -1702,6 +1683,9 @@ func (s *Server) submitImageUpgrade() (controller.Snapshot, error) {
 	values := s.cfg.Snapshot()
 	return s.operations.Submit(controller.OperationRuntimeRestart, func(ctx context.Context, progress func(controller.Progress)) error {
 		progressFn := func(message string) { progress(controller.Progress{Message: message}) }
+		if delegated {
+			return launcher.RequestUpgrade(ctx, s.launcherSocket)
+		}
 		if err := upgrader.UpgradeRunnerImage(ctx, progressFn); err != nil {
 			return err
 		}
@@ -1747,12 +1731,20 @@ func (s *Server) maintenanceUpgrade(w http.ResponseWriter, r *http.Request) {
 		available := s.maintenance
 		s.mu.RUnlock()
 		var err error
+		delegated := false
 		if available.Image.UpdateAvailable {
 			if upgrader, ok := s.manager.(managerImageUpgrader); ok {
 				err = upgrader.UpgradeRunnerImage(ctx, s.appendStartupLog)
+			} else if s.launcherSocket != "" {
+				err = launcher.RequestUpgrade(ctx, s.launcherSocket)
+				delegated = true
 			} else if s.manager != nil {
 				err = s.manager.UpdateImage(ctx)
 			}
+		}
+		if delegated && err == nil {
+			s.setStartupState(StartupReady, "Runner image upgrade accepted by the outer launcher.")
+			return nil
 		}
 		if err == nil && dashboardruntime.RunnerReadinessRequiredBeforeRegistration(dashboardruntime.Values(values), runtimeGOOS()) {
 			s.setStartupState(StartupWaitingRunner, "Runner image updated. Waiting for runner readiness.")
@@ -2102,9 +2094,6 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {
-	if diff.BackendTransition {
-		return "Save these changes? The configured device inventory requires a controlled runner backend transition and the runner record in Credimi will be updated."
-	}
 	switch {
 	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
 		return "Save these changes? Runner services must restart and the runner record in Credimi will be updated."
