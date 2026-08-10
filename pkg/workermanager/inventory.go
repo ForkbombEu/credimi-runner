@@ -3,6 +3,7 @@ package workermanager
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 )
@@ -20,6 +21,7 @@ type DeviceRuntimeConfig struct {
 // RunnerRuntimeConfig is shared by every namespace worker for one local host.
 type RunnerRuntimeConfig struct {
 	RunnerID string
+	Host     map[string]string
 	Devices  []DeviceRuntimeConfig
 }
 
@@ -67,22 +69,91 @@ type DeviceGate struct {
 }
 
 type DeviceDispatcher struct {
-	Inventory RunnerRuntimeConfig
+	Inventory *InventoryStore
 	Gate      *DeviceGate
+}
+
+// InventoryStore is the concurrency-safe local source of truth for device
+// execution settings. Replacing it updates future activity lookups without
+// stopping the Temporal worker or mutating process-wide environment state.
+type InventoryStore struct {
+	mu     sync.RWMutex
+	config RunnerRuntimeConfig
+}
+
+func NewInventoryStore(config RunnerRuntimeConfig) (*InventoryStore, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	return &InventoryStore{config: cloneRuntimeConfig(config)}, nil
+}
+
+func (s *InventoryStore) Update(config RunnerRuntimeConfig) error {
+	if s == nil {
+		return fmt.Errorf("inventory store is not configured")
+	}
+	if err := config.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.config = cloneRuntimeConfig(config)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *InventoryStore) Snapshot() RunnerRuntimeConfig {
+	if s == nil {
+		return RunnerRuntimeConfig{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneRuntimeConfig(s.config)
+}
+
+// Environment returns the getter shape expected by credimi-extra mobile
+// activities. It resolves selected-device values first, then stable host
+// values, then the caller's fallback. No global environment is modified.
+func (s *InventoryStore) Environment(deviceID string) (func(string, ...any) string, error) {
+	config := s.Snapshot()
+	device, err := config.Device(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	return func(name string, fallback ...any) string {
+		if value := strings.TrimSpace(device.Values[name]); value != "" {
+			return value
+		}
+		if value := strings.TrimSpace(config.Host[name]); value != "" {
+			return value
+		}
+		if value, ok := os.LookupEnv(name); ok && value != "" {
+			return value
+		}
+		if len(fallback) > 0 {
+			if value, ok := fallback[0].(string); ok {
+				return value
+			}
+		}
+		return ""
+	}, nil
 }
 
 func NewDeviceDispatcher(inventory RunnerRuntimeConfig) (*DeviceDispatcher, error) {
 	if err := inventory.Validate(); err != nil {
 		return nil, err
 	}
-	return &DeviceDispatcher{Inventory: inventory, Gate: NewDeviceGate()}, nil
+	store, err := NewInventoryStore(inventory)
+	if err != nil {
+		return nil, err
+	}
+	return &DeviceDispatcher{Inventory: store, Gate: NewDeviceGate()}, nil
 }
 
 func (d *DeviceDispatcher) Execute(ctx context.Context, deviceID string, operation func(context.Context, DeviceRuntimeConfig) error) error {
 	if d == nil || operation == nil {
 		return fmt.Errorf("device dispatcher is not configured")
 	}
-	device, err := d.Inventory.Device(deviceID)
+	device, err := d.Inventory.Snapshot().Device(deviceID)
 	if err != nil {
 		return err
 	}
@@ -92,6 +163,21 @@ func (d *DeviceDispatcher) Execute(ctx context.Context, deviceID string, operati
 	}
 	defer unlock()
 	return operation(ctx, device)
+}
+
+func cloneRuntimeConfig(config RunnerRuntimeConfig) RunnerRuntimeConfig {
+	cloned := RunnerRuntimeConfig{RunnerID: config.RunnerID, Host: make(map[string]string, len(config.Host)), Devices: make([]DeviceRuntimeConfig, len(config.Devices))}
+	for key, value := range config.Host {
+		cloned.Host[key] = value
+	}
+	for index, device := range config.Devices {
+		cloned.Devices[index] = device
+		cloned.Devices[index].Values = make(map[string]string, len(device.Values))
+		for key, value := range device.Values {
+			cloned.Devices[index].Values[key] = value
+		}
+	}
+	return cloned
 }
 
 func NewDeviceGate() *DeviceGate { return &DeviceGate{locks: make(map[string]chan struct{})} }

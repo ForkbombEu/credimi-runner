@@ -22,10 +22,11 @@ func (s *runnerService) configuredDevice(identifier string) (dashboardruntime.De
 	if identifier == "" {
 		return dashboardruntime.DeviceRuntimeConfig{}, &runner.APIError{Code: 400, Domain: "device", Reason: "missing device_identifier", Message: "device_identifier is required"}
 	}
-	if s.Deps.RuntimeConfig == nil {
+	configValue, err := s.currentRuntimeConfig()
+	if err != nil {
 		return dashboardruntime.DeviceRuntimeConfig{}, nil
 	}
-	config := s.Deps.RuntimeConfig
+	config := &configValue
 	runnerID := canonicalDeviceIdentifier(config.Host["CREDIMI_RUNNER_ID"])
 	for _, device := range config.Devices {
 		if canonicalDeviceIdentifier(device.ID) == identifier {

@@ -35,7 +35,7 @@ func (s *runnerService) storeExecutionScreenshotsLogic(payload storeExecutionScr
 	}
 
 	root := s.Deps.ManagedWorkflowRoot
-	if s.Deps.RuntimeConfig != nil {
+	if _, configErr := s.currentRuntimeConfig(); configErr == nil {
 		var err error
 		root, err = deviceArtifactRoot(root, payload.DeviceIdentifier, payload.RunIdentifier)
 		if err != nil {

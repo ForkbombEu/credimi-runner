@@ -154,7 +154,7 @@ func (s *runnerService) fetchInstallerAndActionLogic(payload fetchInstallerAndAc
 
 	fileURL := utils.JoinURL(instance.URL, "api", "files", "wallet_versions", md5Resp.RecordID, md5Resp.InstallerName)
 	root := ""
-	if s.Deps.RuntimeConfig != nil {
+	if _, configErr := s.currentRuntimeConfig(); configErr == nil {
 		root, err = deviceArtifactRoot(s.Deps.ManagedWorkflowRoot, payload.DeviceIdentifier, payload.VersionIdentifier)
 		if err != nil {
 			return nil, &runner.APIError{Code: http.StatusBadRequest, Domain: "device", Reason: "unsafe artifact path", Message: err.Error()}

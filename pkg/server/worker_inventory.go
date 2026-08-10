@@ -6,6 +6,10 @@ import (
 )
 
 func workerInventory(config runtime.RunnerRuntimeConfig) workermanager.RunnerRuntimeConfig {
+	host := make(map[string]string, len(config.Host))
+	for key, value := range config.Host {
+		host[key] = value
+	}
 	devices := make([]workermanager.DeviceRuntimeConfig, 0, len(config.Devices))
 	for _, device := range config.Devices {
 		values := make(map[string]string, len(device.Values))
@@ -14,5 +18,5 @@ func workerInventory(config runtime.RunnerRuntimeConfig) workermanager.RunnerRun
 		}
 		devices = append(devices, workermanager.DeviceRuntimeConfig{ID: device.ID, Type: device.Type, Serial: device.Serial, Enabled: device.Enabled, Values: values})
 	}
-	return workermanager.RunnerRuntimeConfig{RunnerID: config.Host["CREDIMI_RUNNER_ID"], Devices: devices}
+	return workermanager.RunnerRuntimeConfig{RunnerID: config.Host["CREDIMI_RUNNER_ID"], Host: host, Devices: devices}
 }

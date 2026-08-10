@@ -38,6 +38,7 @@ type CommandRunner interface {
 
 type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
 type InventoryWorkerRunnerFactory func(namespace string, inventory workermanager.RunnerRuntimeConfig) func(ctx context.Context) error
+type RuntimeConfigLoader func() (dashboardruntime.RunnerRuntimeConfig, error)
 
 type Deps struct {
 	HTTPClient                   HTTPClient
@@ -46,6 +47,7 @@ type Deps struct {
 	WorkerRunnerFactory          WorkerRunnerFactory
 	InventoryWorkerRunnerFactory InventoryWorkerRunnerFactory
 	RuntimeConfig                *dashboardruntime.RunnerRuntimeConfig
+	RuntimeConfigLoader          RuntimeConfigLoader
 	Sleeper                      func(time.Duration)
 	ManagedWorkflowRoot          string
 }

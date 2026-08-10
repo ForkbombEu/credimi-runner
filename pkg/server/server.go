@@ -33,6 +33,9 @@ func NewRunnerService(store *ProcessStore, instance utils.Instance) *runnerServi
 func NewRunnerServiceWithDeps(store *ProcessStore, instance utils.Instance, deps Deps) *runnerService {
 	deps.WithDefaults()
 	if deps.RuntimeConfig == nil {
+		deps.RuntimeConfigLoader = func() (dashboardruntime.RunnerRuntimeConfig, error) {
+			return dashboardruntime.RuntimeConfigFromEnvironment()
+		}
 		if config, err := dashboardruntime.RuntimeConfigFromEnvironment(); err == nil {
 			deps.RuntimeConfig = &config
 		}
@@ -55,8 +58,8 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	startDelay := startupWorkerDelay()
 	startAttempts := 0
 	runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")
-	if s.Deps.RuntimeConfig != nil {
-		runnerID = s.Deps.RuntimeConfig.Host["CREDIMI_RUNNER_ID"]
+	if config, err := s.currentRuntimeConfig(); err == nil {
+		runnerID = config.Host["CREDIMI_RUNNER_ID"]
 	}
 	runnerPublished, _ := strconv.ParseBool(utils.GetEnvironmentVariable("CREDIMI_RUNNER_PUBLISHED"))
 
@@ -252,8 +255,8 @@ func (s *runnerService) startWorkerIfNeeded(
 		observability.String("namespace", namespace),
 	)
 	run := s.Deps.WorkerRunnerFactory(namespace)
-	if s.Deps.RuntimeConfig != nil && s.Deps.InventoryWorkerRunnerFactory != nil {
-		run = s.Deps.InventoryWorkerRunnerFactory(namespace, workerInventory(*s.Deps.RuntimeConfig))
+	if config, err := s.currentRuntimeConfig(); err == nil && s.Deps.InventoryWorkerRunnerFactory != nil {
+		run = s.Deps.InventoryWorkerRunnerFactory(namespace, workerInventory(config))
 	}
 	proc := NewProcess(namespace, run)
 	s.Store.Add(proc)
@@ -276,6 +279,16 @@ func (s *runnerService) startWorkerIfNeeded(
 	span.AddEvent("worker.started", trace.WithAttributes(attrs...))
 
 	return startAttempts
+}
+
+func (s *runnerService) currentRuntimeConfig() (dashboardruntime.RunnerRuntimeConfig, error) {
+	if s.Deps.RuntimeConfigLoader != nil {
+		return s.Deps.RuntimeConfigLoader()
+	}
+	if s.Deps.RuntimeConfig != nil {
+		return *s.Deps.RuntimeConfig, nil
+	}
+	return dashboardruntime.RunnerRuntimeConfig{}, fmt.Errorf("runtime configuration is unavailable")
 }
 
 func startupWorkerDelay() time.Duration {

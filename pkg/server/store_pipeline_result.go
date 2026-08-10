@@ -48,7 +48,7 @@ func (s *runnerService) storePipelineResultLogic(payload storePipelineResultPayl
 		return nil, apiErr
 	}
 	artifactRoot := s.Deps.ManagedWorkflowRoot
-	if s.Deps.RuntimeConfig != nil {
+	if _, configErr := s.currentRuntimeConfig(); configErr == nil {
 		artifactRoot, err := deviceArtifactRoot(artifactRoot, payload.DeviceIdentifier, payload.RunIdentifier)
 		if err != nil {
 			return nil, badScreenshotPathError(err.Error())
