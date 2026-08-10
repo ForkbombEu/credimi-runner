@@ -89,6 +89,11 @@ var serverCmd = &cobra.Command{
 		http.DefaultClient = observability.NewHTTPClient(http.DefaultClient)
 
 		store := server.NewProcessStore()
+		if configDir := os.Getenv("CREDIMI_RUNNER_CONFIG_DIR"); configDir != "" {
+			if err := hydrateTypedRuntimeEnvironment(configDir); err != nil {
+				return err
+			}
+		}
 		instance := utils.LoadInstance()
 		srv := server.NewRunnerService(store, instance)
 		lifecycleCfg := server.LoadRunnerLifecycleConfig(instance)

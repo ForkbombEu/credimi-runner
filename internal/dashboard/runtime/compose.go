@@ -165,7 +165,10 @@ var hostKVMAvailable = func(goos string) bool {
 func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sharedRunnerRuntime, error) {
 	inventory, err := ParseRuntimeConfig(values)
 	if err != nil {
-		return sharedRunnerRuntime{}, err
+		if strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
+			return sharedRunnerRuntime{}, err
+		}
+		inventory = RunnerRuntimeConfig{}
 	}
 	spec := sharedRunnerRuntime{Image: defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), PullPolicy: defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), NetworkMode: "bridge", StateVolume: defaultIfEmpty(values["ANDROID_STATE_VOLUME"], "credimi-runner-state"), ToolCacheVolume: defaultIfEmpty(values["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"), SDKVolume: defaultIfEmpty(values["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"), ADBKeysPath: values["ANDROID_ADB_KEYS_PATH"]}
 	for _, device := range inventory.Devices {

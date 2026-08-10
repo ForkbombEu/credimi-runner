@@ -1633,15 +1633,11 @@
     const emulator = form.querySelector('[data-inventory-emulator]');
     const ios = form.querySelector('[data-inventory-ios]');
     const redroid = form.querySelector('[data-inventory-redroid]');
-    const image = form.querySelector('[data-inventory-image]');
     if (phone) phone.hidden = type !== 'android_phone';
     if (emulator) emulator.hidden = type !== 'android_emulator';
     if (ios) ios.hidden = type !== 'ios_simulator';
     if (redroid) redroid.hidden = type !== 'redroid';
-    if (image) image.hidden = !['android_phone', 'android_emulator', 'redroid'].includes(type);
     form.querySelectorAll('input[name="mode"]').forEach(input => { input.disabled = input.closest('[hidden]') !== null; });
-    const img = form.querySelector('[data-inventory-image-name]');
-    if (img && !img.value) img.value = type === 'android_emulator' ? TYPE_DEFAULTS.emulatorImage : TYPE_DEFAULTS.phoneImage;
     const mode = (form.querySelector('input[name="mode"]:not(:disabled)') || {}).value || 'usb';
     const usb = form.querySelector('[data-inventory-usb]');
     const wifi = form.querySelector('[data-inventory-wifi]');

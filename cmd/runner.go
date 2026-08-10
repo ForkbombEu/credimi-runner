@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	stdlog "log"
 	"net"
 	"os"
@@ -130,12 +131,6 @@ func runInternalRuntime(cmd *cobra.Command, args []string) error {
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
 	}
-	if err := configureInternalListeners(configDir); err != nil {
-		return err
-	}
-	if err := provisionInternalRuntime(cmd.Context(), configDir); err != nil {
-		return err
-	}
 	serverHost := host
 	if serverHost == "127.0.0.1" || serverHost == "" {
 		serverHost = "0.0.0.0"
@@ -154,6 +149,9 @@ func runInternalRuntime(cmd *cobra.Command, args []string) error {
 		go func() { errCh <- serverCmd.RunE(cmd, args) }()
 	}
 	if _, err := os.Stat(filepath.Join(configDir, "config.toml")); err == nil {
+		if err := prepareInternalRuntime(cmd.Context(), configDir); err != nil {
+			return err
+		}
 		startServer()
 	}
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -164,12 +162,50 @@ func runInternalRuntime(cmd *cobra.Command, args []string) error {
 			return err
 		case <-ticker.C:
 			if _, err := os.Stat(filepath.Join(configDir, "config.toml")); err == nil {
+				if !serverStarted {
+					if err := prepareInternalRuntime(cmd.Context(), configDir); err != nil {
+						return err
+					}
+				}
 				startServer()
 			}
 		case <-cmd.Context().Done():
 			return cmd.Context().Err()
 		}
 	}
+}
+
+func prepareInternalRuntime(ctx context.Context, configDir string) error {
+	if err := configureInternalListeners(configDir); err != nil {
+		return err
+	}
+	if err := hydrateTypedRuntimeEnvironment(configDir); err != nil {
+		return err
+	}
+	return provisionInternalRuntime(ctx, configDir)
+}
+
+// hydrateTypedRuntimeEnvironment is the compatibility boundary for existing
+// Credimi services that still read process-global configuration. TOML remains
+// authoritative; this snapshot contains only stable runner/device inventory
+// values and is never changed per activity or selected device.
+func hydrateTypedRuntimeEnvironment(configDir string) error {
+	store, err := dashboardruntime.LoadStore(configDir)
+	if err != nil {
+		return err
+	}
+	if !store.Exists() {
+		return nil
+	}
+	for key, value := range store.Snapshot() {
+		if value == "" {
+			continue
+		}
+		if err := os.Setenv(key, value); err != nil {
+			return fmt.Errorf("hydrate %s from typed configuration: %w", key, err)
+		}
+	}
+	return nil
 }
 
 func configureInternalListeners(configDir string) error {
@@ -206,7 +242,18 @@ func provisionInternalRuntimeAt(ctx context.Context, configDir, sdkRoot string) 
 		return err
 	}
 	if backend == runnerplacement.Container {
-		return androidtools.Ensure(ctx, sdkRoot)
+		needsEmulator := false
+		systemImage := ""
+		for _, device := range cfg.Devices {
+			if !device.Enabled || device.Type != runnerconfig.DeviceAndroidEmulator {
+				continue
+			}
+			needsEmulator = true
+			if device.AndroidEmulator != nil {
+				systemImage = device.AndroidEmulator.SystemImage
+			}
+		}
+		return androidtools.EnsureCapabilities(ctx, sdkRoot, needsEmulator, systemImage)
 	}
 	return nil
 }

@@ -26,6 +26,16 @@ func TestComposeUsesOneGlobalRunnerImageAndForegroundRuntime(t *testing.T) {
 	}
 }
 
+func TestComposeBootstrapsWithoutConfiguredInventory(t *testing.T) {
+	content, err := ComposeYAML(Values{"ANDROID_RUNNER_IMAGE": "credimi-runner:local", "ANDROID_PULL_POLICY": "never"}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "command:\n      - internal-runtime") || !strings.Contains(content, ":/etc/credimi-runner") {
+		t.Fatalf("first-run compose bootstrap is incomplete:\n%s", content)
+	}
+}
+
 func TestComposeEmulatorAndPhoneShareTheGlobalImage(t *testing.T) {
 	values := indexedComposeValues(Values{"ANDROID_RUNNER_IMAGE": "runner:shared", "ANDROID_PULL_POLICY": "never"})
 	values["CREDIMI_DEVICE_COUNT"] = "2"

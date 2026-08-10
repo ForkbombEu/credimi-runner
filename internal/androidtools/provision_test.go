@@ -23,6 +23,12 @@ func TestEnsureWithRunnerReusesCompleteSDK(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "emulator", "emulator"), nil, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(root, "platform-tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "platform-tools", "adb"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	called := false
 	if err := EnsureWithRunner(context.Background(), root, func(context.Context, string, ...string) error { called = true; return nil }); err != nil {
 		t.Fatal(err)
@@ -42,6 +48,65 @@ func TestEnsureWithRunnerInstallsMissingPackages(t *testing.T) {
 	}
 	if !strings.HasSuffix(command, "/sdkmanager") || !strings.Contains(strings.Join(args, " "), "platform-tools") || !strings.Contains(strings.Join(args, " "), "emulator") {
 		t.Fatalf("sdkmanager invocation = %q %#v", command, args)
+	}
+}
+
+func TestEnsureCapabilitiesPhysicalOnlySkipsEmulator(t *testing.T) {
+	installFakeSDKManager(t)
+	root := t.TempDir()
+	var args []string
+	if err := EnsureCapabilitiesWithRunner(context.Background(), root, false, "", func(_ context.Context, _ string, got ...string) error {
+		args = got
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "emulator") {
+		t.Fatalf("physical-only provisioning installed emulator: %q", joined)
+	}
+	if !strings.Contains(joined, "platform-tools") {
+		t.Fatalf("physical-only provisioning skipped platform-tools: %q", joined)
+	}
+}
+
+func TestEnsureCapabilitiesEmulatorInstallsSystemImageOnce(t *testing.T) {
+	installFakeSDKManager(t)
+	root := t.TempDir()
+	var calls [][]string
+	run := func(_ context.Context, _ string, args ...string) error {
+		calls = append(calls, args)
+		return nil
+	}
+	image := "system-images;android-35;google_apis;x86_64"
+	if err := EnsureCapabilitiesWithRunner(context.Background(), root, true, image, run); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || !strings.Contains(strings.Join(calls[0], " "), image) {
+		t.Fatalf("emulator provisioning calls = %#v", calls)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "emulator"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "emulator", "emulator"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "platform-tools"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "platform-tools", "adb"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	imagePath := filepath.Join(root, "system-images", "android-35", "google_apis", "x86_64")
+	if err := os.MkdirAll(imagePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls = nil
+	if err := EnsureCapabilitiesWithRunner(context.Background(), root, true, image, run); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("already-installed emulator provisioning repeated install: %#v", calls)
 	}
 }
 
