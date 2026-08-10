@@ -834,6 +834,39 @@ func (m *LifecycleManager) Restart(ctx context.Context) error {
 	return m.Start(ctx)
 }
 
+// TransitionBackend stops the currently managed topology before applying a
+// device-driven backend change. It intentionally introduces a controlled
+// boundary because a running container cannot become the native macOS
+// application (or vice versa) without replacing the application process.
+func (m *LifecycleManager) TransitionBackend(ctx context.Context, values Values) error {
+	if m == nil {
+		return errors.New("runtime lifecycle manager is unavailable")
+	}
+	m.mu.Lock()
+	oldValues := cloneValues(m.values)
+	oldPlan := BuildRuntimePlanForOS(m.configDir, oldValues, m.goos)
+	newPlan := BuildRuntimePlanForOS(m.configDir, values, m.goos)
+	running := m.status.RunnerRunning || m.status.ComposeRunning
+	m.mu.Unlock()
+	if oldPlan.Backend == newPlan.Backend {
+		m.Configure(values)
+		return nil
+	}
+	if running {
+		if err := m.Stop(ctx); err != nil {
+			return fmt.Errorf("stop old %s backend: %w", oldPlan.Backend, err)
+		}
+	}
+	m.Configure(values)
+	if !running {
+		return nil
+	}
+	if err := m.Start(ctx); err != nil {
+		return fmt.Errorf("start new %s backend: %w", newPlan.Backend, err)
+	}
+	return nil
+}
+
 // StartLogFollower attaches the owning dashboard process to managed runtime
 // logs without starting or recreating any service.
 func (m *LifecycleManager) StartLogFollower() {

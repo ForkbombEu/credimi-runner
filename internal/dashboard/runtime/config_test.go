@@ -148,6 +148,32 @@ func TestParseRuntimeConfigPreservesMultiDeviceInventory(t *testing.T) {
 	}
 }
 
+func TestRedroidReadinessSurvivesTypedTOMLRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	values := Values{
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "key", "TEMPORAL_ADDRESS": "temporal.example:7233", "RUNNER_HOST": "127.0.0.1", "RUNNER_PORT": "8050", "DASHBOARD_HOST": "127.0.0.1", "DASHBOARD_PORT": "8051", "CREDIMI_TEMP_DIR": t.TempDir(), "CREDIMI_DEVICE_COUNT": "1",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/redroid", "CREDIMI_DEVICE_1_NAME": "Redroid", "CREDIMI_DEVICE_1_TYPE": "redroid", "CREDIMI_DEVICE_1_MODE": "redroid", "CREDIMI_DEVICE_1_SERIAL": "redroid:5555",
+	}
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(values); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Snapshot()["CREDIMI_DEVICE_1_TYPE"] != "redroid" {
+		t.Fatalf("loaded type = %q", loaded.Snapshot()["CREDIMI_DEVICE_1_TYPE"])
+	}
+	if DeviceReadinessRequired(loaded.Snapshot(), "linux") {
+		t.Fatal("idle Redroid must not require startup ADB readiness")
+	}
+}
+
 func TestParseRuntimeConfigRejectsMalformedInventory(t *testing.T) {
 	cases := []struct {
 		name   string

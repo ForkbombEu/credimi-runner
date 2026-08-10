@@ -772,7 +772,9 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	if s.manager != nil {
 		status := s.manager.Status(r.Context())
 		runtimeRunning = status.RunnerRunning || status.ComposeRunning
-		s.manager.Configure(newValues)
+		if !diff.BackendTransition {
+			s.manager.Configure(newValues)
+		}
 	}
 	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := dashboardruntime.WriteComposeFile(s.composeDir, newValues); err != nil {
@@ -879,7 +881,9 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 	newSnapshot := s.cfg.Snapshot()
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
 	if s.manager != nil {
-		s.manager.Configure(dashboardruntime.Values(newSnapshot))
+		if !diff.BackendTransition {
+			s.manager.Configure(dashboardruntime.Values(newSnapshot))
+		}
 	}
 	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := WriteComposeFile(s.composeDir, newSnapshot); err != nil {
@@ -972,6 +976,24 @@ func (s *Server) applySavedConfig(diff dashboardruntime.ConfigDiff, values map[s
 	status := s.manager.Status(context.Background())
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
 	restartRequired := runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate))
+	if diff.BackendTransition {
+		err := s.runLifecycleOperation(controller.OperationRuntimeRestart, func(ctx context.Context) error {
+			transitioner, ok := s.manager.(interface {
+				TransitionBackend(context.Context, dashboardruntime.Values) error
+			})
+			if !ok {
+				return errors.New("runtime manager does not support backend transitions")
+			}
+			if err := transitioner.TransitionBackend(ctx, dashboardruntime.Values(values)); err != nil {
+				return err
+			}
+			if err := s.registerCurrent(ctx, values); err != nil {
+				return err
+			}
+			return nil
+		})
+		return applyOutcome{Restarted: true, CredimiUpdated: err == nil}, err
+	}
 	registerRequired := shouldRegisterAfterApply(diff, values, restartRequired)
 	if !restartRequired && !registerRequired {
 		return outcome, nil
