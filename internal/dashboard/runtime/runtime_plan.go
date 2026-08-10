@@ -42,8 +42,9 @@ const (
 )
 
 type ConfigDiff struct {
-	ChangedKeys []string
-	Classes     []ApplyClass
+	ChangedKeys       []string
+	Classes           []ApplyClass
+	BackendTransition bool
 }
 
 type FieldImpact struct {
@@ -82,8 +83,14 @@ var FieldImpacts = map[string]FieldImpact{
 }
 
 func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
+	return BuildRuntimePlanForOS(configDir, values, goruntime.GOOS)
+}
+
+// BuildRuntimePlanForOS derives placement from the typed inventory adapter
+// and the host platform.
+func BuildRuntimePlanForOS(configDir string, values Values, goos string) RuntimePlan {
 	serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
-	backend := defaultIfEmpty(values["CREDIMI_RUNNER_BACKEND"], DefaultContainerBackend)
+	backend := derivedBackend(values, goos)
 
 	canonicalDir, err := filepath.Abs(configDir)
 	if err != nil {
@@ -107,9 +114,9 @@ func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
 	case backend == DefaultHostBackend && serviceMode == "manual":
 		plan.ComposeServices = nil
 	case backend == DefaultHostBackend && serviceMode == "cloudflare-managed":
-		plan.ComposeServices = []string{"runner_host", "caddy", "tunnel_named"}
+		plan.ComposeServices = []string{"caddy", "tunnel_named"}
 	case backend == DefaultHostBackend:
-		plan.ComposeServices = []string{"runner_host", "caddy", "tunnel"}
+		plan.ComposeServices = []string{"caddy", "tunnel"}
 	case serviceMode == "manual":
 		plan.ComposeServices = []string{"runner"}
 	case serviceMode == "cloudflare-managed":
@@ -132,7 +139,7 @@ func composeProjectName(configDir string) string {
 func configFingerprint(configDir string, values Values) string {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(configDir))
-	for _, key := range []string{"CREDIMI_RUNNER_ID", "CREDIMI_RUNNER_BACKEND", "CREDIMI_SERVICE_MODE", "RUNNER_HOST", "RUNNER_PORT"} {
+	for _, key := range []string{"CREDIMI_RUNNER_ID", "CREDIMI_SERVICE_MODE", "RUNNER_HOST", "RUNNER_PORT"} {
 		_, _ = hash.Write([]byte(key + "=" + values[key] + "\n"))
 	}
 	return fmt.Sprintf("%016x", hash.Sum64())
@@ -149,8 +156,6 @@ func expectedServices(plan RuntimePlan) []PlannedService {
 		switch service {
 		case "runner":
 			services = append(services, PlannedService{ID: "runner", Name: "runner", Role: "credimi-runner serve", Critical: true, Kind: "compose"})
-		case "runner_host":
-			services = append(services, PlannedService{ID: "runner_host", Name: "runner_host", Role: "host runner adapter", Critical: true, Kind: "compose"})
 		case "caddy":
 			services = append(services, PlannedService{ID: "caddy", Name: "caddy", Role: "reverse proxy", Critical: plan.ServiceMode != "manual", Kind: "compose"})
 		case "tunnel":
@@ -176,11 +181,28 @@ func RunnerAPIReachableFromHost(values Values, goos string) bool {
 	if err != nil {
 		return false
 	}
-	plan := BuildRuntimePlan("", normalized)
+	plan := BuildRuntimePlanForOS("", normalized, goos)
 	if plan.Backend == DefaultHostBackend {
 		return true
 	}
 	return plan.Backend == DefaultContainerBackend
+}
+
+func derivedBackend(values Values, goos string) string {
+	// This only tolerates old in-memory test/migration values. The typed TOML
+	// adapter never emits this key; configured placement is always inventory-
+	// derived.
+	if compatibility := strings.TrimSpace(values["CREDIMI_RUNNER_BACKEND"]); compatibility == DefaultHostBackend || compatibility == DefaultContainerBackend {
+		return compatibility
+	}
+	backend, err := legacyBackend(values, goos)
+	if err != nil {
+		return DefaultContainerBackend
+	}
+	if string(backend) == DefaultHostBackend {
+		return DefaultHostBackend
+	}
+	return DefaultContainerBackend
 }
 
 func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool {
@@ -209,7 +231,7 @@ func DeviceReadinessRequired(values Values, goos string) bool {
 	}
 	if inventory, err := ParseRuntimeConfig(normalized); err == nil {
 		for _, device := range inventory.Devices {
-			if device.Enabled && device.Mode != "no_device" {
+			if device.Enabled && device.Type != "redroid" && device.Mode != "no_device" {
 				return true
 			}
 		}
@@ -219,8 +241,21 @@ func DeviceReadinessRequired(values Values, goos string) bool {
 }
 
 func DiffValues(oldValues, newValues Values) ConfigDiff {
+	return DiffValuesForOS(oldValues, newValues, goruntime.GOOS)
+}
+
+// DiffValuesForOS classifies persistent configuration changes and separately
+// records when the device inventory moves the complete application between
+// container and native backends.
+func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 	var diff ConfigDiff
 	classSet := map[ApplyClass]struct{}{}
+	oldBackend, oldErr := backendFromValues(oldValues, goos)
+	newBackend, newErr := backendFromValues(newValues, goos)
+	if oldErr == nil && newErr == nil && oldBackend != newBackend {
+		diff.BackendTransition = true
+		classSet[ApplyRestartRequired] = struct{}{}
+	}
 	for _, key := range SortedKnownKeys() {
 		if oldValues[key] == newValues[key] {
 			continue
@@ -277,4 +312,12 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 		}
 	}
 	return diff
+}
+
+func backendFromValues(values Values, goos string) (string, error) {
+	normalized, err := NormalizeValues(values, goos)
+	if err != nil {
+		return "", err
+	}
+	return derivedBackend(normalized, goos), nil
 }

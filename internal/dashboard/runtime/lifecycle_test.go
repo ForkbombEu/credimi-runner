@@ -120,10 +120,10 @@ func TestLifecycleManagerStartStop(t *testing.T) {
 	if len(runner.runs) != 5 || runner.runs[0].Name != "docker" || !strings.Contains(strings.Join(runner.runs[0].Args, " "), "rm -f -s runner tunnel_named") {
 		t.Fatalf("stale cleanup runs = %v", runner.runs)
 	}
-	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "pull runner_host caddy tunnel") {
+	if runner.runs[1].Name != "docker" || !strings.Contains(strings.Join(runner.runs[1].Args, " "), "pull caddy tunnel") {
 		t.Fatalf("pull run = %v", runner.runs)
 	}
-	if runner.runs[2].Name != "docker" || !strings.Contains(strings.Join(runner.runs[2].Args, " "), "up -d --pull never runner_host caddy tunnel") {
+	if runner.runs[2].Name != "docker" || !strings.Contains(strings.Join(runner.runs[2].Args, " "), "up -d --pull never caddy tunnel") {
 		t.Fatalf("runs = %v", runner.runs)
 	}
 	if status := manager.Status(context.Background()); !status.LastStartedAt.Equal(fakeTunnelStartedAt) {
@@ -687,10 +687,10 @@ func TestExecRunnerRunStreamsProgress(t *testing.T) {
 
 func TestStaleComposeServices(t *testing.T) {
 	got := strings.Join(staleComposeServices([]string{"runner", "caddy", "tunnel"}), ",")
-	if got != "runner_host,tunnel_named" {
+	if got != "tunnel_named" {
 		t.Fatalf("staleComposeServices = %q", got)
 	}
-	if got := staleComposeServices([]string{"runner", "runner_host", "caddy", "tunnel", "tunnel_named"}); len(got) != 0 {
+	if got := staleComposeServices([]string{"runner", "caddy", "tunnel", "tunnel_named"}); len(got) != 0 {
 		t.Fatalf("staleComposeServices all active = %#v", got)
 	}
 }

@@ -41,6 +41,20 @@ func TestComposeEmulatorAndPhoneShareTheGlobalImage(t *testing.T) {
 	}
 }
 
+func TestPhysicalOnlyRunnerMapsStableKVMCapability(t *testing.T) {
+	values := indexedComposeValues(Values{"ANDROID_RUNNER_IMAGE": "runner:shared", "ANDROID_PULL_POLICY": "never"})
+	previous := hostKVMAvailable
+	hostKVMAvailable = func(string) bool { return true }
+	t.Cleanup(func() { hostKVMAvailable = previous })
+	content, err := ComposeYAML(values, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "/dev/kvm:/dev/kvm") {
+		t.Fatalf("stable KVM capability was not mapped for a physical-only runner:\n%s", content)
+	}
+}
+
 func TestComposeUsesPersistentAndroidToolingAndConfiguredADBKeys(t *testing.T) {
 	values := indexedComposeValues(Values{
 		"ANDROID_RUNNER_IMAGE":      "runner:shared",
@@ -96,7 +110,7 @@ func TestComposeServicesFollowBackendSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan := BuildRuntimePlan(t.TempDir(), values)
+	plan := BuildRuntimePlanForOS(t.TempDir(), values, "darwin")
 	if plan.Backend != DefaultHostBackend || len(plan.ComposeServices) != 0 {
 		t.Fatalf("native manual plan = %#v", plan)
 	}

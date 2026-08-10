@@ -45,7 +45,7 @@ func TestNormalizeRunnerIdentityKeepsExplicitValues(t *testing.T) {
 
 func TestNormalizeHelperFunctions(t *testing.T) {
 	values, err := NormalizeValues(Values{}, "darwin")
-	if err != nil || values["CREDIMI_RUNNER_BACKEND"] != DefaultContainerBackend {
+	if err != nil || values["CREDIMI_RUNNER_BACKEND"] != "" {
 		t.Fatalf("default backend = %#v, %v", values, err)
 	}
 	if !defaultYesNoChoice("yes", false) || defaultYesNoChoice("no", true) {

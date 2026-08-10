@@ -178,6 +178,7 @@ type LifecycleManager struct {
 	mu        sync.Mutex
 	binary    string
 	configDir string
+	goos      string
 	values    Values
 	runner    Runner
 	cmd       *exec.Cmd
@@ -189,6 +190,10 @@ type LifecycleManager struct {
 }
 
 func NewLifecycleManager(binary, configDir string, values Values, runner Runner) *LifecycleManager {
+	return NewLifecycleManagerForOS(binary, configDir, values, runner, runtime.GOOS)
+}
+
+func NewLifecycleManagerForOS(binary, configDir string, values Values, runner Runner, goos string) *LifecycleManager {
 	if runner == nil {
 		runner = ExecRunner{}
 	}
@@ -199,6 +204,7 @@ func NewLifecycleManager(binary, configDir string, values Values, runner Runner)
 	return &LifecycleManager{
 		binary:    binary,
 		configDir: configDir,
+		goos:      goos,
 		values:    cloneValues(values),
 		runner:    runner,
 		lifecycle: lifecycle,
@@ -247,7 +253,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	plan := BuildRuntimePlan(m.configDir, m.values)
+	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
 	m.emitLifecycleLocked(lifecyclelog.Event{
 		Level: lifecyclelog.LevelInfo, Event: "operation.started",
 		Message: "runtime start requested", Component: "runtime", Phase: "starting",
@@ -303,7 +309,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 
 	if len(plan.ComposeServices) > 0 {
 		emitProgress(progress, "Writing docker-compose.yaml.")
-		if err := WriteComposeFile(m.configDir, m.values); err != nil {
+		if err := WriteComposeFileForOS(m.configDir, m.values, m.goos); err != nil {
 			m.status.LastError = err.Error()
 			return err
 		}
@@ -312,7 +318,7 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 			m.status.LastError = err.Error()
 			return err
 		}
-		spec, specErr := sharedRunnerSpec(m.values, runtime.GOOS)
+		spec, specErr := sharedRunnerSpec(m.values, m.goos)
 		if specErr != nil && containsService(plan.ComposeServices, "runner") {
 			m.status.LastError = specErr.Error()
 			return specErr
@@ -420,7 +426,7 @@ func staleComposeServices(active []string) []string {
 		activeSet[service] = struct{}{}
 	}
 	var stale []string
-	for _, service := range []string{"runner", "runner_host", "caddy", "tunnel", "tunnel_named"} {
+	for _, service := range []string{"runner", "caddy", "tunnel", "tunnel_named"} {
 		if _, ok := activeSet[service]; !ok {
 			stale = append(stale, service)
 		}
@@ -432,7 +438,7 @@ func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	plan := BuildRuntimePlan(m.configDir, m.values)
+	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
 	m.emitLifecycleLocked(lifecyclelog.Event{
 		Level: lifecyclelog.LevelInfo, Event: "operation.started",
 		Message: "runtime stop requested", Component: "runtime", Phase: "stopping",
@@ -833,7 +839,7 @@ func (m *LifecycleManager) Restart(ctx context.Context) error {
 func (m *LifecycleManager) StartLogFollower() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.startComposeLogFollowerLocked(BuildRuntimePlan(m.configDir, m.values))
+	m.startComposeLogFollowerLocked(BuildRuntimePlanForOS(m.configDir, m.values, m.goos))
 }
 
 func (m *LifecycleManager) startComposeLogFollowerLocked(plan RuntimePlan) {
@@ -905,7 +911,7 @@ func (m *LifecycleManager) UpdateImage(ctx context.Context) error {
 func (m *LifecycleManager) UpgradeRunnerImage(ctx context.Context, progress func(string)) error {
 	m.mu.Lock()
 	images := configuredRuntimeImages(m.values)
-	plan := BuildRuntimePlan(m.configDir, m.values)
+	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
 	m.mu.Unlock()
 	if len(images) == 0 {
 		return fmt.Errorf("the configured shared runner image is local-only or no container runtime is configured")
@@ -1098,12 +1104,16 @@ type observedRuntime struct {
 }
 
 func observeRuntime(ctx context.Context, runner Runner, configDir string, values Values) observedRuntime {
+	return observeRuntimeForOS(ctx, runner, configDir, values, runtime.GOOS)
+}
+
+func observeRuntimeForOS(ctx context.Context, runner Runner, configDir string, values Values, goos string) observedRuntime {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	plan := BuildRuntimePlan(configDir, values)
+	plan := BuildRuntimePlanForOS(configDir, values, goos)
 	result := observedRuntime{deviceReady: configuredDeviceReady(ctx, values)}
 	if plan.Backend == DefaultHostBackend {
 		result.runnerRunning = runnerAddressReachable(values, 500*time.Millisecond)
@@ -1124,7 +1134,7 @@ func observeRuntime(ctx context.Context, runner Runner, configDir string, values
 	for _, row := range rows {
 		if strings.EqualFold(row.State, "running") {
 			result.composeRunning = true
-			if row.Service == "runner" || row.Service == "runner_host" {
+			if row.Service == "runner" {
 				result.runnerRunning = true
 			}
 		}
@@ -1165,7 +1175,7 @@ func (m *LifecycleManager) TunnelLogs(ctx context.Context, tail int) ([]LogLine,
 func (m *LifecycleManager) logs(ctx context.Context, tail int, services []string) ([]LogLine, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	plan := BuildRuntimePlan(m.configDir, m.values)
+	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
 	args := composeLogArgs(plan, tail, m.status.LastStartedAt)
 	args = append(args, services...)
 	output, err := m.runner.Run(ctx, CommandSpec{

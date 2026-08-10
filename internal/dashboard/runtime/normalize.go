@@ -72,11 +72,9 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 		normalized[key] = strings.TrimSpace(value)
 	}
 
-	backend, err := legacyBackend(normalized, goos)
-	if err != nil {
+	if _, err := legacyBackend(normalized, goos); err != nil {
 		return nil, err
 	}
-	normalized["CREDIMI_RUNNER_BACKEND"] = string(backend)
 	normalized["CREDIMI_SERVICE_MODE"] = normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"])
 	normalizeRunnerIdentity(normalized)
 
@@ -95,11 +93,9 @@ func normalizeIndexedValues(values Values, goos string) (Values, error) {
 	if _, err := ParseRuntimeConfig(normalized); err != nil {
 		return nil, err
 	}
-	backend, err := legacyBackend(normalized, goos)
-	if err != nil {
+	if _, err := legacyBackend(normalized, goos); err != nil {
 		return nil, err
 	}
-	normalized["CREDIMI_RUNNER_BACKEND"] = string(backend)
 	return normalized, nil
 }
 

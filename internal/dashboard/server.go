@@ -764,7 +764,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
-	diff := dashboardruntime.DiffValues(oldValues, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
 	runtimeRunning := false
 	if s.runtimeOwned {
 		runtimeRunning = true
@@ -877,7 +877,7 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 		return
 	}
 	newSnapshot := s.cfg.Snapshot()
-	diff := dashboardruntime.DiffValues(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot))
+	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
 	if s.manager != nil {
 		s.manager.Configure(dashboardruntime.Values(newSnapshot))
 	}
@@ -936,7 +936,7 @@ func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	diff := dashboardruntime.DiffValues(dashboardruntime.Values(current), normalized)
+	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(current), normalized, runtimeGOOS())
 	confirmRequired := diffRequiresRuntimeRestart(diff)
 	writeJSON(w, map[string]any{
 		"classes":          diff.Classes,
@@ -2080,6 +2080,9 @@ func (s *Server) registerCurrent(ctx context.Context, values map[string]string) 
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {
+	if diff.BackendTransition {
+		return "Save these changes? The configured device inventory requires a controlled runner backend transition and the runner record in Credimi will be updated."
+	}
 	switch {
 	case hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired):
 		return "Save these changes? Runner services must restart and the runner record in Credimi will be updated."

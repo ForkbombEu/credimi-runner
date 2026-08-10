@@ -9,12 +9,16 @@ import (
 )
 
 func WriteComposeFile(dir string, values Values) error {
+	return WriteComposeFileForOS(dir, values, runtime.GOOS)
+}
+
+func WriteComposeFileForOS(dir string, values Values, goos string) error {
 	values = cloneValues(values)
-	plan := BuildRuntimePlan(dir, values)
+	plan := BuildRuntimePlanForOS(dir, values, goos)
 	values["CREDIMI_COMPOSE_PROJECT"] = plan.ComposeProject
 	values["CREDIMI_CONFIG_FINGERPRINT"] = plan.ConfigFingerprint
 	values["CREDIMI_CONFIG_DIR"] = dir
-	content, err := ComposeYAML(values, runtime.GOOS)
+	content, err := ComposeYAML(values, goos)
 	if err != nil {
 		return err
 	}
@@ -33,11 +37,12 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	plan := BuildRuntimePlanForOS("", normalized, goos)
 	spec, err := sharedRunnerSpec(normalized, goos)
 	if err != nil {
 		// Host runners do not use the generated runner service; they retain a
 		// Compose file only for Caddy/tunnel services.
-		if BuildRuntimePlan("", normalized).Backend != DefaultHostBackend {
+		if plan.Backend != DefaultHostBackend {
 			return "", err
 		}
 		spec = sharedRunnerRuntime{Image: normalized["ANDROID_RUNNER_IMAGE"], PullPolicy: normalized["ANDROID_PULL_POLICY"], NetworkMode: "bridge"}
@@ -48,11 +53,12 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	// daemon. Caddy must use that namespace too: reaching the host through
 	// host.docker.internal resolves to Docker's bridge gateway, which is not a
 	// reliable route back to a host-networked runner on every Docker setup.
-	caddyOnHost := goos == "linux" && (spec.NetworkMode == "host" || BuildRuntimePlan("", normalized).Backend == DefaultHostBackend)
+	caddyOnHost := spec.NetworkMode == "host" || plan.Backend == DefaultHostBackend
 	builder.WriteString("services:\n")
-	writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost, normalized["CREDIMI_CONFIG_DIR"], normalized["DASHBOARD_PORT"])
-	writeRunnerHostService(&builder, caddyOnHost)
-	writeCaddyService(&builder, caddyOnHost)
+	if plan.Backend != DefaultHostBackend {
+		writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost, normalized["CREDIMI_CONFIG_DIR"], normalized["DASHBOARD_PORT"])
+	}
+	writeCaddyService(&builder, caddyOnHost, plan.Backend == DefaultHostBackend)
 	writeTunnelService(&builder, caddyOnHost)
 	writeNamedTunnelService(&builder)
 	builder.WriteString(`
@@ -145,6 +151,18 @@ func SharedRunnerImage(values Values, goos string) (image, pullPolicy string, er
 }
 
 func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
+	return sharedRunnerSpecWithKVM(values, goos, hostKVMAvailable(goos))
+}
+
+var hostKVMAvailable = func(goos string) bool {
+	if goos != "linux" {
+		return false
+	}
+	_, err := os.Stat("/dev/kvm")
+	return err == nil
+}
+
+func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sharedRunnerRuntime, error) {
 	inventory, err := ParseRuntimeConfig(values)
 	if err != nil {
 		return sharedRunnerRuntime{}, err
@@ -184,10 +202,7 @@ func sharedRunnerSpec(values Values, goos string) (sharedRunnerRuntime, error) {
 	if goos == "linux" && spec.HasUSB {
 		spec.NetworkMode = "host"
 	}
-	if goos == "linux" {
-		_, err := os.Stat("/dev/kvm")
-		spec.HasKVM = err == nil
-	}
+	spec.HasKVM = goos == "linux" && kvmAvailable
 	return spec, nil
 }
 
@@ -199,33 +214,32 @@ func composePath(path string) string {
 	return path
 }
 
-func writeRunnerHostService(builder *strings.Builder, caddyOnHost bool) {
-	upstreamHost := "host.docker.internal"
-	if caddyOnHost {
-		upstreamHost = "127.0.0.1"
-	}
-	builder.WriteString(`
-  runner_host:
-    image: alpine:3.21
+func writeCaddyService(builder *strings.Builder, caddyOnHost, native bool) {
+	if native {
+		builder.WriteString(`
+  caddy:
+    image: caddy:2.9-alpine
     restart: "no"
     command:
-      - /bin/sh
-      - -c
-      - "trap : TERM INT; while true; do sleep 3600; done"
+      - caddy
+      - reverse-proxy
+      - --from
+      - "${RUNNER_CADDY_SITE:-:80}"
+      - --to
+      - "host.docker.internal:${RUNNER_PORT:-8050}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    labels:
-      caddy: "${RUNNER_CADDY_SITE:-:80}"
-      caddy.reverse_proxy: "` + upstreamHost + `:${RUNNER_PORT:-` + DefaultRunnerPort + `}"
-      io.credimi.runner.managed: "true"
-      io.credimi.runner.project: "${CREDIMI_COMPOSE_PROJECT:-credimi-runner}"
-      io.credimi.runner.config-fingerprint: "${CREDIMI_CONFIG_FINGERPRINT:-unknown}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/config/"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
     networks:
       - ingress
 `)
-}
-
-func writeCaddyService(builder *strings.Builder, caddyOnHost bool) {
+		return
+	}
 	builder.WriteString(`
   caddy:
     image: lucaslorentz/caddy-docker-proxy:2.9-alpine

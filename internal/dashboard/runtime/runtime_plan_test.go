@@ -22,7 +22,7 @@ func TestBuildRuntimePlanExpectedServices(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := BuildRuntimePlan("/tmp/credimi", normalized)
+			plan := BuildRuntimePlanForOS("/tmp/credimi", normalized, goos)
 			var got []string
 			for _, service := range plan.ExpectedServices {
 				got = append(got, service.ID)
@@ -71,6 +71,50 @@ func TestRuntimePlanReadinessUsesIndexedDevices(t *testing.T) {
 	host["CREDIMI_RUNNER_BACKEND"] = "host"
 	if !RunnerAPIReachableFromHost(host, "darwin") || !RunnerReadinessRequiredBeforeRegistration(host, "darwin") {
 		t.Fatal("host runner should be reachable before registration")
+	}
+}
+
+func TestBackendSelectionFollowsInventoryAndHostPlatform(t *testing.T) {
+	cases := []struct {
+		name, goos, deviceType, want string
+	}{
+		{"linux android", "linux", "android_phone", DefaultContainerBackend},
+		{"mac android", "darwin", "android_phone", DefaultContainerBackend},
+		{"mac ios", "darwin", "ios_simulator", DefaultHostBackend},
+		{"mac mixed", "darwin", "android_phone", DefaultHostBackend},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": tc.deviceType})
+			if tc.name == "mac mixed" {
+				values["CREDIMI_DEVICE_COUNT"] = "2"
+				values["CREDIMI_DEVICE_2_ID"] = "acme/runner/ios"
+				values["CREDIMI_DEVICE_2_TYPE"] = "ios_simulator"
+			}
+			normalized, err := NormalizeValues(values, tc.goos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := BuildRuntimePlanForOS("", normalized, tc.goos).Backend; got != tc.want {
+				t.Fatalf("backend=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBackendTransitionIsExplicitlyDetected(t *testing.T) {
+	oldValues := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "android_phone"})
+	newValues := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "ios_simulator"})
+	diff := DiffValuesForOS(oldValues, newValues, "darwin")
+	if !diff.BackendTransition || !containsApplyClass(diff.Classes, ApplyRestartRequired) {
+		t.Fatalf("backend transition diff = %#v", diff)
+	}
+}
+
+func TestBackendRejectsIOSOnNonMacOS(t *testing.T) {
+	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "ios_simulator"})
+	if _, err := NormalizeValues(values, "linux"); err == nil {
+		t.Fatal("Linux iOS inventory must be rejected")
 	}
 }
 
