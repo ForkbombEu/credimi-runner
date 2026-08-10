@@ -147,20 +147,21 @@ func TestComposeServicesFollowBackendSelection(t *testing.T) {
 
 func TestRuntimePlanServiceModesRemainExplicit(t *testing.T) {
 	cases := []struct {
-		name, mode    string
-		want, notWant string
+		name, mode   string
+		want         string
+		serviceCount int
 	}{
-		{"container manual", "manual", "runner", "runner_host"},
-		{"container quick tunnel", "auto", "runner", "runner_host"},
-		{"container named tunnel", "cloudflare-managed", "runner", "runner_host"},
+		{"container manual", "manual", "runner", 1},
+		{"container quick tunnel", "auto", "runner", 3},
+		{"container named tunnel", "cloudflare-managed", "runner", 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			values := Values{"CREDIMI_SERVICE_MODE": tc.mode, "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/device"}
 			plan := BuildRuntimePlan(t.TempDir(), values)
 			joined := strings.Join(plan.ComposeServices, ",")
-			if !strings.Contains(joined, tc.want) || strings.Contains(joined, tc.notWant) {
-				t.Fatalf("plan services=%v, want %q and not %q", plan.ComposeServices, tc.want, tc.notWant)
+			if !strings.Contains(joined, tc.want) || len(plan.ComposeServices) != tc.serviceCount {
+				t.Fatalf("plan services=%v, want %q and %d services", plan.ComposeServices, tc.want, tc.serviceCount)
 			}
 		})
 	}
