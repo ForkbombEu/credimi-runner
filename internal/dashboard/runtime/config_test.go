@@ -99,6 +99,33 @@ func TestRuntimeConfigFromEnvironmentUsesTypedConfigDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadStorePreservesEmulatorActivityEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testTOMLConfig(dir)
+	cfg.Devices = []config.DeviceConfig{{
+		ID: "acme/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true,
+		AndroidEmulator: &config.AndroidEmulatorConfig{
+			AVDName: "credimi", BaseName: "credimi-base", GoldenSource: "/avd-golden/credimi-base",
+			ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", APILevel: 35, MemoryMB: 2048, Cores: 2,
+		},
+	}}
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory, err := store.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	device := inventory.Devices[0]
+	if device.Values["BASE_NAME"] != "credimi-base" || device.Values["GOLDEN_PATH"] != "/avd-golden/credimi-base" {
+		t.Fatalf("emulator activity environment = %#v", device.Values)
+	}
+}
+
 func TestDefaultConfigDirHonorsOverride(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "/tmp/runner-config")
 	if got := DefaultConfigDir(); got != "/tmp/runner-config" {

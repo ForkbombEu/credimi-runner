@@ -130,6 +130,8 @@ func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
 			values[prefix+"MODE"], values[prefix+"SERIAL"] = device.AndroidPhysical.Transport, device.AndroidPhysical.Serial
 		case runnerconfig.DeviceAndroidEmulator:
 			values[prefix+"MODE"], values[prefix+"AVD_NAME"] = "emulator", device.AndroidEmulator.AVDName
+			values[prefix+"BASE_NAME"] = device.AndroidEmulator.BaseName
+			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
 		case runnerconfig.DeviceRedroid:
 			values[prefix+"MODE"], values[prefix+"SERIAL"] = "redroid", device.Redroid.Serial
 		case runnerconfig.DeviceIOSSimulator:
