@@ -1179,11 +1179,11 @@ func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/devices" {
 		t.Fatalf("save device = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 	}
-	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := store.RuntimeConfig()
+	config, err := updatedStore.RuntimeConfig()
 	if err != nil || len(config.Devices) != 1 || config.Devices[0].ID != "acme/runner/pixel" || config.Devices[0].Serial != "usb-1" {
 		t.Fatalf("saved config = %#v, %v", config, err)
 	}
@@ -2432,11 +2432,11 @@ func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
 	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/devices" {
 		t.Fatalf("save device response = %d location=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
 	}
-	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	config, err := store.RuntimeConfig()
+	config, err := updatedStore.RuntimeConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2488,6 +2488,56 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	s.saveDevicesConfig(recorder, request)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("missing update = %d", recorder.Code)
+	}
+}
+
+func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device" {
+			return nil, fmt.Errorf("unexpected Credimi path %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	s := newTestServer(t)
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}, Devices: []dashboardruntime.DeviceRuntimeConfig{{
+		ID: "acme/runner/first-phone", Name: "First phone", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	form := url.Values{
+		"CREDIMI_DEVICE_CONFLICT_ACTION": {"create"},
+		"CREDIMI_DEVICE_ID":              {"acme/runner/second-phone"},
+		"name":                           {"Second phone"},
+		"type":                           {"android_phone"},
+		"mode":                           {"usb"},
+		"serial":                         {"usb-2"},
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("previewed device creation = %d %s", recorder.Code, recorder.Body.String())
+	}
+	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := updatedStore.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Devices) != 2 || config.Devices[1].ID != "acme/runner/second-phone" {
+		t.Fatalf("created device inventory = %#v", config.Devices)
 	}
 }
 
@@ -2800,6 +2850,53 @@ func TestDashboardRuntimeStartUsesControllerLifecycleAndRefreshesAutoURL(t *test
 	}
 	if payload.IP != "https://replacement-url.trycloudflare.com" {
 		t.Fatalf("restart registered URL = %q", payload.IP)
+	}
+}
+
+func TestRuntimeOwnedStartRegistersCurrentQuickTunnelURL(t *testing.T) {
+	s := newTestServer(t)
+	configDir := filepath.Dir(s.cfg.Path())
+	s.runtimeOwned = true
+	s.manager = nil
+	s.runnerReady = func(context.Context, map[string]string) error { return nil }
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+	if err := launcher.WriteQuickTunnelURL(configDir, "https://restarted.trycloudflare.com"); err != nil {
+		t.Fatal(err)
+	}
+	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), func(context.Context) error { return nil }, nil, launcher.Operations{RuntimeStart: func(context.Context) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = filepath.Join(configDir, "control.sock")
+
+	var registration dashboardruntime.RegisterRunnerRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile-runner" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&registration); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	s.cfg.values["CREDIMI_URL"] = api.URL
+
+	snapshot, err := s.submitRuntimeAction("start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.operations.Wait(context.Background(), snapshot.ID); err != nil {
+		t.Fatal(err)
+	}
+	if registration.IP != "https://restarted.trycloudflare.com" {
+		t.Fatalf("restarted runner registration URL = %q", registration.IP)
 	}
 }
 

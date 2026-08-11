@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +35,9 @@ func NewRunnerService(store *ProcessStore, instance utils.Instance) *runnerServi
 
 func NewRunnerServiceWithDeps(store *ProcessStore, instance utils.Instance, deps Deps) *runnerService {
 	deps.WithDefaults()
-	if deps.RuntimeConfig == nil {
+	// Typed inventory belongs to the managed runner. Do not implicitly load a
+	// developer's ~/.config file for a direct server or test process.
+	if deps.RuntimeConfig == nil && strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")) != "" {
 		deps.RuntimeConfigLoader = func() (dashboardruntime.RunnerRuntimeConfig, error) {
 			return dashboardruntime.RuntimeConfigFromEnvironment()
 		}
@@ -230,14 +234,22 @@ func (s *runnerService) startWorkerIfNeeded(
 		span.AddEvent("worker.start_skipped", trace.WithAttributes(append(attrs, attribute.String("reason", "namespace_empty"))...))
 		return startAttempts
 	}
-	if proc, exists := s.Store.Get(namespace); exists && proc.Running {
-		span.AddEvent("worker.already_running", trace.WithAttributes(attrs...))
-		log.Printf("Worker already running for namespace %s", namespace)
-		observability.Info(ctx, "credimi-runner.startup", "worker already running for namespace",
-			observability.String("organization.name", orgName),
-			observability.String("namespace", namespace),
-		)
-		return startAttempts
+	if proc, exists := s.Store.Get(namespace); exists {
+		if proc.IsRunning() {
+			span.AddEvent("worker.already_running", trace.WithAttributes(attrs...))
+			log.Printf("Worker already running for namespace %s", namespace)
+			observability.Info(ctx, "credimi-runner.startup", "worker already running for namespace",
+				observability.String("organization.name", orgName),
+				observability.String("namespace", namespace),
+			)
+			return startAttempts
+		}
+		if err := proc.Start(); err != nil {
+			span.RecordError(err)
+			log.Printf("Failed to restart worker for %s: %v", namespace, err)
+			return startAttempts
+		}
+		return startAttempts + 1
 	}
 	if startDelay > 0 && startAttempts > 0 {
 		s.Deps.Sleeper(startDelay)

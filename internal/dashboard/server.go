@@ -263,7 +263,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
-	if owned && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" && fileExists(filepath.Join(composeDir, "setup-pending")) {
+	if owned && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
 		srv.startExistingRuntimeJob(cfg.Snapshot())
 	} else if !owned && bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
 		if !srv.bootstrapConfiguredRuntime() {
@@ -829,6 +829,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	name := formValue("name", "CREDIMI_DEVICE_NAME")
 	deviceID := strings.TrimPrefix(formValue("device_id", "CREDIMI_DEVICE_ID"), "/")
+	conflictAction := formValue("device_conflict_action", "CREDIMI_DEVICE_CONFLICT_ACTION")
 	device := dashboardruntime.DeviceRuntimeConfig{
 		ID:          deviceID,
 		Name:        name,
@@ -871,7 +872,9 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if created {
-		if deviceID != "" {
+		// Previewing an available canonical ID is part of normal creation. It
+		// is only an edit when the form explicitly selected an existing record.
+		if deviceID != "" && conflictAction != "create" {
 			http.Error(w, "device not found", http.StatusNotFound)
 			return
 		}
@@ -2016,7 +2019,16 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, progress func(controller.Progress)) error {
 		if s.manager == nil {
 			if s.launcherSocket != "" {
-				return launcher.RequestRuntimeAction(ctx, s.launcherSocket, action)
+				if err := launcher.RequestRuntimeAction(ctx, s.launcherSocket, action); err != nil {
+					return err
+				}
+				if action == "start" || action == "restart" {
+					// The outer launcher may have created a fresh quick-tunnel URL
+					// while restoring the execution runtime. Re-register only after
+					// it has confirmed the runtime transition.
+					return s.runtimeLifecycle(values).RegisterRunning(ctx)
+				}
+				return nil
 			}
 			return writeNativeRuntimeControl(s.runtimeControlFile, action)
 		}

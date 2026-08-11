@@ -105,6 +105,7 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	// Configuration is TOML and is mounted by the unified runner container;
 	// Compose must not treat it as a dotenv file.
 	fmt.Fprintf(builder, "    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n      CREDIMI_RUNNER_LAUNCHER_SOCKET: /etc/credimi-runner/control.sock\n      CREDIMI_BOOTSTRAP_IMAGE: \"${CREDIMI_BOOTSTRAP_IMAGE:-}\"\n      CREDIMI_BOOTSTRAP_PULL_POLICY: \"${CREDIMI_BOOTSTRAP_PULL_POLICY:-}\"\n      CREDIMI_CONFIG_OWNER_UID: \"${CREDIMI_CONFIG_OWNER_UID:-}\"\n      CREDIMI_CONFIG_OWNER_GID: \"${CREDIMI_CONFIG_OWNER_GID:-}\"\n      CREDIMI_HOST_HOME: \"${CREDIMI_HOST_HOME:-}\"\n      CREDIMI_CONTAINER_ANDROID_DIR: \"${CREDIMI_CONTAINER_ANDROID_DIR:-/root/.android}\"\n      CREDIMI_CONTAINER_AVD_HOME: \"${CREDIMI_CONTAINER_AVD_HOME:-/root/.android/avd}\"\n      CREDIMI_CONTAINER_GOLDEN_ROOT: \"${CREDIMI_CONTAINER_GOLDEN_ROOT:-/avd-golden}\"\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	fmt.Fprintf(builder, "      ANDROID_AVD_HOME: %s\n", strconv.Quote(defaultIfEmpty(spec.ContainerAVDHome, "/root/.android/avd")))
 	if adbSocket := runnerADBServerSocket(spec); adbSocket != "" {
 		fmt.Fprintf(builder, "      ADB_SERVER_SOCKET: %s\n", strconv.Quote(adbSocket))
 	}
@@ -167,20 +168,21 @@ func runnerADBServerSocket(spec sharedRunnerRuntime) string {
 }
 
 type sharedRunnerRuntime struct {
-	Image           string
-	PullPolicy      string
-	NetworkMode     string
-	HasADB          bool
-	UsesHostADB     bool
-	HasUSB          bool
-	HasEmulator     bool
-	HasKVM          bool
-	StateVolume     string
-	ToolCacheVolume string
-	SDKVolume       string
-	ADBKeysPath     string
-	HostAndroidDir  string
-	HostGoldenRoot  string
+	Image            string
+	PullPolicy       string
+	NetworkMode      string
+	HasADB           bool
+	UsesHostADB      bool
+	HasUSB           bool
+	HasEmulator      bool
+	HasKVM           bool
+	StateVolume      string
+	ToolCacheVolume  string
+	SDKVolume        string
+	ADBKeysPath      string
+	HostAndroidDir   string
+	HostGoldenRoot   string
+	ContainerAVDHome string
 }
 
 // SharedRunnerImage reports the actual image and pull policy of the one
@@ -213,7 +215,7 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 		}
 		inventory = RunnerRuntimeConfig{}
 	}
-	spec := sharedRunnerRuntime{Image: defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), PullPolicy: defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), NetworkMode: "bridge", StateVolume: defaultIfEmpty(values["ANDROID_STATE_VOLUME"], "credimi-runner-state"), ToolCacheVolume: defaultIfEmpty(values["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"), SDKVolume: defaultIfEmpty(values["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"), ADBKeysPath: values["ANDROID_ADB_KEYS_PATH"], HostAndroidDir: values[HostAndroidDirEnv], HostGoldenRoot: values[HostGoldenRootEnv]}
+	spec := sharedRunnerRuntime{Image: defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), PullPolicy: defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), NetworkMode: "bridge", StateVolume: defaultIfEmpty(values["ANDROID_STATE_VOLUME"], "credimi-runner-state"), ToolCacheVolume: defaultIfEmpty(values["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"), SDKVolume: defaultIfEmpty(values["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"), ADBKeysPath: values["ANDROID_ADB_KEYS_PATH"], HostAndroidDir: values[HostAndroidDirEnv], HostGoldenRoot: values[HostGoldenRootEnv], ContainerAVDHome: values[ContainerAVDHomeEnv]}
 	for _, device := range inventory.Devices {
 		if !device.Enabled {
 			continue

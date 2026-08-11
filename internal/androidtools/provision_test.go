@@ -185,6 +185,56 @@ func TestEnsureBootstrapsPinnedCommandLineToolsArchive(t *testing.T) {
 	}
 }
 
+func TestDownloadCommandLineToolsRejectsFailedDownload(t *testing.T) {
+	previousClient, previousOS := androidToolsHTTP, androidToolsGOOS
+	androidToolsGOOS = "linux"
+	androidToolsHTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Status:     "502 Bad Gateway",
+			Body:       io.NopCloser(strings.NewReader("unavailable")),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	t.Cleanup(func() { androidToolsHTTP, androidToolsGOOS = previousClient, previousOS })
+
+	err := downloadCommandLineTools(context.Background(), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "502 Bad Gateway") {
+		t.Fatalf("download error = %v", err)
+	}
+}
+
+func TestDownloadCommandLineToolsRejectsUnsafeArchivePath(t *testing.T) {
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	entry, err := writer.Create("cmdline-tools/../../outside")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("must not be written")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	previousClient, previousOS := androidToolsHTTP, androidToolsGOOS
+	androidToolsGOOS = "linux"
+	androidToolsHTTP = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(buffer.Bytes())), Header: make(http.Header)}, nil
+	})}
+	t.Cleanup(func() { androidToolsHTTP, androidToolsGOOS = previousClient, previousOS })
+
+	root := t.TempDir()
+	err = downloadCommandLineTools(context.Background(), root)
+	if err == nil || !strings.Contains(err.Error(), "unsafe path") {
+		t.Fatalf("download error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "cmdline-tools", "outside")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsafe archive wrote outside tools root: %v", err)
+	}
+}
+
 func newCommandLineToolsArchive(t *testing.T) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
@@ -317,6 +367,29 @@ func TestEnsureRuntimeCapabilitiesProvisionsConfiguredEmulatorAssets(t *testing.
 	}
 	if !needsEmulator {
 		t.Fatal("emulator inventory did not request emulator capability provisioning")
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesReusesConfiguredAVDHome(t *testing.T) {
+	root := t.TempDir()
+	avdHome := t.TempDir()
+	if err := os.Mkdir(filepath.Join(avdHome, "credimi.avd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.ini"), []byte("path=credimi.avd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANDROID_AVD_HOME", avdHome)
+	cfg := runnerconfig.Bootstrap()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", SystemImage: "system-images;android-35;google_apis;x86_64"},
+	}}
+	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "linux", root, func(context.Context, string, bool, string) error { return nil }); err != nil {
+		t.Fatalf("existing mounted AVD was not reused: %v", err)
+	}
+	if got := os.Getenv("ANDROID_AVD_HOME"); got != avdHome {
+		t.Fatalf("configured AVD home = %q, want %q", got, avdHome)
 	}
 }
 

@@ -22,7 +22,7 @@ func (s *runnerService) processStart(namespace, oldNamespace string) (*processSt
 	}
 
 	if oldNamespace != "" {
-		if oldProc, exist := s.Store.Get(oldNamespace); exist && oldProc.Running {
+		if oldProc, exist := s.Store.Get(oldNamespace); exist && oldProc.IsRunning() {
 			oldProc.Stop()
 		}
 	}
@@ -33,7 +33,7 @@ func (s *runnerService) processStart(namespace, oldNamespace string) (*processSt
 		s.Store.Add(proc)
 	}
 
-	if proc.Running {
+	if proc.IsRunning() {
 		return &processStartResult{Status: "already running", Namespace: namespace}, nil
 	}
 

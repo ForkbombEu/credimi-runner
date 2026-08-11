@@ -134,6 +134,31 @@ func TestRunContainerLauncherCarriesBootstrapHostContext(t *testing.T) {
 	}
 }
 
+func TestRunContainerLauncherClearsStaleQuickTunnelURLBeforeStart(t *testing.T) {
+	oldOpen, oldSignal, oldFactory := dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldOpen, oldSignal, oldFactory
+	})
+	dashboardOpen = false
+	dir := t.TempDir()
+	if err := launcher.WriteQuickTunnelURL(dir, "https://stale.trycloudflare.com"); err != nil {
+		t.Fatal(err)
+	}
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	signals := make(chan os.Signal, 1)
+	signals <- os.Interrupt
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := runContainerLauncher(command, dir, map[string]string{"CREDIMI_SERVICE_MODE": "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "quick-tunnel-url")); !os.IsNotExist(err) {
+		t.Fatalf("stale quick tunnel URL survived launcher start: %v", err)
+	}
+}
+
 func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	oldImage, oldPolicy, oldOpen, oldSignal, oldFactory := bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager
 	t.Cleanup(func() {

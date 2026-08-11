@@ -50,10 +50,12 @@ func (s *ProcessStore) StopAll() {
 }
 
 type Process struct {
+	mu         sync.Mutex
 	Name       string
 	Running    bool
 	CancelFunc context.CancelFunc
 	RunFunc    func(ctx context.Context) error
+	generation uint64
 }
 
 func NewProcess(name string, runFunc func(ctx context.Context) error) *Process {
@@ -64,7 +66,9 @@ func NewProcess(name string, runFunc func(ctx context.Context) error) *Process {
 }
 
 func (p *Process) Start() error {
+	p.mu.Lock()
 	if p.Running {
+		p.mu.Unlock()
 		log.Printf("Worker for namespace %s already running", p.Name)
 		return nil
 	}
@@ -72,12 +76,24 @@ func (p *Process) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.CancelFunc = cancel
 	p.Running = true
+	p.generation++
+	generation := p.generation
+	run := p.RunFunc
+	p.mu.Unlock()
 
 	go func() {
-		defer func() { p.Running = false }()
+		defer func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			// A stop/start may have already begun a new worker. The old
+			// goroutine must not mark that replacement as stopped.
+			if p.generation == generation {
+				p.Running = false
+			}
+		}()
 
-		if p.RunFunc != nil {
-			if err := p.RunFunc(ctx); err != nil {
+		if run != nil {
+			if err := run(ctx); err != nil {
 				log.Printf("Process %s stopped with error: %v", p.Name, err)
 			} else {
 				log.Printf("Process %s stopped", p.Name)
@@ -90,10 +106,22 @@ func (p *Process) Start() error {
 }
 
 func (p *Process) Stop() {
+	p.mu.Lock()
 	if !p.Running {
+		p.mu.Unlock()
 		return
 	}
-	p.CancelFunc()
+	cancel := p.CancelFunc
 	p.Running = false
+	p.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	log.Printf("Worker stopped for namespace %s", p.Name)
+}
+
+func (p *Process) IsRunning() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Running
 }

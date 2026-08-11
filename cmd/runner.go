@@ -264,6 +264,12 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
 	}
+	// A launcher restart creates a new quick tunnel. Remove any previous
+	// endpoint before the new dashboard can resume registration, so Credimi
+	// never receives a URL from the stopped tunnel.
+	if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+		return err
+	}
 	if err := manager.Start(cmd.Context()); err != nil {
 		return err
 	}

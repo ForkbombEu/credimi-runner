@@ -79,6 +79,7 @@ func TestComposeCarriesBootstrapHostContextForFirstRunDiscovery(t *testing.T) {
 	for _, want := range []string{
 		"/home/tester/.android:/root/.android",
 		"/home/tester/avd-golden:/avd-golden",
+		"ANDROID_AVD_HOME: \"/root/.android/avd\"",
 		"CREDIMI_CONFIG_OWNER_UID: \"${CREDIMI_CONFIG_OWNER_UID:-}\"",
 		"CREDIMI_BOOTSTRAP_IMAGE: \"${CREDIMI_BOOTSTRAP_IMAGE:-}\"",
 		"network_mode: host",
@@ -86,6 +87,16 @@ func TestComposeCarriesBootstrapHostContextForFirstRunDiscovery(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Fatalf("bootstrap Compose missing %q:\n%s", want, content)
 		}
+	}
+}
+
+func TestComposeUsesMountedAndroidAVDHome(t *testing.T) {
+	content, err := ComposeYAML((BootstrapContext{ContainerAVDHome: "/root/.android/avd"}).Apply(Values{}), "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "ANDROID_AVD_HOME: \"/root/.android/avd\"") {
+		t.Fatalf("runner does not use its mounted AVD home:\n%s", content)
 	}
 }
 
