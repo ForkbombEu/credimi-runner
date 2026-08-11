@@ -23,6 +23,7 @@ const (
 	RuntimeRestart     = "runtime-restart"
 	QuickTunnelURL     = "quick-tunnel-url"
 	OperationStatus    = "operation-status"
+	setupOperationFile = "setup-operation"
 )
 
 type OperationPhase string
@@ -183,16 +184,28 @@ func (s *Server) acceptAsync(connection net.Conn, kind string, operation func(co
 		writeResponse(connection, response{Error: "launcher operation is not configured"})
 		return
 	}
-	handle := s.startOperation(kind, operation)
+	handle, err := s.startOperation(kind, operation)
+	if err != nil {
+		writeResponse(connection, response{Error: err.Error()})
+		return
+	}
 	writeResponse(connection, response{Accepted: true, OperationID: handle.ID, Phase: PhaseQueued})
 }
 
-func (s *Server) startOperation(kind string, operation func(context.Context) error) OperationHandle {
+func (s *Server) startOperation(kind string, operation func(context.Context) error) (OperationHandle, error) {
 	s.mu.Lock()
 	s.nextID++
 	handle := OperationHandle{ID: fmt.Sprintf("%s-%d", kind, s.nextID), Kind: kind}
 	s.results[handle.ID] = OperationResult{ID: handle.ID, Kind: kind, Phase: PhaseQueued}
 	s.mu.Unlock()
+	if kind == ReconcileConfig {
+		if err := persistOperationReference(filepath.Dir(s.listener.Addr().String()), handle.ID); err != nil {
+			s.mu.Lock()
+			delete(s.results, handle.ID)
+			s.mu.Unlock()
+			return OperationHandle{}, err
+		}
+	}
 	go func() {
 		s.setOperation(OperationResult{ID: handle.ID, Kind: kind, Phase: PhaseRunning})
 		err := operation(context.Background())
@@ -204,7 +217,32 @@ func (s *Server) startOperation(kind string, operation func(context.Context) err
 		}
 		s.setOperation(result)
 	}()
-	return handle
+	return handle, nil
+}
+
+func persistOperationReference(configDir, operationID string) error {
+	path := filepath.Join(configDir, setupOperationFile)
+	temporary, err := os.CreateTemp(configDir, ".setup-operation-")
+	if err != nil {
+		return fmt.Errorf("create setup operation reference: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("secure setup operation reference: %w", err)
+	}
+	if _, err := temporary.WriteString(operationID + "\n"); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write setup operation reference: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close setup operation reference: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("publish setup operation reference: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) setOperation(result OperationResult) {
@@ -263,6 +301,13 @@ func RequestRuntimeAction(ctx context.Context, path, action string) error {
 
 func RequestReconcileAsync(ctx context.Context, path string) (OperationHandle, error) {
 	return requestAsync(ctx, path, ReconcileConfig)
+}
+
+// RequestOperationStatus reconnects to an already accepted launcher operation.
+// The operation remains owned by the outer launcher, so callers may use this
+// after the process that submitted the operation has been replaced.
+func RequestOperationStatus(ctx context.Context, path, id string) (OperationResult, error) {
+	return operationStatus(ctx, path, id)
 }
 
 func RequestRuntimeActionAsync(ctx context.Context, path, action string) (OperationHandle, error) {

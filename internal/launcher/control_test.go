@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -202,7 +203,7 @@ func TestLauncherAsyncRuntimeActionCanBeObservedUntilCompletion(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("runtime start did not begin")
 	}
-	status, err := operationStatus(context.Background(), path, handle.ID)
+	status, err := RequestOperationStatus(context.Background(), path, handle.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,4 +295,21 @@ func TestLauncherRejectsInvalidServerConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
+}
+
+func TestLauncherRejectsReconcileWhenOperationReferenceCannotBePublished(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "setup-operation"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server, err := ServeWithOperations(filepath.Join(dir, "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		ReconcileConfig: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if _, err := RequestReconcileAsync(context.Background(), server.listener.Addr().String()); err == nil || !strings.Contains(err.Error(), "publish setup operation reference") {
+		t.Fatalf("unpublishable operation reference error = %v", err)
+	}
 }

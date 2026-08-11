@@ -249,6 +249,15 @@ func TestRuntimeOwnedRegistrationUsesCredimiWithoutLifecycleManager(t *testing.T
 	s.cfg.values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
 	s.cfg.values["CREDIMI_DEVICE_1_MODE"] = "usb"
 	s.cfg.values["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
+	socket := filepath.Join(filepath.Dir(s.cfg.Path()), "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
 
 	s.startRuntimeOwnedRegistration(s.cfg.Snapshot())
 	operation := s.operations.Current()
@@ -293,6 +302,289 @@ func TestRuntimeOwnedConfigDelegatesTopologyChangesToLauncher(t *testing.T) {
 	case <-reconciled:
 	case <-time.After(time.Second):
 		t.Fatal("launcher did not receive reconcile-config")
+	}
+}
+
+func TestRuntimeOwnedSetupRecoversLauncherOperationAfterReplacement(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+
+	submitter := newTestServer(t)
+	submitter.cfg.values["CREDIMI_URL"] = api.URL
+	submitter.cfg.values["CREDIMI_DEVICE_COUNT"] = "1"
+	submitter.cfg.values["CREDIMI_DEVICE_1_ID"] = "acme/runner/phone"
+	submitter.cfg.values["CREDIMI_DEVICE_1_NAME"] = "Phone"
+	submitter.cfg.values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	submitter.cfg.values["CREDIMI_DEVICE_1_MODE"] = "usb"
+	submitter.cfg.values["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
+	submitter.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	submitter.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	configDir := filepath.Dir(submitter.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "setup-pending"), []byte("pending\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	socket := filepath.Join(configDir, "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	_, err = launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	replacement := newTestServer(t)
+	replacement.cfg.path = submitter.cfg.Path()
+	replacement.cfg.values = cloneStringMap(submitter.cfg.Snapshot())
+	replacement.runtimeOwned = true
+	replacement.launcherSocket = socket
+	replacement.startExistingRuntimeJob(replacement.cfg.Snapshot())
+	close(release)
+	waitForCondition(t, func() bool {
+		snapshot := replacement.startupSnapshot()
+		return snapshot.Phase == StartupReady && !snapshot.running
+	})
+	if fileExists(setupOperationPath(configDir)) || fileExists(filepath.Join(configDir, "setup-pending")) {
+		t.Fatal("terminal setup operation state was not cleared")
+	}
+}
+
+func TestRuntimeOwnedSetupSurfacesLauncherFailureAfterReplacement(t *testing.T) {
+	submitter := newTestServer(t)
+	configDir := filepath.Dir(submitter.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "setup-pending"), []byte("pending\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(configDir, "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error {
+			return errors.New("docker compose failed: network-scoped aliases are only supported for user-defined networks")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	_, err = launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := newTestServer(t)
+	replacement.cfg.path = submitter.cfg.Path()
+	replacement.cfg.values = cloneStringMap(submitter.cfg.Snapshot())
+	replacement.runtimeOwned = true
+	replacement.launcherSocket = socket
+	replacement.startExistingRuntimeJob(replacement.cfg.Snapshot())
+	waitForCondition(t, func() bool {
+		snapshot := replacement.startupSnapshot()
+		return snapshot.Phase == StartupNeedsAttention && !snapshot.running
+	})
+	snapshot := replacement.startupSnapshot()
+	if !strings.Contains(snapshot.Message, "network-scoped aliases") {
+		t.Fatalf("launcher failure was not surfaced: %q", snapshot.Message)
+	}
+	if fileExists(setupOperationPath(configDir)) {
+		t.Fatal("failed setup operation state was not cleared")
+	}
+}
+
+func TestRuntimeOwnedSetupMissingOperationDoesNotRemainRunning(t *testing.T) {
+	submitter := newTestServer(t)
+	configDir := filepath.Dir(submitter.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "setup-pending"), []byte("pending\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacement := newTestServer(t)
+	replacement.cfg.path = submitter.cfg.Path()
+	replacement.cfg.values = cloneStringMap(submitter.cfg.Snapshot())
+	replacement.runtimeOwned = true
+	replacement.launcherSocket = filepath.Join(t.TempDir(), "missing.sock")
+	replacement.startExistingRuntimeJob(replacement.cfg.Snapshot())
+	waitForCondition(t, func() bool {
+		snapshot := replacement.startupSnapshot()
+		return snapshot.Phase == StartupNeedsAttention && !snapshot.running
+	})
+	if !strings.Contains(replacement.startupSnapshot().Message, "operation is unavailable") {
+		t.Fatalf("missing operation was not reported: %q", replacement.startupSnapshot().Message)
+	}
+}
+
+func TestRuntimeOwnedSetupReportsLauncherRequestFailure(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeOwned = true
+	s.launcherSocket = filepath.Join(t.TempDir(), "missing.sock")
+	s.startRuntimeOwnedRegistration(s.cfg.Snapshot())
+	waitForCondition(t, func() bool {
+		snapshot := s.startupSnapshot()
+		return snapshot.Phase == StartupNeedsAttention && !snapshot.running
+	})
+	if !strings.Contains(s.startupSnapshot().Message, "connect to runner launcher") {
+		t.Fatalf("launcher request failure was not surfaced: %q", s.startupSnapshot().Message)
+	}
+}
+
+func TestWaitForLauncherOperationHonorsCancellation(t *testing.T) {
+	s := newTestServer(t)
+	socket := filepath.Join(filepath.Dir(s.cfg.Path()), "control.sock")
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error {
+			close(started)
+			<-finished
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.waitForLauncherOperation(ctx, handle.ID) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "canceled") {
+			t.Fatalf("canceled launcher wait = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled launcher wait did not finish")
+	}
+	close(finished)
+}
+
+func TestRuntimeOwnedSetupClearsOperationAfterRegistrationFailure(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.Error(w, "registration failed", http.StatusBadGateway)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer api.Close()
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = api.URL
+	s.cfg.values["CREDIMI_DEVICE_COUNT"] = "1"
+	s.cfg.values["CREDIMI_DEVICE_1_ID"] = "acme/runner/phone"
+	s.cfg.values["CREDIMI_DEVICE_1_NAME"] = "Phone"
+	s.cfg.values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	s.cfg.values["CREDIMI_DEVICE_1_MODE"] = "usb"
+	s.cfg.values["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	socket := filepath.Join(filepath.Dir(s.cfg.Path()), "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.finishSetupRegistration(context.Background(), s.cfg.Snapshot(), handle.ID)
+	if err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("registration failure = %v", err)
+	}
+	if fileExists(setupOperationPath(filepath.Dir(s.cfg.Path()))) {
+		t.Fatal("registration failure left setup operation state behind")
+	}
+}
+
+func TestSetupOperationStateIsMinimalAndTerminallyCleared(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readSetupOperation(dir); err == nil {
+		t.Fatal("missing setup operation state was accepted")
+	}
+	path := setupOperationPath(dir)
+	if err := os.WriteFile(path, []byte("reconcile-config-7\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	operationID, err := readSetupOperation(dir)
+	if err != nil || operationID != "reconcile-config-7" {
+		t.Fatalf("setup operation ID=%q err=%v", operationID, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("setup operation mode=%o", info.Mode().Perm())
+	}
+	if err := clearSetupOperation(dir); err != nil || fileExists(path) {
+		t.Fatalf("clear setup operation err=%v exists=%t", err, fileExists(path))
+	}
+	if err := clearSetupOperation(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSetupOperation(dir); err == nil {
+		t.Fatal("empty setup operation state was accepted")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "marker"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearSetupOperation(dir); err == nil {
+		t.Fatal("directory setup operation state was silently cleared")
+	}
+	if err := os.Remove(filepath.Join(path, "marker")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "setup-pending"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "setup-pending", "marker"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearSetupPending(dir); err == nil {
+		t.Fatal("directory setup pending state was silently cleared")
+	}
+	if err := os.Remove(filepath.Join(dir, "setup-pending", "marker")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "setup-pending")); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearSetupPending(dir); err != nil {
+		t.Fatal(err)
 	}
 }
 

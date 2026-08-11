@@ -111,6 +111,8 @@ const (
 
 const startupLogRetain = 2000
 
+const setupOperationFile = "setup-operation"
+
 type startupState struct {
 	Phase     StartupPhase
 	Message   string
@@ -628,6 +630,44 @@ func runtimePaused(configDir string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func setupOperationPath(configDir string) string {
+	return filepath.Join(configDir, setupOperationFile)
+}
+
+func readSetupOperation(configDir string) (string, error) {
+	contents, err := os.ReadFile(setupOperationPath(configDir))
+	if err != nil {
+		return "", fmt.Errorf("read setup operation state: %w", err)
+	}
+	operationID := strings.TrimSpace(string(contents))
+	if operationID == "" {
+		return "", errors.New("setup operation state is empty")
+	}
+	return operationID, nil
+}
+
+func clearSetupOperation(configDir string) error {
+	err := os.Remove(setupOperationPath(configDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove setup operation state: %w", err)
+	}
+	return nil
+}
+
+func clearSetupPending(configDir string) error {
+	err := os.Remove(filepath.Join(configDir, "setup-pending"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove setup pending state: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) page(name string) http.HandlerFunc {
@@ -1362,22 +1402,83 @@ func (s *Server) startRuntimeOwnedRegistration(values map[string]string) {
 		LogBase:   1,
 		LogNextID: 1,
 	}, func(ctx context.Context) error {
+		operationID := ""
 		if s.launcherSocket != "" {
 			s.setStartupState(StartupWaitingRunner, "Setup saved. Waiting for the outer launcher to apply the final runtime topology.")
-			if err := launcher.RequestReconcile(ctx, s.launcherSocket); err != nil {
+			handle, err := launcher.RequestReconcileAsync(ctx, s.launcherSocket)
+			if err != nil {
 				s.setStartupState(StartupNeedsAttention, "Setup saved, but launcher reconciliation failed: "+err.Error())
 				return err
 			}
-			s.setStartupState(StartupRegistering, "Runtime is ready. Resolving the public URL and registering the runner.")
+			operationID = handle.ID
 		}
-		if err := s.registerCurrent(ctx, values); err != nil {
-			s.setStartupState(StartupNeedsAttention, "Setup saved, but runner registration failed: "+err.Error())
+		return s.finishSetupRegistration(ctx, values, operationID)
+	})
+}
+
+func (s *Server) finishSetupRegistration(ctx context.Context, values map[string]string, operationID string) error {
+	if operationID != "" {
+		if err := s.waitForLauncherOperation(ctx, operationID); err != nil {
+			if cleanupErr := clearSetupOperation(filepath.Dir(s.cfg.Path())); cleanupErr != nil {
+				err = fmt.Errorf("%w; also could not clear setup operation state: %v", err, cleanupErr)
+			}
+			s.setStartupState(StartupNeedsAttention, "Setup saved, but launcher reconciliation failed: "+err.Error())
 			return err
 		}
-		_ = os.Remove(filepath.Join(filepath.Dir(s.cfg.Path()), "setup-pending"))
-		s.setStartupState(StartupReady, "Setup complete. Runner registered with Credimi.")
-		return nil
-	})
+		s.setStartupState(StartupRegistering, "Runtime is ready. Resolving the public URL and registering the runner.")
+	}
+	if err := s.registerCurrent(ctx, values); err != nil {
+		s.setStartupState(StartupNeedsAttention, "Setup saved, but runner registration failed: "+err.Error())
+		if operationID != "" {
+			if cleanupErr := clearSetupOperation(filepath.Dir(s.cfg.Path())); cleanupErr != nil {
+				return fmt.Errorf("%w; also could not clear setup operation state: %v", err, cleanupErr)
+			}
+		}
+		return err
+	}
+	if err := clearSetupOperation(filepath.Dir(s.cfg.Path())); err != nil {
+		s.setStartupState(StartupNeedsAttention, "Setup completed, but setup state could not be cleared: "+err.Error())
+		return err
+	}
+	if err := clearSetupPending(filepath.Dir(s.cfg.Path())); err != nil {
+		s.setStartupState(StartupNeedsAttention, "Setup completed, but setup state could not be cleared: "+err.Error())
+		return err
+	}
+	s.setStartupState(StartupReady, "Setup complete. Runner registered with Credimi.")
+	return nil
+}
+
+func (s *Server) waitForLauncherOperation(ctx context.Context, operationID string) error {
+	if s.launcherSocket == "" {
+		return errors.New("launcher control socket is not configured")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	for {
+		result, err := launcher.RequestOperationStatus(waitCtx, s.launcherSocket, operationID)
+		if err != nil {
+			return err
+		}
+		switch result.Phase {
+		case launcher.PhaseSucceeded:
+			return nil
+		case launcher.PhaseFailed:
+			if result.Error != "" {
+				return errors.New(result.Error)
+			}
+			if result.Message != "" {
+				return errors.New(result.Message)
+			}
+			return errors.New("launcher operation failed")
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return fmt.Errorf("timed out waiting for launcher operation %s: %w", operationID, waitCtx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Server) applyRuntimeOwnedRegistration(values map[string]string) error {
@@ -1419,6 +1520,15 @@ func (s *Server) startExistingRuntimeJob(values map[string]string) {
 		LogBase:   1,
 		LogNextID: 1,
 	}, func(ctx context.Context) error {
+		if s.runtimeOwned && s.launcherSocket != "" {
+			operationID, err := readSetupOperation(filepath.Dir(s.cfg.Path()))
+			if err != nil {
+				message := "Setup cannot resume because the launcher reconciliation operation is unavailable: " + err.Error()
+				s.setStartupState(StartupNeedsAttention, message)
+				return errors.New(message)
+			}
+			return s.finishSetupRegistration(ctx, values, operationID)
+		}
 		s.setStartupState(StartupRegistering, "Runner already running. Updating Credimi registration.")
 		if err := s.runtimeLifecycle(cloneStringMap(values)).RegisterRunning(ctx); err != nil {
 			s.mu.Lock()
@@ -1432,7 +1542,10 @@ func (s *Server) startExistingRuntimeJob(values map[string]string) {
 		s.mu.Unlock()
 		s.setStartupState(StartupReady, "Runner already running and registered with Credimi.")
 		if s.runtimeOwned {
-			_ = os.Remove(filepath.Join(filepath.Dir(s.cfg.Path()), "setup-pending"))
+			if err := clearSetupPending(filepath.Dir(s.cfg.Path())); err != nil {
+				s.setStartupState(StartupNeedsAttention, "Runner registered, but setup state could not be cleared: "+err.Error())
+				return err
+			}
 		}
 		return nil
 	})
@@ -1467,7 +1580,16 @@ func (s *Server) startTrackedStartupOperation(kind controller.OperationKind, sta
 	}
 	go func() {
 		defer close(done)
-		_, _ = s.operations.Wait(context.Background(), snapshot.ID)
+		completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+		if err != nil {
+			if s.startupSnapshot().Phase != StartupNeedsAttention {
+				s.setStartupState(StartupNeedsAttention, "Runtime operation failed: "+err.Error())
+			}
+		} else if completed.Phase == controller.PhaseFailed && completed.Error != "" {
+			if s.startupSnapshot().Phase != StartupNeedsAttention {
+				s.setStartupState(StartupNeedsAttention, completed.Error)
+			}
+		}
 		s.mu.Lock()
 		if s.startup.done == done {
 			s.startup.running = false

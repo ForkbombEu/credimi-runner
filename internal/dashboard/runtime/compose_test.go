@@ -250,7 +250,7 @@ func TestComposeUsesHostNetworkForLinuxUSBADB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content, "network_mode: host") || !strings.Contains(content, "caddy.reverse_proxy: \"host.docker.internal:") || !strings.Contains(content, "  caddy:\n") || !strings.Contains(content, "    networks:\n      - ingress\n      - host_gateway") || !strings.Contains(content, "  host_gateway:\n    external: true\n    name: bridge") {
+	if !strings.Contains(content, "network_mode: host") || !strings.Contains(content, "caddy.reverse_proxy: \"host.docker.internal:") || !strings.Contains(content, "  caddy:\n") || !strings.Contains(content, "    networks:\n      - ingress\n") || strings.Contains(content, "host_gateway") || strings.Contains(content, "name: bridge") {
 		t.Fatalf("USB compose did not use the host network topology:\n%s", content)
 	}
 	if !strings.Contains(content, `ADB_SERVER_SOCKET: "tcp:127.0.0.1:5037"`) || strings.Contains(content, "ADB_SERVER_SOCKET:-tcp:host.docker.internal") {
