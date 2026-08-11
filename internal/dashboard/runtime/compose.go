@@ -38,7 +38,10 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	plan := BuildRuntimePlanForOS("", normalized, goos)
+	// WriteComposeFileForOS provides CREDIMI_CONFIG_DIR before rendering. Use it
+	// here so the generated diagnostics port and LifecycleManager derive the
+	// same project-scoped runtime plan.
+	plan := BuildRuntimePlanForOS(normalized["CREDIMI_CONFIG_DIR"], normalized, goos)
 	spec, err := sharedRunnerSpec(normalized, goos)
 	if err != nil {
 		// Host runners do not use the generated runner service; they retain a

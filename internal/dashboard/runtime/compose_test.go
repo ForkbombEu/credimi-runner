@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	stdruntime "runtime"
@@ -102,6 +103,27 @@ func TestWriteComposeFileUsesAtomicWritableConfigDirectory(t *testing.T) {
 	}
 	if !strings.Contains(string(content), dir+":/etc/credimi-runner") || strings.Contains(string(content), dir+":/etc/credimi-runner:ro") {
 		t.Fatalf("compose config mount is not writable: %s", content)
+	}
+}
+
+func TestWriteComposeFileUsesLifecycleQuickTunnelMetricsPort(t *testing.T) {
+	dir := t.TempDir()
+	values := indexedComposeValues(Values{
+		"ANDROID_RUNNER_IMAGE": "runner:local",
+		"ANDROID_PULL_POLICY":  "never",
+		"CREDIMI_SERVICE_MODE": "auto",
+	})
+	if err := WriteComposeFileForOS(dir, values, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "docker-compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := BuildRuntimePlanForOS(dir, values, "linux")
+	want := fmt.Sprintf("127.0.0.1:%d:20241", QuickTunnelMetricsPort(plan))
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("quick-tunnel diagnostics mapping %q is missing:\n%s", want, raw)
 	}
 }
 
