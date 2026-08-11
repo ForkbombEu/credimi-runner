@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,9 +30,10 @@ func (f *runtimeControlServerFake) startCount() int {
 }
 
 type runtimeControlLifecycleFake struct {
-	mu      sync.Mutex
-	pauses  []string
-	resumes []string
+	mu         sync.Mutex
+	pauses     []string
+	resumes    []string
+	heartbeats int
 }
 
 func (f *runtimeControlLifecycleFake) Pause(_ context.Context, reason string) error {
@@ -45,6 +47,13 @@ func (f *runtimeControlLifecycleFake) Resume(_ context.Context, reason string) e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.resumes = append(f.resumes, reason)
+	return nil
+}
+
+func (f *runtimeControlLifecycleFake) Heartbeat(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.heartbeats++
 	return nil
 }
 
@@ -77,7 +86,7 @@ func TestRuntimeControlLoopKeepsDashboardAliveWhileTogglingWorkers(t *testing.T)
 	lifecycle := &runtimeControlLifecycleFake{}
 	store := &runtimeControlStoreFake{}
 	ctx, cancel := context.WithCancel(context.Background())
-	stop := startRuntimeControlLoop(ctx, dir, server, lifecycle, store)
+	stop := startRuntimeControlLoop(ctx, dir, server, lifecycle, store, nil)
 	t.Cleanup(func() {
 		cancel()
 		stop()
@@ -113,6 +122,194 @@ func TestRuntimeControlLoopKeepsDashboardAliveWhileTogglingWorkers(t *testing.T)
 		t.Fatalf("runtime control request was not consumed: %v", err)
 	}
 }
+
+func TestConfiguredRuntimeStartupWaitsForSetupRecovery(t *testing.T) {
+	if shouldStartConfiguredRuntime(false, false) {
+		t.Fatal("unconfigured runner entered normal startup")
+	}
+	if shouldStartConfiguredRuntime(true, true) {
+		t.Fatal("setup-pending runner entered normal startup")
+	}
+	if !shouldStartConfiguredRuntime(true, false) {
+		t.Fatal("configured runner skipped normal startup")
+	}
+}
+
+func TestRuntimeControlLoopStartsSetupRuntimeInOrder(t *testing.T) {
+	dir := t.TempDir()
+	events := make(chan string, 3)
+	server := orderedRuntimeControlServerFake{events: events}
+	lifecycle := orderedRuntimeControlLifecycleFake{events: events}
+	store := &runtimeControlStoreFake{}
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := startRuntimeControlLoop(ctx, dir, &server, &lifecycle, store, nil)
+	t.Cleanup(func() {
+		cancel()
+		stop()
+	})
+
+	if err := os.WriteFile(filepath.Join(dir, "runtime-control"), []byte("setup-ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForRuntimeControl(t, filepath.Join(dir, "runtime-state"), true)
+	ordered := make([]string, 0, 3)
+	for range 3 {
+		select {
+		case event := <-events:
+			ordered = append(ordered, event)
+		case <-time.After(time.Second):
+			t.Fatalf("setup runtime order incomplete: %v", ordered)
+		}
+	}
+	if got, want := strings.Join(ordered, ","), "workers,resume,heartbeat"; got != want {
+		t.Fatalf("setup runtime order = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeControlLoopReportsSetupResumeFailure(t *testing.T) {
+	dir := t.TempDir()
+	server := &runtimeControlServerFake{}
+	lifecycle := &setupResumeFailureLifecycleFake{}
+	store := &runtimeControlStoreFake{}
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := startRuntimeControlLoop(ctx, dir, server, lifecycle, store, nil)
+	t.Cleanup(func() {
+		cancel()
+		stop()
+	})
+	if err := os.WriteFile(filepath.Join(dir, "runtime-control"), []byte("setup-ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if raw, err := os.ReadFile(filepath.Join(dir, "runtime-state")); err == nil && strings.TrimSpace(string(raw)) == "failed: resume failed" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("setup resume failure was not persisted")
+}
+
+func TestRuntimeControlLoopReportsSetupHeartbeatFailure(t *testing.T) {
+	dir := t.TempDir()
+	server := &runtimeControlServerFake{}
+	lifecycle := &setupHeartbeatFailureLifecycleFake{}
+	store := &runtimeControlStoreFake{}
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := startRuntimeControlLoop(ctx, dir, server, lifecycle, store, nil)
+	t.Cleanup(func() {
+		cancel()
+		stop()
+	})
+	if err := os.WriteFile(filepath.Join(dir, "runtime-control"), []byte("setup-ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if raw, err := os.ReadFile(filepath.Join(dir, "runtime-state")); err == nil && strings.TrimSpace(string(raw)) == "failed: heartbeat failed" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("setup heartbeat failure was not persisted")
+}
+
+func TestRuntimeControlLoopReportsStartAndRestartWorkerFailures(t *testing.T) {
+	for _, action := range []string{"start", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			dir := t.TempDir()
+			server := &runtimeControlStartFailureServerFake{err: errors.New("workers failed")}
+			lifecycle := &runtimeControlLifecycleFake{}
+			store := &runtimeControlStoreFake{}
+			ctx, cancel := context.WithCancel(context.Background())
+			stop := startRuntimeControlLoop(ctx, dir, server, lifecycle, store, nil)
+			t.Cleanup(func() {
+				cancel()
+				stop()
+			})
+			if err := writeRuntimeCommand(dir, action); err != nil {
+				t.Fatal(err)
+			}
+			waitForRuntimeState(t, dir, "failed: workers failed")
+		})
+	}
+}
+
+func TestRuntimeControlLoopReportsStartResumeFailure(t *testing.T) {
+	dir := t.TempDir()
+	server := &runtimeControlServerFake{}
+	lifecycle := &runtimeControlResumeFailureLifecycleFake{}
+	store := &runtimeControlStoreFake{}
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := startRuntimeControlLoop(ctx, dir, server, lifecycle, store, nil)
+	t.Cleanup(func() {
+		cancel()
+		stop()
+	})
+	if err := writeRuntimeCommand(dir, "start"); err != nil {
+		t.Fatal(err)
+	}
+	waitForRuntimeState(t, dir, "failed: resume failed")
+}
+
+type orderedRuntimeControlServerFake struct{ events chan<- string }
+
+func (f *orderedRuntimeControlServerFake) StartExistingWorkers(context.Context) error {
+	f.events <- "workers"
+	return nil
+}
+
+type orderedRuntimeControlLifecycleFake struct{ events chan<- string }
+
+func (f *orderedRuntimeControlLifecycleFake) Pause(context.Context, string) error { return nil }
+
+func (f *orderedRuntimeControlLifecycleFake) Resume(context.Context, string) error {
+	f.events <- "resume"
+	return nil
+}
+
+func (f *orderedRuntimeControlLifecycleFake) Heartbeat(context.Context) error {
+	f.events <- "heartbeat"
+	return nil
+}
+
+type setupResumeFailureLifecycleFake struct{}
+
+func (setupResumeFailureLifecycleFake) Pause(context.Context, string) error { return nil }
+
+func (setupResumeFailureLifecycleFake) Resume(context.Context, string) error {
+	return errors.New("resume failed")
+}
+
+func (setupResumeFailureLifecycleFake) Heartbeat(context.Context) error {
+	return errors.New("heartbeat should not run")
+}
+
+type setupHeartbeatFailureLifecycleFake struct{}
+
+func (setupHeartbeatFailureLifecycleFake) Pause(context.Context, string) error { return nil }
+
+func (setupHeartbeatFailureLifecycleFake) Resume(context.Context, string) error { return nil }
+
+func (setupHeartbeatFailureLifecycleFake) Heartbeat(context.Context) error {
+	return errors.New("heartbeat failed")
+}
+
+type runtimeControlStartFailureServerFake struct{ err error }
+
+func (f *runtimeControlStartFailureServerFake) StartExistingWorkers(context.Context) error {
+	return f.err
+}
+
+type runtimeControlResumeFailureLifecycleFake struct{}
+
+func (runtimeControlResumeFailureLifecycleFake) Pause(context.Context, string) error { return nil }
+
+func (runtimeControlResumeFailureLifecycleFake) Resume(context.Context, string) error {
+	return errors.New("resume failed")
+}
+
+func (runtimeControlResumeFailureLifecycleFake) Heartbeat(context.Context) error { return nil }
 
 func TestWriteRuntimeCommandValidatesActionAndKeepsRequestPrivate(t *testing.T) {
 	dir := t.TempDir()
@@ -233,4 +430,16 @@ func waitForRuntimeControl(t *testing.T, path string, wantPresent bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("runtime control marker %q present=%v, want %v", path, !wantPresent, wantPresent)
+}
+
+func waitForRuntimeState(t *testing.T, dir, want string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if raw, err := os.ReadFile(filepath.Join(dir, "runtime-state")); err == nil && strings.TrimSpace(string(raw)) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("runtime state did not become %q", want)
 }

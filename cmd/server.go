@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -102,7 +103,17 @@ var serverCmd = &cobra.Command{
 		srv := server.NewRunnerService(store, instance)
 		lifecycleCfg := server.LoadRunnerLifecycleConfig(instance)
 		lifecycleClient := server.NewRunnerLifecycleClient(lifecycleCfg, http.DefaultClient, store)
-		stopRuntimeControls := startRuntimeControlLoop(serveCtx, configDir, srv, lifecycleClient, store)
+		configured := configDir != "" && fileExists(filepath.Join(configDir, "config.toml"))
+		setupPending := configDir != "" && fileExists(filepath.Join(configDir, "setup-pending"))
+		heartbeatCtx, stopHeartbeat := context.WithCancel(serveCtx)
+		defer stopHeartbeat()
+		var heartbeatOnce sync.Once
+		startHeartbeatLoop := func() {
+			heartbeatOnce.Do(func() {
+				_ = lifecycleClient.StartHeartbeatLoop(heartbeatCtx)
+			})
+		}
+		stopRuntimeControls := startRuntimeControlLoop(serveCtx, configDir, srv, lifecycleClient, store, startHeartbeatLoop)
 		defer stopRuntimeControls()
 
 		// Bind before performing remote startup work. Worker recovery and the
@@ -134,8 +145,7 @@ var serverCmd = &cobra.Command{
 		}()
 		serverSignalReadyHook()
 
-		configured := configDir != "" && fileExists(filepath.Join(configDir, "config.toml"))
-		if configured {
+		if shouldStartConfiguredRuntime(configured, setupPending) {
 			if err := srv.StartExistingWorkers(serveCtx); err != nil {
 				serveSpan.RecordError(err)
 				serveSpan.SetStatus(codes.Error, "start existing workers failed")
@@ -143,11 +153,6 @@ var serverCmd = &cobra.Command{
 				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
 			}
 
-			if err := lifecycleClient.Resume(serveCtx, "runner_startup"); err != nil {
-				cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
-				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
-			}
-			_ = writeRuntimeState(configDir, "running")
 			// `serve` may be started directly by Compose, Coolify, or the CLI rather
 			// than through the dashboard lifecycle controller. Ensure every indexed
 			// child exists before the first heartbeat reports its state to Credimi.
@@ -155,6 +160,11 @@ var serverCmd = &cobra.Command{
 				cluelog.Printf(serveCtx, "Warning: failed to register configured devices: %v", err)
 				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to register configured devices", err)
 			}
+			if err := lifecycleClient.Resume(serveCtx, "runner_startup"); err != nil {
+				cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
+				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
+			}
+			_ = writeRuntimeState(configDir, "running")
 			// Do not leave a newly started runner and its devices offline until the
 			// first periodic tick (normally 30 seconds). Resume records host state;
 			// this immediate heartbeat records the per-device readiness inventory.
@@ -162,13 +172,8 @@ var serverCmd = &cobra.Command{
 				cluelog.Printf(serveCtx, "Warning: failed to send initial runner heartbeat: %v", err)
 				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send initial runner heartbeat", err)
 			}
+			startHeartbeatLoop()
 		}
-
-		heartbeatCtx, stopHeartbeat := context.WithCancel(serveCtx)
-		defer stopHeartbeat()
-		stopHeartbeatLoop := lifecycleClient.StartHeartbeatLoop(heartbeatCtx)
-		defer stopHeartbeatLoop()
-
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigc)
@@ -190,7 +195,6 @@ var serverCmd = &cobra.Command{
 		}
 
 		stopHeartbeat()
-		stopHeartbeatLoop()
 
 		pauseCtx, pauseCancel := context.WithTimeout(context.Background(), lifecycleCfg.RequestTimeout)
 		defer pauseCancel()
@@ -224,12 +228,17 @@ var serverCmd = &cobra.Command{
 	},
 }
 
+func shouldStartConfiguredRuntime(configured, setupPending bool) bool {
+	return configured && !setupPending
+}
+
 func startRuntimeControlLoop(ctx context.Context, configDir string, srv interface {
 	StartExistingWorkers(context.Context) error
 }, lifecycle interface {
 	Pause(context.Context, string) error
 	Resume(context.Context, string) error
-}, store interface{ StopAll() }) func() {
+	Heartbeat(context.Context) error
+}, store interface{ StopAll() }, onRuntimeReady func()) func() {
 	controlCtx, cancel := context.WithCancel(ctx)
 	go func() {
 		ticker := time.NewTicker(250 * time.Millisecond)
@@ -245,6 +254,23 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 				}
 				_ = os.Remove(filepath.Join(configDir, "runtime-control"))
 				switch strings.TrimSpace(string(raw)) {
+				case "setup-ready":
+					if err := srv.StartExistingWorkers(controlCtx); err != nil {
+						_ = writeRuntimeState(configDir, "failed: "+err.Error())
+						continue
+					}
+					if err := lifecycle.Resume(controlCtx, "setup"); err != nil {
+						_ = writeRuntimeState(configDir, "failed: "+err.Error())
+						continue
+					}
+					if err := lifecycle.Heartbeat(controlCtx); err != nil {
+						_ = writeRuntimeState(configDir, "failed: "+err.Error())
+						continue
+					}
+					_ = writeRuntimeState(configDir, "running")
+					if onRuntimeReady != nil {
+						onRuntimeReady()
+					}
 				case "stop":
 					store.StopAll()
 					_ = lifecycle.Pause(controlCtx, "dashboard_stop")
@@ -252,9 +278,15 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 					_ = writeRuntimeState(configDir, "paused")
 				case "start":
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
-						_ = lifecycle.Resume(controlCtx, "dashboard_start")
+						if err := lifecycle.Resume(controlCtx, "dashboard_start"); err != nil {
+							_ = writeRuntimeState(configDir, "failed: "+err.Error())
+							continue
+						}
 						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
 						_ = writeRuntimeState(configDir, "running")
+						if onRuntimeReady != nil {
+							onRuntimeReady()
+						}
 					} else {
 						_ = writeRuntimeState(configDir, "failed: "+err.Error())
 					}
@@ -263,9 +295,15 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 					store.StopAll()
 					_ = lifecycle.Pause(controlCtx, "dashboard_restart")
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
-						_ = lifecycle.Resume(controlCtx, "dashboard_restart")
+						if err := lifecycle.Resume(controlCtx, "dashboard_restart"); err != nil {
+							_ = writeRuntimeState(configDir, "failed: "+err.Error())
+							continue
+						}
 						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
 						_ = writeRuntimeState(configDir, "running")
+						if onRuntimeReady != nil {
+							onRuntimeReady()
+						}
 					} else {
 						_ = writeRuntimeState(configDir, "failed: "+err.Error())
 					}

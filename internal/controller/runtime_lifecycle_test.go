@@ -366,6 +366,69 @@ func TestRuntimeLifecycleRegisterRunningWaitsForRunnerReadiness(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleRegistersRunnerBeforeDevices(t *testing.T) {
+	var paths []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	lifecycle := RuntimeLifecycle{
+		Values: dashboardruntime.Values{
+			"CREDIMI_URL":                 api.URL,
+			"CREDIMI_USER_API_KEY":        "key",
+			"CREDIMI_RUNNER_ID":           "acme/runner",
+			"CREDIMI_RUNNER_NAME":         "runner",
+			"CREDIMI_RUNNER_ORGANIZATION": "acme",
+			"CREDIMI_SERVICE_MODE":        "manual",
+			"RUNNER_PUBLIC_URL":           "https://runner.example",
+			"CREDIMI_DEVICE_COUNT":        "1",
+			"CREDIMI_DEVICE_1_ID":         "acme/runner/phone",
+			"CREDIMI_DEVICE_1_NAME":       "Phone",
+			"CREDIMI_DEVICE_1_TYPE":       "android_phone",
+			"CREDIMI_DEVICE_1_MODE":       "usb",
+			"CREDIMI_DEVICE_1_SERIAL":     "usb-1",
+		},
+		GOOS:      "darwin",
+		WaitReady: func(context.Context, dashboardruntime.Values) error { return nil },
+	}
+	if err := lifecycle.RegisterRunning(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(paths, ","), "/api/mobile-runner,/api/mobile-device,/api/mobile-device/reconcile"; got != want {
+		t.Fatalf("registration order = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeLifecycleRunnerRegistrationFailureStopsDeviceRegistration(t *testing.T) {
+	var paths []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		http.Error(w, "runner registration failed", http.StatusBadGateway)
+	}))
+	defer api.Close()
+	lifecycle := RuntimeLifecycle{
+		Values: dashboardruntime.Values{
+			"CREDIMI_URL":          api.URL,
+			"CREDIMI_USER_API_KEY": "key",
+			"CREDIMI_RUNNER_ID":    "acme/runner",
+			"CREDIMI_RUNNER_NAME":  "runner",
+			"CREDIMI_SERVICE_MODE": "manual",
+			"RUNNER_PUBLIC_URL":    "https://runner.example",
+			"CREDIMI_DEVICE_COUNT": "1",
+			"CREDIMI_DEVICE_1_ID":  "acme/runner/phone",
+		},
+		GOOS:      "darwin",
+		WaitReady: func(context.Context, dashboardruntime.Values) error { return nil },
+	}
+	if err := lifecycle.RegisterRunning(context.Background()); err == nil {
+		t.Fatal("runner registration unexpectedly succeeded")
+	}
+	if got, want := strings.Join(paths, ","), "/api/mobile-runner"; got != want {
+		t.Fatalf("registration after runner failure = %q, want %q", got, want)
+	}
+}
+
 func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {

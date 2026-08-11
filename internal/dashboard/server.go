@@ -30,10 +30,10 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
-// RuntimeControlFileEnv names the private file channel used by the native
-// application to pause/resume its own execution workers while keeping the
-// dashboard alive. Linux runtime-owned dashboards use the launcher socket
-// instead.
+// RuntimeControlFileEnv names the private file channel used by the application
+// to pause/resume its own execution workers while keeping the dashboard alive.
+// Linux runtime-owned setup also uses this private channel to hand execution
+// startup to the already-running server after Credimi registration succeeds.
 const RuntimeControlFileEnv = "CREDIMI_RUNNER_RUNTIME_CONTROL_FILE"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -112,6 +112,16 @@ const (
 const startupLogRetain = 2000
 
 const setupOperationFile = "setup-operation"
+
+// setup-operation is a replacement handoff owned by the setup recovery flow.
+// Once reconciliation is accepted, the submitting container may disappear.
+// Therefore the submitting container must not delete this file on cancellation.
+// Only a terminal recovery path may clear it.
+type launcherOperationTerminalError struct{ err error }
+
+func (e *launcherOperationTerminalError) Error() string { return e.err.Error() }
+
+func (e *launcherOperationTerminalError) Unwrap() error { return e.err }
 
 type startupState struct {
 	Phase     StartupPhase
@@ -1412,24 +1422,44 @@ func (s *Server) startRuntimeOwnedRegistration(values map[string]string) {
 			}
 			operationID = handle.ID
 		}
-		return s.finishSetupRegistration(ctx, values, operationID)
+		return s.finishSetupRegistration(ctx, values, operationID, false)
 	})
 }
 
-func (s *Server) finishSetupRegistration(ctx context.Context, values map[string]string, operationID string) error {
+func (s *Server) finishSetupRegistration(ctx context.Context, values map[string]string, operationID string, consumeHandoff bool) error {
 	if operationID != "" {
 		if err := s.waitForLauncherOperation(ctx, operationID); err != nil {
-			if cleanupErr := clearSetupOperation(filepath.Dir(s.cfg.Path())); cleanupErr != nil {
-				err = fmt.Errorf("%w; also could not clear setup operation state: %v", err, cleanupErr)
+			if !consumeHandoff && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+				// The submitting dashboard is commonly cancelled because the
+				// launcher is replacing its container. The handoff remains owned
+				// by the replacement and must not be turned into a failure here.
+				return nil
+			}
+			if consumeHandoff {
+				var terminalErr *launcherOperationTerminalError
+				if errors.As(err, &terminalErr) {
+					if cleanupErr := clearSetupOperation(filepath.Dir(s.cfg.Path())); cleanupErr != nil {
+						err = fmt.Errorf("%w; also could not clear setup operation state: %v", err, cleanupErr)
+					}
+				}
 			}
 			s.setStartupState(StartupNeedsAttention, "Setup saved, but launcher reconciliation failed: "+err.Error())
 			return err
 		}
 		s.setStartupState(StartupRegistering, "Runtime is ready. Resolving the public URL and registering the runner.")
 	}
-	if err := s.registerCurrent(ctx, values); err != nil {
+	if err := s.runtimeLifecycle(cloneStringMap(values)).RegisterRunning(ctx); err != nil {
 		s.setStartupState(StartupNeedsAttention, "Setup saved, but runner registration failed: "+err.Error())
-		if operationID != "" {
+		if operationID != "" && consumeHandoff {
+			if cleanupErr := clearSetupOperation(filepath.Dir(s.cfg.Path())); cleanupErr != nil {
+				return fmt.Errorf("%w; also could not clear setup operation state: %v", err, cleanupErr)
+			}
+		}
+		return err
+	}
+	if err := s.startSetupRuntime(ctx); err != nil {
+		s.setStartupState(StartupNeedsAttention, "Runner registered, but execution runtime could not start: "+err.Error())
+		if operationID != "" && consumeHandoff {
 			if cleanupErr := clearSetupOperation(filepath.Dir(s.cfg.Path())); cleanupErr != nil {
 				return fmt.Errorf("%w; also could not clear setup operation state: %v", err, cleanupErr)
 			}
@@ -1457,6 +1487,9 @@ func (s *Server) waitForLauncherOperation(ctx context.Context, operationID strin
 	for {
 		result, err := launcher.RequestOperationStatus(waitCtx, s.launcherSocket, operationID)
 		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "operation not found") {
+				return &launcherOperationTerminalError{err: err}
+			}
 			return err
 		}
 		switch result.Phase {
@@ -1464,12 +1497,12 @@ func (s *Server) waitForLauncherOperation(ctx context.Context, operationID strin
 			return nil
 		case launcher.PhaseFailed:
 			if result.Error != "" {
-				return errors.New(result.Error)
+				return &launcherOperationTerminalError{err: errors.New(result.Error)}
 			}
 			if result.Message != "" {
-				return errors.New(result.Message)
+				return &launcherOperationTerminalError{err: errors.New(result.Message)}
 			}
-			return errors.New("launcher operation failed")
+			return &launcherOperationTerminalError{err: errors.New("launcher operation failed")}
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
 		select {
@@ -1477,6 +1510,40 @@ func (s *Server) waitForLauncherOperation(ctx context.Context, operationID strin
 			timer.Stop()
 			return fmt.Errorf("timed out waiting for launcher operation %s: %w", operationID, waitCtx.Err())
 		case <-timer.C:
+		}
+	}
+}
+
+func (s *Server) startSetupRuntime(ctx context.Context) error {
+	if strings.TrimSpace(s.runtimeControlFile) == "" {
+		return nil
+	}
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "runtime-state"), []byte("starting\n"), 0o600); err != nil {
+		return fmt.Errorf("mark runtime startup: %w", err)
+	}
+	if err := writeSetupRuntimeControl(s.runtimeControlFile); err != nil {
+		return err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		raw, err := os.ReadFile(filepath.Join(configDir, "runtime-state"))
+		if err == nil {
+			state := strings.TrimSpace(string(raw))
+			if state == "running" {
+				return nil
+			}
+			if strings.HasPrefix(state, "failed:") {
+				return fmt.Errorf("runtime startup failed: %s", strings.TrimSpace(strings.TrimPrefix(state, "failed:")))
+			}
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("timed out waiting for execution runtime: %w", waitCtx.Err())
+		case <-ticker.C:
 		}
 	}
 }
@@ -1520,14 +1587,15 @@ func (s *Server) startExistingRuntimeJob(values map[string]string) {
 		LogBase:   1,
 		LogNextID: 1,
 	}, func(ctx context.Context) error {
-		if s.runtimeOwned && s.launcherSocket != "" {
+		setupPending := fileExists(filepath.Join(filepath.Dir(s.cfg.Path()), "setup-pending"))
+		if s.runtimeOwned && s.launcherSocket != "" && setupPending {
 			operationID, err := readSetupOperation(filepath.Dir(s.cfg.Path()))
 			if err != nil {
 				message := "Setup cannot resume because the launcher reconciliation operation is unavailable: " + err.Error()
 				s.setStartupState(StartupNeedsAttention, message)
 				return errors.New(message)
 			}
-			return s.finishSetupRegistration(ctx, values, operationID)
+			return s.finishSetupRegistration(ctx, values, operationID, true)
 		}
 		s.setStartupState(StartupRegistering, "Runner already running. Updating Credimi registration.")
 		if err := s.runtimeLifecycle(cloneStringMap(values)).RegisterRunning(ctx); err != nil {
@@ -1961,6 +2029,16 @@ func writeNativeRuntimeControl(path, action string) error {
 	}
 	if err := os.WriteFile(path, []byte(action+"\n"), 0o600); err != nil {
 		return fmt.Errorf("write native runtime control: %w", err)
+	}
+	return nil
+}
+
+func writeSetupRuntimeControl(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte("setup-ready\n"), 0o600); err != nil {
+		return fmt.Errorf("write setup runtime control: %w", err)
 	}
 	return nil
 }

@@ -411,12 +411,8 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	previousRuntimeControl, hadRuntimeControl := os.LookupEnv(dashboard.RuntimeControlFileEnv)
-	if stdruntime.GOOS == "darwin" {
-		if err := os.Setenv(dashboard.RuntimeControlFileEnv, filepath.Join(configDir, "runtime-control")); err != nil {
-			return err
-		}
-	} else {
-		_ = os.Unsetenv(dashboard.RuntimeControlFileEnv)
+	if err := os.Setenv(dashboard.RuntimeControlFileEnv, filepath.Join(configDir, "runtime-control")); err != nil {
+		return err
 	}
 	defer func() {
 		if hadRuntimeControl {

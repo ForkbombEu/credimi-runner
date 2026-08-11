@@ -349,6 +349,9 @@ func TestRuntimeOwnedSetupRecoversLauncherOperationAfterReplacement(t *testing.T
 		t.Fatal(err)
 	}
 	<-started
+	if !fileExists(setupOperationPath(configDir)) {
+		t.Fatal("launcher did not persist setup operation handoff")
+	}
 
 	replacement := newTestServer(t)
 	replacement.cfg.path = submitter.cfg.Path()
@@ -356,6 +359,10 @@ func TestRuntimeOwnedSetupRecoversLauncherOperationAfterReplacement(t *testing.T
 	replacement.runtimeOwned = true
 	replacement.launcherSocket = socket
 	replacement.startExistingRuntimeJob(replacement.cfg.Snapshot())
+	waitForCondition(t, func() bool {
+		snapshot := replacement.startupSnapshot()
+		return snapshot.Phase == StartupWaitingRunner && fileExists(setupOperationPath(configDir))
+	})
 	close(release)
 	waitForCondition(t, func() bool {
 		snapshot := replacement.startupSnapshot()
@@ -364,6 +371,40 @@ func TestRuntimeOwnedSetupRecoversLauncherOperationAfterReplacement(t *testing.T
 	if fileExists(setupOperationPath(configDir)) || fileExists(filepath.Join(configDir, "setup-pending")) {
 		t.Fatal("terminal setup operation state was not cleared")
 	}
+}
+
+func TestRuntimeOwnedSetupSubmitterCancellationPreservesHandoff(t *testing.T) {
+	s := newTestServer(t)
+	configDir := filepath.Dir(s.cfg.Path())
+	socket := filepath.Join(configDir, "control.sock")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.finishSetupRegistration(ctx, s.cfg.Snapshot(), handle.ID, false); err != nil {
+		t.Fatalf("cancelled setup submitter = %v", err)
+	}
+	if got, err := os.ReadFile(setupOperationPath(configDir)); err != nil || strings.TrimSpace(string(got)) != handle.ID {
+		t.Fatalf("setup operation handoff after submitter cancellation = %q, %v", got, err)
+	}
+	close(release)
 }
 
 func TestRuntimeOwnedSetupSurfacesLauncherFailureAfterReplacement(t *testing.T) {
@@ -423,6 +464,115 @@ func TestRuntimeOwnedSetupMissingOperationDoesNotRemainRunning(t *testing.T) {
 	})
 	if !strings.Contains(replacement.startupSnapshot().Message, "operation is unavailable") {
 		t.Fatalf("missing operation was not reported: %q", replacement.startupSnapshot().Message)
+	}
+}
+
+func TestRuntimeOwnedSetupStaleOperationIsTerminallyReported(t *testing.T) {
+	s := newTestServer(t)
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "setup-pending"), []byte("pending\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(configDir, "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	if err := os.WriteFile(setupOperationPath(configDir), []byte("reconcile-config-stale\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.runtimeOwned = true
+	s.launcherSocket = socket
+	s.startExistingRuntimeJob(s.cfg.Snapshot())
+	waitForCondition(t, func() bool {
+		snapshot := s.startupSnapshot()
+		return snapshot.Phase == StartupNeedsAttention && !snapshot.running
+	})
+	if !strings.Contains(s.startupSnapshot().Message, "operation not found") {
+		t.Fatalf("stale operation was not reported: %q", s.startupSnapshot().Message)
+	}
+	if fileExists(setupOperationPath(configDir)) {
+		t.Fatal("stale setup operation was not cleared")
+	}
+}
+
+func TestSetupRuntimeHandoffWaitsForConfirmedRuntimeState(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeControlFile = filepath.Join(t.TempDir(), "runtime-control")
+	started := make(chan struct{})
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			raw, err := os.ReadFile(s.runtimeControlFile)
+			if err == nil && string(raw) == "setup-ready\n" {
+				close(started)
+				_ = os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state"), []byte("running\n"), 0o600)
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if err := s.startSetupRuntime(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("setup runtime handoff was not observed")
+	}
+}
+
+func TestSetupRuntimeHandoffSurfacesRuntimeFailure(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeControlFile = filepath.Join(t.TempDir(), "runtime-control")
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(s.runtimeControlFile); err == nil {
+				_ = os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state"), []byte("failed: workers failed\n"), 0o600)
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if err := s.startSetupRuntime(context.Background()); err == nil || !strings.Contains(err.Error(), "workers failed") {
+		t.Fatalf("runtime failure = %v", err)
+	}
+}
+
+func TestWriteSetupRuntimeControlIsPrivateAndActionable(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeSetupRuntimeControl(""); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "runtime-control")
+	if err := writeSetupRuntimeControl(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("setup runtime control mode = %o", info.Mode().Perm())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "setup-ready\n" {
+		t.Fatalf("setup runtime control content = %q, err = %v", raw, err)
+	}
+	if err := writeSetupRuntimeControl(filepath.Join(dir, "missing", "runtime-control")); err == nil || !strings.Contains(err.Error(), "write setup runtime control") {
+		t.Fatalf("setup runtime control write error = %v", err)
+	}
+}
+
+func TestSetupRuntimeHandoffReportsControlWriteFailure(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeControlFile = filepath.Join(t.TempDir(), "missing", "runtime-control")
+	if err := s.startSetupRuntime(context.Background()); err == nil || !strings.Contains(err.Error(), "write setup runtime control") {
+		t.Fatalf("setup runtime control failure = %v", err)
 	}
 }
 
@@ -509,7 +659,7 @@ func TestRuntimeOwnedSetupClearsOperationAfterRegistrationFailure(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = s.finishSetupRegistration(context.Background(), s.cfg.Snapshot(), handle.ID)
+	err = s.finishSetupRegistration(context.Background(), s.cfg.Snapshot(), handle.ID, true)
 	if err == nil || !strings.Contains(err.Error(), "502") {
 		t.Fatalf("registration failure = %v", err)
 	}
@@ -2838,6 +2988,8 @@ func TestServerExistingRuntimeJobRegistersWithoutRestart(t *testing.T) {
 	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
 	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	s.runtimeOwned = true
+	s.launcherSocket = filepath.Join(t.TempDir(), "control.sock")
 	s.startExistingRuntimeJob(s.cfg.Snapshot())
 	waitForCondition(t, func() bool { return s.startupSnapshot().Phase == StartupReady && !s.startupSnapshot().running })
 	if s.manager.(*fakeManager).startCalls != 0 {
