@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	stdlog "log"
 	"net"
@@ -10,6 +11,7 @@ import (
 	stdruntime "runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/androidtools"
@@ -32,6 +34,7 @@ type containerLauncherManager interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 	UpdateImage(context.Context) error
+	Configure(dashboardruntime.Values)
 	Status(context.Context) dashboardruntime.RuntimeStatus
 	Close() error
 }
@@ -133,6 +136,8 @@ func applyBootstrapValues(values map[string]string) error {
 }
 
 func runContainerLauncher(cmd *cobra.Command, configDir string, values map[string]string) error {
+	bootstrap := hostBootstrapContext(!fileExists(filepath.Join(configDir, "config.toml")))
+	values = map[string]string(bootstrap.Apply(dashboardruntime.Values(values)))
 	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(values), stdruntime.GOOS)
 	if err != nil {
 		return err
@@ -143,9 +148,52 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	}
 	manager := newContainerLauncherManager(binaryPath, configDir, normalized)
 	defer manager.Close()
-	control, err := launcher.Serve(filepath.Join(configDir, "control.sock"), manager.UpdateImage, func() bool {
+	var valuesMu sync.RWMutex
+	currentValues := normalized
+	reconcile := func(ctx context.Context) error {
+		config, err := dashboard.LoadConfig(configDir)
+		if err != nil {
+			return fmt.Errorf("reload configuration for reconciliation: %w", err)
+		}
+		nextInput := dashboardruntime.Values(config.Snapshot())
+		nextInput = hostBootstrapContext(false).Apply(nextInput)
+		next, err := dashboardruntime.NormalizeValues(nextInput, stdruntime.GOOS)
+		if err != nil {
+			return fmt.Errorf("normalize configuration for reconciliation: %w", err)
+		}
+		valuesMu.Lock()
+		previous := currentValues
+		currentValues = next
+		valuesMu.Unlock()
+		diff := dashboardruntime.DiffValuesForOS(previous, next, stdruntime.GOOS)
+		manager.Configure(next)
+		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
+			if err := manager.Stop(ctx); err != nil {
+				return fmt.Errorf("stop runtime for configuration reconciliation: %w", err)
+			}
+			if err := manager.Start(ctx); err != nil {
+				return fmt.Errorf("start runtime after configuration reconciliation: %w", err)
+			}
+		}
+		return nil
+	}
+	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), manager.UpdateImage, func() bool {
 		status := manager.Status(context.Background())
 		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate || readActiveMobileActivities(configDir)
+	}, launcher.Operations{
+		ReconcileConfig: reconcile,
+		QuickTunnelURL: func(ctx context.Context) (string, error) {
+			resolver, ok := manager.(interface {
+				QuickTunnelURL(context.Context) (string, error)
+			})
+			if !ok {
+				return "", errors.New("quick tunnel URL discovery is unavailable")
+			}
+			return resolver.QuickTunnelURL(ctx)
+		},
+		RuntimeStart:   func(ctx context.Context) error { return writeRuntimeCommand(configDir, "start") },
+		RuntimeStop:    func(ctx context.Context) error { return writeRuntimeCommand(configDir, "stop") },
+		RuntimeRestart: func(ctx context.Context) error { return writeRuntimeCommand(configDir, "restart") },
 	})
 	if err != nil {
 		return err
@@ -177,6 +225,38 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	}
 }
 
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func hostBootstrapContext(beforeSetup bool) dashboardruntime.BootstrapContext {
+	home, _ := os.UserHomeDir()
+	return dashboardruntime.BootstrapContext{
+		RunnerImage: func() string {
+			if beforeSetup {
+				return bootstrapImage
+			}
+			return ""
+		}(),
+		PullPolicy: func() string {
+			if beforeSetup {
+				return bootstrapPullPolicy
+			}
+			return ""
+		}(),
+		HostUID:             os.Getuid(),
+		HostGID:             os.Getgid(),
+		HostHome:            home,
+		HostAndroidDir:      filepath.Join(home, ".android"),
+		HostGoldenRoot:      filepath.Join(home, "avd-golden"),
+		ContainerAndroidDir: "/root/.android",
+		ContainerAVDHome:    "/root/.android/avd",
+		ContainerGoldenRoot: "/avd-golden",
+		HostNetwork:         beforeSetup,
+	}
+}
+
 func readActiveMobileActivities(configDir string) bool {
 	raw, err := os.ReadFile(filepath.Join(configDir, "active-mobile-activities"))
 	if err != nil {
@@ -186,6 +266,41 @@ func readActiveMobileActivities(configDir string) bool {
 	return err == nil && count > 0
 }
 
+func hasApplyClass(diff dashboardruntime.ConfigDiff, class dashboardruntime.ApplyClass) bool {
+	for _, candidate := range diff.Classes {
+		if candidate == class {
+			return true
+		}
+	}
+	return false
+}
+
+func writeRuntimeCommand(configDir, action string) error {
+	switch action {
+	case "start", "stop", "restart":
+	default:
+		return fmt.Errorf("unsupported runtime action %q", action)
+	}
+	temporary, err := os.CreateTemp(configDir, ".runtime-control-*")
+	if err != nil {
+		return fmt.Errorf("create runtime control request: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.WriteString(action + "\n"); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, filepath.Join(configDir, "runtime-control"))
+}
+
 // runApplicationRuntime is the one foreground application unit used by both
 // native macOS startup and the Linux managed container.
 func runApplicationRuntime(cmd *cobra.Command, args []string) error {
@@ -193,6 +308,21 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
 	}
+	previousRuntimeControl, hadRuntimeControl := os.LookupEnv(dashboard.RuntimeControlFileEnv)
+	if stdruntime.GOOS == "darwin" {
+		if err := os.Setenv(dashboard.RuntimeControlFileEnv, filepath.Join(configDir, "runtime-control")); err != nil {
+			return err
+		}
+	} else {
+		_ = os.Unsetenv(dashboard.RuntimeControlFileEnv)
+	}
+	defer func() {
+		if hadRuntimeControl {
+			_ = os.Setenv(dashboard.RuntimeControlFileEnv, previousRuntimeControl)
+		} else {
+			_ = os.Unsetenv(dashboard.RuntimeControlFileEnv)
+		}
+	}()
 	serverHost := host
 	if serverHost == "127.0.0.1" || serverHost == "" {
 		serverHost = "0.0.0.0"

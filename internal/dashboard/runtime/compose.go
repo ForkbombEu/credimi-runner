@@ -57,17 +57,17 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	}
 
 	var builder strings.Builder
-	// A Linux USB runner uses the host network so it can talk to the host ADB
-	// daemon. Caddy must use that namespace too: reaching the host through
-	// host.docker.internal resolves to Docker's bridge gateway, which is not a
-	// reliable route back to a host-networked runner on every Docker setup.
-	caddyOnHost := spec.NetworkMode == "host" || plan.Backend == DefaultNativeBackend
+	// The application runner may use host networking for Linux USB discovery,
+	// but edge services always remain on the ingress bridge. This is the known
+	// working topology: Caddy reaches a host-networked runner via
+	// host.docker.internal and cloudflared reaches Caddy by service name.
+	caddyOnHost := plan.Backend == DefaultNativeBackend
 	builder.WriteString("services:\n")
 	if plan.Backend != DefaultNativeBackend {
 		writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost, normalized["CREDIMI_CONFIG_DIR"], normalized["DASHBOARD_PORT"])
 	}
 	writeCaddyService(&builder, caddyOnHost, plan.Backend == DefaultNativeBackend)
-	writeTunnelService(&builder, caddyOnHost)
+	writeTunnelService(&builder, caddyOnHost, QuickTunnelMetricsPort(plan))
 	writeNamedTunnelService(&builder)
 	fmt.Fprintf(&builder, `
 networks:
@@ -93,7 +93,10 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	builder.WriteString("    command:\n      - internal-runtime\n")
 	// Configuration is TOML and is mounted by the unified runner container;
 	// Compose must not treat it as a dotenv file.
-	fmt.Fprintf(builder, "    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n      CREDIMI_RUNNER_LAUNCHER_SOCKET: /etc/credimi-runner/control.sock\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	fmt.Fprintf(builder, "    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n      CREDIMI_RUNNER_LAUNCHER_SOCKET: /etc/credimi-runner/control.sock\n      CREDIMI_BOOTSTRAP_IMAGE: \"${CREDIMI_BOOTSTRAP_IMAGE:-}\"\n      CREDIMI_BOOTSTRAP_PULL_POLICY: \"${CREDIMI_BOOTSTRAP_PULL_POLICY:-}\"\n      CREDIMI_CONFIG_OWNER_UID: \"${CREDIMI_CONFIG_OWNER_UID:-}\"\n      CREDIMI_CONFIG_OWNER_GID: \"${CREDIMI_CONFIG_OWNER_GID:-}\"\n      CREDIMI_HOST_HOME: \"${CREDIMI_HOST_HOME:-}\"\n      CREDIMI_CONTAINER_ANDROID_DIR: \"${CREDIMI_CONTAINER_ANDROID_DIR:-/root/.android}\"\n      CREDIMI_CONTAINER_AVD_HOME: \"${CREDIMI_CONTAINER_AVD_HOME:-/root/.android/avd}\"\n      CREDIMI_CONTAINER_GOLDEN_ROOT: \"${CREDIMI_CONTAINER_GOLDEN_ROOT:-/avd-golden}\"\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
+	if spec.NetworkMode == "host" {
+		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}\"\n")
+	}
 	if spec.HasADB && spec.NetworkMode != "host" {
 		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
 	}
@@ -109,8 +112,13 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	fmt.Fprintf(builder, "      - %s:/etc/credimi-runner\n", composePath(configDir))
 	if spec.ADBKeysPath != "" {
 		fmt.Fprintf(builder, "      - %s:/root/.android:ro\n", spec.ADBKeysPath)
+	} else if spec.HostAndroidDir != "" {
+		fmt.Fprintf(builder, "      - %s:/root/.android\n", composePath(spec.HostAndroidDir))
 	} else {
 		builder.WriteString("      - adbkeys:/root/.android\n")
+	}
+	if spec.HostGoldenRoot != "" {
+		fmt.Fprintf(builder, "      - %s:/avd-golden\n", composePath(spec.HostGoldenRoot))
 	}
 	builder.WriteString("      - runner_state:/var/lib/credimi-runner\n      - runner_tools:/opt/credimi-runner/tools\n      - android_sdk:/opt/android-sdk\n")
 	if spec.NetworkMode == "host" {
@@ -152,6 +160,8 @@ type sharedRunnerRuntime struct {
 	ToolCacheVolume string
 	SDKVolume       string
 	ADBKeysPath     string
+	HostAndroidDir  string
+	HostGoldenRoot  string
 }
 
 // SharedRunnerImage reports the actual image and pull policy of the one
@@ -184,7 +194,7 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 		}
 		inventory = RunnerRuntimeConfig{}
 	}
-	spec := sharedRunnerRuntime{Image: defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), PullPolicy: defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), NetworkMode: "bridge", StateVolume: defaultIfEmpty(values["ANDROID_STATE_VOLUME"], "credimi-runner-state"), ToolCacheVolume: defaultIfEmpty(values["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"), SDKVolume: defaultIfEmpty(values["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"), ADBKeysPath: values["ANDROID_ADB_KEYS_PATH"]}
+	spec := sharedRunnerRuntime{Image: defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), PullPolicy: defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), NetworkMode: "bridge", StateVolume: defaultIfEmpty(values["ANDROID_STATE_VOLUME"], "credimi-runner-state"), ToolCacheVolume: defaultIfEmpty(values["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"), SDKVolume: defaultIfEmpty(values["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"), ADBKeysPath: values["ANDROID_ADB_KEYS_PATH"], HostAndroidDir: values[HostAndroidDirEnv], HostGoldenRoot: values[HostGoldenRootEnv]}
 	for _, device := range inventory.Devices {
 		if !device.Enabled {
 			continue
@@ -219,6 +229,9 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 	if goos == "linux" && spec.HasUSB {
 		spec.NetworkMode = "host"
 	}
+	if goos == "linux" && strings.EqualFold(values[BootstrapHostNetworkEnv], "true") {
+		spec.NetworkMode = "host"
+	}
 	spec.HasKVM = goos == "linux" && kvmAvailable
 	return spec, nil
 }
@@ -246,9 +259,6 @@ func composeEnv(values Values, plan RuntimePlan, goos string) []string {
 	}
 
 	caddyOnHost := plan.Backend == DefaultNativeBackend
-	if spec, err := sharedRunnerSpec(normalized, goos); err == nil {
-		caddyOnHost = caddyOnHost || spec.NetworkMode == "host"
-	}
 	tunnelURL := "http://caddy:80"
 	if caddyOnHost {
 		tunnelURL = "http://127.0.0.1:80"
@@ -266,6 +276,14 @@ func composeEnv(values Values, plan RuntimePlan, goos string) []string {
 		"ADB_SERVER_SOCKET=" + defaultIfEmpty(normalized["ADB_SERVER_SOCKET"], "tcp:host.docker.internal:5037"),
 		"COMPOSE_PROGRESS=plain",
 		"DOCKER_CLI_HINTS=false",
+	}
+	for _, key := range []string{
+		BootstrapImageEnv, BootstrapPullPolicyEnv, ConfigOwnerUIDEnv,
+		ConfigOwnerGIDEnv, HostHomeEnv, HostAndroidDirEnv, HostGoldenRootEnv,
+		ContainerAndroidDirEnv, ContainerAVDHomeEnv, ContainerGoldenRootEnv,
+		BootstrapHostNetworkEnv,
+	} {
+		overrides = append(overrides, key+"="+normalized[key])
 	}
 	return replaceEnvironment(os.Environ(), overrides...)
 }
@@ -349,12 +367,12 @@ func writeCaddyService(builder *strings.Builder, caddyOnHost, native bool) {
 	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n")
 }
 
-func writeTunnelService(builder *strings.Builder, caddyOnHost bool) {
+func writeTunnelService(builder *strings.Builder, caddyOnHost bool, metricsPort int) {
 	builder.WriteString(`
   tunnel:
     image: cloudflare/cloudflared:latest
     restart: "no"
-    command: tunnel --no-autoupdate --url ${CREDIMI_TUNNEL_URL:-`)
+    command: tunnel --no-autoupdate --metrics 0.0.0.0:20241 --url ${CREDIMI_TUNNEL_URL:-`)
 	if caddyOnHost {
 		builder.WriteString("http://127.0.0.1:80")
 	} else {
@@ -367,6 +385,7 @@ func writeTunnelService(builder *strings.Builder, caddyOnHost bool) {
 		builder.WriteString("    network_mode: host\n")
 		return
 	}
+	fmt.Fprintf(builder, "    ports:\n      - \"127.0.0.1:%d:20241\"\n", metricsPort)
 	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n")
 }
 

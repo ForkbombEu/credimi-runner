@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -622,13 +624,6 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 	if len(lines) != 2 || lines[0].Message != "line-1" || lines[1].Message != "line-2" {
 		t.Fatalf("logs = %#v", lines)
 	}
-	manager.status.LastStartedAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	if _, err := manager.TunnelLogs(context.Background(), 100); err != nil {
-		t.Fatal(err)
-	}
-	if args := runner.runs[len(runner.runs)-1].Args; len(args) == 0 || args[len(args)-1] != "tunnel" || !strings.Contains(strings.Join(args, " "), "--since 2026-01-02T03:04:05Z") {
-		t.Fatalf("TunnelLogs args = %#v", args)
-	}
 	manager.Configure(Values{
 		"CREDIMI_RUNNER_ID":    "acme/runner-2",
 		"CREDIMI_DEVICE_COUNT": "1",
@@ -762,9 +757,6 @@ func TestLifecycleManagerConfigurationStatusAndLogs(t *testing.T) {
 	if err != nil || len(logs) != 2 || logs[1].Message != "second" {
 		t.Fatalf("logs = %#v err=%v", logs, err)
 	}
-	if _, err := manager.TunnelLogs(context.Background(), 5); err != nil {
-		t.Fatal(err)
-	}
 	manager.EmitLifecycle(lifecyclelog.Event{Event: "test"})
 	if err := manager.Close(); err != nil {
 		t.Fatal(err)
@@ -773,3 +765,69 @@ func TestLifecycleManagerConfigurationStatusAndLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestParseQuickTunnelHostname(t *testing.T) {
+	if got, err := ParseQuickTunnelHostname("abc.trycloudflare.com"); err != nil || got != "https://abc.trycloudflare.com" {
+		t.Fatalf("quick tunnel URL = %q, err=%v", got, err)
+	}
+	for _, hostname := range []string{"", "https://abc.trycloudflare.com", "abc/path"} {
+		if _, err := ParseQuickTunnelHostname(hostname); err == nil {
+			t.Fatalf("invalid hostname %q was accepted", hostname)
+		}
+	}
+}
+
+func TestLifecycleManagerReadsStructuredQuickTunnelEndpoint(t *testing.T) {
+	previous := quickTunnelHTTPClient
+	quickTunnelHTTPClient = httpClientFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"hostname":"abc.trycloudflare.com"}`)), Header: make(http.Header)}, nil
+	})
+	t.Cleanup(func() { quickTunnelHTTPClient = previous })
+	manager := NewLifecycleManagerForOS("", t.TempDir(), Values{"CREDIMI_SERVICE_MODE": "auto"}, &fakeRunner{}, "linux")
+	got, err := manager.QuickTunnelURL(context.Background())
+	if err != nil || got != "https://abc.trycloudflare.com" {
+		t.Fatalf("structured quick tunnel URL = %q, err=%v", got, err)
+	}
+}
+
+func TestLifecycleManagerReportsStructuredQuickTunnelFailures(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusCode int
+		status     string
+		body       string
+		clientErr  error
+		want       string
+	}{
+		{name: "transport", clientErr: errors.New("metrics endpoint unavailable"), want: "query quick tunnel diagnostics"},
+		{name: "http status", statusCode: http.StatusServiceUnavailable, status: "503 Service Unavailable", body: `{}`, want: "503 Service Unavailable"},
+		{name: "malformed json", statusCode: http.StatusOK, status: "200 OK", body: `{`, want: "decode quick tunnel diagnostics"},
+		{name: "hostname not ready", statusCode: http.StatusOK, status: "200 OK", body: `{"hostname":""}`, want: "hostname is not available yet"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			previous := quickTunnelHTTPClient
+			quickTunnelHTTPClient = httpClientFunc(func(*http.Request) (*http.Response, error) {
+				if tc.clientErr != nil {
+					return nil, tc.clientErr
+				}
+				return &http.Response{
+					StatusCode: tc.statusCode,
+					Status:     tc.status,
+					Body:       io.NopCloser(strings.NewReader(tc.body)),
+					Header:     make(http.Header),
+				}, nil
+			})
+			t.Cleanup(func() { quickTunnelHTTPClient = previous })
+			manager := NewLifecycleManagerForOS("", t.TempDir(), Values{"CREDIMI_SERVICE_MODE": "auto"}, &fakeRunner{}, "linux")
+			_, err := manager.QuickTunnelURL(context.Background())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("quick tunnel error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+type httpClientFunc func(*http.Request) (*http.Response, error)
+
+func (f httpClientFunc) Do(request *http.Request) (*http.Response, error) { return f(request) }

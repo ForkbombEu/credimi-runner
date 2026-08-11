@@ -6,24 +6,20 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
-const (
-	quickTunnelLogTail     = 1000
-	RunnerReadinessTimeout = 2 * time.Minute
-)
+const RunnerReadinessTimeout = 2 * time.Minute
 
 type runtimeProgressStarter interface {
 	StartWithProgress(context.Context, func(string)) error
 }
 
-type runtimeTunnelLogger interface {
-	TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error)
+type runtimeQuickTunnelResolver interface {
+	QuickTunnelURL(context.Context) (string, error)
 }
 
 // RuntimeLifecycle is the sole orchestration path for runtime actions. It
@@ -34,8 +30,10 @@ type RuntimeLifecycle struct {
 	Values  dashboardruntime.Values
 	GOOS    string
 
-	HTTPClient *http.Client
-	WaitReady  func(context.Context, dashboardruntime.Values) error
+	HTTPClient     *http.Client
+	WaitReady      func(context.Context, dashboardruntime.Values) error
+	QuickTunnelURL func(context.Context) (string, error)
+	SetPublicURL   func(string)
 }
 
 func (l RuntimeLifecycle) Start(ctx context.Context, progress func(string)) error {
@@ -125,6 +123,9 @@ func (l RuntimeLifecycle) Register(ctx context.Context) error {
 	}
 	if l.Manager != nil {
 		l.Manager.SetPublicURL(publicURL)
+	}
+	if l.SetPublicURL != nil {
+		l.SetPublicURL(publicURL)
 	}
 	client := &dashboardruntime.CredimiClient{
 		BaseURL:    strings.TrimSpace(l.Values["CREDIMI_URL"]),
@@ -322,31 +323,35 @@ func (l RuntimeLifecycle) registrationEndpoint(ctx context.Context) (string, str
 		}
 		return domain, "", nil
 	default:
-		status := l.Manager.Status(ctx)
-		if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
-			return publicURL, "", nil
+		if l.Manager != nil {
+			status := l.Manager.Status(ctx)
+			if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
+				return publicURL, "", nil
+			}
 		}
-		// LifecycleManager turns a positive tail into a Compose --since filter
-		// using LastStartedAt. Never search historical quick-tunnel output: old
-		// trycloudflare URLs expire on every restart and must not be registered.
-		tail := quickTunnelLogTail
-		matcher := regexp.MustCompile(`https://[a-zA-Z0-9.-]+\.trycloudflare\.com`)
+		resolver := l.QuickTunnelURL
+		if resolver == nil {
+			if quickTunnel, ok := l.Manager.(runtimeQuickTunnelResolver); ok {
+				resolver = quickTunnel.QuickTunnelURL
+			}
+		}
+		if resolver == nil {
+			return "", "", errors.New("quick tunnel URL discovery is unavailable")
+		}
 		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		var lastErr error
 		for {
-			logs, err := l.tunnelLogs(deadline, tail)
+			publicURL, err := resolver(deadline)
+			if err == nil && strings.TrimSpace(publicURL) != "" {
+				return strings.TrimSpace(publicURL), "", nil
+			}
 			if err != nil {
 				lastErr = err
 			} else {
-				for i := len(logs) - 1; i >= 0; i-- {
-					if found := matcher.FindString(logs[i].Message); found != "" {
-						return found, "", nil
-					}
-				}
-				lastErr = errors.New("no trycloudflare URL found in runtime logs")
+				lastErr = errors.New("quick tunnel URL is not available yet")
 			}
 			select {
 			case <-deadline.Done():
@@ -357,16 +362,12 @@ func (l RuntimeLifecycle) registrationEndpoint(ctx context.Context) (string, str
 	}
 }
 
-func (l RuntimeLifecycle) tunnelLogs(ctx context.Context, tail int) ([]dashboardruntime.LogLine, error) {
-	if logger, ok := l.Manager.(runtimeTunnelLogger); ok {
-		return logger.TunnelLogs(ctx, tail)
-	}
-	return l.Manager.Logs(ctx, tail)
-}
-
 func (l RuntimeLifecycle) clearAutoPublicURL() {
-	if strings.TrimSpace(l.Values["CREDIMI_SERVICE_MODE"]) == "auto" {
+	if l.Manager != nil && strings.TrimSpace(l.Values["CREDIMI_SERVICE_MODE"]) == "auto" {
 		l.Manager.SetPublicURL("")
+	}
+	if l.SetPublicURL != nil && strings.TrimSpace(l.Values["CREDIMI_SERVICE_MODE"]) == "auto" {
+		l.SetPublicURL("")
 	}
 }
 

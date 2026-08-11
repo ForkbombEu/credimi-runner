@@ -6,37 +6,67 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
+	"github.com/forkbombeu/credimi-runner/internal/dashboard"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/launcher"
 	"github.com/spf13/cobra"
 )
 
 type fakeContainerLauncherManager struct {
+	mu                       sync.Mutex
 	started, stopped, closed int
 	startErr                 error
+	configured               []dashboardruntime.Values
 }
 
 func (m *fakeContainerLauncherManager) Start(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.started++
 	return m.startErr
 }
 
 func (m *fakeContainerLauncherManager) Stop(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.stopped++
 	return nil
 }
 
 func (m *fakeContainerLauncherManager) UpdateImage(context.Context) error { return nil }
 
+func (m *fakeContainerLauncherManager) Configure(values dashboardruntime.Values) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.configured = append(m.configured, values)
+}
+
+func (m *fakeContainerLauncherManager) QuickTunnelURL(context.Context) (string, error) {
+	return "https://example.trycloudflare.com", nil
+}
+
 func (m *fakeContainerLauncherManager) Status(context.Context) dashboardruntime.RuntimeStatus {
 	return dashboardruntime.RuntimeStatus{}
 }
 
 func (m *fakeContainerLauncherManager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.closed++
 	return nil
+}
+
+func (m *fakeContainerLauncherManager) snapshot() (int, int, int, []dashboardruntime.Values) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	configured := append([]dashboardruntime.Values(nil), m.configured...)
+	return m.started, m.stopped, m.closed, configured
 }
 
 func TestProvisionInternalRuntimeToleratesMissingOrEmptyConfig(t *testing.T) {
@@ -57,6 +87,150 @@ func TestProvisionInternalRuntimeToleratesMissingOrEmptyConfig(t *testing.T) {
 	if err := provisionInternalRuntime(context.Background(), dir); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunContainerLauncherCarriesBootstrapHostContext(t *testing.T) {
+	oldImage, oldPolicy, oldOpen, oldSignal, oldFactory := bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldImage, oldPolicy, oldOpen, oldSignal, oldFactory
+	})
+	bootstrapImage, bootstrapPullPolicy, dashboardOpen = "credimi-runner:local", "never", false
+	var received dashboardruntime.Values
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, values dashboardruntime.Values) containerLauncherManager {
+		received = values
+		return manager
+	}
+	done := make(chan os.Signal, 1)
+	done <- syscall.SIGTERM
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return done, func() {} }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	if err := runContainerLauncher(command, t.TempDir(), map[string]string{"ANDROID_RUNNER_IMAGE": "credimi-runner:local", "ANDROID_PULL_POLICY": "never"}); err != nil {
+		t.Fatal(err)
+	}
+	if manager.started != 1 || manager.stopped != 1 || manager.closed != 1 {
+		t.Fatalf("launcher lifecycle = %#v", manager)
+	}
+	for _, key := range []string{dashboardruntime.ConfigOwnerUIDEnv, dashboardruntime.ConfigOwnerGIDEnv, dashboardruntime.HostHomeEnv, dashboardruntime.HostAndroidDirEnv, dashboardruntime.HostGoldenRootEnv} {
+		if received[key] == "" {
+			t.Fatalf("bootstrap context key %s was not propagated: %#v", key, received)
+		}
+	}
+	if received[dashboardruntime.BootstrapHostNetworkEnv] != "true" {
+		t.Fatalf("bootstrap host network = %q", received[dashboardruntime.BootstrapHostNetworkEnv])
+	}
+}
+
+func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
+	oldImage, oldPolicy, oldOpen, oldSignal, oldFactory := bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldImage, oldPolicy, oldOpen, oldSignal, oldFactory
+	})
+	bootstrapImage, bootstrapPullPolicy, dashboardOpen = "credimi-runner:local", "never", false
+	dir := t.TempDir()
+	signals := make(chan os.Signal, 1)
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- runContainerLauncher(command, dir, map[string]string{
+			"ANDROID_RUNNER_IMAGE": "credimi-runner:local",
+			"ANDROID_PULL_POLICY":  "never",
+		})
+	}()
+	socket := filepath.Join(dir, "control.sock")
+	waitForPath(t, socket)
+
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Server.APIListen = "127.0.0.1:19050"
+	cfg.Exposure.Mode = "manual"
+	cfg.Exposure.PublicURL = "https://runner.example"
+	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "if-not-present", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+	}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := dashboard.LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("saved TOML cannot be loaded for reconciliation: %v", err)
+	}
+	if _, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(hostBootstrapContext(false).Apply(loaded.Snapshot())), "linux"); err != nil {
+		t.Fatalf("saved TOML cannot be normalized for reconciliation: %v", err)
+	}
+	if err := launcher.RequestReconcile(context.Background(), socket); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		started, stopped, _, configured := manager.snapshot()
+		if len(configured) == 1 && started >= 2 && stopped >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	started, stopped, _, configured := manager.snapshot()
+	if len(configured) != 1 || started < 2 || stopped < 1 {
+		t.Fatalf("reconciliation state: started=%d stopped=%d configured=%d", started, stopped, len(configured))
+	}
+	if got := configured[0]["ANDROID_RUNNER_IMAGE"]; got != "published:stable" {
+		t.Fatalf("reconciliation used bootstrap image instead of TOML: %q", got)
+	}
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("container launcher did not stop")
+	}
+}
+
+func TestRunContainerLauncherReturnsManagerStartError(t *testing.T) {
+	oldFactory := newContainerLauncherManager
+	t.Cleanup(func() { newContainerLauncherManager = oldFactory })
+	want := errors.New("docker daemon unavailable")
+	manager := &fakeContainerLauncherManager{startErr: want}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	err := runContainerLauncher(command, t.TempDir(), map[string]string{
+		"ANDROID_RUNNER_IMAGE": "credimi-runner:local",
+		"ANDROID_PULL_POLICY":  "never",
+	})
+	if !errors.Is(err, want) || manager.closed != 1 {
+		t.Fatalf("launcher start error = %v, manager = %#v", err, manager)
+	}
+}
+
+func waitForPath(t *testing.T, path string) {
+	t.Helper()
+	waitForCondition(t, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
+}
+
+func waitForCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }
 
 func TestProvisionInternalRuntimeReportsMissingSDKManager(t *testing.T) {
@@ -204,6 +378,19 @@ func TestApplyBootstrapValuesUsesLocalImageAndValidatesPolicy(t *testing.T) {
 	bootstrapPullPolicy = "sometimes"
 	if err := applyBootstrapValues(values); err == nil || !strings.Contains(err.Error(), "invalid bootstrap pull policy") {
 		t.Fatalf("invalid policy error = %v", err)
+	}
+}
+
+func TestRunPublicRejectsInvalidBootstrapPolicyBeforeStartingDocker(t *testing.T) {
+	oldDir, oldImage, oldPolicy := dashboardConfigDir, bootstrapImage, bootstrapPullPolicy
+	t.Cleanup(func() { dashboardConfigDir, bootstrapImage, bootstrapPullPolicy = oldDir, oldImage, oldPolicy })
+	dashboardConfigDir = t.TempDir()
+	bootstrapImage, bootstrapPullPolicy = "credimi-runner:local", "sometimes"
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	err := runPublicForOS(command, nil, "linux")
+	if err == nil || !strings.Contains(err.Error(), "invalid bootstrap pull policy") {
+		t.Fatalf("invalid bootstrap policy error = %v", err)
 	}
 }
 

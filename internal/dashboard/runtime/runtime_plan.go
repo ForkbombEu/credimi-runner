@@ -134,6 +134,15 @@ func composeProjectName(configDir string) string {
 	return fmt.Sprintf("credimi-runner-%d-%08x", os.Getuid(), hash.Sum32())
 }
 
+// QuickTunnelMetricsPort returns the loopback-only host port used to expose
+// cloudflared's structured diagnostics to the outer launcher. It is stable for
+// a Compose project without consuming a globally fixed port.
+func QuickTunnelMetricsPort(plan RuntimePlan) int {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(plan.ComposeProject))
+	return 24000 + int(hash.Sum32()%10000)
+}
+
 func configFingerprint(configDir string, values Values) string {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(configDir))

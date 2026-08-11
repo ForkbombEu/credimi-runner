@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,6 +185,10 @@ type LifecycleManager struct {
 	lifecycle *lifecyclelog.Logger
 	verbose   *verboseLog
 }
+
+var quickTunnelHTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+} = http.DefaultClient
 
 func NewLifecycleManager(binary, configDir string, values Values, runner Runner) *LifecycleManager {
 	return NewLifecycleManagerForOS(binary, configDir, values, runner, runtime.GOOS)
@@ -835,10 +842,50 @@ func (m *LifecycleManager) Logs(ctx context.Context, tail int) ([]LogLine, error
 	return m.logs(ctx, tail, nil)
 }
 
-// TunnelLogs returns only quick-tunnel service output. URL discovery must not
-// scan noisy runner/emulator logs because doing so can exhaust its deadline.
-func (m *LifecycleManager) TunnelLogs(ctx context.Context, tail int) ([]LogLine, error) {
-	return m.logs(ctx, tail, []string{"tunnel"})
+// QuickTunnelURL reads cloudflared's local structured diagnostics endpoint.
+// The endpoint is published only on loopback by the generated Compose file.
+func (m *LifecycleManager) QuickTunnelURL(ctx context.Context) (string, error) {
+	m.mu.Lock()
+	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
+	port := QuickTunnelMetricsPort(plan)
+	m.mu.Unlock()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/quicktunnel", port), nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := quickTunnelHTTPClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("query quick tunnel diagnostics: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("quick tunnel diagnostics returned %s", response.Status)
+	}
+	var payload struct {
+		Hostname string `json:"hostname"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return "", fmt.Errorf("decode quick tunnel diagnostics: %w", err)
+	}
+	return ParseQuickTunnelHostname(payload.Hostname)
+}
+
+// ParseQuickTunnelHostname validates and normalizes cloudflared's structured
+// hostname without accepting an arbitrary public URL from the diagnostics
+// channel.
+func ParseQuickTunnelHostname(hostname string) (string, error) {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return "", errors.New("quick tunnel hostname is not available yet")
+	}
+	if strings.Contains(hostname, "/") || strings.Contains(hostname, "://") {
+		return "", fmt.Errorf("invalid quick tunnel hostname %q", hostname)
+	}
+	parsed, err := url.Parse("https://" + hostname)
+	if err != nil || parsed.Host != hostname {
+		return "", fmt.Errorf("invalid quick tunnel hostname %q", hostname)
+	}
+	return parsed.String(), nil
 }
 
 func (m *LifecycleManager) logs(ctx context.Context, tail int, services []string) ([]LogLine, error) {

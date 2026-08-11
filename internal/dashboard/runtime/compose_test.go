@@ -56,6 +56,37 @@ func TestComposeBootstrapsWithoutConfiguredInventory(t *testing.T) {
 	}
 }
 
+func TestComposeCarriesBootstrapHostContextForFirstRunDiscovery(t *testing.T) {
+	values := BootstrapContext{
+		RunnerImage:         "credimi-runner:local",
+		PullPolicy:          "never",
+		HostUID:             1001,
+		HostGID:             1002,
+		HostHome:            "/home/tester",
+		HostAndroidDir:      "/home/tester/.android",
+		HostGoldenRoot:      "/home/tester/avd-golden",
+		ContainerAndroidDir: "/root/.android",
+		ContainerAVDHome:    "/root/.android/avd",
+		ContainerGoldenRoot: "/avd-golden",
+		HostNetwork:         true,
+	}
+	content, err := ComposeYAML(values.Apply(Values{}), "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"/home/tester/.android:/root/.android",
+		"/home/tester/avd-golden:/avd-golden",
+		"CREDIMI_CONFIG_OWNER_UID: \"${CREDIMI_CONFIG_OWNER_UID:-}\"",
+		"CREDIMI_BOOTSTRAP_IMAGE: \"${CREDIMI_BOOTSTRAP_IMAGE:-}\"",
+		"network_mode: host",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("bootstrap Compose missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestWriteComposeFileUsesAtomicWritableConfigDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteComposeFile(dir, Values{"ANDROID_RUNNER_IMAGE": "runner:local", "ANDROID_PULL_POLICY": "never"}); err != nil {
@@ -216,8 +247,11 @@ func TestComposeUsesHostNetworkForLinuxUSBADB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content, "network_mode: host") || !strings.Contains(content, "caddy.reverse_proxy: \"127.0.0.1:") {
+	if !strings.Contains(content, "network_mode: host") || !strings.Contains(content, "caddy.reverse_proxy: \"host.docker.internal:") || !strings.Contains(content, "    caddy:\n") || !strings.Contains(content, "    networks:\n      - ingress") {
 		t.Fatalf("USB compose did not use the host network topology:\n%s", content)
+	}
+	if !strings.Contains(content, "--url ${CREDIMI_TUNNEL_URL:-http://caddy:80}") || !strings.Contains(content, "127.0.0.1:") {
+		t.Fatalf("USB edge services are not using the bridge topology:\n%s", content)
 	}
 }
 

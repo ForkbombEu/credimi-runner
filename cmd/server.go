@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -89,7 +91,8 @@ var serverCmd = &cobra.Command{
 		http.DefaultClient = observability.NewHTTPClient(http.DefaultClient)
 
 		store := server.NewProcessStore()
-		if configDir := os.Getenv("CREDIMI_RUNNER_CONFIG_DIR"); configDir != "" {
+		configDir := os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")
+		if configDir != "" {
 			if err := hydrateTypedRuntimeEnvironment(configDir); err != nil {
 				return err
 			}
@@ -98,6 +101,8 @@ var serverCmd = &cobra.Command{
 		srv := server.NewRunnerService(store, instance)
 		lifecycleCfg := server.LoadRunnerLifecycleConfig(instance)
 		lifecycleClient := server.NewRunnerLifecycleClient(lifecycleCfg, http.DefaultClient, store)
+		stopRuntimeControls := startRuntimeControlLoop(serveCtx, configDir, srv, lifecycleClient, store)
+		defer stopRuntimeControls()
 
 		// Bind before performing remote startup work. Worker recovery and the
 		// lifecycle resume request depend on external services and must not
@@ -212,6 +217,50 @@ var serverCmd = &cobra.Command{
 		)
 		return nil
 	},
+}
+
+func startRuntimeControlLoop(ctx context.Context, configDir string, srv interface {
+	StartExistingWorkers(context.Context) error
+}, lifecycle interface {
+	Pause(context.Context, string) error
+	Resume(context.Context, string) error
+}, store interface{ StopAll() }) func() {
+	controlCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(250 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-controlCtx.Done():
+				return
+			case <-ticker.C:
+				raw, err := os.ReadFile(filepath.Join(configDir, "runtime-control"))
+				if err != nil {
+					continue
+				}
+				_ = os.Remove(filepath.Join(configDir, "runtime-control"))
+				switch strings.TrimSpace(string(raw)) {
+				case "stop":
+					store.StopAll()
+					_ = lifecycle.Pause(controlCtx, "dashboard_stop")
+					_ = os.WriteFile(filepath.Join(configDir, "runtime-paused"), []byte("paused\n"), 0o600)
+				case "start":
+					if err := srv.StartExistingWorkers(controlCtx); err == nil {
+						_ = lifecycle.Resume(controlCtx, "dashboard_start")
+						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
+					}
+				case "restart":
+					store.StopAll()
+					_ = lifecycle.Pause(controlCtx, "dashboard_restart")
+					if err := srv.StartExistingWorkers(controlCtx); err == nil {
+						_ = lifecycle.Resume(controlCtx, "dashboard_restart")
+						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
+					}
+				}
+			}
+		}
+	}()
+	return cancel
 }
 
 func registerConfiguredDevices(ctx context.Context) error {

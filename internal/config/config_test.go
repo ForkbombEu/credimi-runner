@@ -41,6 +41,19 @@ func TestValidateForPlatformAcceptsSupportedInventory(t *testing.T) {
 	}
 }
 
+func TestConfiguredOwnerReadsLauncherIdentityWithoutWeakeningMode(t *testing.T) {
+	t.Setenv("CREDIMI_CONFIG_OWNER_UID", "1001")
+	t.Setenv("CREDIMI_CONFIG_OWNER_GID", "1002")
+	uid, gid, ok := configuredOwner()
+	if !ok || uid != 1001 || gid != 1002 {
+		t.Fatalf("configured owner = %d:%d, ok=%v", uid, gid, ok)
+	}
+	t.Setenv("CREDIMI_CONFIG_OWNER_UID", "not-a-user")
+	if _, _, ok := configuredOwner(); ok {
+		t.Fatal("invalid launcher owner was accepted")
+	}
+}
+
 func TestValidateForPlatformRejectsInvalidCombinations(t *testing.T) {
 	cases := []struct {
 		name, goos, want string

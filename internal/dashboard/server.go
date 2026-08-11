@@ -30,6 +30,12 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
+// RuntimeControlFileEnv names the private file channel used by the native
+// application to pause/resume its own execution workers while keeping the
+// dashboard alive. Linux runtime-owned dashboards use the launcher socket
+// instead.
+const RuntimeControlFileEnv = "CREDIMI_RUNNER_RUNTIME_CONTROL_FILE"
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP server. Stdlib net/http + Go 1.22 pattern routing. htmx for interaction,
 // SSE for live status. No third-party deps.
@@ -86,6 +92,8 @@ type Server struct {
 	startupProgress         func(string)
 	runtimeOwned            bool
 	launcherSocket          string
+	runtimeControlFile      string
+	publicURL               string
 	mu                      sync.RWMutex
 }
 
@@ -101,10 +109,7 @@ const (
 	StartupNeedsAttention StartupPhase = "needs_attention"
 )
 
-const (
-	quickTunnelLogTail = -1000
-	startupLogRetain   = 2000
-)
+const startupLogRetain = 2000
 
 type startupState struct {
 	Phase     StartupPhase
@@ -183,7 +188,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 			return dashboardruntime.RuntimeStatus{}
 		}
 		if owned {
-			return dashboardruntime.RuntimeStatus{Configured: cfg.Exists(), RunnerRunning: true}
+			return dashboardruntime.RuntimeStatus{Configured: cfg.Exists(), RunnerRunning: !runtimePaused(filepath.Dir(cfg.Path()))}
 		}
 		return manager.Status(context.Background())
 	}, func(ctx context.Context, values dashboardruntime.Values) controller.ObservedRuntime {
@@ -219,6 +224,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 		manager:                 manager,
 		runtimeOwned:            owned,
 		launcherSocket:          strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_LAUNCHER_SOCKET")),
+		runtimeControlFile:      strings.TrimSpace(os.Getenv(RuntimeControlFileEnv)),
 		operations:              operations,
 		lookupPath:              lookupPath,
 		statPath:                statPath,
@@ -554,6 +560,11 @@ func (s *Server) pageData(active string, payload any) PageData {
 	runtimeStatus := dashboardruntime.RuntimeStatus{}
 	if s.manager != nil {
 		runtimeStatus = s.manager.Status(context.Background())
+	} else if s.runtimeOwned {
+		s.mu.RLock()
+		publicURL := s.publicURL
+		s.mu.RUnlock()
+		runtimeStatus = dashboardruntime.RuntimeStatus{Configured: s.cfg.Exists(), RunnerRunning: !runtimePaused(s.composeDir), PublicURL: publicURL}
 	}
 	s.mu.RLock()
 	runtimeStatus.PendingRestart = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRestartRequired)
@@ -562,11 +573,13 @@ func (s *Server) pageData(active string, payload any) PageData {
 	maintenanceStatus := s.maintenance
 	s.mu.RUnlock()
 	payloadMap := map[string]any{
-		"RuntimeStatus": runtimeStatus,
-		"RuntimeOwned":  s.runtimeOwned,
-		"Startup":       s.startupSnapshot(),
-		"RunnerVersion": buildinfo.String(),
-		"Maintenance":   maintenanceStatus,
+		"RuntimeStatus":                 runtimeStatus,
+		"RuntimeOwned":                  s.runtimeOwned,
+		"LauncherControlAvailable":      s.launcherSocket != "",
+		"NativeRuntimeControlAvailable": s.runtimeControlFile != "" && s.launcherSocket == "",
+		"Startup":                       s.startupSnapshot(),
+		"RunnerVersion":                 buildinfo.String(),
+		"Maintenance":                   maintenanceStatus,
 	}
 	if p, ok := payload.(map[string]any); ok {
 		for key, value := range p {
@@ -582,6 +595,11 @@ func (s *Server) pageData(active string, payload any) PageData {
 		Pill:     s.hub.pillData(snap),
 		Data:     payloadMap,
 	}
+}
+
+func runtimePaused(configDir string) bool {
+	_, err := os.Stat(filepath.Join(configDir, "runtime-paused"))
+	return err == nil
 }
 
 func (s *Server) page(name string) http.HandlerFunc {
@@ -865,12 +883,11 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	}
 	switch device.Type {
 	case "android_emulator":
-		homeDir, _ := os.UserHomeDir()
-		androidKeysDir := filepath.Join(homeDir, ".android")
+		androidKeysDir, avdHome, goldenRoot := emulatorAssetPaths()
 		set("BASE_NAME", "credimi")
 		set("ANDROID_KEYS_DIR", androidKeysDir)
-		set("HOST_AVD_HOME_PATH", filepath.Join(androidKeysDir, "avd"))
-		set("HOST_AVD_GOLDEN_PATH", filepath.Join(homeDir, "avd-golden"))
+		set("HOST_AVD_HOME_PATH", avdHome)
+		set("HOST_AVD_GOLDEN_PATH", goldenRoot)
 		set("GOLDEN_PATH", "/avd-golden/credimi-golden")
 	case "android_phone", "redroid":
 	}
@@ -881,6 +898,28 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 		set("REDROID_DATA_DIR", "/home/credimi/redroid-data")
 		set("REDROID_DATA_TAR", "/home/credimi/redroid-data.tar")
 	}
+}
+
+// emulatorAssetPaths returns paths inside the runner. In Linux bootstrap mode
+// these are explicit mount targets backed by the launching user's home; using
+// os.UserHomeDir here would incorrectly resolve the container user's HOME.
+func emulatorAssetPaths() (androidKeysDir, avdHome, goldenRoot string) {
+	androidKeysDir = strings.TrimSpace(os.Getenv(dashboardruntime.ContainerAndroidDirEnv))
+	avdHome = strings.TrimSpace(os.Getenv(dashboardruntime.ContainerAVDHomeEnv))
+	goldenRoot = strings.TrimSpace(os.Getenv(dashboardruntime.ContainerGoldenRootEnv))
+	if androidKeysDir == "" || avdHome == "" || goldenRoot == "" {
+		homeDir, _ := os.UserHomeDir()
+		if androidKeysDir == "" {
+			androidKeysDir = filepath.Join(homeDir, ".android")
+		}
+		if avdHome == "" {
+			avdHome = filepath.Join(androidKeysDir, "avd")
+		}
+		if goldenRoot == "" {
+			goldenRoot = filepath.Join(homeDir, "avd-golden")
+		}
+	}
+	return androidKeysDir, avdHome, goldenRoot
 }
 
 func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page string) {
@@ -931,8 +970,8 @@ func (s *Server) saveConfigPage(w http.ResponseWriter, r *http.Request, page str
 			message = "Runner restarted with the new configuration."
 		}
 	} else if s.runtimeOwned && len(diff.ChangedKeys) > 0 {
-		if err := s.applyRuntimeOwnedRegistration(newSnapshot); err != nil {
-			message = "Configuration saved, but Credimi registration failed: " + err.Error()
+		if err := s.applyRuntimeOwnedConfig(diff, newSnapshot); err != nil {
+			message = "Configuration saved, but applying it to the outer launcher failed: " + err.Error()
 			appliedCleanly = false
 		}
 	} else {
@@ -1268,6 +1307,14 @@ func (s *Server) startRuntimeOwnedRegistration(values map[string]string) {
 		LogBase:   1,
 		LogNextID: 1,
 	}, func(ctx context.Context) error {
+		if s.launcherSocket != "" {
+			if err := launcher.RequestReconcile(ctx, s.launcherSocket); err != nil {
+				s.setStartupState(StartupNeedsAttention, "Setup saved, but launcher reconciliation failed: "+err.Error())
+				return err
+			}
+			s.setStartupState(StartupReady, "Setup saved. The outer launcher is applying the configuration.")
+			return nil
+		}
 		if err := s.registerCurrent(ctx, values); err != nil {
 			s.setStartupState(StartupNeedsAttention, "Setup saved, but runner registration failed: "+err.Error())
 			return err
@@ -1281,6 +1328,15 @@ func (s *Server) applyRuntimeOwnedRegistration(values map[string]string) error {
 	return s.runLifecycleOperation(controller.OperationRegistration, func(ctx context.Context) error {
 		return s.registerCurrent(ctx, values)
 	})
+}
+
+func (s *Server) applyRuntimeOwnedConfig(diff dashboardruntime.ConfigDiff, values map[string]string) error {
+	if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+		return s.runLifecycleOperation(controller.OperationRuntimeRestart, func(ctx context.Context) error {
+			return launcher.RequestReconcile(ctx, s.launcherSocket)
+		})
+	}
+	return s.applyRuntimeOwnedRegistration(values)
 }
 
 func (s *Server) bootstrapConfiguredRuntime() bool {
@@ -1672,7 +1728,7 @@ func (s *Server) controllerUpgradeImage(w http.ResponseWriter, r *http.Request) 
 var errRuntimeManagerUnavailable = errors.New("runtime manager unavailable")
 
 func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error) {
-	if s.manager == nil {
+	if s.manager == nil && (!s.runtimeOwned || (s.launcherSocket == "" && s.runtimeControlFile == "")) {
 		return controller.Snapshot{}, errRuntimeManagerUnavailable
 	}
 	var kind controller.OperationKind
@@ -1691,6 +1747,12 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 	}
 	values := s.cfg.Snapshot()
 	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, progress func(controller.Progress)) error {
+		if s.manager == nil {
+			if s.launcherSocket != "" {
+				return launcher.RequestRuntimeAction(ctx, s.launcherSocket, action)
+			}
+			return writeNativeRuntimeControl(s.runtimeControlFile, action)
+		}
 		lifecycle := s.runtimeLifecycle(values)
 		progressFn := func(message string) { progress(controller.Progress{Message: message}) }
 		switch kind {
@@ -1705,6 +1767,21 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 		}
 	})
 	return snapshot, err
+}
+
+func writeNativeRuntimeControl(path, action string) error {
+	switch action {
+	case "start", "stop", "restart":
+	default:
+		return fmt.Errorf("unsupported runtime action %q", action)
+	}
+	if strings.TrimSpace(path) == "" {
+		return errRuntimeManagerUnavailable
+	}
+	if err := os.WriteFile(path, []byte(action+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write native runtime control: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) submitImageUpgrade() (controller.Snapshot, error) {
@@ -1730,14 +1807,31 @@ func (s *Server) submitImageUpgrade() (controller.Snapshot, error) {
 }
 
 func (s *Server) runtimeLifecycle(values map[string]string) controller.RuntimeLifecycle {
-	return controller.RuntimeLifecycle{
+	lifecycle := controller.RuntimeLifecycle{
 		Manager: s.manager,
 		Values:  dashboardruntime.Values(values),
 		GOOS:    runtimeGOOS(),
 		WaitReady: func(ctx context.Context, values dashboardruntime.Values) error {
 			return s.runnerReady(ctx, values)
 		},
+		SetPublicURL: func(publicURL string) {
+			s.mu.Lock()
+			s.publicURL = strings.TrimSpace(publicURL)
+			s.mu.Unlock()
+		},
 	}
+	if s.manager != nil {
+		if resolver, ok := s.manager.(interface {
+			QuickTunnelURL(context.Context) (string, error)
+		}); ok {
+			lifecycle.QuickTunnelURL = resolver.QuickTunnelURL
+		}
+	} else if s.launcherSocket != "" {
+		lifecycle.QuickTunnelURL = func(ctx context.Context) (string, error) {
+			return launcher.RequestQuickTunnelURL(ctx, s.launcherSocket)
+		}
+	}
+	return lifecycle
 }
 
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
@@ -2241,15 +2335,14 @@ func (s *Server) androidEmulatorAssetsStatus(w http.ResponseWriter, r *http.Requ
 		baseName = dashboardruntime.DefaultBaseName
 	}
 	// A phone-only inventory has no emulator-specific indexed block yet. Use
-	// the established host defaults so adding the first emulator discovers the
-	// assets the one-device setup already placed in the user's home directory.
-	homeDir, _ := os.UserHomeDir()
-	androidKeysDir := filepath.Join(homeDir, ".android")
+	// the mounted runner paths so adding the first emulator discovers assets
+	// already present in the launching user's home directory.
+	androidKeysDir, defaultAVDHome, defaultGoldenRoot := emulatorAssetPaths()
 	if avdHome == "" {
-		avdHome = filepath.Join(androidKeysDir, "avd")
+		avdHome = defaultAVDHome
 	}
 	if goldenRoot == "" {
-		goldenRoot = filepath.Join(homeDir, "avd-golden")
+		goldenRoot = defaultGoldenRoot
 	}
 	goldenLeaf := goldenLeafFromPath(goldenPath, baseName)
 	status := AndroidEmulatorAssetsStatus{
@@ -2300,13 +2393,12 @@ func (s *Server) androidEmulatorAssetsDownload(w http.ResponseWriter, r *http.Re
 	}
 	avdHome := strings.TrimSpace(req.AVDHome)
 	goldenRoot := strings.TrimSpace(req.GoldenRoot)
-	homeDir, _ := os.UserHomeDir()
-	androidKeysDir := filepath.Join(homeDir, ".android")
+	_, defaultAVDHome, defaultGoldenRoot := emulatorAssetPaths()
 	if avdHome == "" {
-		avdHome = filepath.Join(androidKeysDir, "avd")
+		avdHome = defaultAVDHome
 	}
 	if goldenRoot == "" {
-		goldenRoot = filepath.Join(homeDir, "avd-golden")
+		goldenRoot = defaultGoldenRoot
 	}
 	goldenLeaf := goldenLeafFromPath(req.GoldenPath, baseName)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,4 +110,91 @@ func TestLauncherRechecksBusyStateBeforeReplacement(t *testing.T) {
 	if got := checks.Load(); got < 2 {
 		t.Fatalf("busy checks = %d, want an admission and final check", got)
 	}
+}
+
+func TestLauncherTypedOperationsAreAllowListed(t *testing.T) {
+	called := make(chan string, 2)
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		ReconcileConfig: func(context.Context) error { called <- ReconcileConfig; return nil },
+		RuntimeRestart:  func(context.Context) error { called <- RuntimeRestart; return nil },
+		QuickTunnelURL:  func(context.Context) (string, error) { return "https://current.trycloudflare.com", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := RequestReconcile(context.Background(), server.listener.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequestRuntimeAction(context.Background(), server.listener.Addr().String(), "restart"); err != nil {
+		t.Fatal(err)
+	}
+	url, err := RequestQuickTunnelURL(context.Background(), server.listener.Addr().String())
+	if err != nil || url != "https://current.trycloudflare.com" {
+		t.Fatalf("quick tunnel URL=%q err=%v", url, err)
+	}
+	for range 2 {
+		select {
+		case <-called:
+		case <-time.After(time.Second):
+			t.Fatal("typed launcher operation was not invoked")
+		}
+	}
+	if err := RequestRuntimeAction(context.Background(), server.listener.Addr().String(), "exec"); err == nil {
+		t.Fatal("arbitrary runtime action was accepted")
+	}
+}
+
+func TestLauncherTypedOperationsReportRejectedAndUnconfiguredRequests(t *testing.T) {
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		QuickTunnelURL: func(context.Context) (string, error) { return "", errors.New("tunnel is not ready") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	path := server.listener.Addr().String()
+	if _, err := RequestQuickTunnelURL(context.Background(), path); err == nil || !strings.Contains(err.Error(), "tunnel is not ready") {
+		t.Fatalf("quick tunnel rejection = %v", err)
+	}
+	if err := RequestReconcile(context.Background(), path); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("unconfigured reconcile = %v", err)
+	}
+}
+
+func TestLauncherReportsMissingQuickTunnelOperationAndMalformedRequests(t *testing.T) {
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	path := server.listener.Addr().String()
+	if _, err := RequestQuickTunnelURL(context.Background(), path); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("missing quick tunnel operation = %v", err)
+	}
+	connection, err := net.Dial("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = connection.Write([]byte("not-json\n"))
+	var result response
+	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	if result.Accepted || result.Error != "invalid launcher request" {
+		t.Fatalf("malformed request response = %#v", result)
+	}
+}
+
+func TestLauncherRejectsInvalidServerConfiguration(t *testing.T) {
+	if _, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), nil, nil, Operations{}); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("missing upgrade callback = %v", err)
+	}
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
 }

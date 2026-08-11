@@ -109,6 +109,12 @@ func LoadConfig(dir string) (*Config, error) {
 		c.values[k] = v
 	}
 	if _, err := os.Stat(c.path); os.IsNotExist(err) {
+		if image := strings.TrimSpace(os.Getenv(dashboardruntime.BootstrapImageEnv)); image != "" {
+			c.values["ANDROID_RUNNER_IMAGE"] = image
+		}
+		if policy := strings.TrimSpace(os.Getenv(dashboardruntime.BootstrapPullPolicyEnv)); policy != "" {
+			c.values["ANDROID_PULL_POLICY"] = policy
+		}
 		return c, nil
 	} else if err != nil {
 		return nil, err

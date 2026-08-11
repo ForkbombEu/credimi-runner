@@ -140,10 +140,11 @@ func TestRuntimeLifecycleStartReportsRunnerExitDuringReadiness(t *testing.T) {
 }
 
 type lifecycleManager struct {
-	status dashboardruntime.RuntimeStatus
-	logs   []dashboardruntime.LogLine
-	starts int
-	stops  int
+	status   dashboardruntime.RuntimeStatus
+	logs     []dashboardruntime.LogLine
+	quickURL string
+	starts   int
+	stops    int
 }
 
 type failingLifecycleManager struct{ lifecycleManager }
@@ -195,14 +196,17 @@ func (m *lifecycleManager) Status(context.Context) dashboardruntime.RuntimeStatu
 func (m *lifecycleManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
 	return m.logs, nil
 }
-func (m *lifecycleManager) TunnelLogs(context.Context, int) ([]dashboardruntime.LogLine, error) {
-	return m.logs, nil
+func (m *lifecycleManager) QuickTunnelURL(context.Context) (string, error) {
+	if m.quickURL != "" {
+		return m.quickURL, nil
+	}
+	return "", errors.New("quick tunnel URL unavailable")
 }
 
 func TestRuntimeLifecycleStartRegistersFreshAutoURL(t *testing.T) {
 	manager := &lifecycleManager{
-		status: dashboardruntime.RuntimeStatus{PublicURL: "https://stale.trycloudflare.com"},
-		logs:   []dashboardruntime.LogLine{{Message: "ready https://fresh.trycloudflare.com"}},
+		status:   dashboardruntime.RuntimeStatus{PublicURL: "https://stale.trycloudflare.com"},
+		quickURL: "https://fresh.trycloudflare.com",
 	}
 	var request dashboardruntime.RegisterRunnerRequest
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

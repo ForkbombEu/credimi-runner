@@ -259,7 +259,15 @@ func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
 
 func (d PageData) RuntimeControlsAvailable() bool {
 	owned, _ := d.payload()["RuntimeOwned"].(bool)
-	return !owned
+	if !owned {
+		return true
+	}
+	available, _ := d.payload()["LauncherControlAvailable"].(bool)
+	if available {
+		return true
+	}
+	nativeControl, _ := d.payload()["NativeRuntimeControlAvailable"].(bool)
+	return nativeControl
 }
 
 func (d PageData) RuntimeImageVisible() bool { return goruntime.GOOS != "darwin" }

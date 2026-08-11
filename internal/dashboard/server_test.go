@@ -39,6 +39,7 @@ type fakeManager struct {
 	updateImageCalls int
 	logLines         []dashboardruntime.LogLine
 	logLinesSince    []dashboardruntime.LogLine
+	quickTunnelURL   string
 	status           dashboardruntime.RuntimeStatus
 	startErr         error
 	stopErr          error
@@ -130,6 +131,12 @@ func (f *fakeManager) Logs(_ context.Context, tail int) ([]dashboardruntime.LogL
 	}
 	return f.logLines, nil
 }
+func (f *fakeManager) QuickTunnelURL(context.Context) (string, error) {
+	if f.quickTunnelURL == "" {
+		return "", errors.New("quick tunnel URL is not configured")
+	}
+	return f.quickTunnelURL, nil
+}
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -157,15 +164,13 @@ func newTestServer(t *testing.T) *Server {
 	}
 	hub.workers = []Worker{{ID: "runner-mr", Env: "runner", Status: Online}}
 	return &Server{
-		cfg:        cfg,
-		hub:        hub,
-		render:     render,
-		composeDir: t.TempDir(),
-		ctx:        context.Background(),
-		authToken:  "token",
-		manager: &fakeManager{logLines: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
-		}},
+		cfg:                cfg,
+		hub:                hub,
+		render:             render,
+		composeDir:         t.TempDir(),
+		ctx:                context.Background(),
+		authToken:          "token",
+		manager:            &fakeManager{quickTunnelURL: "https://runner.example.trycloudflare.com"},
 		runnerReady:        func(context.Context, map[string]string) error { return nil },
 		lookupPath:         func(string) (string, error) { return "/tmp/fake-bin", nil },
 		statPath:           func(string) (os.FileInfo, error) { return fakeFileInfo("ok"), nil },
@@ -259,6 +264,70 @@ func TestRuntimeOwnedRegistrationUsesCredimiWithoutLifecycleManager(t *testing.T
 	}
 	if !slices.Contains(paths, "/api/mobile-runner") || !slices.Contains(paths, "/api/mobile-device/reconcile") {
 		t.Fatalf("Credimi registration paths = %v", paths)
+	}
+}
+
+func TestRuntimeOwnedConfigDelegatesTopologyChangesToLauncher(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeOwned = true
+	socket := filepath.Join(t.TempDir(), "control.sock")
+	reconciled := make(chan struct{}, 1)
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error {
+			reconciled <- struct{}{}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+	if err := s.applyRuntimeOwnedConfig(dashboardruntime.ConfigDiff{
+		ChangedKeys: []string{"RUNNER_PORT"},
+		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate},
+	}, s.cfg.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("launcher did not receive reconcile-config")
+	}
+}
+
+func TestRuntimeOwnedNativeControlsUsePrivateRuntimeChannel(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	s.launcherSocket = ""
+	s.runtimeControlFile = filepath.Join(t.TempDir(), "runtime-control")
+	if !s.pageData("overview", nil).RuntimeControlsAvailable() {
+		t.Fatal("native runtime controls were hidden")
+	}
+	snapshot, err := s.submitRuntimeAction("stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil || completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("native runtime control operation = %#v err=%v", completed, err)
+	}
+	raw, err := os.ReadFile(s.runtimeControlFile)
+	if err != nil || string(raw) != "stop\n" {
+		t.Fatalf("native runtime control file=%q err=%v", raw, err)
+	}
+}
+
+func TestWriteNativeRuntimeControlRejectsInvalidRequests(t *testing.T) {
+	if err := writeNativeRuntimeControl(t.TempDir()+"/control", "exec"); err == nil || !strings.Contains(err.Error(), "unsupported runtime action") {
+		t.Fatalf("unsupported native action = %v", err)
+	}
+	if err := writeNativeRuntimeControl("", "start"); !errors.Is(err, errRuntimeManagerUnavailable) {
+		t.Fatalf("empty native control path = %v", err)
+	}
+	if err := writeNativeRuntimeControl(filepath.Join(t.TempDir(), "missing", "control"), "start"); err == nil || !strings.Contains(err.Error(), "write native runtime control") {
+		t.Fatalf("unwritable native control path = %v", err)
 	}
 }
 
@@ -1005,7 +1074,7 @@ func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) 
 	s := newTestServer(t)
 	manager := s.manager.(*fakeManager)
 	manager.status.PublicURL = ""
-	manager.logLines = []dashboardruntime.LogLine{{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"}}
+	manager.quickTunnelURL = "https://fresh.example.trycloudflare.com"
 	s.cfg.values["CREDIMI_URL"] = api.URL
 	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
@@ -1469,9 +1538,7 @@ func TestApplySavedConfigClearsCachedQuickTunnelURL(t *testing.T) {
 			RunnerRunning: true,
 			PublicURL:     "https://old.example.trycloudflare.com",
 		},
-		logLines: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://new.example.trycloudflare.com"},
-		},
+		quickTunnelURL: "https://new.example.trycloudflare.com",
 	}
 	s.manager = fm
 	values := map[string]string{
@@ -2151,7 +2218,7 @@ func TestDashboardRuntimeStartUsesControllerLifecycleAndRefreshesAutoURL(t *test
 	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
 	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
-	s.manager.(*fakeManager).logLines = []dashboardruntime.LogLine{{Message: "tunnel ready https://new-url.trycloudflare.com"}}
+	s.manager.(*fakeManager).quickTunnelURL = "https://new-url.trycloudflare.com"
 
 	var payload dashboardruntime.RegisterRunnerRequest
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2202,7 +2269,7 @@ func TestDashboardRuntimeStartUsesControllerLifecycleAndRefreshesAutoURL(t *test
 		t.Fatalf("stopped runtime retained quick tunnel URL %q", got)
 	}
 
-	s.manager.(*fakeManager).logLines = []dashboardruntime.LogLine{{Message: "tunnel ready https://replacement-url.trycloudflare.com"}}
+	s.manager.(*fakeManager).quickTunnelURL = "https://replacement-url.trycloudflare.com"
 	rec = httptest.NewRecorder()
 	s.runtimeRestart(rec, httptest.NewRequest(http.MethodPost, "/runtime/restart", nil))
 	if rec.Code != http.StatusAccepted {

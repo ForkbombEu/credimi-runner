@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -40,6 +42,12 @@ func WriteFile(path string, cfg Config) error {
 		temporary.Close()
 		return err
 	}
+	if uid, gid, ok := configuredOwner(); ok && os.Geteuid() == 0 {
+		if err := temporary.Chown(uid, gid); err != nil {
+			temporary.Close()
+			return fmt.Errorf("set config owner: %w", err)
+		}
+	}
 	if _, err := temporary.Write(content); err != nil {
 		temporary.Close()
 		return err
@@ -61,6 +69,12 @@ func WriteFile(path string, cfg Config) error {
 		_ = dir.Close()
 	}
 	return nil
+}
+
+func configuredOwner() (uid, gid int, ok bool) {
+	uid, errUID := strconv.Atoi(strings.TrimSpace(os.Getenv("CREDIMI_CONFIG_OWNER_UID")))
+	gid, errGID := strconv.Atoi(strings.TrimSpace(os.Getenv("CREDIMI_CONFIG_OWNER_GID")))
+	return uid, gid, errUID == nil && errGID == nil && uid > 0 && gid > 0
 }
 
 func (cfg Config) Redacted() Config {

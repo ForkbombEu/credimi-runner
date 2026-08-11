@@ -40,6 +40,15 @@ func (s *ProcessStore) List() []*Process {
 	return list
 }
 
+// StopAll stops every registered worker without changing the inventory. The
+// dashboard uses this for a local runtime pause while keeping its control
+// process alive.
+func (s *ProcessStore) StopAll() {
+	for _, process := range s.List() {
+		process.Stop()
+	}
+}
+
 type Process struct {
 	Name       string
 	Running    bool

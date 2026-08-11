@@ -1,11 +1,13 @@
 package dashboard
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 func dashboardTestConfig(dir string) config.Config {
@@ -35,6 +37,32 @@ func TestLoadConfigUsesTypedTOML(t *testing.T) {
 	}
 	if runner.Get("CREDIMI_DEVICE_1_SERIAL") != "one:5555" {
 		t.Fatalf("devices=%#v", runner.Snapshot())
+	}
+}
+
+func TestLoadConfigUsesEphemeralBootstrapValuesOnlyBeforeTOMLExists(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(dashboardruntime.BootstrapImageEnv, "credimi-runner:local")
+	t.Setenv(dashboardruntime.BootstrapPullPolicyEnv, "never")
+	loaded, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Get("ANDROID_RUNNER_IMAGE") != "credimi-runner:local" || loaded.Get("ANDROID_PULL_POLICY") != "never" {
+		t.Fatalf("bootstrap values = %#v", loaded.Snapshot())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("bootstrap load persisted config: %v", err)
+	}
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), dashboardTestConfig(dir)); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Get("ANDROID_RUNNER_IMAGE") == "credimi-runner:local" || loaded.Get("ANDROID_PULL_POLICY") == "never" {
+		t.Fatalf("bootstrap values overrode typed TOML: %#v", loaded.Snapshot())
 	}
 }
 
