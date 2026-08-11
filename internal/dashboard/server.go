@@ -596,10 +596,7 @@ func (s *Server) pageData(active string, payload any) PageData {
 	if s.manager != nil {
 		runtimeStatus = s.manager.Status(context.Background())
 	} else if s.runtimeOwned {
-		s.mu.RLock()
-		publicURL := s.publicURL
-		s.mu.RUnlock()
-		runtimeStatus = dashboardruntime.RuntimeStatus{Configured: s.cfg.Exists(), RunnerRunning: !runtimePaused(s.composeDir), PublicURL: publicURL}
+		runtimeStatus = dashboardruntime.RuntimeStatus{Configured: s.cfg.Exists(), RunnerRunning: !runtimePaused(s.composeDir), PublicURL: s.runtimeOwnedPublicURL()}
 	}
 	s.mu.RLock()
 	runtimeStatus.PendingRestart = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRestartRequired)
@@ -630,6 +627,27 @@ func (s *Server) pageData(active string, payload any) PageData {
 		Pill:     s.hub.pillData(snap),
 		Data:     payloadMap,
 	}
+}
+
+// runtimeOwnedPublicURL reloads the launcher-owned quick-tunnel state after a
+// runner container replacement. The URL is ephemeral launcher state, not TOML,
+// so a newly created Dashboard cannot rely only on its in-memory value.
+func (s *Server) runtimeOwnedPublicURL() string {
+	s.mu.RLock()
+	publicURL := s.publicURL
+	s.mu.RUnlock()
+	if publicURL != "" || !s.runtimeOwned || s.launcherSocket == "" || normalizedApplyServiceMode(s.cfg.Get("CREDIMI_SERVICE_MODE")) != "auto" {
+		return publicURL
+	}
+
+	publicURL, err := launcher.ReadQuickTunnelURL(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		return ""
+	}
+	s.mu.Lock()
+	s.publicURL = publicURL
+	s.mu.Unlock()
+	return publicURL
 }
 
 func runtimePaused(configDir string) bool {

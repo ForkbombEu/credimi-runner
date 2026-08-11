@@ -3031,6 +3031,30 @@ func TestServerRuntimeSSE(t *testing.T) {
 	}
 }
 
+func TestRuntimeOwnedDashboardReloadsLauncherQuickTunnelURL(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	s.launcherSocket = filepath.Join(t.TempDir(), "control.sock")
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := launcher.WriteQuickTunnelURL(configDir, "https://current.trycloudflare.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	data := s.pageData("overview", nil)
+	runtimeStatus, ok := data.Data.(map[string]any)["RuntimeStatus"].(dashboardruntime.RuntimeStatus)
+	if !ok {
+		t.Fatalf("runtime status = %#v", data.Data)
+	}
+	if got, want := runtimeStatus.PublicURL, "https://current.trycloudflare.com"; got != want {
+		t.Fatalf("public URL = %q, want %q", got, want)
+	}
+	if got := s.publicURL; got != "https://current.trycloudflare.com" {
+		t.Fatalf("cached public URL = %q", got)
+	}
+}
+
 func TestDialTemporalOnline(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
