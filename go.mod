@@ -3,7 +3,7 @@ module github.com/forkbombeu/credimi-runner
 go 1.26.5
 
 require (
-	github.com/forkbombeu/credimi v1.269.2-0.20260810104027-cb7f6bd1ba3b
+	github.com/forkbombeu/credimi v1.269.2-0.20260811163633-421cf8e5f8e5
 	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
@@ -51,9 +51,9 @@ require (
 	github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
-	github.com/forkbombeu/avdctl v0.10.3 // indirect
+	github.com/forkbombeu/avdctl v0.10.4 // indirect
 	github.com/forkbombeu/credimi-conformance-assessment v1.3.1 // indirect
-	github.com/forkbombeu/credimi-extra v1.14.4-0.20260724134709-29d767578a6f // indirect
+	github.com/forkbombeu/credimi-extra v1.14.4-0.20260811163438-a4e1cff8dbcd // indirect
 	github.com/forkbombeu/eudi-conformance-evidence v1.0.2 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/ganigeorgiev/fexpr v0.4.1 // indirect
