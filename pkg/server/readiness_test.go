@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 func TestADBDeviceState(t *testing.T) {
@@ -30,7 +32,7 @@ func TestADBDeviceState(t *testing.T) {
 func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
 		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_RUNNER_VERSION": "v1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
-	}, DeviceState: func(serial string) string {
+	}, RuntimeConfig: staticRuntimeConfig(dashboardruntime.DeviceRuntimeConfig{ID: "runner-1/device-1", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "device-1"}), DeviceState: func(serial string) string {
 		if serial != "device-1" {
 			t.Fatalf("serial = %q", serial)
 		}
@@ -47,10 +49,30 @@ func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 	}
 }
 
+func TestReadinessUsesTypedDeviceInventoryWithoutDeviceEnvironment(t *testing.T) {
+	service := &ReadinessService{
+		Environment: func(key string) string {
+			return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1"}[key]
+		},
+		RuntimeConfig: func() (dashboardruntime.RunnerRuntimeConfig, error) {
+			return dashboardruntime.RunnerRuntimeConfig{Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "runner-1/device-1", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "device-1"}}}, nil
+		},
+		DeviceState: func(serial string) string {
+			if serial != "device-1" {
+				t.Fatalf("serial = %q", serial)
+			}
+			return "device"
+		},
+	}
+	if device := service.Check().Devices["runner-1/device-1"]; !device.Ready || device.State != "device" {
+		t.Fatalf("typed device readiness = %#v", device)
+	}
+}
+
 func TestReadinessRejectsUnavailableConfiguredDevice(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
 		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": "boot-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-1"}[key]
-	}, DeviceState: func(string) string { return "offline" }}
+	}, RuntimeConfig: staticRuntimeConfig(dashboardruntime.DeviceRuntimeConfig{ID: "runner-1/device-1", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "device-1"}), DeviceState: func(string) string { return "offline" }}
 	recorder := httptest.NewRecorder()
 	service.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
@@ -70,7 +92,7 @@ func TestReadinessAcceptsDeferredManagedDevice(t *testing.T) {
 			"CREDIMI_DEVICE_1_MODE":   "no_device",
 			"CREDIMI_DEVICE_1_SERIAL": "192.168.0.241:5555",
 		}[key]
-	}, DeviceState: func(string) string {
+	}, RuntimeConfig: staticRuntimeConfig(dashboardruntime.DeviceRuntimeConfig{ID: "runner-1/device-1", Type: "redroid", Mode: "no_device", Enabled: true, Serial: "192.168.0.241:5555"}), DeviceState: func(string) string {
 		deviceStateCalled = true
 		return "missing"
 	}}
@@ -95,7 +117,7 @@ func TestReadinessAcceptsConfiguredEmulatorWithoutADBSerial(t *testing.T) {
 			"CREDIMI_DEVICE_1_TYPE":  "android_emulator",
 			"CREDIMI_DEVICE_1_MODE":  "emulator",
 		}[key]
-	}, DeviceState: func(string) string {
+	}, RuntimeConfig: staticRuntimeConfig(dashboardruntime.DeviceRuntimeConfig{ID: "runner-1/emulator", Type: "android_emulator", Mode: "emulator", Enabled: true}), DeviceState: func(string) string {
 		deviceStateCalled = true
 		return "missing"
 	}}
@@ -112,7 +134,7 @@ func TestReadinessAcceptsConfiguredEmulatorWithoutADBSerial(t *testing.T) {
 func TestReadinessUsesIndexedSerialAndReportsMissingIdentity(t *testing.T) {
 	service := &ReadinessService{Environment: func(key string) string {
 		return map[string]string{"CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-2", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-2"}[key]
-	}, DeviceState: func(serial string) string {
+	}, RuntimeConfig: staticRuntimeConfig(dashboardruntime.DeviceRuntimeConfig{ID: "runner-1/device-2", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "device-2"}), DeviceState: func(serial string) string {
 		if serial != "device-2" {
 			t.Fatalf("serial = %q", serial)
 		}
@@ -126,5 +148,11 @@ func TestReadinessUsesIndexedSerialAndReportsMissingIdentity(t *testing.T) {
 	service.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d", recorder.Code)
+	}
+}
+
+func staticRuntimeConfig(devices ...dashboardruntime.DeviceRuntimeConfig) func() (dashboardruntime.RunnerRuntimeConfig, error) {
+	return func() (dashboardruntime.RunnerRuntimeConfig, error) {
+		return dashboardruntime.RunnerRuntimeConfig{Devices: devices}, nil
 	}
 }

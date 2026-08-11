@@ -3,13 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 // Readiness describes this particular runner process. Unlike /health, this
@@ -31,36 +32,57 @@ type DeviceReady struct {
 }
 
 type ReadinessService struct {
-	Environment func(string) string
-	DeviceState func(string) string
+	Environment   func(string) string
+	DeviceState   func(string) string
+	RuntimeConfig func() (dashboardruntime.RunnerRuntimeConfig, error)
 }
 
 func NewReadinessService() *ReadinessService {
-	return &ReadinessService{Environment: os.Getenv, DeviceState: adbDeviceState}
+	service := &ReadinessService{Environment: os.Getenv, DeviceState: adbDeviceState}
+	if strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")) != "" {
+		service.RuntimeConfig = dashboardruntime.RuntimeConfigFromEnvironment
+	}
+	return service
 }
 
 func (s *ReadinessService) Check() Readiness {
 	env := s.environment
-	devices := make(map[string]DeviceReady)
-	count, _ := strconv.Atoi(strings.TrimSpace(env("CREDIMI_DEVICE_COUNT")))
-	for index := 1; index <= count; index++ {
-		prefix := fmt.Sprintf("CREDIMI_DEVICE_%d_", index)
-		id := strings.TrimPrefix(strings.TrimSpace(env(prefix+"ID")), "/")
-		if id == "" {
-			continue
-		}
-		serial := strings.TrimSpace(env(prefix + "SERIAL"))
-		required := deviceReadinessRequired(env(prefix+"TYPE"), env(prefix+"MODE"), env(prefix+"ENABLED"))
-		state := ""
-		if required && serial != "" && s.DeviceState != nil {
-			state = s.DeviceState(serial)
-		}
-		if required && serial == "" {
-			state = "missing"
-		}
-		devices[id] = DeviceReady{Serial: serial, State: state, Ready: !required || state == "device"}
-	}
+	devices := s.typedDevices()
 	return Readiness{Service: "credimi-runner", RunnerID: strings.TrimSpace(env("CREDIMI_RUNNER_ID")), BootID: strings.TrimSpace(env("CREDIMI_RUNNER_BOOT_ID")), Version: defaultReadinessVersion(env("CREDIMI_RUNNER_VERSION")), Devices: devices}
+}
+
+// typedDevices reads the authoritative TOML inventory. Device keys are not
+// copied into process-global environment variables, so readiness must not rely
+// on the legacy environment representation.
+func (s *ReadinessService) typedDevices() map[string]DeviceReady {
+	if s.RuntimeConfig == nil {
+		return map[string]DeviceReady{}
+	}
+	inventory, err := s.RuntimeConfig()
+	if err != nil {
+		return map[string]DeviceReady{}
+	}
+	devices := make(map[string]DeviceReady, len(inventory.Devices))
+	for _, device := range inventory.Devices {
+		id := strings.TrimPrefix(strings.TrimSpace(device.ID), "/")
+		if id != "" {
+			devices[id] = s.deviceReady(device.Type, device.Mode, strconv.FormatBool(device.Enabled), device.Serial)
+		}
+	}
+	return devices
+}
+
+func (s *ReadinessService) deviceReady(deviceType, mode, enabled, serial string) DeviceReady {
+	serial = strings.TrimSpace(serial)
+	required := deviceReadinessRequired(deviceType, mode, enabled)
+	state := ""
+	if required && serial != "" && s.DeviceState != nil {
+		state = s.DeviceState(serial)
+	}
+	if required && serial == "" {
+		state = "missing"
+	}
+	return DeviceReady{Serial: serial, State: state, Ready: !required || state == "device"}
 }
 
 func (s *ReadinessService) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
