@@ -2134,10 +2134,15 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	s := newTestServer(t)
 	transport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/mobile-device/preview-id" {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/mobile-device/preview-id":
+			body = `{"device_id":"acme/runner/pixel"}`
+		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
+		default:
 			return nil, errors.New("unexpected path: " + req.URL.Path)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/pixel"}`))}, nil
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = transport })
 	form := url.Values{
@@ -2172,6 +2177,10 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	runtimeConfig, err := store.RuntimeConfig()
 	if err != nil || len(runtimeConfig.Devices) != 1 || runtimeConfig.Devices[0].ID != "acme/runner/pixel" {
 		t.Fatalf("setup persisted incomplete inventory: %#v err=%v", runtimeConfig, err)
+	}
+	waitForStartup(t, s)
+	if startup := s.startupSnapshot(); startup.Phase != StartupReady {
+		t.Fatalf("setup startup phase = %q: %s", startup.Phase, startup.Message)
 	}
 }
 

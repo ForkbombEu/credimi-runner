@@ -119,7 +119,7 @@ func TestCommandErrorPreservesDockerDiagnostics(t *testing.T) {
 
 func TestLifecycleComposeCommandsUseOneResolvedEnvironment(t *testing.T) {
 	dir := t.TempDir()
-	values := Values{"CREDIMI_SERVICE_MODE": "manual", "ANDROID_PULL_POLICY": "never"}
+	values := Values{"CREDIMI_SERVICE_MODE": "manual", "ANDROID_PULL_POLICY": "always"}
 	runner := &fakeRunner{}
 	manager := NewLifecycleManagerForOS("credimi-runner", dir, values, runner, "linux")
 	if err := manager.Start(context.Background()); err != nil {
@@ -311,10 +311,10 @@ func TestLifecycleManagerNativeStartsOnlyEdgeServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	commands := commandArgs(runner.runs)
-	if strings.Contains(commands, " up -d --pull never runner") || !strings.Contains(commands, "pull caddy tunnel") {
+	if strings.Contains(commands, " up -d --remove-orphans --pull never runner") || !strings.Contains(commands, "pull caddy tunnel") {
 		t.Fatalf("pull commands =\n%s", commands)
 	}
-	if !strings.Contains(commands, "up -d --pull never caddy tunnel") {
+	if !strings.Contains(commands, "up -d --remove-orphans --pull never caddy tunnel") {
 		t.Fatalf("up command =\n%s", commands)
 	}
 	_ = progress
@@ -343,7 +343,7 @@ func TestLifecycleManagerUpgradeRunnerImageStreamsOrderedCycle(t *testing.T) {
 		"pull example.test/runner:latest",
 		"stop runner",
 		"rm -f -s runner",
-		"up -d --pull never runner",
+		"up -d --remove-orphans --pull never runner",
 	}
 	position := -1
 	for _, command := range ordered {
@@ -506,13 +506,19 @@ func TestExecRunnerRunStreamsProgress(t *testing.T) {
 	}
 }
 
-func TestStaleComposeServices(t *testing.T) {
-	got := strings.Join(staleComposeServices([]string{"runner", "caddy", "tunnel"}), ",")
-	if got != "tunnel_named" {
-		t.Fatalf("staleComposeServices = %q", got)
+func TestLifecycleManagerBootstrapRemovesOrphansDuringRunnerUp(t *testing.T) {
+	runner := &fakeRunner{}
+	values := (BootstrapContext{RunnerImage: "credimi-runner:local", PullPolicy: "never", BeforeSetup: true}).Apply(DefaultValues())
+	manager := NewLifecycleManagerForOS("credimi-runner", t.TempDir(), values, runner, "linux")
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if got := staleComposeServices([]string{"runner", "caddy", "tunnel", "tunnel_named"}); len(got) != 0 {
-		t.Fatalf("staleComposeServices all active = %#v", got)
+	commands := commandArgs(runner.runs)
+	if !strings.Contains(commands, "up -d --remove-orphans --pull never runner") {
+		t.Fatalf("bootstrap did not remove stale services during runner start:\n%s", commands)
+	}
+	if strings.Contains(commands, "rm -f -s caddy") || strings.Contains(commands, "rm -f -s tunnel") {
+		t.Fatalf("bootstrap targeted services omitted from the compose model:\n%s", commands)
 	}
 }
 
@@ -539,7 +545,7 @@ func TestLifecycleManagerStatusObservesComposeRuntimeWithExecRunner(t *testing.T
 }
 
 func TestLifecycleManagerStartReportsDockerStageFailures(t *testing.T) {
-	for _, failAt := range []int{1, 2, 3} {
+	for _, failAt := range []int{1, 2} {
 		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
 			runner := &failOnRunRunner{failAt: failAt}
 			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
@@ -635,7 +641,7 @@ func TestLifecycleManagerHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if joined := commandArgs(runner.runs); !strings.Contains(joined, "pull ghcr.io/forkbombeu/credimi-runner:local") ||
-		!strings.Contains(joined, "up -d --pull never runner") {
+		!strings.Contains(joined, "up -d --remove-orphans --pull never runner") {
 		t.Fatalf("runs = %#v", runner.runs)
 	}
 

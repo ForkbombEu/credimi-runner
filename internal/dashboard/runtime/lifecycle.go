@@ -281,11 +281,6 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 			m.status.LastError = err.Error()
 			return err
 		}
-		emitProgress(progress, "Stopping stale Docker services.")
-		if err := m.stopStaleComposeServicesLocked(ctx, plan); err != nil {
-			m.status.LastError = err.Error()
-			return err
-		}
 		spec, specErr := sharedRunnerSpec(m.values, m.goos)
 		if specErr != nil && containsService(plan.ComposeServices, "runner") {
 			m.status.LastError = specErr.Error()
@@ -309,7 +304,11 @@ func (m *LifecycleManager) start(ctx context.Context, progress func(string)) (re
 		}
 		emitProgress(progress, "Starting Docker services.")
 		composeStartedAt := time.Now()
-		upSpec := m.composeSpec(plan, "up", "-d", "--pull", "never")
+		// `up --remove-orphans` removes services from a previous topology while
+		// only naming services declared by the freshly generated Compose model.
+		// Calling `compose rm caddy` after rendering a runner-only bootstrap file
+		// is invalid because Compose rejects unknown service names.
+		upSpec := m.composeSpec(plan, "up", "-d", "--remove-orphans", "--pull", "never")
 		args := upSpec.Args
 		args = append(args, plan.ComposeServices...)
 		upSpec.Args = args
@@ -405,33 +404,6 @@ func (m *LifecycleManager) composeSpec(plan RuntimePlan, command ...string) Comm
 		Args: composeArgs(plan, command...),
 		Env:  composeEnv(m.values, plan, m.goos),
 	}
-}
-
-func (m *LifecycleManager) stopStaleComposeServicesLocked(ctx context.Context, plan RuntimePlan) error {
-	staleServices := staleComposeServices(plan.ComposeServices)
-	if len(staleServices) == 0 {
-		return nil
-	}
-	spec := m.composeSpec(plan, "rm", "-f", "-s")
-	args := spec.Args
-	args = append(args, staleServices...)
-	spec.Args = args
-	_, err := m.run(ctx, spec)
-	return err
-}
-
-func staleComposeServices(active []string) []string {
-	activeSet := make(map[string]struct{}, len(active))
-	for _, service := range active {
-		activeSet[service] = struct{}{}
-	}
-	var stale []string
-	for _, service := range []string{"runner", "caddy", "tunnel", "tunnel_named"} {
-		if _, ok := activeSet[service]; !ok {
-			stale = append(stale, service)
-		}
-	}
-	return stale
 }
 
 func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
