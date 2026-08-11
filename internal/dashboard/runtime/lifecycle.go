@@ -821,7 +821,9 @@ func (m *LifecycleManager) QuickTunnelURL(ctx context.Context) (string, error) {
 	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
 	port := QuickTunnelMetricsPort(plan)
 	m.mu.Unlock()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/quicktunnel", port), nil)
+	requestCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/quicktunnel", port), nil)
 	if err != nil {
 		return "", err
 	}

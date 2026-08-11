@@ -150,6 +150,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	defer manager.Close()
 	var valuesMu sync.RWMutex
 	currentValues := normalized
+	var refreshQuickTunnelURL func(context.Context, dashboardruntime.Values) error
 	reconcile := func(ctx context.Context) error {
 		config, err := dashboard.LoadConfig(configDir)
 		if err != nil {
@@ -170,6 +171,10 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		diff := dashboardruntime.DiffValuesForOS(previous, next, stdruntime.GOOS)
 		manager.Configure(next)
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
+			if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+				manager.Configure(previous)
+				return err
+			}
 			if err := manager.Stop(ctx); err != nil {
 				manager.Configure(previous)
 				return fmt.Errorf("stop runtime for configuration reconciliation: %w", err)
@@ -178,25 +183,71 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 				manager.Configure(previous)
 				return fmt.Errorf("start runtime after configuration reconciliation: %w", err)
 			}
+			if err := refreshQuickTunnelURL(ctx, next); err != nil {
+				return err
+			}
 		}
 		valuesMu.Lock()
 		currentValues = next
 		valuesMu.Unlock()
 		return nil
 	}
-	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), manager.UpdateImage, func() bool {
+	refreshQuickTunnelURL = func(ctx context.Context, values dashboardruntime.Values) error {
+		plan := dashboardruntime.BuildRuntimePlanForOS(configDir, values, stdruntime.GOOS)
+		if plan.ServiceMode != "auto" {
+			return launcher.ClearQuickTunnelURL(configDir)
+		}
+		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+			return err
+		}
+		resolver, ok := manager.(interface {
+			QuickTunnelURL(context.Context) (string, error)
+		})
+		if !ok {
+			return errors.New("quick tunnel URL discovery is unavailable")
+		}
+		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		var lastErr error
+		for {
+			url, err := resolver.QuickTunnelURL(deadline)
+			if err == nil && strings.TrimSpace(url) != "" {
+				return launcher.WriteQuickTunnelURL(configDir, url)
+			}
+			if err != nil {
+				lastErr = err
+			}
+			select {
+			case <-deadline.Done():
+				if lastErr != nil {
+					return fmt.Errorf("resolve quick tunnel URL: %w", lastErr)
+				}
+				return errors.New("timed out waiting for quick tunnel URL")
+			case <-ticker.C:
+			}
+		}
+	}
+	upgrade := func(ctx context.Context) error {
+		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+			return err
+		}
+		if err := manager.UpdateImage(ctx); err != nil {
+			return err
+		}
+		valuesMu.RLock()
+		values := currentValues
+		valuesMu.RUnlock()
+		return refreshQuickTunnelURL(ctx, values)
+	}
+	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), upgrade, func() bool {
 		status := manager.Status(context.Background())
 		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate || readActiveMobileActivities(configDir)
 	}, launcher.Operations{
 		ReconcileConfig: reconcile,
 		QuickTunnelURL: func(ctx context.Context) (string, error) {
-			resolver, ok := manager.(interface {
-				QuickTunnelURL(context.Context) (string, error)
-			})
-			if !ok {
-				return "", errors.New("quick tunnel URL discovery is unavailable")
-			}
-			return resolver.QuickTunnelURL(ctx)
+			return launcher.ReadQuickTunnelURL(configDir)
 		},
 		RuntimeStart: func(ctx context.Context) error {
 			return requestRuntimeCommandAndWait(ctx, configDir, "start", "running")
@@ -216,7 +267,11 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	if err := manager.Start(cmd.Context()); err != nil {
 		return err
 	}
+	if err := refreshQuickTunnelURL(cmd.Context(), currentValues); err != nil {
+		return err
+	}
 	defer manager.Stop(context.Background())
+	defer launcher.ClearQuickTunnelURL(configDir)
 	listenHost, listenPort := resolveDashboardListenAddress(cmd, normalized)
 	if dashboardOpen && dashboardCanOpenBrowser() {
 		go func() {

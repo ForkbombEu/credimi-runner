@@ -1887,7 +1887,11 @@ func (s *Server) runtimeLifecycle(values map[string]string) controller.RuntimeLi
 		}
 	} else if s.launcherSocket != "" {
 		lifecycle.QuickTunnelURL = func(ctx context.Context) (string, error) {
-			return launcher.RequestQuickTunnelURL(ctx, s.launcherSocket)
+			// The outer launcher survives runner-container replacement and
+			// publishes the current URL after it has observed cloudflared. Do
+			// not make registration depend on a socket request racing that
+			// replacement.
+			return launcher.ReadQuickTunnelURL(filepath.Dir(s.cfg.Path()))
 		}
 	}
 	return lifecycle

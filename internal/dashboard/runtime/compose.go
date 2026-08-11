@@ -79,6 +79,14 @@ func ComposeYAML(values Values, goos string) (string, error) {
 networks:
   ingress:
     name: ${CADDY_INGRESS_NETWORKS:-credimi-runner-ingress}
+`)
+	if !caddyOnHost {
+		// Docker's host-gateway name resolves to the default bridge gateway.
+		// Keep Caddy on ingress for cloudflared, and attach this second bridge
+		// solely so its route to that gateway stays on the same bridge.
+		builder.WriteString("  host_gateway:\n    external: true\n    name: bridge\n")
+	}
+	fmt.Fprintf(&builder, `
 
 volumes:
   runner_state:
@@ -380,7 +388,7 @@ func writeCaddyService(builder *strings.Builder, caddyOnHost, native bool) {
 		builder.WriteString("    network_mode: host\n")
 		return
 	}
-	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n")
+	builder.WriteString("    extra_hosts:\n      - \"host.docker.internal:host-gateway\"\n    networks:\n      - ingress\n      - host_gateway\n")
 }
 
 func writeTunnelService(builder *strings.Builder, caddyOnHost bool, metricsPort int) {

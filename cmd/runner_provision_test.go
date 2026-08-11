@@ -21,6 +21,7 @@ import (
 type fakeContainerLauncherManager struct {
 	mu                       sync.Mutex
 	started, stopped, closed int
+	updated                  int
 	startErr                 error
 	configured               []dashboardruntime.Values
 }
@@ -39,7 +40,12 @@ func (m *fakeContainerLauncherManager) Stop(context.Context) error {
 	return nil
 }
 
-func (m *fakeContainerLauncherManager) UpdateImage(context.Context) error { return nil }
+func (m *fakeContainerLauncherManager) UpdateImage(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updated++
+	return nil
+}
 
 func (m *fakeContainerLauncherManager) Configure(values dashboardruntime.Values) {
 	m.mu.Lock()
@@ -67,6 +73,12 @@ func (m *fakeContainerLauncherManager) snapshot() (int, int, int, []dashboardrun
 	defer m.mu.Unlock()
 	configured := append([]dashboardruntime.Values(nil), m.configured...)
 	return m.started, m.stopped, m.closed, configured
+}
+
+func (m *fakeContainerLauncherManager) updateCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.updated
 }
 
 func TestProvisionInternalRuntimeToleratesMissingOrEmptyConfig(t *testing.T) {
@@ -150,8 +162,7 @@ func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
 	cfg.Temporal.Address = "temporal.example:7233"
 	cfg.Server.APIListen = "127.0.0.1:19050"
-	cfg.Exposure.Mode = "manual"
-	cfg.Exposure.PublicURL = "https://runner.example"
+	cfg.Exposure.Mode = "quick_tunnel"
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "if-not-present", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
@@ -184,6 +195,63 @@ func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	}
 	if got := configured[0]["ANDROID_RUNNER_IMAGE"]; got != "published:stable" {
 		t.Fatalf("reconciliation used bootstrap image instead of TOML: %q", got)
+	}
+	if got, err := launcher.ReadQuickTunnelURL(dir); err != nil || got != "https://example.trycloudflare.com" {
+		t.Fatalf("launcher did not publish the reconciled quick tunnel URL: %q, %v", got, err)
+	}
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("container launcher did not stop")
+	}
+}
+
+func TestRunContainerLauncherUpgradeRefreshesQuickTunnelState(t *testing.T) {
+	oldOpen, oldSignal, oldFactory := dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldOpen, oldSignal, oldFactory
+	})
+	dashboardOpen = false
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Exposure.Mode = "quick_tunnel"
+	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "if-not-present", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+	}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := dashboard.LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signals := make(chan os.Signal, 1)
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- runContainerLauncher(command, dir, loaded.Snapshot()) }()
+	socket := filepath.Join(dir, "control.sock")
+	waitForPath(t, socket)
+	if err := launcher.RequestUpgrade(context.Background(), socket); err != nil {
+		t.Fatal(err)
+	}
+	if manager.updateCount() != 1 {
+		t.Fatalf("image upgrades = %d, want 1", manager.updateCount())
+	}
+	if got, err := launcher.ReadQuickTunnelURL(dir); err != nil || got != "https://example.trycloudflare.com" {
+		t.Fatalf("upgrade did not refresh quick tunnel URL: %q, %v", got, err)
 	}
 	signals <- syscall.SIGTERM
 	select {

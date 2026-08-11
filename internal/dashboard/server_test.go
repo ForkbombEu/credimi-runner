@@ -296,6 +296,21 @@ func TestRuntimeOwnedConfigDelegatesTopologyChangesToLauncher(t *testing.T) {
 	}
 }
 
+func TestRuntimeOwnedLifecycleReadsLauncherQuickTunnelState(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	s.launcherSocket = filepath.Join(t.TempDir(), "control.sock")
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := launcher.WriteQuickTunnelURL(configDir, "https://current.trycloudflare.com"); err != nil {
+		t.Fatal(err)
+	}
+	url, err := s.runtimeLifecycle(s.cfg.Snapshot()).QuickTunnelURL(context.Background())
+	if err != nil || url != "https://current.trycloudflare.com" {
+		t.Fatalf("launcher quick tunnel state = %q, %v", url, err)
+	}
+}
+
 func TestRuntimeOwnedNativeControlsUsePrivateRuntimeChannel(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
