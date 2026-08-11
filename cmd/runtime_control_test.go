@@ -136,6 +136,91 @@ func TestWriteRuntimeCommandValidatesActionAndKeepsRequestPrivate(t *testing.T) 
 	}
 }
 
+func TestRequestRuntimeCommandAndWaitConfirmsStateTransition(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeRuntimeState(dir, "running"); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(filepath.Join(dir, "runtime-control")); err == nil {
+				_ = writeRuntimeState(dir, "paused")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if err := requestRuntimeCommandAndWait(context.Background(), dir, "stop", "paused"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRequestRuntimeCommandAndWaitReportsRuntimeFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeRuntimeState(dir, "running"); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(filepath.Join(dir, "runtime-control")); err == nil {
+				_ = writeRuntimeState(dir, "failed: workers did not start")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	if err := requestRuntimeCommandAndWait(context.Background(), dir, "start", "running"); err == nil || !strings.Contains(err.Error(), "workers did not start") {
+		t.Fatalf("runtime failure = %v", err)
+	}
+}
+
+func TestWriteRuntimeStatePersistsSequenceAndPrivateMode(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeRuntimeState(dir, "running"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRuntimeState(dir, "paused"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "runtime-state-sequence"))
+	if err != nil || strings.TrimSpace(string(raw)) != "2" {
+		t.Fatalf("runtime state sequence = %q, err=%v", raw, err)
+	}
+	state, err := os.ReadFile(filepath.Join(dir, "runtime-state"))
+	if err != nil || string(state) != "paused\n" {
+		t.Fatalf("runtime state = %q, err=%v", state, err)
+	}
+	for _, name := range []string{"runtime-state", "runtime-state-sequence"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode = %o, want 600", name, info.Mode().Perm())
+		}
+	}
+}
+
+func TestRuntimeStateAndCommandRejectUnavailableStorage(t *testing.T) {
+	if err := writeRuntimeState("", "running"); err != nil {
+		t.Fatalf("empty runtime state directory = %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	if err := writeRuntimeState(missing, "running"); err == nil {
+		t.Fatal("runtime state unexpectedly succeeded for missing directory")
+	}
+	if err := writeRuntimeCommand(missing, "start"); err == nil {
+		t.Fatal("runtime command unexpectedly succeeded for missing directory")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := requestRuntimeCommandAndWait(ctx, missing, "start", "running"); err == nil {
+		t.Fatal("runtime command unexpectedly succeeded for unavailable storage")
+	}
+}
+
 func waitForRuntimeControl(t *testing.T, path string, wantPresent bool) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

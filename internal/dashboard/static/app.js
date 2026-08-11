@@ -461,6 +461,7 @@
       form.dataset.setupReady = '1';
 	  $$('[data-legacy-setup-devices] input, [data-legacy-setup-devices] select, [data-legacy-setup-devices] textarea', form).forEach((field) => { field.disabled = true; });
       let current = 0;
+      let connectedAndroidTimer = null;
       const buttons = $$('.wizard-step', form);
       const panels = $$('.wizard-panel', form);
       const prev = $('[data-step-prev]', form);
@@ -557,6 +558,14 @@
           b.classList.toggle('on', i === current);
           b.classList.toggle('done', i < current);
         });
+        if (connectedAndroidTimer) {
+          clearInterval(connectedAndroidTimer);
+          connectedAndroidTimer = null;
+        }
+        if (panels[current] && panels[current].dataset.step === 'devices') {
+          refreshConnectedAndroidDevices(form);
+          connectedAndroidTimer = setInterval(() => refreshConnectedAndroidDevices(form), 2500);
+        }
         if (prev) prev.disabled = current === 0;
         if (next) next.hidden = current === panels.length - 1;
         if (submit) submit.style.display = current === panels.length - 1 ? '' : 'none';
@@ -1341,6 +1350,25 @@
       if (Object.prototype.hasOwnProperty.call(values, key)) setFieldValue(root, key, values[key] || '');
     });
   };
+  async function refreshConnectedAndroidDevices(root = document) {
+    try {
+      const response = await fetch('/devices/android/connected', { headers: { Accept: 'application/json' } });
+      if (!response.ok) return;
+      const devices = (await response.json()).filter((device) => device && device.status === 'online');
+      root.querySelectorAll('[data-android-phone-device-select]').forEach((select) => {
+        const serialField = select.closest('[data-device-provision]')?.querySelector('[data-android-phone-serial]');
+        const current = serialField?.value || select.value || '';
+        select.replaceChildren(new Option('Select a connected Android device', ''));
+        devices.forEach((device) => {
+          const option = new Option(`${device.name || device.os || 'Android device'} — ${device.serial}`, device.serial);
+          option.selected = device.serial === current;
+          select.add(option);
+        });
+        if (serialField) serialField.value = select.value || '';
+      });
+    } catch (_) {}
+  }
+
   const updateDeviceFields = (root = document) => {
     const type = fieldValue(root, 'CREDIMI_RUNNER_TYPE');
     const mode = fieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE');

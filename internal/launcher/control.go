@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -21,16 +22,43 @@ const (
 	RuntimeStop        = "runtime-stop"
 	RuntimeRestart     = "runtime-restart"
 	QuickTunnelURL     = "quick-tunnel-url"
+	OperationStatus    = "operation-status"
 )
+
+type OperationPhase string
+
+const (
+	PhaseQueued    OperationPhase = "queued"
+	PhaseRunning   OperationPhase = "running"
+	PhaseSucceeded OperationPhase = "succeeded"
+	PhaseFailed    OperationPhase = "failed"
+)
+
+type OperationHandle struct {
+	ID   string
+	Kind string
+}
+
+type OperationResult struct {
+	ID      string
+	Kind    string
+	Phase   OperationPhase
+	Message string
+	Error   string
+}
 
 type request struct {
 	Operation string `json:"operation"`
+	ID        string `json:"id,omitempty"`
 }
 
 type response struct {
-	Accepted bool   `json:"accepted"`
-	Error    string `json:"error,omitempty"`
-	Value    string `json:"value,omitempty"`
+	Accepted    bool           `json:"accepted"`
+	Error       string         `json:"error,omitempty"`
+	Value       string         `json:"value,omitempty"`
+	OperationID string         `json:"operation_id,omitempty"`
+	Phase       OperationPhase `json:"phase,omitempty"`
+	Message     string         `json:"message,omitempty"`
 }
 
 // Operations contains the small, typed set of actions the inner dashboard
@@ -51,6 +79,9 @@ type Server struct {
 	upgrade    func(context.Context) error
 	busy       func() bool
 	operations Operations
+	mu         sync.RWMutex
+	nextID     uint64
+	results    map[string]OperationResult
 }
 
 // Serve starts the private launcher control channel. The socket is deliberately
@@ -79,7 +110,7 @@ func ServeWithOperations(path string, upgrade func(context.Context) error, busy 
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("secure launcher control socket: %w", err)
 	}
-	server := &Server{listener: listener, close: make(chan struct{}), upgrade: upgrade, busy: busy, operations: operations}
+	server := &Server{listener: listener, close: make(chan struct{}), upgrade: upgrade, busy: busy, operations: operations, results: map[string]OperationResult{}}
 	go server.acceptLoop()
 	return server, nil
 }
@@ -114,22 +145,23 @@ func (s *Server) handle(connection net.Conn) {
 			writeResponse(connection, response{Error: "runner is busy; retry the upgrade when idle"})
 			return
 		}
-		writeResponse(connection, response{Accepted: true})
-		go func() {
+		s.acceptAsync(connection, UpgradeRunnerImage, func(ctx context.Context) error {
 			// Re-check immediately before the destructive operation.
 			if s.busy != nil && s.busy() {
-				return
+				return errors.New("runner is busy; retry the upgrade when idle")
 			}
-			_ = s.upgrade(context.Background())
-		}()
+			return s.upgrade(ctx)
+		})
 	case ReconcileConfig:
-		s.acceptAsync(connection, s.operations.ReconcileConfig)
+		s.acceptAsync(connection, ReconcileConfig, s.operations.ReconcileConfig)
 	case RuntimeStart:
-		s.acceptAsync(connection, s.operations.RuntimeStart)
+		s.acceptAsync(connection, RuntimeStart, s.operations.RuntimeStart)
 	case RuntimeStop:
-		s.acceptAsync(connection, s.operations.RuntimeStop)
+		s.acceptAsync(connection, RuntimeStop, s.operations.RuntimeStop)
 	case RuntimeRestart:
-		s.acceptAsync(connection, s.operations.RuntimeRestart)
+		s.acceptAsync(connection, RuntimeRestart, s.operations.RuntimeRestart)
+	case OperationStatus:
+		s.writeOperationStatus(connection, request.ID)
 	case QuickTunnelURL:
 		if s.operations.QuickTunnelURL == nil {
 			writeResponse(connection, response{Error: "quick tunnel URL operation is not configured"})
@@ -146,13 +178,50 @@ func (s *Server) handle(connection net.Conn) {
 	}
 }
 
-func (s *Server) acceptAsync(connection net.Conn, operation func(context.Context) error) {
+func (s *Server) acceptAsync(connection net.Conn, kind string, operation func(context.Context) error) {
 	if operation == nil {
 		writeResponse(connection, response{Error: "launcher operation is not configured"})
 		return
 	}
-	writeResponse(connection, response{Accepted: true})
-	go func() { _ = operation(context.Background()) }()
+	handle := s.startOperation(kind, operation)
+	writeResponse(connection, response{Accepted: true, OperationID: handle.ID, Phase: PhaseQueued})
+}
+
+func (s *Server) startOperation(kind string, operation func(context.Context) error) OperationHandle {
+	s.mu.Lock()
+	s.nextID++
+	handle := OperationHandle{ID: fmt.Sprintf("%s-%d", kind, s.nextID), Kind: kind}
+	s.results[handle.ID] = OperationResult{ID: handle.ID, Kind: kind, Phase: PhaseQueued}
+	s.mu.Unlock()
+	go func() {
+		s.setOperation(OperationResult{ID: handle.ID, Kind: kind, Phase: PhaseRunning})
+		err := operation(context.Background())
+		result := OperationResult{ID: handle.ID, Kind: kind, Phase: PhaseSucceeded, Message: "completed"}
+		if err != nil {
+			result.Phase = PhaseFailed
+			result.Error = err.Error()
+			result.Message = "operation failed"
+		}
+		s.setOperation(result)
+	}()
+	return handle
+}
+
+func (s *Server) setOperation(result OperationResult) {
+	s.mu.Lock()
+	s.results[result.ID] = result
+	s.mu.Unlock()
+}
+
+func (s *Server) writeOperationStatus(connection net.Conn, id string) {
+	s.mu.RLock()
+	result, ok := s.results[id]
+	s.mu.RUnlock()
+	if !ok {
+		writeResponse(connection, response{Error: "launcher operation not found"})
+		return
+	}
+	writeResponse(connection, response{Accepted: true, OperationID: result.ID, Phase: result.Phase, Message: result.Message, Error: result.Error})
 }
 
 func writeResponse(connection net.Conn, response response) {
@@ -174,11 +243,13 @@ func (s *Server) Close() error {
 
 // RequestUpgrade asks the outer launcher to replace the Linux runner image.
 func RequestUpgrade(ctx context.Context, path string) error {
-	return requestOperation(ctx, path, UpgradeRunnerImage)
+	handle, err := requestAsync(ctx, path, UpgradeRunnerImage)
+	return waitOperation(ctx, path, handle, err)
 }
 
 func RequestReconcile(ctx context.Context, path string) error {
-	return requestOperation(ctx, path, ReconcileConfig)
+	handle, err := RequestReconcileAsync(ctx, path)
+	return waitOperation(ctx, path, handle, err)
 }
 
 func RequestRuntimeAction(ctx context.Context, path, action string) error {
@@ -186,7 +257,20 @@ func RequestRuntimeAction(ctx context.Context, path, action string) error {
 	if operation == "" {
 		return fmt.Errorf("unsupported runtime action %q", action)
 	}
-	return requestOperation(ctx, path, operation)
+	handle, err := requestAsync(ctx, path, operation)
+	return waitOperation(ctx, path, handle, err)
+}
+
+func RequestReconcileAsync(ctx context.Context, path string) (OperationHandle, error) {
+	return requestAsync(ctx, path, ReconcileConfig)
+}
+
+func RequestRuntimeActionAsync(ctx context.Context, path, action string) (OperationHandle, error) {
+	operation := map[string]string{"start": RuntimeStart, "stop": RuntimeStop, "restart": RuntimeRestart}[action]
+	if operation == "" {
+		return OperationHandle{}, fmt.Errorf("unsupported runtime action %q", action)
+	}
+	return requestAsync(ctx, path, operation)
 }
 
 func RequestQuickTunnelURL(ctx context.Context, path string) (string, error) {
@@ -211,26 +295,79 @@ func RequestQuickTunnelURL(ctx context.Context, path string) (string, error) {
 	return result.Value, nil
 }
 
-func requestOperation(ctx context.Context, path, operation string) error {
+func requestAsync(ctx context.Context, path, operation string) (OperationHandle, error) {
 	connection, err := dial(ctx, path)
 	if err != nil {
-		return err
+		return OperationHandle{}, err
 	}
 	defer connection.Close()
 	if err := json.NewEncoder(connection).Encode(request{Operation: operation}); err != nil {
-		return fmt.Errorf("send launcher request: %w", err)
+		return OperationHandle{}, fmt.Errorf("send launcher request: %w", err)
 	}
-	var response response
-	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&response); err != nil {
-		return fmt.Errorf("read launcher response: %w", err)
+	var result response
+	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&result); err != nil {
+		return OperationHandle{}, fmt.Errorf("read launcher response: %w", err)
 	}
-	if !response.Accepted {
-		if response.Error == "" {
-			return errors.New("runner launcher rejected request")
+	if !result.Accepted {
+		if result.Error == "" {
+			return OperationHandle{}, errors.New("runner launcher rejected request")
 		}
-		return errors.New(response.Error)
+		return OperationHandle{}, errors.New(result.Error)
 	}
-	return nil
+	if result.OperationID == "" {
+		return OperationHandle{}, errors.New("runner launcher returned no operation ID")
+	}
+	return OperationHandle{ID: result.OperationID, Kind: operation}, nil
+}
+
+func waitOperation(ctx context.Context, path string, handle OperationHandle, err error) error {
+	if err != nil {
+		return err
+	}
+	for {
+		result, queryErr := operationStatus(ctx, path, handle.ID)
+		if queryErr != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return queryErr
+		}
+		switch result.Phase {
+		case PhaseSucceeded:
+			return nil
+		case PhaseFailed:
+			if result.Error != "" {
+				return errors.New(result.Error)
+			}
+			return errors.New(result.Message)
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func operationStatus(ctx context.Context, path, id string) (OperationResult, error) {
+	connection, err := dial(ctx, path)
+	if err != nil {
+		return OperationResult{}, err
+	}
+	defer connection.Close()
+	if err := json.NewEncoder(connection).Encode(request{Operation: OperationStatus, ID: id}); err != nil {
+		return OperationResult{}, fmt.Errorf("send launcher status request: %w", err)
+	}
+	var result response
+	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&result); err != nil {
+		return OperationResult{}, fmt.Errorf("read launcher status response: %w", err)
+	}
+	if !result.Accepted {
+		return OperationResult{}, errors.New(result.Error)
+	}
+	return OperationResult{ID: result.OperationID, Phase: result.Phase, Message: result.Message, Error: result.Error}, nil
 }
 
 func dial(ctx context.Context, path string) (net.Conn, error) {

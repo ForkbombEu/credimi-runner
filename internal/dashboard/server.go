@@ -251,7 +251,9 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
-	if !owned && bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
+	if owned && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" && fileExists(filepath.Join(composeDir, "setup-pending")) {
+		srv.startExistingRuntimeJob(cfg.Snapshot())
+	} else if !owned && bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
 		if !srv.bootstrapConfiguredRuntime() {
 			srv.startHub()
 		}
@@ -324,6 +326,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 	// Device actions
 	mux.HandleFunc("POST /devices/config", s.saveDevicesConfig)
+	mux.HandleFunc("GET /devices/android/connected", s.connectedAndroidDevices)
 	mux.HandleFunc("GET /devices/ios-simulator/status", s.iosSimulatorStatus)
 	mux.HandleFunc("POST /devices/ios-simulator/create", s.iosSimulatorCreate)
 	mux.HandleFunc("GET /devices/android-emulator/assets/status", s.androidEmulatorAssetsStatus)
@@ -352,6 +355,14 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/controller/operations/{id}", s.controllerOperation)
 	mux.HandleFunc("POST /api/controller/runtime/{action}", s.controllerRuntimeAction)
 	mux.HandleFunc("POST /api/controller/maintenance/upgrade-image", s.controllerUpgradeImage)
+}
+
+func (s *Server) connectedAndroidDevices(w http.ResponseWriter, r *http.Request) {
+	devices := probeAndroid(r.Context())
+	if devices == nil {
+		devices = []Device{}
+	}
+	writeJSON(w, devices)
 }
 
 func (s *Server) deviceEnable(w http.ResponseWriter, r *http.Request) { s.setDeviceEnabled(w, r, true) }
@@ -389,6 +400,7 @@ func (s *Server) setDeviceEnabled(w http.ResponseWriter, r *http.Request, enable
 		return
 	}
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	oldValues := dashboardruntime.Values(s.cfg.Snapshot())
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -421,6 +433,11 @@ func (s *Server) setDeviceEnabled(w http.ResponseWriter, r *http.Request, enable
 		http.Error(w, "device state saved, but Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+	newValues := dashboardruntime.Values(s.cfg.Snapshot())
+	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
+		http.Error(w, "device state was saved, but runtime reconciliation failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	// These controls are ordinary dashboard forms as well as API endpoints.
 	// Returning JSON to a browser form produced a blank page, which made the
 	// enable/disable action look broken even though the file had changed.
@@ -440,6 +457,7 @@ func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "confirmation required", http.StatusBadRequest)
 		return
 	}
+	oldValues := dashboardruntime.Values(s.cfg.Snapshot())
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
@@ -485,6 +503,11 @@ func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	if err := s.provisionRuntimeCapabilities(r.Context()); err != nil {
 		http.Error(w, "device removed, but Android capabilities could not be reconciled: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	newValues := dashboardruntime.Values(s.cfg.Snapshot())
+	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
+		http.Error(w, "device removal was saved, but runtime reconciliation failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	// Device actions are submitted from the dashboard, not a raw API client.
@@ -599,6 +622,11 @@ func (s *Server) pageData(active string, payload any) PageData {
 
 func runtimePaused(configDir string) bool {
 	_, err := os.Stat(filepath.Join(configDir, "runtime-paused"))
+	return err == nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
 	return err == nil
 }
 
@@ -830,7 +858,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.runtimeOwned {
-		if err := s.applyRuntimeOwnedRegistration(newValues); err != nil {
+		if err := s.applyRuntimeOwnedConfig(diff, newValues); err != nil {
 			http.Error(w, "device configuration was saved, but applying it to the running runner failed: "+err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -852,6 +880,23 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/devices", http.StatusSeeOther)
+}
+
+func (s *Server) applyDeviceChange(ctx context.Context, oldValues, newValues dashboardruntime.Values) error {
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
+	if s.runtimeOwned {
+		return s.applyRuntimeOwnedConfig(diff, map[string]string(newValues))
+	}
+	if s.manager == nil {
+		return nil
+	}
+	s.manager.Configure(newValues)
+	status := s.manager.Status(ctx)
+	if !status.RunnerRunning && !status.ComposeRunning {
+		return nil
+	}
+	_, err := s.applySavedConfig(diff, map[string]string(newValues))
+	return err
 }
 
 func (s *Server) registerConfiguredDevice(ctx context.Context, values dashboardruntime.Values, device dashboardruntime.DeviceRuntimeConfig) error {
@@ -1140,12 +1185,12 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		s.renderSetupError(w, incoming, "identity resolution failed: "+err.Error())
 		return
 	}
-	devices, err := s.setupDevices(r.WithContext(setupCtx), incoming)
+	candidate, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
 	if err != nil {
-		s.renderSetupError(w, incoming, "device setup failed: "+err.Error())
+		s.renderSetupError(w, incoming, "configuration validation failed: "+err.Error())
 		return
 	}
-	if errs, err := s.cfg.Apply(incoming); err != nil {
+	if errs := Validate(map[string]string(candidate)); len(errs) > 0 {
 		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Configuration validation failed."})
 		html, _ := s.render.FragmentPage("setup", d)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1153,24 +1198,33 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(html))
 		return
 	}
-	values := dashboardruntime.Values(s.cfg.Snapshot())
+	devices, err := s.setupDevices(r.WithContext(setupCtx), map[string]string(candidate))
+	if err != nil {
+		s.renderSetupError(w, incoming, "device setup failed: "+err.Error())
+		return
+	}
+	values := dashboardruntime.ValuesWithRuntimeDevices(candidate, devices)
+	if err := s.validateRuntimeRequirements(map[string]string(values)); err != nil {
+		s.renderSetupError(w, map[string]string(values), "runtime requirement check failed: "+err.Error())
+		return
+	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		s.renderSetupError(w, incoming, "configuration store failed: "+err.Error())
 		return
 	}
-	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: values, Devices: devices}); err != nil {
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: candidate, Devices: devices}); err != nil {
 		s.renderSetupError(w, incoming, "device inventory failed: "+err.Error())
+		return
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "setup-pending"), []byte("pending\n"), 0o600); err != nil {
+		s.renderSetupError(w, map[string]string(values), "setup state could not be recorded: "+err.Error())
 		return
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	values = dashboardruntime.Values(s.cfg.Snapshot())
 	if err := s.provisionRuntimeCapabilities(setupCtx); err != nil {
 		s.renderSetupError(w, map[string]string(values), "Android capabilities are unavailable: "+err.Error())
-		return
-	}
-	if err := s.validateRuntimeRequirements(values); err != nil {
-		s.renderSetupError(w, map[string]string(values), "runtime requirement check failed: "+err.Error())
 		return
 	}
 	if s.manager != nil {
@@ -1308,17 +1362,18 @@ func (s *Server) startRuntimeOwnedRegistration(values map[string]string) {
 		LogNextID: 1,
 	}, func(ctx context.Context) error {
 		if s.launcherSocket != "" {
+			s.setStartupState(StartupWaitingRunner, "Setup saved. Waiting for the outer launcher to apply the final runtime topology.")
 			if err := launcher.RequestReconcile(ctx, s.launcherSocket); err != nil {
 				s.setStartupState(StartupNeedsAttention, "Setup saved, but launcher reconciliation failed: "+err.Error())
 				return err
 			}
-			s.setStartupState(StartupReady, "Setup saved. The outer launcher is applying the configuration.")
-			return nil
+			s.setStartupState(StartupRegistering, "Runtime is ready. Resolving the public URL and registering the runner.")
 		}
 		if err := s.registerCurrent(ctx, values); err != nil {
 			s.setStartupState(StartupNeedsAttention, "Setup saved, but runner registration failed: "+err.Error())
 			return err
 		}
+		_ = os.Remove(filepath.Join(filepath.Dir(s.cfg.Path()), "setup-pending"))
 		s.setStartupState(StartupReady, "Setup complete. Runner registered with Credimi.")
 		return nil
 	})
@@ -1375,6 +1430,9 @@ func (s *Server) startExistingRuntimeJob(values map[string]string) {
 		s.pendingDiff = dashboardruntime.ConfigDiff{}
 		s.mu.Unlock()
 		s.setStartupState(StartupReady, "Runner already running and registered with Credimi.")
+		if s.runtimeOwned {
+			_ = os.Remove(filepath.Join(filepath.Dir(s.cfg.Path()), "setup-pending"))
+		}
 		return nil
 	})
 }

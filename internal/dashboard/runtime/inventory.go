@@ -265,32 +265,7 @@ func RuntimeConfigFromEnvironment() (RunnerRuntimeConfig, error) {
 // blocks. Unknown runner-level lines are retained; generated device lines are
 // always replaced.
 func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
-	if config.Host == nil {
-		config.Host = Values{}
-	}
-	values := cloneValues(config.Host)
-	for key, defaultValue := range DefaultValues() {
-		if strings.TrimSpace(values[key]) == "" {
-			values[key] = defaultValue
-		}
-	}
-	for key := range values {
-		if strings.HasPrefix(key, "CREDIMI_DEVICE_") {
-			delete(values, key)
-		}
-	}
-	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(config.Devices))
-	for index, device := range config.Devices {
-		for key, value := range device.Values {
-			values[devicePrefix(index+1)+key] = value
-		}
-		values[devicePrefix(index+1)+"ID"] = device.ID
-		values[devicePrefix(index+1)+"NAME"] = device.Name
-		values[devicePrefix(index+1)+"DESCRIPTION"] = device.Description
-		values[devicePrefix(index+1)+"TYPE"] = device.Type
-		values[devicePrefix(index+1)+"MODE"] = device.Mode
-		values[devicePrefix(index+1)+"ENABLED"] = strconv.FormatBool(device.Enabled)
-	}
+	values := ValuesWithRuntimeDevices(config.Host, config.Devices)
 	config, err := parseRunnerRuntimeConfig(values)
 	if err != nil {
 		return err
@@ -325,6 +300,38 @@ func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 		return err
 	}
 	return s.writeTOML(typed, values)
+}
+
+// ValuesWithRuntimeDevices returns the compatibility values that represent a
+// complete host configuration and inventory. Callers can validate the full
+// candidate before handing it to SaveRuntimeConfig, without exposing a
+// partially-written config.toml to another process.
+func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values {
+	values := cloneValues(host)
+	for key, defaultValue := range DefaultValues() {
+		if strings.TrimSpace(values[key]) == "" {
+			values[key] = defaultValue
+		}
+	}
+	for key := range values {
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") {
+			delete(values, key)
+		}
+	}
+	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(devices))
+	for index, device := range devices {
+		prefix := devicePrefix(index + 1)
+		for key, value := range device.Values {
+			values[prefix+key] = value
+		}
+		values[prefix+"ID"] = device.ID
+		values[prefix+"NAME"] = device.Name
+		values[prefix+"DESCRIPTION"] = device.Description
+		values[prefix+"TYPE"] = device.Type
+		values[prefix+"MODE"] = device.Mode
+		values[prefix+"ENABLED"] = strconv.FormatBool(device.Enabled)
+	}
+	return values
 }
 
 func SortedRunnerKeys() []string {

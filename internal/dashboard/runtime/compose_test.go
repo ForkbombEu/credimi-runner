@@ -39,7 +39,7 @@ func TestComposeUsesOneGlobalRunnerImageAndForegroundRuntime(t *testing.T) {
 
 func TestComposeBootstrapsWithoutConfiguredInventory(t *testing.T) {
 	dir := t.TempDir()
-	values := Values{"ANDROID_RUNNER_IMAGE": "credimi-runner:local", "ANDROID_PULL_POLICY": "never"}
+	values := (BootstrapContext{RunnerImage: "credimi-runner:local", PullPolicy: "never", BeforeSetup: true}).Apply(Values{})
 	if err := WriteComposeFileForOS(dir, values, "linux"); err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +69,7 @@ func TestComposeCarriesBootstrapHostContextForFirstRunDiscovery(t *testing.T) {
 		ContainerAVDHome:    "/root/.android/avd",
 		ContainerGoldenRoot: "/avd-golden",
 		HostNetwork:         true,
+		BeforeSetup:         true,
 	}
 	content, err := ComposeYAML(values.Apply(Values{}), "linux")
 	if err != nil {
@@ -213,7 +214,7 @@ func TestComposeEnvironmentUsesTypedValues(t *testing.T) {
 		"CREDIMI_DEVICE_1_SERIAL": "device-1",
 	}
 	plan := BuildRuntimePlanForOS(t.TempDir(), values, "linux")
-	environment := composeEnv(values, plan, "linux")
+	environment := ComposeEnvironment(values, plan, "linux")
 	got := make(map[string]string, len(environment))
 	for _, entry := range environment {
 		key, value, ok := strings.Cut(entry, "=")
@@ -230,7 +231,6 @@ func TestComposeEnvironmentUsesTypedValues(t *testing.T) {
 		"CREDIMI_CONFIG_FINGERPRINT": plan.ConfigFingerprint,
 		"CREDIMI_TUNNEL_URL":         "http://caddy:80",
 		"CADDY_INGRESS_NETWORKS":     "credimi-runner-ingress",
-		"ADB_SERVER_SOCKET":          "tcp:host.docker.internal:5037",
 	} {
 		if got[key] != want {
 			t.Fatalf("compose environment %s=%q, want %q", key, got[key], want)
@@ -238,6 +238,9 @@ func TestComposeEnvironmentUsesTypedValues(t *testing.T) {
 	}
 	if got["CREDIMI_COMPOSE_PROJECT"] == "shell-project" || got["RUNNER_PORT"] == "shell-runner-port" {
 		t.Fatalf("shell interpolation values were not replaced: %#v", got)
+	}
+	if _, exists := got["ADB_SERVER_SOCKET"]; exists {
+		t.Fatalf("ADB topology must be rendered by the runner service, not composeEnv: %#v", got)
 	}
 }
 
@@ -247,11 +250,51 @@ func TestComposeUsesHostNetworkForLinuxUSBADB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(content, "network_mode: host") || !strings.Contains(content, "caddy.reverse_proxy: \"host.docker.internal:") || !strings.Contains(content, "    caddy:\n") || !strings.Contains(content, "    networks:\n      - ingress") {
+	if !strings.Contains(content, "network_mode: host") || !strings.Contains(content, "caddy.reverse_proxy: \"host.docker.internal:") || !strings.Contains(content, "  caddy:\n") || !strings.Contains(content, "    networks:\n      - ingress") {
 		t.Fatalf("USB compose did not use the host network topology:\n%s", content)
+	}
+	if !strings.Contains(content, `ADB_SERVER_SOCKET: "tcp:127.0.0.1:5037"`) || strings.Contains(content, "ADB_SERVER_SOCKET:-tcp:host.docker.internal") {
+		t.Fatalf("host-network runner ADB socket was not topology-owned:\n%s", content)
 	}
 	if !strings.Contains(content, "--url ${CREDIMI_TUNNEL_URL:-http://caddy:80}") || !strings.Contains(content, "127.0.0.1:") {
 		t.Fatalf("USB edge services are not using the bridge topology:\n%s", content)
+	}
+}
+
+func TestBootstrapComposeOmitsExposureServices(t *testing.T) {
+	values := (BootstrapContext{RunnerImage: "credimi-runner:local", PullPolicy: "never", HostNetwork: true, BeforeSetup: true}).Apply(DefaultValues())
+	content, err := ComposeYAML(values, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "  runner:\n") {
+		t.Fatal("bootstrap compose omitted runner")
+	}
+	for _, service := range []string{"  caddy:\n", "  tunnel:\n", "  tunnel_named:\n"} {
+		if strings.Contains(content, service) {
+			t.Fatalf("bootstrap compose unexpectedly contains %s", strings.TrimSpace(service))
+		}
+	}
+}
+
+func TestComposeRendersNamedTunnelOnlyForManagedExposure(t *testing.T) {
+	values := indexedComposeValues(Values{
+		"CREDIMI_SERVICE_MODE":       "cloudflare-managed",
+		"CLOUDFLARE_TUNNEL_TOKEN":    "token",
+		"CREDIMI_TUNNEL_URL":         "https://runner.example",
+		"ANDROID_RUNNER_IMAGE":       "runner:local",
+		"ANDROID_PULL_POLICY":        "never",
+		"CREDIMI_CONFIG_FINGERPRINT": "fingerprint",
+	})
+	content, err := ComposeYAML(values, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(content, "  tunnel_named:\n") || !strings.Contains(content, "command: tunnel --no-autoupdate run") {
+		t.Fatalf("managed tunnel service missing:\n%s", content)
+	}
+	if strings.Contains(content, "  tunnel:\n") {
+		t.Fatalf("quick tunnel service should not be present for managed exposure:\n%s", content)
 	}
 }
 

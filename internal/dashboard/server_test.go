@@ -2165,6 +2165,14 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
 		t.Fatalf("setup was not persisted: exists=%t values=%#v", s.cfg.Exists(), s.cfg.Snapshot())
 	}
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig, err := store.RuntimeConfig()
+	if err != nil || len(runtimeConfig.Devices) != 1 || runtimeConfig.Devices[0].ID != "acme/runner/pixel" {
+		t.Fatalf("setup persisted incomplete inventory: %#v err=%v", runtimeConfig, err)
+	}
 }
 
 func TestServerRuntimeStartRegistersRunner(t *testing.T) {

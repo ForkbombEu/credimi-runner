@@ -381,6 +381,20 @@ func TestApplyBootstrapValuesUsesLocalImageAndValidatesPolicy(t *testing.T) {
 	}
 }
 
+func TestEffectiveConfigDirPrefersExplicitDirectoryAndConfigPath(t *testing.T) {
+	oldDir, oldPath := dashboardConfigDir, configPath
+	t.Cleanup(func() { dashboardConfigDir, configPath = oldDir, oldPath })
+	dashboardConfigDir = ""
+	configPath = filepath.Join(t.TempDir(), "config.toml")
+	if got, want := effectiveConfigDir(), filepath.Dir(configPath); got != want {
+		t.Fatalf("config path directory = %q, want %q", got, want)
+	}
+	dashboardConfigDir = filepath.Join(t.TempDir(), "runner")
+	if got := effectiveConfigDir(); got != dashboardConfigDir {
+		t.Fatalf("explicit config directory = %q, want %q", got, dashboardConfigDir)
+	}
+}
+
 func TestRunPublicRejectsInvalidBootstrapPolicyBeforeStartingDocker(t *testing.T) {
 	oldDir, oldImage, oldPolicy := dashboardConfigDir, bootstrapImage, bootstrapPullPolicy
 	t.Cleanup(func() { dashboardConfigDir, bootstrapImage, bootstrapPullPolicy = oldDir, oldImage, oldPolicy })

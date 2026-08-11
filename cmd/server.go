@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -133,30 +134,34 @@ var serverCmd = &cobra.Command{
 		}()
 		serverSignalReadyHook()
 
-		if err := srv.StartExistingWorkers(serveCtx); err != nil {
-			serveSpan.RecordError(err)
-			serveSpan.SetStatus(codes.Error, "start existing workers failed")
-			cluelog.Printf(serveCtx, "Warning: failed to start some existing workers: %v", err)
-			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
-		}
+		configured := configDir != "" && fileExists(filepath.Join(configDir, "config.toml"))
+		if configured {
+			if err := srv.StartExistingWorkers(serveCtx); err != nil {
+				serveSpan.RecordError(err)
+				serveSpan.SetStatus(codes.Error, "start existing workers failed")
+				cluelog.Printf(serveCtx, "Warning: failed to start some existing workers: %v", err)
+				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
+			}
 
-		if err := lifecycleClient.Resume(serveCtx, "runner_startup"); err != nil {
-			cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
-			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
-		}
-		// `serve` may be started directly by Compose, Coolify, or the CLI rather
-		// than through the dashboard lifecycle controller. Ensure every indexed
-		// child exists before the first heartbeat reports its state to Credimi.
-		if err := registerConfiguredDevices(serveCtx); err != nil {
-			cluelog.Printf(serveCtx, "Warning: failed to register configured devices: %v", err)
-			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to register configured devices", err)
-		}
-		// Do not leave a newly started runner and its devices offline until the
-		// first periodic tick (normally 30 seconds). Resume records host state;
-		// this immediate heartbeat records the per-device readiness inventory.
-		if err := lifecycleClient.Heartbeat(serveCtx); err != nil {
-			cluelog.Printf(serveCtx, "Warning: failed to send initial runner heartbeat: %v", err)
-			observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send initial runner heartbeat", err)
+			if err := lifecycleClient.Resume(serveCtx, "runner_startup"); err != nil {
+				cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
+				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
+			}
+			_ = writeRuntimeState(configDir, "running")
+			// `serve` may be started directly by Compose, Coolify, or the CLI rather
+			// than through the dashboard lifecycle controller. Ensure every indexed
+			// child exists before the first heartbeat reports its state to Credimi.
+			if err := registerConfiguredDevices(serveCtx); err != nil {
+				cluelog.Printf(serveCtx, "Warning: failed to register configured devices: %v", err)
+				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to register configured devices", err)
+			}
+			// Do not leave a newly started runner and its devices offline until the
+			// first periodic tick (normally 30 seconds). Resume records host state;
+			// this immediate heartbeat records the per-device readiness inventory.
+			if err := lifecycleClient.Heartbeat(serveCtx); err != nil {
+				cluelog.Printf(serveCtx, "Warning: failed to send initial runner heartbeat: %v", err)
+				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send initial runner heartbeat", err)
+			}
 		}
 
 		heartbeatCtx, stopHeartbeat := context.WithCancel(serveCtx)
@@ -244,23 +249,63 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 					store.StopAll()
 					_ = lifecycle.Pause(controlCtx, "dashboard_stop")
 					_ = os.WriteFile(filepath.Join(configDir, "runtime-paused"), []byte("paused\n"), 0o600)
+					_ = writeRuntimeState(configDir, "paused")
 				case "start":
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
 						_ = lifecycle.Resume(controlCtx, "dashboard_start")
 						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
+						_ = writeRuntimeState(configDir, "running")
+					} else {
+						_ = writeRuntimeState(configDir, "failed: "+err.Error())
 					}
 				case "restart":
+					_ = writeRuntimeState(configDir, "restarting")
 					store.StopAll()
 					_ = lifecycle.Pause(controlCtx, "dashboard_restart")
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
 						_ = lifecycle.Resume(controlCtx, "dashboard_restart")
 						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
+						_ = writeRuntimeState(configDir, "running")
+					} else {
+						_ = writeRuntimeState(configDir, "failed: "+err.Error())
 					}
 				}
 			}
 		}
 	}()
 	return cancel
+}
+
+func writeRuntimeState(configDir, state string) error {
+	if strings.TrimSpace(configDir) == "" {
+		return nil
+	}
+	sequence := int64(0)
+	if raw, err := os.ReadFile(filepath.Join(configDir, "runtime-state-sequence")); err == nil {
+		sequence, _ = strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	}
+	sequence++
+	if err := os.WriteFile(filepath.Join(configDir, "runtime-state-sequence"), []byte(strconv.FormatInt(sequence, 10)+"\n"), 0o600); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(configDir, ".runtime-state-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.WriteString(strings.TrimSpace(state) + "\n"); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, filepath.Join(configDir, "runtime-state"))
 }
 
 func registerConfiguredDevices(ctx context.Context) error {

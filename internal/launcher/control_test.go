@@ -26,15 +26,17 @@ func TestUpgradeRequestIsAllowListedAndAcceptedBeforeReplacement(t *testing.T) {
 	}
 	defer server.Close()
 
-	if err := RequestUpgrade(context.Background(), server.listener.Addr().String()); err != nil {
-		t.Fatal(err)
-	}
+	result := make(chan error, 1)
+	go func() { result <- RequestUpgrade(context.Background(), server.listener.Addr().String()) }()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
 		t.Fatal("upgrade operation was not started")
 	}
 	close(finished)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLauncherRejectsUnknownAndExtraOperations(t *testing.T) {
@@ -99,8 +101,8 @@ func TestLauncherRechecksBusyStateBeforeReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	if err := RequestUpgrade(context.Background(), server.listener.Addr().String()); err != nil {
-		t.Fatal(err)
+	if err := RequestUpgrade(context.Background(), server.listener.Addr().String()); err == nil {
+		t.Fatal("busy upgrade unexpectedly succeeded")
 	}
 	select {
 	case <-called:
@@ -160,6 +162,101 @@ func TestLauncherTypedOperationsReportRejectedAndUnconfiguredRequests(t *testing
 	}
 	if err := RequestReconcile(context.Background(), path); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("unconfigured reconcile = %v", err)
+	}
+}
+
+func TestLauncherOperationFailureIsReturnedToCaller(t *testing.T) {
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		ReconcileConfig: func(context.Context) error { return errors.New("compose reconciliation failed") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := RequestReconcile(context.Background(), server.listener.Addr().String()); err == nil || !strings.Contains(err.Error(), "compose reconciliation failed") {
+		t.Fatalf("reconcile failure = %v", err)
+	}
+}
+
+func TestLauncherAsyncRuntimeActionCanBeObservedUntilCompletion(t *testing.T) {
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		RuntimeStart: func(context.Context) error {
+			close(started)
+			<-finished
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	path := server.listener.Addr().String()
+	handle, err := RequestRuntimeActionAsync(context.Background(), path, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runtime start did not begin")
+	}
+	status, err := operationStatus(context.Background(), path, handle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Phase != PhaseRunning && status.Phase != PhaseQueued {
+		t.Fatalf("in-flight runtime status = %#v", status)
+	}
+	close(finished)
+	if err := waitOperation(context.Background(), path, handle, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLauncherOperationWaitHonorsCallerCancellation(t *testing.T) {
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		RuntimeStop: func(context.Context) error {
+			close(started)
+			<-finished
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	handle, err := RequestRuntimeActionAsync(ctx, server.listener.Addr().String(), "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runtime stop did not begin")
+	}
+	cancel()
+	if err := waitOperation(ctx, server.listener.Addr().String(), handle, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled operation error = %v", err)
+	}
+	close(finished)
+}
+
+func TestLauncherRejectsUnknownOperationStatus(t *testing.T) {
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if _, err := operationStatus(context.Background(), server.listener.Addr().String(), "missing-operation"); err == nil || !strings.Contains(err.Error(), "operation not found") {
+		t.Fatalf("unknown operation status = %v", err)
+	}
+	if _, err := RequestRuntimeActionAsync(context.Background(), server.listener.Addr().String(), "invalid"); err == nil {
+		t.Fatal("invalid runtime action was accepted")
 	}
 }
 

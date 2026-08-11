@@ -307,6 +307,24 @@ func TestRuntimeLifecycleEndpointsAndStop(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleWaitsForQuickTunnelURL(t *testing.T) {
+	attempts := 0
+	lifecycle := RuntimeLifecycle{
+		Values: dashboardruntime.Values{"CREDIMI_SERVICE_MODE": "auto"},
+		QuickTunnelURL: func(context.Context) (string, error) {
+			attempts++
+			if attempts < 2 {
+				return "", errors.New("quick tunnel hostname is not available yet")
+			}
+			return "https://fresh.trycloudflare.com", nil
+		},
+	}
+	url, port, err := lifecycle.registrationEndpoint(context.Background())
+	if err != nil || url != "https://fresh.trycloudflare.com" || port != "" || attempts != 2 {
+		t.Fatalf("quick tunnel endpoint = %q %q err=%v attempts=%d", url, port, err, attempts)
+	}
+}
+
 func TestRuntimeLifecycleRegisterRunningWaitsForRunnerReadiness(t *testing.T) {
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

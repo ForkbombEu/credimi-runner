@@ -107,6 +107,16 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 		PublicMode:        serviceMode,
 		RequiresDocker:    backend == DefaultContainerBackend || serviceMode != "manual",
 	}
+	if backend == DefaultContainerBackend && strings.EqualFold(values[BootstrapPhaseEnv], "true") {
+		// Before config.toml exists the runner container only hosts the setup
+		// wizard and discovery endpoints. Exposure services must not be started
+		// from their form defaults before the user commits a service mode.
+		plan.ServiceMode = "bootstrap"
+		plan.PublicMode = "bootstrap"
+		plan.ComposeServices = []string{"runner"}
+		plan.ExpectedServices = expectedServices(plan)
+		return plan
+	}
 
 	switch {
 	case backend == DefaultNativeBackend && serviceMode == "manual":
@@ -171,7 +181,7 @@ func expectedServices(plan RuntimePlan) []PlannedService {
 			services = append(services, PlannedService{ID: "tunnel_named", Name: "tunnel_named", Role: "managed tunnel", Critical: true, Kind: "compose"})
 		}
 	}
-	if strings.TrimSpace(plan.ServiceMode) != "" {
+	if strings.TrimSpace(plan.ServiceMode) != "" && plan.ServiceMode != "bootstrap" {
 		services = append(services, PlannedService{ID: "temporal", Name: "temporal", Role: "workflow backend", Critical: false, Kind: "external"})
 	}
 	return services
@@ -288,6 +298,9 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
 		classSet[ApplyCredimiUpdateRequired] = struct{}{}
 	}
+	if runtimeTopologyChanged(oldValues, newValues, goos) {
+		classSet[ApplyComposeRecreate] = struct{}{}
+	}
 
 	if len(diff.ChangedKeys) == 0 {
 		diff.Classes = []ApplyClass{ApplySavedOnly}
@@ -303,4 +316,23 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		}
 	}
 	return diff
+}
+
+func runtimeTopologyChanged(oldValues, newValues Values, goos string) bool {
+	oldPlan := BuildRuntimePlanForOS("", oldValues, goos)
+	newPlan := BuildRuntimePlanForOS("", newValues, goos)
+	if len(oldPlan.ComposeServices) != len(newPlan.ComposeServices) {
+		return true
+	}
+	for index := range oldPlan.ComposeServices {
+		if oldPlan.ComposeServices[index] != newPlan.ComposeServices[index] {
+			return true
+		}
+	}
+	oldSpec, oldErr := sharedRunnerSpec(oldValues, goos)
+	newSpec, newErr := sharedRunnerSpec(newValues, goos)
+	if oldErr != nil || newErr != nil {
+		return (oldErr == nil) != (newErr == nil)
+	}
+	return oldSpec != newSpec
 }

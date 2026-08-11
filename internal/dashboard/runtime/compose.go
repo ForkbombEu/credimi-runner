@@ -63,12 +63,18 @@ func ComposeYAML(values Values, goos string) (string, error) {
 	// host.docker.internal and cloudflared reaches Caddy by service name.
 	caddyOnHost := plan.Backend == DefaultNativeBackend
 	builder.WriteString("services:\n")
-	if plan.Backend != DefaultNativeBackend {
+	if plan.Backend != DefaultNativeBackend && containsService(plan.ComposeServices, "runner") {
 		writeRunnerService(&builder, goos, normalizeServiceMode(normalized["CREDIMI_SERVICE_MODE"]), spec, caddyOnHost, normalized["CREDIMI_CONFIG_DIR"], normalized["DASHBOARD_PORT"])
 	}
-	writeCaddyService(&builder, caddyOnHost, plan.Backend == DefaultNativeBackend)
-	writeTunnelService(&builder, caddyOnHost, QuickTunnelMetricsPort(plan))
-	writeNamedTunnelService(&builder)
+	if containsService(plan.ComposeServices, "caddy") {
+		writeCaddyService(&builder, caddyOnHost, plan.Backend == DefaultNativeBackend)
+	}
+	if containsService(plan.ComposeServices, "tunnel") {
+		writeTunnelService(&builder, caddyOnHost, QuickTunnelMetricsPort(plan))
+	}
+	if containsService(plan.ComposeServices, "tunnel_named") {
+		writeNamedTunnelService(&builder)
+	}
 	fmt.Fprintf(&builder, `
 networks:
   ingress:
@@ -94,11 +100,8 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	// Configuration is TOML and is mounted by the unified runner container;
 	// Compose must not treat it as a dotenv file.
 	fmt.Fprintf(builder, "    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n      CREDIMI_RUNNER_LAUNCHER_SOCKET: /etc/credimi-runner/control.sock\n      CREDIMI_BOOTSTRAP_IMAGE: \"${CREDIMI_BOOTSTRAP_IMAGE:-}\"\n      CREDIMI_BOOTSTRAP_PULL_POLICY: \"${CREDIMI_BOOTSTRAP_PULL_POLICY:-}\"\n      CREDIMI_CONFIG_OWNER_UID: \"${CREDIMI_CONFIG_OWNER_UID:-}\"\n      CREDIMI_CONFIG_OWNER_GID: \"${CREDIMI_CONFIG_OWNER_GID:-}\"\n      CREDIMI_HOST_HOME: \"${CREDIMI_HOST_HOME:-}\"\n      CREDIMI_CONTAINER_ANDROID_DIR: \"${CREDIMI_CONTAINER_ANDROID_DIR:-/root/.android}\"\n      CREDIMI_CONTAINER_AVD_HOME: \"${CREDIMI_CONTAINER_AVD_HOME:-/root/.android/avd}\"\n      CREDIMI_CONTAINER_GOLDEN_ROOT: \"${CREDIMI_CONTAINER_GOLDEN_ROOT:-/avd-golden}\"\n      PORT: \"${RUNNER_PORT:-%s}\"\n", DefaultRunnerPort)
-	if spec.NetworkMode == "host" {
-		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:127.0.0.1:5037}\"\n")
-	}
-	if spec.HasADB && spec.NetworkMode != "host" {
-		builder.WriteString("      ADB_SERVER_SOCKET: \"${ADB_SERVER_SOCKET:-tcp:host.docker.internal:5037}\"\n")
+	if adbSocket := runnerADBServerSocket(spec); adbSocket != "" {
+		fmt.Fprintf(builder, "      ADB_SERVER_SOCKET: %s\n", strconv.Quote(adbSocket))
 	}
 	if spec.HasKVM {
 		builder.WriteString("    devices:\n      - /dev/kvm:/dev/kvm\n")
@@ -148,11 +151,22 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	}
 }
 
+func runnerADBServerSocket(spec sharedRunnerRuntime) string {
+	if spec.NetworkMode == "host" {
+		return "tcp:127.0.0.1:5037"
+	}
+	if spec.UsesHostADB {
+		return "tcp:host.docker.internal:5037"
+	}
+	return ""
+}
+
 type sharedRunnerRuntime struct {
 	Image           string
 	PullPolicy      string
 	NetworkMode     string
 	HasADB          bool
+	UsesHostADB     bool
 	HasUSB          bool
 	HasEmulator     bool
 	HasKVM          bool
@@ -219,6 +233,9 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 		if deviceMode != "no_device" && deviceType != "redroid" {
 			spec.HasADB = true
 		}
+		if deviceType == "android_phone" && deviceMode != "no_device" {
+			spec.UsesHostADB = true
+		}
 		if deviceMode == "usb" {
 			spec.HasUSB = true
 		}
@@ -273,7 +290,6 @@ func composeEnv(values Values, plan RuntimePlan, goos string) []string {
 		"CREDIMI_CONFIG_FINGERPRINT=" + defaultIfEmpty(plan.ConfigFingerprint, "unknown"),
 		"CREDIMI_TUNNEL_URL=" + tunnelURL,
 		"CADDY_INGRESS_NETWORKS=credimi-runner-ingress",
-		"ADB_SERVER_SOCKET=" + defaultIfEmpty(normalized["ADB_SERVER_SOCKET"], "tcp:host.docker.internal:5037"),
 		"COMPOSE_PROGRESS=plain",
 		"DOCKER_CLI_HINTS=false",
 	}
@@ -281,7 +297,7 @@ func composeEnv(values Values, plan RuntimePlan, goos string) []string {
 		BootstrapImageEnv, BootstrapPullPolicyEnv, ConfigOwnerUIDEnv,
 		ConfigOwnerGIDEnv, HostHomeEnv, HostAndroidDirEnv, HostGoldenRootEnv,
 		ContainerAndroidDirEnv, ContainerAVDHomeEnv, ContainerGoldenRootEnv,
-		BootstrapHostNetworkEnv,
+		BootstrapHostNetworkEnv, BootstrapPhaseEnv,
 	} {
 		overrides = append(overrides, key+"="+normalized[key])
 	}

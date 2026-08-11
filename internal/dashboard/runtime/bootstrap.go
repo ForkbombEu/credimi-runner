@@ -17,6 +17,7 @@ const (
 	ContainerAVDHomeEnv     = "CREDIMI_CONTAINER_AVD_HOME"
 	ContainerGoldenRootEnv  = "CREDIMI_CONTAINER_GOLDEN_ROOT"
 	BootstrapHostNetworkEnv = "CREDIMI_BOOTSTRAP_HOST_NETWORK"
+	BootstrapPhaseEnv       = "CREDIMI_BOOTSTRAP_PHASE"
 )
 
 // BootstrapContext contains host-only values needed before typed TOML exists.
@@ -34,6 +35,7 @@ type BootstrapContext struct {
 	ContainerAVDHome    string
 	ContainerGoldenRoot string
 	HostNetwork         bool
+	BeforeSetup         bool
 }
 
 func (c BootstrapContext) Apply(values Values) Values {
@@ -47,6 +49,8 @@ func (c BootstrapContext) Apply(values Values) Values {
 	}
 	set(BootstrapImageEnv, c.RunnerImage)
 	set(BootstrapPullPolicyEnv, c.PullPolicy)
+	set("ANDROID_RUNNER_IMAGE", c.RunnerImage)
+	set("ANDROID_PULL_POLICY", c.PullPolicy)
 	if c.HostUID > 0 {
 		set(ConfigOwnerUIDEnv, strconv.Itoa(c.HostUID))
 	}
@@ -61,6 +65,9 @@ func (c BootstrapContext) Apply(values Values) Values {
 	set(ContainerGoldenRootEnv, c.ContainerGoldenRoot)
 	if c.HostNetwork {
 		values[BootstrapHostNetworkEnv] = "true"
+	}
+	if c.BeforeSetup {
+		values[BootstrapPhaseEnv] = "true"
 	}
 	return values
 }

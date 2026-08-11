@@ -2,6 +2,9 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -156,6 +159,27 @@ esac
 	}
 	if devices[2].Status != Offline || devices[2].Name != "Pixel 6" {
 		t.Fatalf("offline device = %#v", devices[2])
+	}
+}
+
+func TestConnectedAndroidDevicesEndpointReturnsLiveProbe(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "adb"), `#!/bin/sh
+printf '%s\n' 'List of devices attached' 'USB123 device product:pixel model:Pixel_8 device:husky transport_id:1'
+`)
+	server := newTestServer(t)
+	t.Setenv("PATH", bin)
+	response := httptest.NewRecorder()
+	server.connectedAndroidDevices(response, httptest.NewRequest(http.MethodGet, "/devices/android/connected", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("endpoint status = %d", response.Code)
+	}
+	var devices []Device
+	if err := json.Unmarshal(response.Body.Bytes(), &devices); err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].Serial != "USB123" || devices[0].Status != Online {
+		t.Fatalf("connected devices = %#v", devices)
 	}
 }
 

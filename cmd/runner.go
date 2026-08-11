@@ -161,20 +161,27 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		if err != nil {
 			return fmt.Errorf("normalize configuration for reconciliation: %w", err)
 		}
-		valuesMu.Lock()
-		previous := currentValues
-		currentValues = next
-		valuesMu.Unlock()
+		valuesMu.RLock()
+		previous := make(dashboardruntime.Values, len(currentValues))
+		for key, value := range currentValues {
+			previous[key] = value
+		}
+		valuesMu.RUnlock()
 		diff := dashboardruntime.DiffValuesForOS(previous, next, stdruntime.GOOS)
 		manager.Configure(next)
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
 			if err := manager.Stop(ctx); err != nil {
+				manager.Configure(previous)
 				return fmt.Errorf("stop runtime for configuration reconciliation: %w", err)
 			}
 			if err := manager.Start(ctx); err != nil {
+				manager.Configure(previous)
 				return fmt.Errorf("start runtime after configuration reconciliation: %w", err)
 			}
 		}
+		valuesMu.Lock()
+		currentValues = next
+		valuesMu.Unlock()
 		return nil
 	}
 	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), manager.UpdateImage, func() bool {
@@ -191,9 +198,13 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 			}
 			return resolver.QuickTunnelURL(ctx)
 		},
-		RuntimeStart:   func(ctx context.Context) error { return writeRuntimeCommand(configDir, "start") },
-		RuntimeStop:    func(ctx context.Context) error { return writeRuntimeCommand(configDir, "stop") },
-		RuntimeRestart: func(ctx context.Context) error { return writeRuntimeCommand(configDir, "restart") },
+		RuntimeStart: func(ctx context.Context) error {
+			return requestRuntimeCommandAndWait(ctx, configDir, "start", "running")
+		},
+		RuntimeStop: func(ctx context.Context) error { return requestRuntimeCommandAndWait(ctx, configDir, "stop", "paused") },
+		RuntimeRestart: func(ctx context.Context) error {
+			return requestRuntimeCommandAndWait(ctx, configDir, "restart", "running")
+		},
 	})
 	if err != nil {
 		return err
@@ -254,6 +265,7 @@ func hostBootstrapContext(beforeSetup bool) dashboardruntime.BootstrapContext {
 		ContainerAVDHome:    "/root/.android/avd",
 		ContainerGoldenRoot: "/avd-golden",
 		HostNetwork:         beforeSetup,
+		BeforeSetup:         beforeSetup,
 	}
 }
 
@@ -299,6 +311,41 @@ func writeRuntimeCommand(configDir, action string) error {
 		return err
 	}
 	return os.Rename(temporaryPath, filepath.Join(configDir, "runtime-control"))
+}
+
+func requestRuntimeCommandAndWait(ctx context.Context, configDir, action, expected string) error {
+	sequence := int64(0)
+	if raw, err := os.ReadFile(filepath.Join(configDir, "runtime-state-sequence")); err == nil {
+		sequence, _ = strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	}
+	if err := writeRuntimeCommand(configDir, action); err != nil {
+		return err
+	}
+	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		raw, err := os.ReadFile(filepath.Join(configDir, "runtime-state"))
+		currentSequence := int64(0)
+		if sequenceRaw, sequenceErr := os.ReadFile(filepath.Join(configDir, "runtime-state-sequence")); sequenceErr == nil {
+			currentSequence, _ = strconv.ParseInt(strings.TrimSpace(string(sequenceRaw)), 10, 64)
+		}
+		if err == nil && currentSequence > sequence {
+			state := strings.TrimSpace(string(raw))
+			if strings.HasPrefix(state, "failed:") {
+				return fmt.Errorf("runtime %s failed: %s", action, strings.TrimSpace(strings.TrimPrefix(state, "failed:")))
+			}
+			if state == expected {
+				return nil
+			}
+		}
+		select {
+		case <-deadline.Done():
+			return fmt.Errorf("timed out waiting for runtime %s to reach %s", action, expected)
+		case <-ticker.C:
+		}
+	}
 }
 
 // runApplicationRuntime is the one foreground application unit used by both

@@ -39,6 +39,17 @@ func TestBuildRuntimePlanExpectedServices(t *testing.T) {
 	}
 }
 
+func TestBootstrapPlanStartsOnlyRunner(t *testing.T) {
+	values := (BootstrapContext{RunnerImage: "credimi-runner:local", PullPolicy: "never", BeforeSetup: true}).Apply(DefaultValues())
+	plan := BuildRuntimePlanForOS(t.TempDir(), values, "linux")
+	if got := plan.ComposeServices; len(got) != 1 || got[0] != "runner" {
+		t.Fatalf("bootstrap services = %v, want runner only", got)
+	}
+	if plan.ServiceMode != "bootstrap" || plan.PublicMode != "bootstrap" {
+		t.Fatalf("bootstrap modes = %q/%q", plan.ServiceMode, plan.PublicMode)
+	}
+}
+
 func TestDiffValuesCoverageBranches(t *testing.T) {
 	if got := DiffValues(Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Values{"CREDIMI_RUNNER_ID": "acme/runner"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
 		t.Fatalf("saved only diff = %#v", got)
@@ -54,6 +65,29 @@ func TestDiffValuesCoverageBranches(t *testing.T) {
 	}
 	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a", "CREDIMI_DEVICE_2_ID": "acme/runner/b"}); containsApplyClass(got.Classes, ApplyRestartRequired) || containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("added device inventory diff = %#v", got)
+	}
+}
+
+func TestDiffValuesClassifiesOnlyTopologyChangingDeviceEditsAsRecreate(t *testing.T) {
+	base := Values{
+		"CREDIMI_RUNNER_ID":        "acme/runner",
+		"CREDIMI_DEVICE_COUNT":     "1",
+		"CREDIMI_DEVICE_1_ID":      "acme/runner/pixel",
+		"CREDIMI_DEVICE_1_TYPE":    "android_emulator",
+		"CREDIMI_DEVICE_1_MODE":    "emulator",
+		"CREDIMI_DEVICE_1_ENABLED": "true",
+	}
+	description := cloneValues(base)
+	description["CREDIMI_DEVICE_1_DESCRIPTION"] = "lab"
+	if got := DiffValuesForOS(base, description, "linux"); containsApplyClass(got.Classes, ApplyComposeRecreate) {
+		t.Fatalf("metadata-only device edit requested recreate: %#v", got)
+	}
+	usb := cloneValues(base)
+	usb["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	usb["CREDIMI_DEVICE_1_MODE"] = "usb"
+	usb["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
+	if got := DiffValuesForOS(base, usb, "linux"); !containsApplyClass(got.Classes, ApplyComposeRecreate) {
+		t.Fatalf("USB topology change did not request recreate: %#v", got)
 	}
 }
 
