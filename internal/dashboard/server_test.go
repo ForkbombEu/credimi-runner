@@ -735,7 +735,7 @@ func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	emulator := dashboardruntime.DeviceRuntimeConfig{Type: "android_emulator", Mode: "emulator"}
 	applyDeviceDefaults(&emulator)
-	if emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
+	if emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["AVD_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
 		t.Fatalf("emulator defaults = %#v", emulator.Values)
 	}
 	redroid := dashboardruntime.DeviceRuntimeConfig{Type: "redroid", Mode: "no_device", Values: dashboardruntime.Values{}}
@@ -746,6 +746,51 @@ func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	s := newTestServer(t)
 	if err := s.registerConfiguredDevice(context.Background(), dashboardruntime.Values{}, dashboardruntime.DeviceRuntimeConfig{Name: "Pixel", Type: "android_phone", Mode: "usb"}); err == nil || !strings.Contains(err.Error(), "Credimi URL") {
 		t.Fatalf("missing credentials error = %v", err)
+	}
+}
+
+func TestSetupDevicesPersistsEmulatorAVDName(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/mobile-device/preview-id" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"device_id":"acme/runner/emulator"}`))
+	}))
+	defer api.Close()
+
+	s := newTestServer(t)
+	values := map[string]string(dashboardruntime.DefaultValues())
+	values["CREDIMI_URL"] = api.URL
+	values["CREDIMI_USER_API_KEY"] = "key"
+	values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	values["CREDIMI_RUNNER_NAME"] = "runner"
+	values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	form := url.Values{
+		"CREDIMI_DEVICE_NAME":        {"Emulator"},
+		"CREDIMI_RUNNER_TYPE":        {"android_emulator"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"emulator"},
+		"BASE_NAME":                  {"credimi"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := s.setupDevices(req, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].Values["AVD_NAME"] != "credimi" {
+		t.Fatalf("emulator device = %#v", devices)
+	}
+	store, err := dashboardruntime.LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(values), Devices: devices}); err != nil {
+		t.Fatalf("emulator inventory must persist: %v", err)
 	}
 }
 

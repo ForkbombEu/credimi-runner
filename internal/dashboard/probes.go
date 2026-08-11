@@ -30,15 +30,15 @@ const (
 )
 
 type Device struct {
-	Serial  string
-	Name    string
-	Type    string // android_phone | android_emulator | ios_simulator
-	Mode    string // wifi | usb | emulator | simulator
-	OS      string
-	Status  Status
-	Battery int
-	CPU     int
-	Mem     int
+	Serial  string `json:"serial"`
+	Name    string `json:"name"`
+	Type    string `json:"type"` // android_phone | android_emulator | ios_simulator
+	Mode    string `json:"mode"` // wifi | usb | emulator | simulator
+	OS      string `json:"os"`
+	Status  Status `json:"status"`
+	Battery int    `json:"battery"`
+	CPU     int    `json:"cpu"`
+	Mem     int    `json:"mem"`
 }
 
 type Service struct {

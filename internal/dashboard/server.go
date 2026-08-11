@@ -930,6 +930,7 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	case "android_emulator":
 		androidKeysDir, avdHome, goldenRoot := emulatorAssetPaths()
 		set("BASE_NAME", "credimi")
+		set("AVD_NAME", device.Values["BASE_NAME"])
 		set("ANDROID_KEYS_DIR", androidKeysDir)
 		set("HOST_AVD_HOME_PATH", avdHome)
 		set("HOST_AVD_GOLDEN_PATH", goldenRoot)

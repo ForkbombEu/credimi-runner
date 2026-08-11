@@ -181,6 +181,13 @@ printf '%s\n' 'List of devices attached' 'USB123 device product:pixel model:Pixe
 	if len(devices) != 1 || devices[0].Serial != "USB123" || devices[0].Status != Online {
 		t.Fatalf("connected devices = %#v", devices)
 	}
+	var payload []map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 1 || payload[0]["serial"] != "USB123" || payload[0]["status"] != string(Online) {
+		t.Fatalf("connected devices JSON = %#v", payload)
+	}
 }
 
 func TestProbeIOSWithFakeXcrun(t *testing.T) {
