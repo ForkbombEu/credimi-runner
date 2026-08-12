@@ -239,7 +239,12 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	}
 	resolveAndVerifyQuickTunnel = func(ctx context.Context, values dashboardruntime.Values) error {
 		plan := dashboardruntime.BuildRuntimePlanForOS(configDir, values, stdruntime.GOOS)
-		if plan.ServiceMode != "auto" {
+		// The bootstrap Compose plan intentionally contains only the runner so
+		// the setup dashboard can come up before the user chooses an exposure
+		// mode. Do not start a two-minute diagnostics poll for a tunnel that
+		// cannot exist yet: the final setup reconciliation is the sole owner of
+		// the first quick tunnel.
+		if !runtimePlanHasQuickTunnel(plan) {
 			return nil
 		}
 		resolver, ok := manager.(interface {
@@ -284,7 +289,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	}
 	refreshQuickTunnelURL = func(ctx context.Context, values dashboardruntime.Values) error {
 		plan := dashboardruntime.BuildRuntimePlanForOS(configDir, values, stdruntime.GOOS)
-		if plan.ServiceMode != "auto" {
+		if !runtimePlanHasQuickTunnel(plan) {
 			return launcher.ClearQuickTunnelURL(configDir)
 		}
 		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
@@ -325,12 +330,25 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		values := snapshotValues()
 		return refreshQuickTunnelURL(ctx, values)
 	}
+	resumePendingSetup := fileExists(filepath.Join(configDir, "setup-pending"))
+	reconcileSetup := reconcile
+	if resumePendingSetup {
+		// A launcher restart discards its in-memory operation result. Replace a
+		// stale setup handoff with one fresh launcher-owned operation before the
+		// runner container starts, so the Dashboard has a result it can observe.
+		reconcileSetup = func(ctx context.Context) error {
+			if err := manager.Start(ctx); err != nil {
+				return fmt.Errorf("start runtime while resuming setup: %w", err)
+			}
+			return refreshQuickTunnelURL(ctx, snapshotValues())
+		}
+	}
 	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), upgrade, func() bool {
 		status := manager.Status(context.Background())
 		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate || readActiveMobileActivities(configDir)
 	}, launcher.Operations{
 		ReconcileConfig: reconcile,
-		ReconcileSetup:  reconcile,
+		ReconcileSetup:  reconcileSetup,
 		QuickTunnelURL: func(ctx context.Context) (string, error) {
 			return launcher.ReadQuickTunnelURL(configDir)
 		},
@@ -372,17 +390,26 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
 	}
-	// A launcher restart creates a new quick tunnel. Remove any previous
-	// endpoint before the new dashboard can resume registration, so Credimi
-	// never receives a URL from the stopped tunnel.
-	if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
-		return err
-	}
-	if err := manager.Start(cmd.Context()); err != nil {
-		return err
-	}
-	if err := refreshQuickTunnelURL(cmd.Context(), snapshotValues()); err != nil {
-		return err
+	if resumePendingSetup {
+		// The fresh operation persists setup-operation before it can start the
+		// runner. Its completion owns exposure verification and final setup
+		// registration; do not race it with the normal launcher start path.
+		if _, err := launcher.RequestSetupReconcileAsync(cmd.Context(), filepath.Join(configDir, "control.sock")); err != nil {
+			return fmt.Errorf("resume pending setup: %w", err)
+		}
+	} else {
+		// A launcher restart creates a new quick tunnel. Remove any previous
+		// endpoint before the new dashboard can resume registration, so Credimi
+		// never receives a URL from the stopped tunnel.
+		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+			return err
+		}
+		if err := manager.Start(cmd.Context()); err != nil {
+			return err
+		}
+		if err := refreshQuickTunnelURL(cmd.Context(), snapshotValues()); err != nil {
+			return err
+		}
 	}
 	defer manager.Stop(context.Background())
 	defer launcher.ClearQuickTunnelURL(configDir)
@@ -403,6 +430,18 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	case <-cmd.Context().Done():
 		return cmd.Context().Err()
 	}
+}
+
+func runtimePlanHasQuickTunnel(plan dashboardruntime.RuntimePlan) bool {
+	if plan.ServiceMode != "auto" {
+		return false
+	}
+	for _, service := range plan.ComposeServices {
+		if service == "tunnel" {
+			return true
+		}
+	}
+	return false
 }
 
 func executionRuntimeRunning(configDir string) bool {

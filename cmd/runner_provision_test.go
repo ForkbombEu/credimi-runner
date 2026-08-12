@@ -228,6 +228,25 @@ func TestExecutionRuntimeRunningReadsOnlyOperationalStates(t *testing.T) {
 	}
 }
 
+func TestRuntimePlanHasQuickTunnelRequiresAutoTunnelService(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		plan dashboardruntime.RuntimePlan
+		want bool
+	}{
+		{name: "auto tunnel", plan: dashboardruntime.RuntimePlan{ServiceMode: "auto", ComposeServices: []string{"runner", "caddy", "tunnel"}}, want: true},
+		{name: "bootstrap runner only", plan: dashboardruntime.RuntimePlan{ServiceMode: "bootstrap", ComposeServices: []string{"runner"}}},
+		{name: "auto without tunnel", plan: dashboardruntime.RuntimePlan{ServiceMode: "auto", ComposeServices: []string{"runner"}}},
+		{name: "managed named tunnel", plan: dashboardruntime.RuntimePlan{ServiceMode: "cloudflare-managed", ComposeServices: []string{"runner", "caddy", "tunnel_named"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := runtimePlanHasQuickTunnel(test.plan); got != test.want {
+				t.Fatalf("runtimePlanHasQuickTunnel(%#v) = %t, want %t", test.plan, got, test.want)
+			}
+		})
+	}
+}
+
 func TestProvisionInternalRuntimeToleratesMissingOrEmptyConfig(t *testing.T) {
 	if err := provisionInternalRuntimeAt(context.Background(), t.TempDir(), filepath.Join(t.TempDir(), "sdk")); err != nil {
 		t.Fatal(err)
@@ -265,7 +284,7 @@ func TestRunContainerLauncherCarriesBootstrapHostContext(t *testing.T) {
 	dashboardSignalSource = func() (<-chan os.Signal, func()) { return done, func() {} }
 	command := &cobra.Command{}
 	command.SetContext(context.Background())
-	if err := runContainerLauncher(command, t.TempDir(), map[string]string{"ANDROID_RUNNER_IMAGE": "credimi-runner:local", "ANDROID_PULL_POLICY": "never"}); err != nil {
+	if err := runContainerLauncher(command, t.TempDir(), map[string]string{"ANDROID_RUNNER_IMAGE": "credimi-runner:local", "ANDROID_PULL_POLICY": "never", dashboardruntime.BootstrapPhaseEnv: "true"}); err != nil {
 		t.Fatal(err)
 	}
 	if manager.started != 1 || manager.stopped != 1 || manager.closed != 1 {
@@ -278,6 +297,91 @@ func TestRunContainerLauncherCarriesBootstrapHostContext(t *testing.T) {
 	}
 	if received[dashboardruntime.BootstrapHostNetworkEnv] != "true" {
 		t.Fatalf("bootstrap host network = %q", received[dashboardruntime.BootstrapHostNetworkEnv])
+	}
+	if manager.verifiedCount() != 0 {
+		t.Fatalf("bootstrap launcher attempted quick tunnel verification %d times", manager.verifiedCount())
+	}
+}
+
+func TestRunContainerLauncherReplacesStaleSetupHandoffBeforeStartingRuntime(t *testing.T) {
+	oldOpen, oldSignal, oldFactory := dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldOpen, oldSignal, oldFactory
+	})
+	dashboardOpen = false
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Server.APIListen = "127.0.0.1:8050"
+	cfg.Exposure.Mode = "manual"
+	cfg.Exposure.PublicURL = "https://runner.example"
+	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "credimi-runner:local", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "usb-1"},
+	}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "setup-pending"), []byte("pending\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "setup-operation"), []byte("reconcile-setup-old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := dashboard.LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	signals := make(chan os.Signal, 1)
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runContainerLauncher(command, dir, loaded.Snapshot()) }()
+	operationPath := filepath.Join(dir, "setup-operation")
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(operationPath)
+		if err == nil && strings.TrimSpace(string(raw)) != "reconcile-setup-old" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	raw, err := os.ReadFile(operationPath)
+	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(raw)), launcher.ReconcileSetup+"-") {
+		t.Fatalf("fresh setup handoff = %q, %v", raw, err)
+	}
+	operationID := strings.TrimSpace(string(raw))
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		result, statusErr := launcher.RequestOperationStatus(context.Background(), filepath.Join(dir, "control.sock"), operationID)
+		if statusErr == nil && result.Phase == launcher.PhaseSucceeded {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	result, err := launcher.RequestOperationStatus(context.Background(), filepath.Join(dir, "control.sock"), operationID)
+	if err != nil || result.Phase != launcher.PhaseSucceeded {
+		select {
+		case runErr := <-done:
+			t.Fatalf("container launcher exited: %v; pending setup operation = %#v, %v", runErr, result, err)
+		default:
+		}
+		t.Fatalf("pending setup operation = %#v, %v", result, err)
+	}
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("container launcher did not stop")
 	}
 }
 
