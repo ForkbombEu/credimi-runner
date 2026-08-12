@@ -852,7 +852,7 @@ func TestPrepareInternalRuntimeRefreshesConfigBeforeStartingServices(t *testing.
 		t.Fatal(err)
 	}
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\n/usr/bin/mkdir -p \"$ANDROID_SDK_ROOT/platform-tools\"\n/usr/bin/touch \"$ANDROID_SDK_ROOT/platform-tools/adb\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
@@ -1033,9 +1033,9 @@ func TestRunPublicUsesNativeApplicationOnMacFirstRun(t *testing.T) {
 }
 
 func TestRunInternalRuntimePreparesTypedConfigBeforeStartingServer(t *testing.T) {
-	oldConfigDir, oldConfigPath, oldDashboard, oldServer, oldHost := dashboardConfigDir, configPath, runInternalDashboardFunc, runInternalServerFunc, host
+	oldConfigDir, oldConfigPath, oldDashboard, oldServer, oldHost, oldEnsure := dashboardConfigDir, configPath, runInternalDashboardFunc, runInternalServerFunc, host, ensureEmulatorRuntime
 	t.Cleanup(func() {
-		dashboardConfigDir, configPath, runInternalDashboardFunc, runInternalServerFunc, host = oldConfigDir, oldConfigPath, oldDashboard, oldServer, oldHost
+		dashboardConfigDir, configPath, runInternalDashboardFunc, runInternalServerFunc, host, ensureEmulatorRuntime = oldConfigDir, oldConfigPath, oldDashboard, oldServer, oldHost, oldEnsure
 	})
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()
@@ -1048,34 +1048,47 @@ func TestRunInternalRuntimePreparesTypedConfigBeforeStartingServer(t *testing.T)
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	sdkBin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(sdkBin, "sdkmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", sdkBin)
 	t.Setenv("ANDROID_SDK_ROOT", filepath.Join(dir, "sdk"))
 	dashboardConfigDir, configPath = dir, ""
+	prepared := false
+	ensureEmulatorRuntime = func(context.Context, runnerconfig.Config, string, string, androidtools.EmulatorProgress) error {
+		prepared = true
+		return nil
+	}
 	serverStarted := make(chan struct{})
+	dashboardStopped := make(chan struct{})
 	runInternalDashboardFunc = func(cmd *cobra.Command, _ []string) error {
+		defer close(dashboardStopped)
+		if !prepared {
+			t.Error("dashboard started before typed runtime preparation")
+		}
 		<-cmd.Context().Done()
 		return cmd.Context().Err()
 	}
-	runInternalServerFunc = func(*cobra.Command, []string) error {
+	runInternalServerFunc = func(cmd *cobra.Command, _ []string) error {
 		close(serverStarted)
-		return nil
+		<-cmd.Context().Done()
+		return cmd.Context().Err()
 	}
 	command := &cobra.Command{}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	command.SetContext(ctx)
-	err := runApplicationRuntime(command, nil)
-	cancel()
-	if err != nil {
-		t.Fatal(err)
-	}
+	done := make(chan error, 1)
+	go func() { done <- runApplicationRuntime(command, nil) }()
 	select {
 	case <-serverStarted:
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("internal server was not started after typed config preparation")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("internal runtime error = %v", err)
+	}
+	select {
+	case <-dashboardStopped:
+	case <-time.After(time.Second):
+		t.Fatal("dashboard did not stop with the runtime")
 	}
 	if host != oldHost {
 		t.Fatalf("internal runtime did not restore host: got %q want %q", host, oldHost)

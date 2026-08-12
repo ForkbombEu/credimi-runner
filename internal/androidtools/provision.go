@@ -33,7 +33,7 @@ type CapabilityEnsurer func(context.Context, string, bool, string) error
 // EnsureRuntimeCapabilities provisions only the Android capabilities needed by
 // the current typed inventory. It is safe to call after every dashboard save.
 func EnsureRuntimeCapabilities(ctx context.Context, cfg runnerconfig.Config, goos string) error {
-	return EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, "", EnsureCapabilities)
+	return EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, "", nil)
 }
 
 func EnsureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer) error {
@@ -74,6 +74,9 @@ func ensureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Confi
 		return err
 	}
 	if useDefaultEnsurer {
+		if needsAndroid && !platformToolsAvailable(sdkRoot) {
+			return errors.New("Android platform-tools are unavailable in the persistent SDK after provisioning")
+		}
 		if err := verifyRuntimeCapabilities(sdkRoot, goos, needsEmulator, systemImage); err != nil {
 			return err
 		}

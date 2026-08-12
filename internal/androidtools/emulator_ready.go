@@ -29,7 +29,7 @@ func EnsureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, s
 		sdkRoot = effectiveSDKRoot(cfg, goos)
 	}
 	if !hasEnabledEmulator(cfg) {
-		return EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, EnsureCapabilities)
+		return EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, nil)
 	}
 	emulator, err := firstEnabledEmulator(cfg)
 	if err != nil {
@@ -83,7 +83,7 @@ func EnsureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, s
 }
 
 func ensureRuntimeCapabilitiesWithoutAVDAt(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string) error {
-	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, EnsureCapabilities, false)
+	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, nil, false)
 }
 
 func hasEnabledEmulator(cfg runnerconfig.Config) bool {

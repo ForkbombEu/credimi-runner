@@ -595,7 +595,9 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 	host = serverHost
 	defer func() { host = previousHost }()
 	errCh := make(chan error, 2)
-	go func() { errCh <- runInternalDashboardFunc(cmd, args) }()
+	startDashboard := func() {
+		go func() { errCh <- runInternalDashboardFunc(cmd, args) }()
+	}
 	serverStarted := false
 	var edgeManager *dashboardruntime.LifecycleManager
 	defer func() {
@@ -634,7 +636,13 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 		if err := startNativeEdges(); err != nil {
 			return err
 		}
+		// The owned dashboard begins registration immediately. Provision the
+		// configured Android capabilities first so its physical-device probe
+		// never races the installation of persistent platform-tools.
+		startDashboard()
 		startServer()
+	} else {
+		startDashboard()
 	}
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()

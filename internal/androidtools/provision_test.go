@@ -580,7 +580,7 @@ func TestEnsureRuntimeCapabilitiesUsesTypedCapabilityDetector(t *testing.T) {
 func TestEnsureRuntimeCapabilitiesProvisionsPhysicalAndroid(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\n/usr/bin/mkdir -p \"$ANDROID_SDK_ROOT/platform-tools\"\n/usr/bin/touch \"$ANDROID_SDK_ROOT/platform-tools/adb\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
@@ -596,6 +596,26 @@ func TestEnsureRuntimeCapabilitiesProvisionsPhysicalAndroid(t *testing.T) {
 	}
 	if os.Getenv("ANDROID_SDK_ROOT") != root || !strings.Contains(os.Getenv("PATH"), filepath.Join(root, "platform-tools")) {
 		t.Fatalf("stable Android environment = root:%q path:%q", os.Getenv("ANDROID_SDK_ROOT"), os.Getenv("PATH"))
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesRejectsPhysicalSDKWithoutPersistentPlatformTools(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("ANDROID_SDK_ROOT", root)
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+	}}
+	err := EnsureRuntimeCapabilities(context.Background(), cfg, "darwin")
+	if err == nil || !strings.Contains(err.Error(), "platform-tools are unavailable") {
+		t.Fatalf("missing persistent platform-tools error = %v", err)
 	}
 }
 
