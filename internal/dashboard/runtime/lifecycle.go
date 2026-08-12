@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -193,6 +194,33 @@ var quickTunnelHTTPClient interface {
 var publicRuntimeHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 } = http.DefaultClient
+
+// quickTunnelPublicResolver deliberately bypasses the host resolver while a
+// newly-created trycloudflare.com hostname is propagating. A probe through the
+// host resolver at that point can cache NXDOMAIN in systemd-resolved, making a
+// valid tunnel look unavailable for several minutes. The readiness probe then
+// dials the published address directly while retaining the hostname for TLS.
+var quickTunnelPublicResolver = &net.Resolver{
+	PreferGo: true,
+	Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		dialer := net.Dialer{}
+		if strings.HasPrefix(network, "tcp") {
+			return dialer.DialContext(ctx, "tcp", "1.1.1.1:53")
+		}
+		return dialer.DialContext(ctx, "udp", "1.1.1.1:53")
+	},
+}
+
+var lookupQuickTunnelPublicIPs = quickTunnelPublicResolver.LookupIPAddr
+
+var newQuickTunnelPublicHTTPClient = func(addresses []net.IPAddr) interface {
+	Do(*http.Request) (*http.Response, error)
+} {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = quickTunnelDialContext(addresses)
+	return &http.Client{Transport: transport}
+}
 
 const publicURLProbeTimeout = 5 * time.Second
 
@@ -925,11 +953,20 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 	m.mu.Unlock()
 	probeCtx, cancel := context.WithTimeout(ctx, publicURLProbeTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(strings.TrimSpace(publicURL), "/")+"/readyz", nil)
+	trimmedURL := strings.TrimRight(strings.TrimSpace(publicURL), "/")
+	addresses, err := quickTunnelPublicAddresses(probeCtx, trimmedURL)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, trimmedURL+"/readyz", nil)
 	if err != nil {
 		return fmt.Errorf("build public runner readiness request: %w", err)
 	}
-	response, err := publicRuntimeHTTPClient.Do(request)
+	client := publicRuntimeHTTPClient
+	if len(addresses) > 0 {
+		client = newQuickTunnelPublicHTTPClient(addresses)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("probe public runner endpoint: %w", err)
 	}
@@ -951,6 +988,55 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 		return fmt.Errorf("%w: public endpoint identified runner %q, expected %q", ErrPublicEndpointIdentity, readiness.RunnerID, expectedRunnerID)
 	}
 	return nil
+}
+
+func quickTunnelPublicAddresses(ctx context.Context, publicURL string) ([]net.IPAddr, error) {
+	parsed, err := url.Parse(publicURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse public runner URL: %w", err)
+	}
+	hostname := parsed.Hostname()
+	if !strings.HasSuffix(strings.ToLower(hostname), ".trycloudflare.com") {
+		return nil, nil
+	}
+	addresses, err := lookupQuickTunnelPublicIPs(ctx, hostname)
+	if err != nil {
+		return nil, fmt.Errorf("resolve quick tunnel hostname through public DNS: %w", err)
+	}
+	if len(addresses) == 0 {
+		return nil, errors.New("resolve quick tunnel hostname through public DNS: no addresses returned")
+	}
+	return addresses, nil
+}
+
+func quickTunnelDialContext(addresses []net.IPAddr) func(context.Context, string, string) (net.Conn, error) {
+	ordered := make([]net.IPAddr, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IP.To4() != nil {
+			ordered = append(ordered, address)
+		}
+	}
+	for _, address := range addresses {
+		if address.IP.To4() == nil {
+			ordered = append(ordered, address)
+		}
+	}
+	return func(ctx context.Context, network, target string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(target)
+		if err != nil {
+			return nil, err
+		}
+		dialer := net.Dialer{}
+		var lastErr error
+		for _, address := range ordered {
+			connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
+			if err == nil {
+				return connection, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
 }
 
 // ParseQuickTunnelHostname validates and normalizes cloudflared's structured
