@@ -1097,14 +1097,6 @@ func TestLifecycleManagerVerifiesQuickTunnelDNSBeforeHTTP(t *testing.T) {
 		lookedUp = hostname
 		return []net.IPAddr{{IP: net.ParseIP("104.16.230.132")}}, nil
 	}
-	previousFlush := flushQuickTunnelResolverCache
-	t.Cleanup(func() { flushQuickTunnelResolverCache = previousFlush })
-	flushes := 0
-	flushQuickTunnelResolverCache = func(context.Context) error {
-		flushes++
-		return nil
-	}
-
 	previousClient := publicRuntimeHTTPClient
 	t.Cleanup(func() { publicRuntimeHTTPClient = previousClient })
 	publicRuntimeHTTPClient = httpClientFunc(func(*http.Request) (*http.Response, error) {
@@ -1122,9 +1114,6 @@ func TestLifecycleManagerVerifiesQuickTunnelDNSBeforeHTTP(t *testing.T) {
 	}
 	if lookedUp != "new.trycloudflare.com" {
 		t.Fatalf("public DNS lookup hostname = %q", lookedUp)
-	}
-	if flushes != 1 {
-		t.Fatalf("resolver cache flushes = %d, want 1", flushes)
 	}
 }
 

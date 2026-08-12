@@ -213,10 +213,6 @@ var quickTunnelPublicResolver = &net.Resolver{
 
 var lookupQuickTunnelPublicIPs = quickTunnelPublicResolver.LookupIPAddr
 
-var flushQuickTunnelResolverCache = func(ctx context.Context) error {
-	return exec.CommandContext(ctx, "resolvectl", "flush-caches").Run()
-}
-
 const publicURLProbeTimeout = 5 * time.Second
 
 var (
@@ -952,13 +948,6 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 	_, err := quickTunnelPublicAddresses(probeCtx, trimmedURL)
 	if err != nil {
 		return err
-	}
-	if m.goos == "linux" {
-		// A just-created hostname can have an NXDOMAIN result cached by
-		// systemd-resolved before Cloudflare publishes it. The public lookup
-		// above proves it is now live; clear only that local cache before the
-		// normal HTTPS probe that represents what the dashboard/browser uses.
-		_ = flushQuickTunnelResolverCache(probeCtx)
 	}
 	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, trimmedURL+"/readyz", nil)
 	if err != nil {
