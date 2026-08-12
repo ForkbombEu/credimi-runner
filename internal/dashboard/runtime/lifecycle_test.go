@@ -1097,12 +1097,12 @@ func TestLifecycleManagerVerifiesQuickTunnelDNSBeforeHTTP(t *testing.T) {
 		lookedUp = hostname
 		return []net.IPAddr{{IP: net.ParseIP("104.16.230.132")}}, nil
 	}
-	previousQuickTunnelClient := newQuickTunnelPublicHTTPClient
-	t.Cleanup(func() { newQuickTunnelPublicHTTPClient = previousQuickTunnelClient })
-	newQuickTunnelPublicHTTPClient = func([]net.IPAddr) interface {
-		Do(*http.Request) (*http.Response, error)
-	} {
-		return publicRuntimeHTTPClient
+	previousFlush := flushQuickTunnelResolverCache
+	t.Cleanup(func() { flushQuickTunnelResolverCache = previousFlush })
+	flushes := 0
+	flushQuickTunnelResolverCache = func(context.Context) error {
+		flushes++
+		return nil
 	}
 
 	previousClient := publicRuntimeHTTPClient
@@ -1116,12 +1116,15 @@ func TestLifecycleManagerVerifiesQuickTunnelDNSBeforeHTTP(t *testing.T) {
 		}, nil
 	})
 
-	manager := &LifecycleManager{values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}}
+	manager := &LifecycleManager{goos: "linux", values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}}
 	if err := manager.VerifyPublicURL(context.Background(), "https://new.trycloudflare.com"); err != nil {
 		t.Fatalf("VerifyPublicURL() error = %v", err)
 	}
 	if lookedUp != "new.trycloudflare.com" {
 		t.Fatalf("public DNS lookup hostname = %q", lookedUp)
+	}
+	if flushes != 1 {
+		t.Fatalf("resolver cache flushes = %d, want 1", flushes)
 	}
 }
 
@@ -1143,41 +1146,6 @@ func TestLifecycleManagerRejectsUnpublishedQuickTunnelBeforeHTTP(t *testing.T) {
 	err := manager.VerifyPublicURL(context.Background(), "https://new.trycloudflare.com")
 	if err == nil || !strings.Contains(err.Error(), "resolve quick tunnel hostname through public DNS") {
 		t.Fatalf("VerifyPublicURL() error = %v", err)
-	}
-}
-
-func TestQuickTunnelDialContextBypassesHostResolver(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	accepted := make(chan struct{})
-	go func() {
-		connection, acceptErr := listener.Accept()
-		if acceptErr == nil {
-			_ = connection.Close()
-			close(accepted)
-		}
-	}()
-
-	_, port, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	connection, err := quickTunnelDialContext([]net.IPAddr{{IP: net.ParseIP("127.0.0.1")}})(
-		context.Background(),
-		"tcp",
-		net.JoinHostPort("not-resolvable.invalid", port),
-	)
-	if err != nil {
-		t.Fatalf("quick tunnel dial error = %v", err)
-	}
-	_ = connection.Close()
-	select {
-	case <-accepted:
-	case <-time.After(time.Second):
-		t.Fatal("quick tunnel dial did not reach supplied public address")
 	}
 }
 

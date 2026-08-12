@@ -213,13 +213,8 @@ var quickTunnelPublicResolver = &net.Resolver{
 
 var lookupQuickTunnelPublicIPs = quickTunnelPublicResolver.LookupIPAddr
 
-var newQuickTunnelPublicHTTPClient = func(addresses []net.IPAddr) interface {
-	Do(*http.Request) (*http.Response, error)
-} {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	transport.DialContext = quickTunnelDialContext(addresses)
-	return &http.Client{Transport: transport}
+var flushQuickTunnelResolverCache = func(ctx context.Context) error {
+	return exec.CommandContext(ctx, "resolvectl", "flush-caches").Run()
 }
 
 const publicURLProbeTimeout = 5 * time.Second
@@ -954,19 +949,22 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 	probeCtx, cancel := context.WithTimeout(ctx, publicURLProbeTimeout)
 	defer cancel()
 	trimmedURL := strings.TrimRight(strings.TrimSpace(publicURL), "/")
-	addresses, err := quickTunnelPublicAddresses(probeCtx, trimmedURL)
+	_, err := quickTunnelPublicAddresses(probeCtx, trimmedURL)
 	if err != nil {
 		return err
+	}
+	if m.goos == "linux" {
+		// A just-created hostname can have an NXDOMAIN result cached by
+		// systemd-resolved before Cloudflare publishes it. The public lookup
+		// above proves it is now live; clear only that local cache before the
+		// normal HTTPS probe that represents what the dashboard/browser uses.
+		_ = flushQuickTunnelResolverCache(probeCtx)
 	}
 	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, trimmedURL+"/readyz", nil)
 	if err != nil {
 		return fmt.Errorf("build public runner readiness request: %w", err)
 	}
-	client := publicRuntimeHTTPClient
-	if len(addresses) > 0 {
-		client = newQuickTunnelPublicHTTPClient(addresses)
-	}
-	response, err := client.Do(request)
+	response, err := publicRuntimeHTTPClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("probe public runner endpoint: %w", err)
 	}
@@ -1007,36 +1005,6 @@ func quickTunnelPublicAddresses(ctx context.Context, publicURL string) ([]net.IP
 		return nil, errors.New("resolve quick tunnel hostname through public DNS: no addresses returned")
 	}
 	return addresses, nil
-}
-
-func quickTunnelDialContext(addresses []net.IPAddr) func(context.Context, string, string) (net.Conn, error) {
-	ordered := make([]net.IPAddr, 0, len(addresses))
-	for _, address := range addresses {
-		if address.IP.To4() != nil {
-			ordered = append(ordered, address)
-		}
-	}
-	for _, address := range addresses {
-		if address.IP.To4() == nil {
-			ordered = append(ordered, address)
-		}
-	}
-	return func(ctx context.Context, network, target string) (net.Conn, error) {
-		_, port, err := net.SplitHostPort(target)
-		if err != nil {
-			return nil, err
-		}
-		dialer := net.Dialer{}
-		var lastErr error
-		for _, address := range ordered {
-			connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
-			if err == nil {
-				return connection, nil
-			}
-			lastErr = err
-		}
-		return nil, lastErr
-	}
 }
 
 // ParseQuickTunnelHostname validates and normalizes cloudflared's structured

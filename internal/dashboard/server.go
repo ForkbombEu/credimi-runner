@@ -686,16 +686,15 @@ func (s *Server) pageData(active string, payload any) PageData {
 // runner container replacement. The URL is ephemeral launcher state, not TOML,
 // so a newly created Dashboard cannot rely only on its in-memory value.
 func (s *Server) runtimeOwnedPublicURL() string {
-	s.mu.RLock()
-	publicURL := s.publicURL
-	s.mu.RUnlock()
-	if publicURL != "" || !s.runtimeOwned || s.launcherSocket == "" || normalizedApplyServiceMode(s.cfg.Get("CREDIMI_SERVICE_MODE")) != "auto" {
-		return publicURL
+	if !s.runtimeOwned || s.launcherSocket == "" || normalizedApplyServiceMode(s.cfg.Get("CREDIMI_SERVICE_MODE")) != "auto" {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return s.publicURL
 	}
 
 	publicURL, err := launcher.ReadQuickTunnelURL(filepath.Dir(s.cfg.Path()))
 	if err != nil {
-		return ""
+		publicURL = ""
 	}
 	s.mu.Lock()
 	s.publicURL = publicURL
