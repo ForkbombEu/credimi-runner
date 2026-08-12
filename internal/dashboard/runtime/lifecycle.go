@@ -213,6 +213,15 @@ var quickTunnelPublicResolver = &net.Resolver{
 
 var lookupQuickTunnelPublicIPs = quickTunnelPublicResolver.LookupIPAddr
 
+var newQuickTunnelPublicHTTPClient = func(addresses []net.IPAddr) interface {
+	Do(*http.Request) (*http.Response, error)
+} {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = quickTunnelDialContext(addresses)
+	return &http.Client{Transport: transport}
+}
+
 const publicURLProbeTimeout = 5 * time.Second
 
 var (
@@ -945,7 +954,7 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 	probeCtx, cancel := context.WithTimeout(ctx, publicURLProbeTimeout)
 	defer cancel()
 	trimmedURL := strings.TrimRight(strings.TrimSpace(publicURL), "/")
-	_, err := quickTunnelPublicAddresses(probeCtx, trimmedURL)
+	addresses, err := quickTunnelPublicAddresses(probeCtx, trimmedURL)
 	if err != nil {
 		return err
 	}
@@ -953,7 +962,15 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 	if err != nil {
 		return fmt.Errorf("build public runner readiness request: %w", err)
 	}
-	response, err := publicRuntimeHTTPClient.Do(request)
+	client := publicRuntimeHTTPClient
+	if len(addresses) > 0 {
+		// The system resolver can retain NXDOMAIN while a new Quick Tunnel is
+		// propagating. Dial the address verified through public DNS directly,
+		// while the request URL preserves the hostname for TLS SNI and Host.
+		// This avoids privileged cache flushing and keeps the public check real.
+		client = newQuickTunnelPublicHTTPClient(addresses)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf("probe public runner endpoint: %w", err)
 	}
@@ -994,6 +1011,36 @@ func quickTunnelPublicAddresses(ctx context.Context, publicURL string) ([]net.IP
 		return nil, errors.New("resolve quick tunnel hostname through public DNS: no addresses returned")
 	}
 	return addresses, nil
+}
+
+func quickTunnelDialContext(addresses []net.IPAddr) func(context.Context, string, string) (net.Conn, error) {
+	ordered := make([]net.IPAddr, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IP.To4() != nil {
+			ordered = append(ordered, address)
+		}
+	}
+	for _, address := range addresses {
+		if address.IP.To4() == nil {
+			ordered = append(ordered, address)
+		}
+	}
+	return func(ctx context.Context, network, target string) (net.Conn, error) {
+		_, port, err := net.SplitHostPort(target)
+		if err != nil {
+			return nil, err
+		}
+		dialer := net.Dialer{}
+		var lastErr error
+		for _, address := range ordered {
+			connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
+			if err == nil {
+				return connection, nil
+			}
+			lastErr = err
+		}
+		return nil, lastErr
+	}
 }
 
 // ParseQuickTunnelHostname validates and normalizes cloudflared's structured
