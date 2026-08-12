@@ -169,11 +169,10 @@ func EnsureCapabilitiesWithRunner(ctx context.Context, sdkRoot string, needsEmul
 }
 
 func emulatorAvailable(sdkRoot string) bool {
-	if fileExists(filepath.Join(sdkRoot, "emulator", "emulator")) {
-		return true
-	}
-	bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP"))
-	return bootstrap != "" && fileExists(filepath.Join(bootstrap, "emulator", "emulator"))
+	// System images live in the mutable SDK volume. The emulator executable
+	// must live there too: a bootstrap-only emulator can select its own SDK
+	// directory and fail to resolve a valid system image from the volume.
+	return fileExists(filepath.Join(sdkRoot, "emulator", "emulator"))
 }
 
 func verifyRuntimeCapabilities(sdkRoot, goos string, needsEmulator bool, systemImage string) error {
@@ -231,7 +230,10 @@ func ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome string) error {
 		)
 	}
 	current := os.Getenv("PATH")
-	for _, path := range paths {
+	// Prepending in reverse retains the declared priority: mutable runtime SDK
+	// tools must win over immutable bootstrap fallbacks.
+	for index := len(paths) - 1; index >= 0; index-- {
+		path := paths[index]
 		if !strings.Contains(string(filepath.ListSeparator)+current+string(filepath.ListSeparator), string(filepath.ListSeparator)+path+string(filepath.ListSeparator)) {
 			current = path + string(filepath.ListSeparator) + current
 		}

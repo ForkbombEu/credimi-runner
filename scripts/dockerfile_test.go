@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -18,4 +19,32 @@ func TestDockerfileBuildsOnlyTheRunnerImage(t *testing.T) {
 	require.NotContains(t, dockerfile, "agent-config.json")
 	require.Contains(t, dockerfile, `"build-tools;35.0.0"`)
 	require.Contains(t, dockerfile, "/usr/local/bin/aapt2")
+}
+
+func TestDockerfileKeepsPersistentEmulatorAndAVDCTL(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dockerfile := string(content)
+	for _, want := range []string{
+		`FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl`,
+		`COPY --from=avdctl /usr/local/bin/avdctl /usr/local/bin/avdctl`,
+		`PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:`,
+	} {
+		if !strings.Contains(dockerfile, want) {
+			t.Fatalf("Dockerfile missing %q", want)
+		}
+	}
+}
+
+func TestDockerfileAuthenticatesPrivateGeneration(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "Dockerfile"))
+	require.NoError(t, err)
+	dockerfile := string(content)
+
+	generateStart := strings.Index(dockerfile, "&& go generate ./...")
+	require.GreaterOrEqual(t, generateStart, 0)
+	secretStart := strings.LastIndex(dockerfile[:generateStart], "--mount=type=secret,id=credimi_extra_pat,required=true")
+	require.GreaterOrEqual(t, secretStart, 0)
 }

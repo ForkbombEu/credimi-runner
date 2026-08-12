@@ -159,7 +159,7 @@ func TestEnsureSDKLicensesHandlesMissingBootstrapAndExistingFiles(t *testing.T) 
 	}
 }
 
-func TestAndroidToolsCanUseBootstrapPlatformAndEmulatorBinaries(t *testing.T) {
+func TestAndroidToolsCanUseBootstrapPlatformToolsButNotEmulator(t *testing.T) {
 	root := t.TempDir()
 	bootstrap := t.TempDir()
 	for _, relative := range []string{"platform-tools/adb", "emulator/emulator"} {
@@ -172,8 +172,11 @@ func TestAndroidToolsCanUseBootstrapPlatformAndEmulatorBinaries(t *testing.T) {
 		}
 	}
 	t.Setenv("ANDROID_SDK_BOOTSTRAP", bootstrap)
-	if !platformToolsAvailable(root) || !emulatorAvailable(root) {
-		t.Fatal("bootstrap Android tools were not discovered")
+	if !platformToolsAvailable(root) {
+		t.Fatal("bootstrap platform-tools were not discovered")
+	}
+	if emulatorAvailable(root) {
+		t.Fatal("bootstrap emulator was accepted as a persistent runtime emulator")
 	}
 	if sdkPackageInstalled(root, "platform-tools") || sdkPackageInstalled(root, "broken") {
 		t.Fatal("invalid SDK package was reported installed")
@@ -256,6 +259,28 @@ func TestEnsureCapabilitiesEmulatorInstallsSystemImageOnce(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Fatalf("already-installed emulator provisioning repeated install: %#v", calls)
+	}
+}
+
+func TestEnsureCapabilitiesInstallsPersistentEmulatorDespiteBootstrap(t *testing.T) {
+	root, bootstrap := t.TempDir(), t.TempDir()
+	installFakeSDKManager(t)
+	if err := os.MkdirAll(filepath.Join(bootstrap, "emulator"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bootstrap, "emulator", "emulator"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANDROID_SDK_BOOTSTRAP", bootstrap)
+	var got []string
+	if err := EnsureCapabilitiesWithRunner(context.Background(), root, true, "", func(_ context.Context, _ string, args ...string) error {
+		got = args
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(got, " "), "emulator") {
+		t.Fatalf("bootstrap emulator incorrectly suppressed persistent installation: %q", got)
 	}
 }
 
