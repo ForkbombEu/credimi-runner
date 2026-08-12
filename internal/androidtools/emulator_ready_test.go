@@ -47,6 +47,9 @@ func TestEnsureEmulatorReadyReusesMountedAssetsAndEmptySerial(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(avdHome, "credimi.avd"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.avd", "config.ini"), []byte("image.sysdir.1=system-images/android-35/google_apis/x86_64/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(avdHome, "credimi.ini"), []byte("path=credimi.avd\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +129,7 @@ func TestEnsureEmulatorReadyDownloadsMissingAssets(t *testing.T) {
 	t.Setenv("ANDROID_AVD_HOME", avdHome)
 	original := androidAssetHTTPClient
 	t.Cleanup(func() { androidAssetHTTPClient = original })
-	base := archiveFiles(t, map[string]string{"credimi.avd/config.ini": "base", "credimi.ini": "path=credimi.avd\n"})
+	base := archiveFiles(t, map[string]string{"credimi.avd/config.ini": "image.sysdir.1=system-images/android-35/google_apis/x86_64/\n", "credimi.ini": "path=credimi.avd\n"})
 	golden := archiveFiles(t, map[string]string{"credimi-golden/config.ini": "golden"})
 	androidAssetHTTPClient = &http.Client{Transport: assetRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body := base
@@ -176,6 +179,9 @@ func TestEnsureEmulatorReadyReportsMissingGoldenArchive(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(avdHome, "credimi.avd"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.avd", "config.ini"), []byte("image.sysdir.1=system-images/android-35/google_apis/x86_64/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(avdHome, "credimi.ini"), []byte("path=credimi.avd\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -196,6 +202,52 @@ func TestEnsureEmulatorReadyReportsMissingGoldenArchive(t *testing.T) {
 	if GoldenAssetsExist(goldenRoot, "credimi-golden") {
 		t.Fatal("golden assets should not be activated after golden provisioning failed")
 	}
+}
+
+func TestEnsureEmulatorReadyInstallsSystemImageRequiredByBaseAVD(t *testing.T) {
+	root, avdHome, goldenRoot, cfg := emulatorReadyFixture(t)
+	if err := os.MkdirAll(filepath.Join(avdHome, "credimi.avd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.avd", "config.ini"), []byte("image.sysdir.1=system-images/android-35/google_apis_playstore/x86_64/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.ini"), []byte("path=credimi.avd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(goldenRoot, "credimi-golden"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manager := filepath.Join(root, "cmdline-tools", "latest", "bin", "sdkmanager")
+	script := "#!/bin/sh\nmkdir -p " + shellQuote(filepath.Join(root, "system-images", "android-35", "google_apis_playstore", "x86_64")) + "\ntouch " + shellQuote(filepath.Join(root, "system-images", "android-35", "google_apis_playstore", "x86_64", "package.xml")) + "\n"
+	if err := os.WriteFile(manager, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANDROID_SDK_ROOT", root)
+	t.Setenv("ANDROID_AVD_HOME", avdHome)
+	if err := EnsureEmulatorReady(context.Background(), cfg, "darwin", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !sdkPackageInstalled(root, "system-images;android-35;google_apis_playstore;x86_64") {
+		t.Fatal("base AVD system image was not provisioned")
+	}
+}
+
+func TestAVDSystemImageRejectsMissingMetadata(t *testing.T) {
+	avdHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(avdHome, "credimi.avd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.avd", "config.ini"), []byte("avd.ini.encoding=UTF-8\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := avdSystemImage(avdHome, "credimi"); err == nil || !strings.Contains(err.Error(), "does not declare image.sysdir.1") {
+		t.Fatalf("missing AVD image metadata error = %v", err)
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\\"'\\\"'") + "'"
 }
 
 func emulatorReadyFixture(t *testing.T) (root, avdHome, goldenRoot string, cfg runnerconfig.Config) {

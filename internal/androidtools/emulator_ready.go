@@ -1,6 +1,7 @@
 package androidtools
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -46,6 +47,16 @@ func EnsureEmulatorReady(ctx context.Context, cfg runnerconfig.Config, goos stri
 	if !AVDAssetsExist(avdHome, baseName) {
 		return fmt.Errorf("Android AVD %q is not present under %s", baseName, avdHome)
 	}
+	baseSystemImage, err := avdSystemImage(avdHome, baseName)
+	if err != nil {
+		return err
+	}
+	if !sdkPackageInstalled(effectiveSDKRoot(cfg, goos), baseSystemImage) {
+		progressStage(progress, "Installing Android system image")
+	}
+	if err := EnsureCapabilities(ctx, effectiveSDKRoot(cfg, goos), true, baseSystemImage); err != nil {
+		return fmt.Errorf("provision Android system image required by AVD %q: %w", baseName, err)
+	}
 	goldenRoot, goldenLeaf := effectiveGoldenPath(emulator.AndroidEmulator.GoldenSource, baseName)
 	if !GoldenAssetsExist(goldenRoot, goldenLeaf) {
 		progressStage(progress, "Preparing Credimi golden image")
@@ -57,7 +68,7 @@ func EnsureEmulatorReady(ctx context.Context, cfg runnerconfig.Config, goos stri
 		return fmt.Errorf("Credimi golden assets %q are not present under %s", goldenLeaf, goldenRoot)
 	}
 	progressStage(progress, "Verifying emulator runtime")
-	return verifyRuntimeCapabilities(effectiveSDKRoot(cfg, goos), goos, true, emulator.AndroidEmulator.SystemImage)
+	return verifyRuntimeCapabilities(effectiveSDKRoot(cfg, goos), goos, true, baseSystemImage)
 }
 
 func ensureRuntimeCapabilitiesWithoutAVD(ctx context.Context, cfg runnerconfig.Config, goos string) error {
@@ -108,6 +119,43 @@ func effectiveGoldenPath(configured, baseName string) (string, string) {
 	}
 	clean := filepath.Clean(configured)
 	return filepath.Dir(clean), filepath.Base(clean)
+}
+
+// avdSystemImage returns the SDK package referenced by an existing AVD. AVD
+// archives are authoritative here: cloning an AVD retains image.sysdir.1, so
+// provisioning only the typed config's fallback image can leave the emulator
+// unable to resolve its own system path.
+func avdSystemImage(avdHome, avdName string) (string, error) {
+	path := filepath.Join(avdHome, strings.TrimSpace(avdName)+".avd", "config.ini")
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("read Android AVD %q configuration: %w", avdName, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		key, value, found := strings.Cut(scanner.Text(), "=")
+		if !found || strings.TrimSpace(key) != "image.sysdir.1" {
+			continue
+		}
+		image := strings.Trim(strings.TrimSpace(value), "/\\")
+		image = strings.ReplaceAll(image, "\\", "/")
+		parts := strings.Split(image, "/")
+		if len(parts) < 4 || parts[0] != "system-images" {
+			return "", fmt.Errorf("Android AVD %q has invalid image.sysdir.1 %q", avdName, value)
+		}
+		for _, part := range parts {
+			if strings.TrimSpace(part) == "" || part == "." || part == ".." {
+				return "", fmt.Errorf("Android AVD %q has invalid image.sysdir.1 %q", avdName, value)
+			}
+		}
+		return strings.Join(parts, ";"), nil
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("read Android AVD %q configuration: %w", avdName, err)
+	}
+	return "", fmt.Errorf("Android AVD %q does not declare image.sysdir.1", avdName)
 }
 
 func progressStage(progress EmulatorProgress, message string) {
