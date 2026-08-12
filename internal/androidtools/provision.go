@@ -226,11 +226,10 @@ func ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome string) error {
 		filepath.Join(sdkRoot, "emulator"),
 	}
 	if bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP")); bootstrap != "" {
-		paths = append(paths,
-			filepath.Join(bootstrap, "cmdline-tools", "latest", "bin"),
-			filepath.Join(bootstrap, "platform-tools"),
-			filepath.Join(bootstrap, "emulator"),
-		)
+		// The bootstrap SDK contains only cmdline-tools. Device-dependent
+		// packages live in the persistent SDK volume and are provisioned from
+		// the typed inventory.
+		paths = append(paths, filepath.Join(bootstrap, "cmdline-tools", "latest", "bin"))
 	}
 	current := os.Getenv("PATH")
 	// Prepending in reverse retains the declared priority: mutable runtime SDK

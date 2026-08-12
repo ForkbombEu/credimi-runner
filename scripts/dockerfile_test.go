@@ -19,6 +19,9 @@ func TestDockerfileBuildsOnlyTheRunnerImage(t *testing.T) {
 	require.NotContains(t, dockerfile, "agent-config.json")
 	require.Contains(t, dockerfile, `"build-tools;35.0.0"`)
 	require.Contains(t, dockerfile, "/usr/local/bin/aapt2")
+	require.NotContains(t, dockerfile, `"platform-tools" "emulator" "build-tools;35.0.0"`)
+	require.NotContains(t, dockerfile, "/opt/android-sdk-bootstrap/platform-tools")
+	require.NotContains(t, dockerfile, "/opt/android-sdk-bootstrap/emulator")
 }
 
 func TestDockerfileKeepsPersistentEmulatorAndAVDCTL(t *testing.T) {
