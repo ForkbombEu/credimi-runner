@@ -15,9 +15,9 @@
         {{with .Field "CREDIMI_SERVICE_MODE"}}
         <div class="field"><label><span class="lbtx">Exposure strategy</span><span class="envkey">CREDIMI_SERVICE_MODE</span></label>
           <div class="picks" style="grid-template-columns:1fr 1fr 1fr" data-seg="CREDIMI_SERVICE_MODE">
-            <button type="button" class="pick {{if .Selected "auto"}}on{{end}}" data-val="auto"><span class="pic">{{icon "cloud"}}</span><span><b>Quick tunnel</b><span>Instant trycloudflare.com URL</span></span></button>
-            <button type="button" class="pick {{if .Selected "cloudflare-managed"}}on{{end}}" data-val="cloudflare-managed"><span class="pic">{{icon "globe"}}</span><span><b>Named tunnel</b><span>Your domain via Cloudflare</span></span></button>
-            <button type="button" class="pick {{if .Selected "manual"}}on{{end}}" data-val="manual"><span class="pic">{{icon "server"}}</span><span><b>Direct</b><span>Bind host port, no tunnel</span></span></button>
+            <button type="button" class="pick {{if .Selected "auto"}}on{{end}}" data-val="auto"><span class="pic">{{icon "cloud"}}</span><span><b>Auto</b><span>Quick tunnel</span></span></button>
+            <button type="button" class="pick {{if .Selected "cloudflare-managed"}}on{{end}}" data-val="cloudflare-managed"><span class="pic">{{icon "globe"}}</span><span><b>Managed</b><span>Named tunnel</span></span></button>
+            <button type="button" class="pick {{if .Selected "manual"}}on{{end}}" data-val="manual"><span class="pic">{{icon "server"}}</span><span><b>Manual</b><span>Self-managed</span></span></button>
           </div>
           <input type="hidden" name="CREDIMI_SERVICE_MODE" value="{{.Value}}">
         </div>

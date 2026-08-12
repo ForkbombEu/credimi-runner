@@ -15,6 +15,7 @@ const (
 	OperationRuntimeStop    OperationKind = "runtime_stop"
 	OperationRuntimeRestart OperationKind = "runtime_restart"
 	OperationRegistration   OperationKind = "registration"
+	OperationConfigApply    OperationKind = "config_apply"
 )
 
 type OperationPhase string

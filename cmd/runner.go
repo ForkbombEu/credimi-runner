@@ -36,6 +36,7 @@ type containerLauncherManager interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 	UpdateImage(context.Context) error
+	RecreateRunner(context.Context, bool) error
 	Configure(dashboardruntime.Values)
 	Status(context.Context) dashboardruntime.RuntimeStatus
 	VerifyPublicURL(context.Context, string) error
@@ -165,7 +166,9 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		return copy
 	}
 	var refreshQuickTunnelURL func(context.Context, dashboardruntime.Values) error
+	var resolveAndVerifyQuickTunnel func(context.Context, dashboardruntime.Values) error
 	reconcile := func(ctx context.Context) error {
+		wasRunning := executionRuntimeRunning(configDir)
 		config, err := dashboard.LoadConfig(configDir)
 		if err != nil {
 			return fmt.Errorf("reload configuration for reconciliation: %w", err)
@@ -183,8 +186,10 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		}
 		valuesMu.RUnlock()
 		diff := dashboardruntime.DiffValuesForOS(previous, next, stdruntime.GOOS)
-		manager.Configure(next)
-		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
+		composeRecreate := hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate)
+		restartRequired := hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)
+		switch {
+		case composeRecreate:
 			// The first reconcile replaces the runner-only bootstrap Compose
 			// file with the final topology. Write it before Stop: Stop uses the
 			// active Compose model to target exposure services, and the bootstrap
@@ -197,30 +202,45 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 				manager.Configure(previous)
 				return err
 			}
-			if err := manager.Stop(ctx); err != nil {
+			manager.Configure(next)
+			if wasRunning {
+				if err := manager.Stop(ctx); err != nil {
+					manager.Configure(previous)
+					return fmt.Errorf("stop runtime for configuration reconciliation: %w", err)
+				}
+				if err := manager.Start(ctx); err != nil {
+					manager.Configure(previous)
+					return fmt.Errorf("start runtime after configuration reconciliation: %w", err)
+				}
+				if err := refreshQuickTunnelURL(ctx, next); err != nil {
+					return err
+				}
+			} else if err := manager.RecreateRunner(ctx, true); err != nil {
 				manager.Configure(previous)
-				return fmt.Errorf("stop runtime for configuration reconciliation: %w", err)
+				return fmt.Errorf("recreate stopped runner for configuration reconciliation: %w", err)
 			}
-			if err := manager.Start(ctx); err != nil {
+		case restartRequired:
+			if err := writeComposeFileForOS(configDir, next, stdruntime.GOOS); err != nil {
 				manager.Configure(previous)
-				return fmt.Errorf("start runtime after configuration reconciliation: %w", err)
+				return fmt.Errorf("write compose file for runner restart: %w", err)
 			}
-			if err := refreshQuickTunnelURL(ctx, next); err != nil {
-				return err
+			manager.Configure(next)
+			if err := manager.RecreateRunner(ctx, false); err != nil {
+				manager.Configure(previous)
+				return fmt.Errorf("recreate runner for configuration reconciliation: %w", err)
 			}
+		default:
+			manager.Configure(next)
 		}
 		valuesMu.Lock()
 		currentValues = next
 		valuesMu.Unlock()
 		return nil
 	}
-	refreshQuickTunnelURL = func(ctx context.Context, values dashboardruntime.Values) error {
+	resolveAndVerifyQuickTunnel = func(ctx context.Context, values dashboardruntime.Values) error {
 		plan := dashboardruntime.BuildRuntimePlanForOS(configDir, values, stdruntime.GOOS)
 		if plan.ServiceMode != "auto" {
-			return launcher.ClearQuickTunnelURL(configDir)
-		}
-		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
-			return err
+			return nil
 		}
 		resolver, ok := manager.(interface {
 			QuickTunnelURL(context.Context) (string, error)
@@ -241,6 +261,9 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 			url, err := resolver.QuickTunnelURL(deadline)
 			if err == nil && strings.TrimSpace(url) != "" {
 				if verifyErr := manager.VerifyPublicURL(deadline, url); verifyErr != nil {
+					if errors.Is(verifyErr, dashboardruntime.ErrPublicEndpointIdentity) {
+						return verifyErr
+					}
 					lastErr = verifyErr
 				} else {
 					return launcher.WriteQuickTunnelURL(configDir, url)
@@ -259,6 +282,39 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 			}
 		}
 	}
+	refreshQuickTunnelURL = func(ctx context.Context, values dashboardruntime.Values) error {
+		plan := dashboardruntime.BuildRuntimePlanForOS(configDir, values, stdruntime.GOOS)
+		if plan.ServiceMode != "auto" {
+			return launcher.ClearQuickTunnelURL(configDir)
+		}
+		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+			return err
+		}
+		err := resolveAndVerifyQuickTunnel(ctx, values)
+		if err == nil {
+			return nil
+		}
+		// A healthy Cloudflare edge returning 502/503/504 proves the hostname
+		// is established; rotating it cannot repair the origin path. Identity
+		// mismatches are terminal for the same reason.
+		if errors.Is(err, dashboardruntime.ErrPublicOriginUnavailable) || errors.Is(err, dashboardruntime.ErrPublicEndpointIdentity) {
+			return fmt.Errorf("resolve quick tunnel URL: %w", err)
+		}
+		// Only transport/establishment failures get one bounded edge restart.
+		if stopErr := manager.Stop(ctx); stopErr != nil {
+			return fmt.Errorf("restart quick tunnel after readiness failure: stop: %w (original: %v)", stopErr, err)
+		}
+		if clearErr := launcher.ClearQuickTunnelURL(configDir); clearErr != nil {
+			return clearErr
+		}
+		if startErr := manager.Start(ctx); startErr != nil {
+			return fmt.Errorf("restart quick tunnel after readiness failure: start: %w (original: %v)", startErr, err)
+		}
+		if retryErr := resolveAndVerifyQuickTunnel(ctx, values); retryErr != nil {
+			return fmt.Errorf("resolve quick tunnel URL after one restart: %w", retryErr)
+		}
+		return nil
+	}
 	upgrade := func(ctx context.Context) error {
 		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
 			return err
@@ -274,6 +330,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate || readActiveMobileActivities(configDir)
 	}, launcher.Operations{
 		ReconcileConfig: reconcile,
+		ReconcileSetup:  reconcile,
 		QuickTunnelURL: func(ctx context.Context) (string, error) {
 			return launcher.ReadQuickTunnelURL(configDir)
 		},
@@ -345,6 +402,19 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		return nil
 	case <-cmd.Context().Done():
 		return cmd.Context().Err()
+	}
+}
+
+func executionRuntimeRunning(configDir string) bool {
+	raw, err := os.ReadFile(filepath.Join(configDir, "runtime-state"))
+	if err != nil {
+		return true
+	}
+	switch strings.TrimSpace(string(raw)) {
+	case "running", "starting", "restarting":
+		return true
+	default:
+		return false
 	}
 }
 

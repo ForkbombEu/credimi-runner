@@ -65,9 +65,13 @@ func (c BootstrapContext) Apply(values Values) Values {
 	set(ContainerGoldenRootEnv, c.ContainerGoldenRoot)
 	if c.HostNetwork {
 		values[BootstrapHostNetworkEnv] = "true"
+	} else {
+		delete(values, BootstrapHostNetworkEnv)
 	}
 	if c.BeforeSetup {
 		values[BootstrapPhaseEnv] = "true"
+	} else {
+		delete(values, BootstrapPhaseEnv)
 	}
 	return values
 }

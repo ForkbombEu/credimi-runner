@@ -243,6 +243,21 @@ func TestDefaultPathsUseXDGAndWriteCreatesPrivateParent(t *testing.T) {
 	}
 }
 
+func TestDefaultStateDirFallsBackToHomeStateDirectory(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	statePath, err := DefaultStateDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, ".local", "state", "credimi-runner"); statePath != want {
+		t.Fatalf("DefaultStateDir = %q, want %q", statePath, want)
+	}
+}
+
 func TestValidateForPlatformRejectsDuplicateDeviceIdentityAndLimits(t *testing.T) {
 	tests := []struct {
 		name, want string

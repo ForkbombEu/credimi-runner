@@ -37,6 +37,10 @@ func EnsureRuntimeCapabilities(ctx context.Context, cfg runnerconfig.Config, goo
 }
 
 func EnsureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer) error {
+	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, ensure, true)
+}
+
+func ensureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer, ensureAVD bool) error {
 	useDefaultEnsurer := ensure == nil
 	if ensure == nil {
 		ensure = EnsureCapabilities
@@ -74,7 +78,7 @@ func EnsureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Confi
 			return err
 		}
 	}
-	if !needsEmulator {
+	if !needsEmulator || !ensureAVD {
 		return nil
 	}
 	for _, device := range cfg.Devices {
@@ -135,6 +139,9 @@ func EnsureCapabilitiesWithRunner(ctx context.Context, sdkRoot string, needsEmul
 	if err := os.MkdirAll(sdkRoot, 0o755); err != nil {
 		return fmt.Errorf("create Android SDK root: %w", err)
 	}
+	if err := ensureSDKLicenses(sdkRoot); err != nil {
+		return err
+	}
 	manager, err := ensureSDKManager(ctx, sdkRoot)
 	if err != nil {
 		return err
@@ -182,8 +189,7 @@ func verifyRuntimeCapabilities(sdkRoot, goos string, needsEmulator bool, systemI
 	if strings.TrimSpace(systemImage) != "" && !sdkPackageInstalled(sdkRoot, systemImage) {
 		return fmt.Errorf("Android system image %q is unavailable under %s", systemImage, sdkRoot)
 	}
-	bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP"))
-	if !fileExists(filepath.Join(sdkRoot, "licenses")) && !fileExists(filepath.Join(bootstrap, "licenses")) {
+	if !sdkLicensesAvailable(sdkRoot) {
 		return errors.New("Android SDK licenses are unavailable")
 	}
 	if goos == "linux" {
@@ -216,6 +222,13 @@ func ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome string) error {
 		filepath.Join(sdkRoot, "cmdline-tools", "latest", "bin"),
 		filepath.Join(sdkRoot, "platform-tools"),
 		filepath.Join(sdkRoot, "emulator"),
+	}
+	if bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP")); bootstrap != "" {
+		paths = append(paths,
+			filepath.Join(bootstrap, "cmdline-tools", "latest", "bin"),
+			filepath.Join(bootstrap, "platform-tools"),
+			filepath.Join(bootstrap, "emulator"),
+		)
 	}
 	current := os.Getenv("PATH")
 	for _, path := range paths {
@@ -393,6 +406,56 @@ func platformToolsAvailable(sdkRoot string) bool {
 	}
 	bootstrap := os.Getenv("ANDROID_SDK_BOOTSTRAP")
 	return bootstrap != "" && fileExists(filepath.Join(bootstrap, "platform-tools", "adb"))
+}
+
+func ensureSDKLicenses(sdkRoot string) error {
+	licensesDir := filepath.Join(sdkRoot, "licenses")
+	if err := os.MkdirAll(licensesDir, 0o755); err != nil {
+		return fmt.Errorf("create Android SDK licenses directory: %w", err)
+	}
+	bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP"))
+	if bootstrap == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join(bootstrap, "licenses"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read Android SDK bootstrap licenses: %w", err)
+	}
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		target := filepath.Join(licensesDir, entry.Name())
+		if _, err := os.Stat(target); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect Android SDK license %s: %w", entry.Name(), err)
+		}
+		contents, err := os.ReadFile(filepath.Join(bootstrap, "licenses", entry.Name()))
+		if err != nil {
+			return fmt.Errorf("read Android SDK license %s: %w", entry.Name(), err)
+		}
+		if err := os.WriteFile(target, contents, 0o644); err != nil {
+			return fmt.Errorf("copy Android SDK license %s: %w", entry.Name(), err)
+		}
+	}
+	return nil
+}
+
+func sdkLicensesAvailable(sdkRoot string) bool {
+	entries, err := os.ReadDir(filepath.Join(sdkRoot, "licenses"))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Type().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 func fileExists(path string) bool {

@@ -194,6 +194,13 @@ var publicRuntimeHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 } = http.DefaultClient
 
+const publicURLProbeTimeout = 5 * time.Second
+
+var (
+	ErrPublicOriginUnavailable = errors.New("public runner origin unavailable")
+	ErrPublicEndpointIdentity  = errors.New("public endpoint belongs to another runner")
+)
+
 func NewLifecycleManager(binary, configDir string, values Values, runner Runner) *LifecycleManager {
 	return NewLifecycleManagerForOS(binary, configDir, values, runner, runtime.GOOS)
 }
@@ -456,6 +463,49 @@ func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 	m.status.RunnerRunning = containsService(plan.ComposeServices, "runner")
 	m.status.ComposeRunning = false
 	m.status.PublicURL = ""
+	return nil
+}
+
+// RecreateRunner replaces only the unified runner service. Exposure services
+// and their public URL are deliberately left untouched so a configuration
+// change to inner-runner settings does not rotate a healthy tunnel.
+func (m *LifecycleManager) RecreateRunner(ctx context.Context, pull bool) (result error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	plan := BuildRuntimePlanForOS(m.configDir, m.values, m.goos)
+	if !containsService(plan.ComposeServices, "runner") {
+		return errors.New("runner service recreation requires the container backend")
+	}
+	if err := WriteComposeFileForOS(m.configDir, m.values, m.goos); err != nil {
+		return fmt.Errorf("write runner Compose file: %w", err)
+	}
+	spec, err := sharedRunnerSpec(m.values, m.goos)
+	if err != nil {
+		return fmt.Errorf("resolve runner service configuration: %w", err)
+	}
+	if pull && defaultIfEmpty(spec.PullPolicy, DefaultAndroidPullPolicy) != "never" {
+		pullSpec := m.composeSpec(plan, "pull", "runner")
+		if _, err := m.run(ctx, pullSpec); err != nil {
+			m.status.LastError = err.Error()
+			return fmt.Errorf("pull runner image: %w", err)
+		}
+	}
+	m.stopComposeLogFollowerLocked()
+	upSpec := m.composeSpec(plan, "up", "-d", "--no-deps", "--force-recreate", "--pull", "never", "runner")
+	if _, err := m.run(ctx, upSpec); err != nil {
+		m.status.LastError = err.Error()
+		return fmt.Errorf("recreate runner service: %w", err)
+	}
+	startedAt, err := m.composeServiceStartedAtLocked(ctx, plan, "runner")
+	if err != nil {
+		m.status.LastError = err.Error()
+		return fmt.Errorf("verify recreated runner service: %w", err)
+	}
+	m.startComposeLogFollowerLocked(plan)
+	m.status.RunnerRunning = true
+	m.status.ComposeRunning = true
+	m.status.LastStartedAt = startedAt
+	m.status.LastError = ""
 	return nil
 }
 
@@ -873,7 +923,9 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 	m.mu.Lock()
 	expectedRunnerID := strings.TrimSpace(m.values["CREDIMI_RUNNER_ID"])
 	m.mu.Unlock()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(strings.TrimSpace(publicURL), "/")+"/readyz", nil)
+	probeCtx, cancel := context.WithTimeout(ctx, publicURLProbeTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, strings.TrimRight(strings.TrimSpace(publicURL), "/")+"/readyz", nil)
 	if err != nil {
 		return fmt.Errorf("build public runner readiness request: %w", err)
 	}
@@ -883,6 +935,9 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusBadGateway || response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusGatewayTimeout {
+			return fmt.Errorf("%w: public runner endpoint returned %s", ErrPublicOriginUnavailable, response.Status)
+		}
 		return fmt.Errorf("public runner endpoint returned %s", response.Status)
 	}
 	var readiness struct {
@@ -893,7 +948,7 @@ func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string
 		return fmt.Errorf("decode public runner readiness: %w", err)
 	}
 	if readiness.Service != "credimi-runner" || (expectedRunnerID != "" && readiness.RunnerID != expectedRunnerID) {
-		return fmt.Errorf("public endpoint identified runner %q, expected %q", readiness.RunnerID, expectedRunnerID)
+		return fmt.Errorf("%w: public endpoint identified runner %q, expected %q", ErrPublicEndpointIdentity, readiness.RunnerID, expectedRunnerID)
 	}
 	return nil
 }

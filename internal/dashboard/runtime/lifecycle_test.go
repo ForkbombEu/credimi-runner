@@ -39,6 +39,27 @@ type imageVersionRunner struct {
 	inspectCall int
 }
 
+type composeStatusRunner struct {
+	fakeRunner
+	containerID string
+	startedAt   string
+	inspectErr  error
+}
+
+func (r *composeStatusRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
+	args := strings.Join(spec.Args, " ")
+	if strings.Contains(args, " ps -q runner") {
+		return []byte(r.containerID), nil
+	}
+	if strings.Contains(args, "inspect --format {{.State.StartedAt}}") {
+		if r.inspectErr != nil {
+			return nil, r.inspectErr
+		}
+		return []byte(r.startedAt), nil
+	}
+	return r.fakeRunner.Run(ctx, spec)
+}
+
 var fakeTunnelStartedAt = time.Date(2026, 7, 14, 16, 23, 32, 123456789, time.UTC)
 
 func (f *imageVersionRunner) Run(ctx context.Context, spec CommandSpec) ([]byte, error) {
@@ -65,7 +86,13 @@ func (f *fakeRunner) Run(_ context.Context, spec CommandSpec) ([]byte, error) {
 	if strings.Contains(args, " ps -q tunnel") {
 		return []byte("tunnel-container\n"), nil
 	}
+	if strings.Contains(args, " ps -q runner") {
+		return []byte("runner-container\n"), nil
+	}
 	if strings.HasPrefix(args, "inspect --format {{.State.StartedAt}} tunnel-container") {
+		return []byte(fakeTunnelStartedAt.Format(time.RFC3339Nano) + "\n"), nil
+	}
+	if strings.HasPrefix(args, "inspect --format {{.State.StartedAt}} runner-container") {
 		return []byte(fakeTunnelStartedAt.Format(time.RFC3339Nano) + "\n"), nil
 	}
 	if f.runOutput != nil || f.runErr != nil {
@@ -80,6 +107,119 @@ func (f *fakeRunner) Run(_ context.Context, spec CommandSpec) ([]byte, error) {
 		spec.Stream("ok")
 	}
 	return []byte("ok"), nil
+}
+
+func TestLifecycleManagerRecreateRunnerOnlyDoesNotTouchExposure(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeRunner{}
+	manager := NewLifecycleManagerForOS("credimi-runner", dir, Values{
+		"ANDROID_RUNNER_IMAGE": "credimi-runner:local",
+		"ANDROID_PULL_POLICY":  "never",
+		"CREDIMI_RUNNER_ID":    "acme/runner",
+		"CREDIMI_SERVICE_MODE": "auto",
+	}, runner, "linux")
+	if err := manager.RecreateRunner(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	var recreate string
+	for _, spec := range runner.runs {
+		joined := strings.Join(spec.Args, " ")
+		if strings.Contains(joined, " up -d --no-deps --force-recreate --pull never runner") {
+			recreate = joined
+		}
+		if strings.Contains(joined, " stop ") || (strings.Contains(joined, "--force-recreate") && (strings.Contains(joined, " caddy") || strings.Contains(joined, " tunnel"))) {
+			t.Fatalf("runner-only recreation touched exposure: %s", joined)
+		}
+	}
+	if recreate == "" {
+		t.Fatalf("runner recreation command not found: %#v", runner.runs)
+	}
+	if status := manager.Status(context.Background()); !status.RunnerRunning {
+		t.Fatalf("runner status after recreation = %#v", status)
+	}
+}
+
+func TestLifecycleManagerRecreateRunnerReportsPreflightAndDockerFailures(t *testing.T) {
+	tests := []struct {
+		name   string
+		goos   string
+		dir    func(*testing.T) string
+		runner Runner
+		pull   bool
+		want   string
+	}{
+		{
+			name:   "native backend",
+			goos:   "darwin",
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			runner: &fakeRunner{},
+			want:   "container backend",
+		},
+		{
+			name: "compose write",
+			goos: "linux",
+			dir: func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "not-a-directory")
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return path
+			},
+			runner: &fakeRunner{},
+			want:   "write runner Compose file",
+		},
+		{
+			name:   "pull",
+			goos:   "linux",
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			runner: &failOnRunRunner{failAt: 1},
+			pull:   true,
+			want:   "pull runner image",
+		},
+		{
+			name:   "recreate",
+			goos:   "linux",
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			runner: &failOnRunRunner{failAt: 1},
+			want:   "recreate runner service",
+		},
+		{
+			name:   "verification",
+			goos:   "linux",
+			dir:    func(t *testing.T) string { return t.TempDir() },
+			runner: &composeStatusRunner{},
+			want:   "verify recreated runner service",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			values := Values{"CREDIMI_RUNNER_ID": "acme/runner", "ANDROID_RUNNER_IMAGE": "runner:local", "ANDROID_PULL_POLICY": "never", "CREDIMI_SERVICE_MODE": "manual"}
+			if test.pull {
+				values["ANDROID_PULL_POLICY"] = "always"
+			}
+			manager := NewLifecycleManagerForOS("credimi-runner", test.dir(t), values, test.runner, test.goos)
+			if err := manager.RecreateRunner(context.Background(), test.pull); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLifecycleManagerNativeStartAndStopHaveNoComposeServices(t *testing.T) {
+	manager := NewLifecycleManagerForOS("credimi-runner", t.TempDir(), Values{
+		"CREDIMI_SERVICE_MODE": "manual",
+		"RUNNER_PUBLIC_URL":    "https://runner.example",
+	}, &fakeRunner{}, "darwin")
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.Status(context.Background()).PublicURL; got != "" {
+		t.Fatalf("stopped native public URL = %q", got)
+	}
 }
 
 func (f *fakeRunner) Start(ctx context.Context, spec CommandSpec) (*exec.Cmd, error) {
@@ -220,6 +360,55 @@ func TestLifecycleManagerStopLogFollowerWithoutProcess(t *testing.T) {
 	manager.stopComposeLogFollowerLocked()
 	if manager.logCmd != nil || manager.logDone != nil {
 		t.Fatalf("log follower was not cleared: %#v", manager)
+	}
+}
+
+func TestLifecycleManagerStopsRunningLogFollower(t *testing.T) {
+	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{}, &fakeRunner{})
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
+	manager.logCmd = cmd
+	manager.logDone = done
+	manager.stopComposeLogFollowerLocked()
+	if manager.logCmd != nil || manager.logDone != nil {
+		t.Fatalf("running log follower was not cleared: %#v", manager)
+	}
+}
+
+func TestComposeServiceStartedAtReportsContainerStateErrors(t *testing.T) {
+	plan := RuntimePlan{ComposeServices: []string{"runner"}}
+	tests := []struct {
+		name      string
+		runner    *composeStatusRunner
+		want      string
+		wantNoErr bool
+	}{
+		{name: "missing container", runner: &composeStatusRunner{}, want: "no running container"},
+		{name: "inspect failure", runner: &composeStatusRunner{containerID: "runner-1", inspectErr: errors.New("inspect failed")}, want: "inspect runner container start time"},
+		{name: "invalid timestamp", runner: &composeStatusRunner{containerID: "runner-1", startedAt: "not-a-time"}, want: "parse runner container start time"},
+		{name: "valid timestamp", runner: &composeStatusRunner{containerID: "runner-1", startedAt: fakeTunnelStartedAt.Format(time.RFC3339Nano)}, wantNoErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{}, test.runner)
+			startedAt, err := manager.composeServiceStartedAtLocked(context.Background(), plan, "runner")
+			if test.wantNoErr {
+				if err != nil || startedAt.IsZero() {
+					t.Fatalf("startedAt=%v err=%v", startedAt, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error=%v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -884,6 +1073,7 @@ func TestLifecycleManagerVerifiesPublicRunnerIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, want string
 	}{
+		{name: "wrong service", body: `{"service":"other","runner_id":"acme/runner"}`, want: "identified runner"},
 		{name: "malformed", body: "{", want: "decode public runner readiness"},
 		{name: "wrong runner", body: `{"service":"credimi-runner","runner_id":"other/runner"}`, want: "identified runner"},
 	} {

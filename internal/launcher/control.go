@@ -16,14 +16,16 @@ import (
 )
 
 const (
-	UpgradeRunnerImage = "upgrade-runner-image"
-	ReconcileConfig    = "reconcile-config"
-	RuntimeStart       = "runtime-start"
-	RuntimeStop        = "runtime-stop"
-	RuntimeRestart     = "runtime-restart"
-	QuickTunnelURL     = "quick-tunnel-url"
-	OperationStatus    = "operation-status"
-	setupOperationFile = "setup-operation"
+	UpgradeRunnerImage  = "upgrade-runner-image"
+	ReconcileConfig     = "reconcile-config"
+	ReconcileSetup      = "reconcile-setup"
+	RuntimeStart        = "runtime-start"
+	RuntimeStop         = "runtime-stop"
+	RuntimeRestart      = "runtime-restart"
+	QuickTunnelURL      = "quick-tunnel-url"
+	OperationStatus     = "operation-status"
+	setupOperationFile  = "setup-operation"
+	configOperationFile = "config-operation"
 )
 
 type OperationPhase string
@@ -67,6 +69,7 @@ type response struct {
 // execution interface.
 type Operations struct {
 	ReconcileConfig func(context.Context) error
+	ReconcileSetup  func(context.Context) error
 	RuntimeStart    func(context.Context) error
 	RuntimeStop     func(context.Context) error
 	RuntimeRestart  func(context.Context) error
@@ -155,6 +158,8 @@ func (s *Server) handle(connection net.Conn) {
 		})
 	case ReconcileConfig:
 		s.acceptAsync(connection, ReconcileConfig, s.operations.ReconcileConfig)
+	case ReconcileSetup:
+		s.acceptAsync(connection, ReconcileSetup, s.operations.ReconcileSetup)
 	case RuntimeStart:
 		s.acceptAsync(connection, RuntimeStart, s.operations.RuntimeStart)
 	case RuntimeStop:
@@ -198,8 +203,15 @@ func (s *Server) startOperation(kind string, operation func(context.Context) err
 	handle := OperationHandle{ID: fmt.Sprintf("%s-%d", kind, s.nextID), Kind: kind}
 	s.results[handle.ID] = OperationResult{ID: handle.ID, Kind: kind, Phase: PhaseQueued}
 	s.mu.Unlock()
-	if kind == ReconcileConfig {
-		if err := persistOperationReference(filepath.Dir(s.listener.Addr().String()), handle.ID); err != nil {
+	operationFile := ""
+	switch kind {
+	case ReconcileSetup:
+		operationFile = setupOperationFile
+	case ReconcileConfig:
+		operationFile = configOperationFile
+	}
+	if operationFile != "" {
+		if err := persistOperationReference(filepath.Dir(s.listener.Addr().String()), operationFile, handle.ID); err != nil {
 			s.mu.Lock()
 			delete(s.results, handle.ID)
 			s.mu.Unlock()
@@ -220,27 +232,27 @@ func (s *Server) startOperation(kind string, operation func(context.Context) err
 	return handle, nil
 }
 
-func persistOperationReference(configDir, operationID string) error {
-	path := filepath.Join(configDir, setupOperationFile)
-	temporary, err := os.CreateTemp(configDir, ".setup-operation-")
+func persistOperationReference(configDir, filename, operationID string) error {
+	path := filepath.Join(configDir, filename)
+	temporary, err := os.CreateTemp(configDir, ".operation-")
 	if err != nil {
-		return fmt.Errorf("create setup operation reference: %w", err)
+		return fmt.Errorf("create %s reference: %w", filename, err)
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
-		return fmt.Errorf("secure setup operation reference: %w", err)
+		return fmt.Errorf("secure %s reference: %w", filename, err)
 	}
 	if _, err := temporary.WriteString(operationID + "\n"); err != nil {
 		_ = temporary.Close()
-		return fmt.Errorf("write setup operation reference: %w", err)
+		return fmt.Errorf("write %s reference: %w", filename, err)
 	}
 	if err := temporary.Close(); err != nil {
-		return fmt.Errorf("close setup operation reference: %w", err)
+		return fmt.Errorf("close %s reference: %w", filename, err)
 	}
 	if err := os.Rename(temporaryPath, path); err != nil {
-		return fmt.Errorf("publish setup operation reference: %w", err)
+		return fmt.Errorf("publish %s reference: %w", filename, err)
 	}
 	return nil
 }
@@ -290,6 +302,11 @@ func RequestReconcile(ctx context.Context, path string) error {
 	return waitOperation(ctx, path, handle, err)
 }
 
+func RequestSetupReconcile(ctx context.Context, path string) error {
+	handle, err := RequestSetupReconcileAsync(ctx, path)
+	return waitOperation(ctx, path, handle, err)
+}
+
 func RequestRuntimeAction(ctx context.Context, path, action string) error {
 	operation := map[string]string{"start": RuntimeStart, "stop": RuntimeStop, "restart": RuntimeRestart}[action]
 	if operation == "" {
@@ -301,6 +318,10 @@ func RequestRuntimeAction(ctx context.Context, path, action string) error {
 
 func RequestReconcileAsync(ctx context.Context, path string) (OperationHandle, error) {
 	return requestAsync(ctx, path, ReconcileConfig)
+}
+
+func RequestSetupReconcileAsync(ctx context.Context, path string) (OperationHandle, error) {
+	return requestAsync(ctx, path, ReconcileSetup)
 }
 
 // RequestOperationStatus reconnects to an already accepted launcher operation.

@@ -208,6 +208,30 @@ func TestNewHandlerWithManagerWrapper(t *testing.T) {
 	}
 }
 
+func TestNewHandlerBootstrapWrappersAndRefreshTargets(t *testing.T) {
+	for _, progress := range []bool{false, true} {
+		t.Run(fmt.Sprintf("progress-%t", progress), func(t *testing.T) {
+			var handler http.Handler
+			var cancel context.CancelFunc
+			var err error
+			if progress {
+				handler, cancel, err = NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(context.Background(), t.TempDir(), &fakeManager{}, "controller", "token", "fingerprint", nil, func(string) {})
+			} else {
+				handler, cancel, err = NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(context.Background(), t.TempDir(), &fakeManager{}, "controller", "token", "fingerprint", nil)
+			}
+			if err != nil || handler == nil {
+				t.Fatalf("bootstrap handler = %v", err)
+			}
+			cancel()
+		})
+	}
+	for page, want := range map[string]string{"devices": "/devices", "config": "/config", "overview": "/"} {
+		if got := dashboardRefreshPath(page); got != want {
+			t.Fatalf("refresh path %q = %q, want %q", page, got, want)
+		}
+	}
+}
+
 func TestRuntimeOwnedHandlerDoesNotCreateHostLifecycleManager(t *testing.T) {
 	handler, cancel, err := NewRuntimeOwnedHandler(context.Background(), t.TempDir(), "controller", "token", "fingerprint", controller.NewCoordinator(context.Background()))
 	if err != nil {
@@ -251,7 +275,7 @@ func TestRuntimeOwnedRegistrationUsesCredimiWithoutLifecycleManager(t *testing.T
 	s.cfg.values["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
 	socket := filepath.Join(filepath.Dir(s.cfg.Path()), "control.sock")
 	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
-		ReconcileConfig: func(context.Context) error { return nil },
+		ReconcileSetup: func(context.Context) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -334,7 +358,7 @@ func TestRuntimeOwnedSetupRecoversLauncherOperationAfterReplacement(t *testing.T
 	release := make(chan struct{})
 	socket := filepath.Join(configDir, "control.sock")
 	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
-		ReconcileConfig: func(context.Context) error {
+		ReconcileSetup: func(context.Context) error {
 			close(started)
 			<-release
 			return nil
@@ -344,7 +368,7 @@ func TestRuntimeOwnedSetupRecoversLauncherOperationAfterReplacement(t *testing.T
 		t.Fatal(err)
 	}
 	defer control.Close()
-	_, err = launcher.RequestReconcileAsync(context.Background(), socket)
+	_, err = launcher.RequestSetupReconcileAsync(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +404,7 @@ func TestRuntimeOwnedSetupSubmitterCancellationPreservesHandoff(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
-		ReconcileConfig: func(context.Context) error {
+		ReconcileSetup: func(context.Context) error {
 			close(started)
 			<-release
 			return nil
@@ -391,7 +415,7 @@ func TestRuntimeOwnedSetupSubmitterCancellationPreservesHandoff(t *testing.T) {
 	}
 	defer control.Close()
 	s.launcherSocket = socket
-	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	handle, err := launcher.RequestSetupReconcileAsync(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +439,7 @@ func TestRuntimeOwnedSetupSurfacesLauncherFailureAfterReplacement(t *testing.T) 
 	}
 	socket := filepath.Join(configDir, "control.sock")
 	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
-		ReconcileConfig: func(context.Context) error {
+		ReconcileSetup: func(context.Context) error {
 			return errors.New("docker compose failed: network-scoped aliases are only supported for user-defined networks")
 		},
 	})
@@ -423,7 +447,7 @@ func TestRuntimeOwnedSetupSurfacesLauncherFailureAfterReplacement(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer control.Close()
-	_, err = launcher.RequestReconcileAsync(context.Background(), socket)
+	_, err = launcher.RequestSetupReconcileAsync(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +499,7 @@ func TestRuntimeOwnedSetupStaleOperationIsTerminallyReported(t *testing.T) {
 	}
 	socket := filepath.Join(configDir, "control.sock")
 	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
-		ReconcileConfig: func(context.Context) error { return nil },
+		ReconcileSetup: func(context.Context) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -496,6 +520,123 @@ func TestRuntimeOwnedSetupStaleOperationIsTerminallyReported(t *testing.T) {
 	}
 	if fileExists(setupOperationPath(configDir)) {
 		t.Fatal("stale setup operation was not cleared")
+	}
+}
+
+func TestRuntimeOwnedConfigRecoveryCompletesWithoutStartingStoppedRuntime(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeOwned = true
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "runtime-state"), []byte("stopped\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(configDir, "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.finishConfigReconcileRecovery(context.Background(), s.cfg.Snapshot(), handle.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(configOperationPath(configDir)) {
+		t.Fatal("config operation handoff was not cleared")
+	}
+	if got := readExecutionState(configDir); got != executionStateStopped {
+		t.Fatalf("runtime state changed during stopped recovery: %q", got)
+	}
+	if s.startupSnapshot().Phase != StartupReady {
+		t.Fatalf("startup state = %#v", s.startupSnapshot())
+	}
+}
+
+func TestRuntimeOwnedConfigRecoveryRegistersRunningRuntime(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	s := newTestServer(t)
+	s.runtimeOwned = true
+	s.cfg.values["CREDIMI_URL"] = api.URL
+	s.cfg.values["CREDIMI_DEVICE_COUNT"] = ""
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "runtime-state"), []byte("running\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(configDir, "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.finishConfigReconcileRecovery(context.Background(), s.cfg.Snapshot(), handle.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(configOperationPath(configDir)) || s.startupSnapshot().Phase != StartupReady {
+		t.Fatalf("running config recovery state = %#v", s.startupSnapshot())
+	}
+}
+
+func TestRuntimeOwnedConfigRecoverySurfacesAndConsumesLauncherFailure(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeOwned = true
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "runtime-state"), []byte("stopped\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(configDir, "control.sock")
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error { return errors.New("docker compose failed") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.finishConfigReconcileRecovery(context.Background(), s.cfg.Snapshot(), handle.ID, true)
+	if err == nil || !strings.Contains(err.Error(), "docker compose failed") {
+		t.Fatalf("config recovery failure = %v", err)
+	}
+	if fileExists(configOperationPath(configDir)) || s.startupSnapshot().Phase != StartupNeedsAttention {
+		t.Fatalf("failed config recovery state = %#v", s.startupSnapshot())
+	}
+}
+
+func TestConfigOperationStateRejectsMissingAndEmptyReferences(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := readConfigOperation(dir); err == nil {
+		t.Fatal("missing config operation was accepted")
+	}
+	path := configOperationPath(dir)
+	if err := os.WriteFile(path, []byte("\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readConfigOperation(dir); err == nil {
+		t.Fatal("empty config operation was accepted")
+	}
+	if err := clearConfigOperation(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearConfigOperation(dir); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -701,14 +842,14 @@ func TestRuntimeOwnedSetupClearsOperationAfterRegistrationFailure(t *testing.T) 
 	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
 	socket := filepath.Join(filepath.Dir(s.cfg.Path()), "control.sock")
 	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
-		ReconcileConfig: func(context.Context) error { return nil },
+		ReconcileSetup: func(context.Context) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer control.Close()
 	s.launcherSocket = socket
-	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
+	handle, err := launcher.RequestSetupReconcileAsync(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1252,10 +1393,6 @@ func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	applyDeviceDefaults(&redroid)
 	if redroid.Values["WIFI_PORT"] != "5555" || redroid.Values["REDROID_DATA_DIR"] == "" {
 		t.Fatalf("redroid defaults = %#v", redroid.Values)
-	}
-	s := newTestServer(t)
-	if err := s.registerConfiguredDevice(context.Background(), dashboardruntime.Values{}, dashboardruntime.DeviceRuntimeConfig{Name: "Pixel", Type: "android_phone", Mode: "usb"}); err == nil || !strings.Contains(err.Error(), "Credimi URL") {
-		t.Fatalf("missing credentials error = %v", err)
 	}
 }
 
@@ -2440,6 +2577,9 @@ func TestServerDevicePreviewAndConfigNormalizationEndpoints(t *testing.T) {
 	if normalized.Code != http.StatusOK || !strings.Contains(normalized.Body.String(), `"RUNNER_PORT":"9000"`) {
 		t.Fatalf("normalized preview = %d %s", normalized.Code, normalized.Body.String())
 	}
+	if _, err := normalizedConfigValues(map[string]string{"CREDIMI_DEVICE_COUNT": "1"}, map[string]string{}, "linux"); err == nil {
+		t.Fatal("invalid indexed configuration was normalized")
+	}
 }
 
 func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
@@ -2676,6 +2816,27 @@ func TestServerSetupDevicePreviewAndSystemMetricsEndpoints(t *testing.T) {
 	s.systemMetrics(metrics, httptest.NewRequest(http.MethodGet, "/api/system-metrics", nil))
 	if metrics.Code != http.StatusOK || !strings.Contains(metrics.Body.String(), "interval_ms") {
 		t.Fatalf("system metrics = %d %s", metrics.Code, metrics.Body.String())
+	}
+}
+
+func TestServerSystemMetricsReturnsEmptySnapshotWithoutMonitor(t *testing.T) {
+	s := newTestServer(t)
+	s.systemMonitor = nil
+	recorder := httptest.NewRecorder()
+	s.systemMetrics(recorder, httptest.NewRequest(http.MethodGet, "/api/system-metrics", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"samples":[]`) || !strings.Contains(recorder.Body.String(), `"interval_ms":2000`) {
+		t.Fatalf("empty system metrics = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServerSystemMetricsSupportsHourlyRange(t *testing.T) {
+	s := newTestServer(t)
+	now := time.Now().UTC()
+	s.systemMonitor = &SystemMonitor{samples: []SystemMetrics{{Timestamp: now.Unix(), CPUPercent: 42}}}
+	recorder := httptest.NewRecorder()
+	s.systemMetrics(recorder, httptest.NewRequest(http.MethodGet, "/api/system-metrics?range=hourly", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"samples"`) {
+		t.Fatalf("hourly system metrics = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

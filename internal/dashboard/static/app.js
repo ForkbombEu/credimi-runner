@@ -53,8 +53,8 @@
     if (token) url.searchParams.set('token', token);
     return `${url.pathname}${url.search}`;
   }
-  function refreshOverview() {
-    htmx.ajax('GET', dashboardURL('/'), { target: 'main', select: 'main', swap: 'outerHTML' });
+	function refreshOverview(path = '/') {
+		htmx.ajax('GET', dashboardURL(path), { target: 'main', select: 'main', swap: 'outerHTML' });
   }
   function runtimeOperationFailure(snapshot) {
     const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
@@ -84,7 +84,7 @@
         } else {
           toast(runtimeOperationFailure(snapshot));
         }
-        refreshOverview();
+			refreshOverview(operation.refresh || '/');
       };
       setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
     } catch (_) {}

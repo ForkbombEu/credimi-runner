@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,5 +101,30 @@ func TestControllerIdentityTokenAndMetadataValidation(t *testing.T) {
 	}
 	if _, err := ReadMetadata(dir); err == nil {
 		t.Fatal("expected invalid metadata error")
+	}
+}
+
+func TestControllerLeaseAndProbeRejectInvalidState(t *testing.T) {
+	var lease *Lease
+	if err := lease.Publish(Metadata{}); err == nil {
+		t.Fatal("nil lease publish unexpectedly succeeded")
+	}
+	if err := Probe(context.Background(), Metadata{ProbeURL: "://bad"}); err == nil {
+		t.Fatal("invalid probe URL unexpectedly succeeded")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	if err := Probe(context.Background(), Metadata{ProbeURL: server.URL, IdentityToken: "token"}); err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("probe HTTP failure = %v", err)
+	}
+	server.Close()
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("{"))
+	}))
+	defer server.Close()
+	if err := Probe(context.Background(), Metadata{ProbeURL: server.URL, IdentityToken: "token"}); err == nil || !strings.Contains(err.Error(), "decode controller identity") {
+		t.Fatalf("probe decode failure = %v", err)
 	}
 }

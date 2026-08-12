@@ -472,6 +472,36 @@ func TestRuntimeLifecycleRegisterRunningWaitsForRunnerReadiness(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleReadinessAndRestartFailuresRemainExplicit(t *testing.T) {
+	readinessErr := errors.New("runner is not ready")
+	lifecycle := RuntimeLifecycle{
+		Manager:   &lifecycleManager{},
+		WaitReady: func(context.Context, dashboardruntime.Values) error { return readinessErr },
+	}
+	if err := lifecycle.RegisterRunning(context.Background()); !errors.Is(err, readinessErr) {
+		t.Fatalf("RegisterRunning error = %v", err)
+	}
+	if err := lifecycle.Restart(context.Background(), nil); !errors.Is(err, readinessErr) || !strings.Contains(err.Error(), "runtime remains running") {
+		t.Fatalf("Restart error = %v", err)
+	}
+
+	stopErr := errors.New("stop failed")
+	manager := &lifecycleManagerWithStopError{lifecycleManager: lifecycleManager{}, err: stopErr}
+	if err := (RuntimeLifecycle{Manager: manager}).Restart(context.Background(), nil); !errors.Is(err, stopErr) {
+		t.Fatalf("restart stop error = %v", err)
+	}
+}
+
+type lifecycleManagerWithStopError struct {
+	lifecycleManager
+	err error
+}
+
+func (m *lifecycleManagerWithStopError) Stop(context.Context) error {
+	m.stops++
+	return m.err
+}
+
 func TestRuntimeLifecycleRegistersRunnerBeforeDevices(t *testing.T) {
 	var paths []string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

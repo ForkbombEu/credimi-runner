@@ -171,6 +171,31 @@ func TestRenderer_FragmentPage(t *testing.T) {
 	}
 }
 
+func TestRendererNetworkUsesSetupServiceModeLabels(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := renderer.Page("network", PageData{
+		Active: "network",
+		Title:  "Network",
+		Runner: &Config{values: Defaults},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"data-val=\"auto\"", "Auto", "Quick tunnel", "data-val=\"cloudflare-managed\"", "Managed", "Named tunnel", "data-val=\"manual\"", "Manual", "Self-managed"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("network page missing %q: %s", want, html)
+		}
+	}
+	for _, obsolete := range []string{"Instant trycloudflare.com URL", "Your domain via Cloudflare", "Bind host port, no tunnel", ">Direct<"} {
+		if strings.Contains(html, obsolete) {
+			t.Fatalf("network page contains obsolete label %q: %s", obsolete, html)
+		}
+	}
+}
+
 func TestRendererOverviewPageIncludesUpgradeLogModal(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {

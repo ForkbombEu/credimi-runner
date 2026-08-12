@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -77,6 +78,45 @@ func TestEnsureCapabilitiesPhysicalOnlySkipsEmulator(t *testing.T) {
 	}
 }
 
+func TestEnsureRuntimeCapabilitiesAtWithUsesInjectedSDKRootForPhysicalInventory(t *testing.T) {
+	root := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "acme/runner/phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "usb-1"},
+	}}
+	var gotRoot string
+	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "linux", root, func(_ context.Context, sdkRoot string, needsEmulator bool, image string) error {
+		gotRoot = sdkRoot
+		if needsEmulator || image != "" {
+			t.Fatalf("physical capability request = emulator %v image %q", needsEmulator, image)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotRoot != root || os.Getenv("ANDROID_SDK_ROOT") != root {
+		t.Fatalf("injected SDK root = %q env=%q", gotRoot, os.Getenv("ANDROID_SDK_ROOT"))
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesAtWithSkipsUnsupportedInventory(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/ios", Type: runnerconfig.DeviceIOSSimulator, Enabled: true}}
+	called := false
+	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", t.TempDir(), func(context.Context, string, bool, string) error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if called {
+		t.Fatal("non-Android inventory invoked Android capability provisioner")
+	}
+}
+
 func TestEnsureCapabilitiesWithRunnerReportsPackageInstallFailure(t *testing.T) {
 	installFakeSDKManager(t)
 	root := t.TempDir()
@@ -85,6 +125,97 @@ func TestEnsureCapabilitiesWithRunnerReportsPackageInstallFailure(t *testing.T) 
 	})
 	if err == nil || !strings.Contains(err.Error(), "install Android SDK packages") || !strings.Contains(err.Error(), "sdkmanager failed") {
 		t.Fatalf("package install error = %v", err)
+	}
+}
+
+func TestEnsureSDKLicensesHandlesMissingBootstrapAndExistingFiles(t *testing.T) {
+	sdkRoot := t.TempDir()
+	t.Setenv("ANDROID_SDK_BOOTSTRAP", "")
+	if err := ensureSDKLicenses(sdkRoot); err != nil {
+		t.Fatal(err)
+	}
+	licenses := filepath.Join(sdkRoot, "licenses")
+	if _, err := os.Stat(licenses); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := t.TempDir()
+	t.Setenv("ANDROID_SDK_BOOTSTRAP", bootstrap)
+	if err := os.MkdirAll(filepath.Join(bootstrap, "licenses"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	license := filepath.Join(bootstrap, "licenses", "android-sdk-license")
+	if err := os.WriteFile(license, []byte("bootstrap"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(licenses, "android-sdk-license"), []byte("existing"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSDKLicenses(sdkRoot); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(licenses, "android-sdk-license"))
+	if err != nil || string(contents) != "existing" {
+		t.Fatalf("existing license = %q err=%v", contents, err)
+	}
+}
+
+func TestAndroidToolsCanUseBootstrapPlatformAndEmulatorBinaries(t *testing.T) {
+	root := t.TempDir()
+	bootstrap := t.TempDir()
+	for _, relative := range []string{"platform-tools/adb", "emulator/emulator"} {
+		path := filepath.Join(bootstrap, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("ANDROID_SDK_BOOTSTRAP", bootstrap)
+	if !platformToolsAvailable(root) || !emulatorAvailable(root) {
+		t.Fatal("bootstrap Android tools were not discovered")
+	}
+	if sdkPackageInstalled(root, "platform-tools") || sdkPackageInstalled(root, "broken") {
+		t.Fatal("invalid SDK package was reported installed")
+	}
+}
+
+func TestVerifyRuntimeCapabilitiesExplainsEachMissingEmulatorRequirement(t *testing.T) {
+	root := t.TempDir()
+	image := "system-images;android-35;google_apis;x86_64"
+	if err := verifyRuntimeCapabilities(root, "darwin", true, image); err == nil || !strings.Contains(err.Error(), "executable is unavailable") {
+		t.Fatalf("missing emulator error = %v", err)
+	}
+	emulator := filepath.Join(root, "emulator", "emulator")
+	if err := os.MkdirAll(filepath.Dir(emulator), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(emulator, nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if err := verifyRuntimeCapabilities(root, "darwin", true, image); err == nil || !strings.Contains(err.Error(), "not resolvable") {
+		t.Fatalf("unresolvable emulator error = %v", err)
+	}
+	t.Setenv("PATH", filepath.Dir(emulator))
+	if err := verifyRuntimeCapabilities(root, "darwin", true, image); err == nil || !strings.Contains(err.Error(), "system image") {
+		t.Fatalf("missing image error = %v", err)
+	}
+	imagePath := filepath.Join(append([]string{root}, strings.Split(image, ";")...)...)
+	if err := os.MkdirAll(imagePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRuntimeCapabilities(root, "darwin", true, image); err == nil || !strings.Contains(err.Error(), "licenses") {
+		t.Fatalf("missing license error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "licenses"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "licenses", "android-sdk-license"), []byte("accepted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRuntimeCapabilities(root, "darwin", true, image); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -326,6 +457,47 @@ func TestEnsureCapabilitiesUsesCommandWrapper(t *testing.T) {
 	}
 }
 
+func TestEnsureCapabilitiesCopiesBootstrapLicensesBeforeInstall(t *testing.T) {
+	root := t.TempDir()
+	bootstrap := t.TempDir()
+	managerDir := filepath.Join(root, "cmdline-tools", "latest", "bin")
+	if err := os.MkdirAll(managerDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managerDir, "sdkmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(bootstrap, "licenses"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := []byte("accepted-license\n")
+	if err := os.WriteFile(filepath.Join(bootstrap, "licenses", "android-sdk-license"), want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANDROID_SDK_BOOTSTRAP", bootstrap)
+	called := false
+	err := EnsureCapabilitiesWithRunner(context.Background(), root, false, "", func(_ context.Context, _ string, args ...string) error {
+		called = true
+		got, readErr := os.ReadFile(filepath.Join(root, "licenses", "android-sdk-license"))
+		if readErr != nil {
+			return readErr
+		}
+		if string(got) != string(want) {
+			return fmt.Errorf("license contents = %q", got)
+		}
+		if len(args) == 0 || args[0] != "--sdk_root="+root {
+			return fmt.Errorf("sdkmanager args = %v", args)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("sdkmanager was not invoked")
+	}
+}
+
 func TestEnsureRejectsEmptySDKRoot(t *testing.T) {
 	if err := Ensure(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "SDK root is required") {
 		t.Fatalf("empty SDK root error = %v", err)
@@ -470,6 +642,9 @@ func TestVerifyRuntimeCapabilitiesRequiresUsableEmulatorTooling(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "licenses"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "licenses", "android-sdk-license"), []byte("accepted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, "system-images", "android-35", "google_apis", "x86_64"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -501,6 +676,9 @@ func TestVerifyRuntimeCapabilitiesRejectsMissingImageAndLicenses(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "licenses"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "licenses", "android-sdk-license"), []byte("accepted\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", filepath.Join(root, "emulator"))
 	if err := verifyRuntimeCapabilities(root, "darwin", true, "system-images;android-35;google_apis;x86_64"); err == nil || !strings.Contains(err.Error(), "system image") {
 		t.Fatalf("missing system image error = %v", err)
@@ -523,6 +701,9 @@ func TestEnsureRuntimeCapabilitiesVerifiesDefaultEmulatorPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "licenses"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "licenses", "android-sdk-license"), []byte("accepted\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "system-images", "android-35", "google_apis", "x86_64"), 0o755); err != nil {

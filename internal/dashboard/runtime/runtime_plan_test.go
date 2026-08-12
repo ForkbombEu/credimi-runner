@@ -1,6 +1,9 @@
 package runtime
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildRuntimePlanExpectedServices(t *testing.T) {
 	tests := []struct {
@@ -136,6 +139,20 @@ func TestRuntimePlanReadinessUsesIndexedDevices(t *testing.T) {
 	host := Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/sim", "CREDIMI_DEVICE_1_TYPE": "ios_simulator", "CREDIMI_DEVICE_1_MODE": "no_device"}
 	if !RunnerAPIReachableFromHost(host, "darwin") || !RunnerReadinessRequiredBeforeRegistration(host, "darwin") {
 		t.Fatal("host runner should be reachable before registration")
+	}
+}
+
+func TestBootstrapContextLeavingBootstrapRemovesBootstrapMarkers(t *testing.T) {
+	values := (BootstrapContext{RunnerImage: "runner:local", PullPolicy: "never", HostNetwork: true, BeforeSetup: true}).Apply(Values{})
+	if !strings.EqualFold(values[BootstrapPhaseEnv], "true") || values[BootstrapHostNetworkEnv] != "true" {
+		t.Fatalf("bootstrap values = %#v", values)
+	}
+	values = BootstrapContext{}.Apply(values)
+	if _, ok := values[BootstrapPhaseEnv]; ok {
+		t.Fatalf("bootstrap phase marker survived final topology: %#v", values)
+	}
+	if _, ok := values[BootstrapHostNetworkEnv]; ok {
+		t.Fatalf("bootstrap host-network marker survived final topology: %#v", values)
 	}
 }
 

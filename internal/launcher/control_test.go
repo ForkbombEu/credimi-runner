@@ -148,6 +148,52 @@ func TestLauncherTypedOperationsAreAllowListed(t *testing.T) {
 	}
 }
 
+func TestLauncherPersistsSetupAndConfigOperationReferencesSeparately(t *testing.T) {
+	dir := t.TempDir()
+	server, err := ServeWithOperations(filepath.Join(dir, "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		ReconcileSetup:  func(context.Context) error { return nil },
+		ReconcileConfig: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	path := server.listener.Addr().String()
+	setup, err := RequestSetupReconcileAsync(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setupID, err := os.ReadFile(filepath.Join(dir, setupOperationFile))
+	if err != nil || strings.TrimSpace(string(setupID)) != setup.ID {
+		t.Fatalf("setup operation reference = %q, err=%v", setupID, err)
+	}
+	config, err := RequestReconcileAsync(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configID, err := os.ReadFile(filepath.Join(dir, configOperationFile))
+	if err != nil || strings.TrimSpace(string(configID)) != config.ID {
+		t.Fatalf("config operation reference = %q, err=%v", configID, err)
+	}
+}
+
+func TestRequestSetupReconcileWaitsForTerminalResult(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.sock")
+	server, err := ServeWithOperations(path, func(context.Context) error { return nil }, nil, Operations{
+		ReconcileSetup: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := RequestSetupReconcile(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "setup-operation")); err != nil {
+		t.Fatalf("setup operation reference after terminal request: %v", err)
+	}
+}
+
 func TestLauncherTypedOperationsReportRejectedAndUnconfiguredRequests(t *testing.T) {
 	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{
 		QuickTunnelURL: func(context.Context) (string, error) { return "", errors.New("tunnel is not ready") },
@@ -247,6 +293,26 @@ func TestLauncherOperationWaitHonorsCallerCancellation(t *testing.T) {
 	close(finished)
 }
 
+func TestLauncherOperationWaitReturnsReconcileFailure(t *testing.T) {
+	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{
+		ReconcileConfig: func(context.Context) error { return errors.New("docker compose failed") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	handle, err := RequestReconcileAsync(context.Background(), server.listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitOperation(context.Background(), server.listener.Addr().String(), handle, nil); err == nil || !strings.Contains(err.Error(), "docker compose failed") {
+		t.Fatalf("reconcile failure = %v", err)
+	}
+	if handle.ID == "" {
+		t.Fatal("reconcile operation did not return an ID")
+	}
+}
+
 func TestLauncherRejectsUnknownOperationStatus(t *testing.T) {
 	server, err := ServeWithOperations(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error { return nil }, nil, Operations{})
 	if err != nil {
@@ -299,7 +365,7 @@ func TestLauncherRejectsInvalidServerConfiguration(t *testing.T) {
 
 func TestLauncherRejectsReconcileWhenOperationReferenceCannotBePublished(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Mkdir(filepath.Join(dir, "setup-operation"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "config-operation"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	server, err := ServeWithOperations(filepath.Join(dir, "control.sock"), func(context.Context) error { return nil }, nil, Operations{
@@ -309,7 +375,7 @@ func TestLauncherRejectsReconcileWhenOperationReferenceCannotBePublished(t *test
 		t.Fatal(err)
 	}
 	defer server.Close()
-	if _, err := RequestReconcileAsync(context.Background(), server.listener.Addr().String()); err == nil || !strings.Contains(err.Error(), "publish setup operation reference") {
+	if _, err := RequestReconcileAsync(context.Background(), server.listener.Addr().String()); err == nil || !strings.Contains(err.Error(), "publish config-operation reference") {
 		t.Fatalf("unpublishable operation reference error = %v", err)
 	}
 }

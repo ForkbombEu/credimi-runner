@@ -140,7 +140,6 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 				activities.NewStartIOSRecordingActivity(),
 				activities.NewStopRecordingActivity(),
 				activities.NewStopIOSRecordingActivity(),
-				// activities.NewUnlockEmulatorActivity(),
 				activities.NewListInstalledAppsActivity(),
 				activities.NewDisableAndroidPlayStoreActivity(),
 				activities.NewCleanupDeviceActivity(),
