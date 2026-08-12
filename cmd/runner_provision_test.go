@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -753,7 +754,7 @@ func waitForCondition(t *testing.T, condition func() bool) {
 	t.Fatal("condition was not met before timeout")
 }
 
-func TestProvisionInternalRuntimeReportsMissingSDKManager(t *testing.T) {
+func TestProvisionInternalRuntimeUsesAuthoritativeEmulatorReadiness(t *testing.T) {
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()
 	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
@@ -762,16 +763,27 @@ func TestProvisionInternalRuntimeReportsMissingSDKManager(t *testing.T) {
 	cfg.Server.APIListen, cfg.Server.DashboardListen = "127.0.0.1:8050", "127.0.0.1:8051"
 	cfg.Storage.StateDir, cfg.Storage.ArtifactRetention = filepath.Join(dir, "state"), runnerconfig.Duration(1)
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "runner", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone"}}}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/emulator", Name: "Emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, ABI: "x86_64", MemoryMB: 2048, Cores: 2, SystemImage: "system-images;android-35;google_apis;x86_64"}}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", t.TempDir())
-	previousEnsure := ensureAndroidCapabilities
-	ensureAndroidCapabilities = func(context.Context, string, bool, string) error { return errors.New("sdkmanager is unavailable") }
-	t.Cleanup(func() { ensureAndroidCapabilities = previousEnsure })
-	if err := provisionInternalRuntimeAt(context.Background(), dir, filepath.Join(dir, "sdk")); err == nil || !strings.Contains(err.Error(), "sdkmanager is unavailable") {
+	previousEnsure := ensureEmulatorRuntime
+	var gotRoot, gotAVDName string
+	ensureEmulatorRuntime = func(_ context.Context, got runnerconfig.Config, gotGOOS, root string, _ androidtools.EmulatorProgress) error {
+		gotRoot = root
+		if gotGOOS != "linux" {
+			t.Fatalf("GOOS = %q", gotGOOS)
+		}
+		gotAVDName = got.Devices[0].AndroidEmulator.AVDName
+		return errors.New("base AVD image is unavailable")
+	}
+	t.Cleanup(func() { ensureEmulatorRuntime = previousEnsure })
+	sdkRoot := filepath.Join(dir, "sdk")
+	if err := provisionInternalRuntimeAtForOS(context.Background(), dir, sdkRoot, "linux"); err == nil || !strings.Contains(err.Error(), "base AVD image is unavailable") {
 		t.Fatalf("provisioning error = %v", err)
+	}
+	if gotRoot != sdkRoot || gotAVDName != "credimi" {
+		t.Fatalf("emulator readiness input root=%q avd=%q", gotRoot, gotAVDName)
 	}
 }
 

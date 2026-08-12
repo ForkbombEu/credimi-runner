@@ -51,7 +51,7 @@ var writeComposeFileForOS = dashboardruntime.WriteComposeFileForOS
 
 var runInternalDashboardFunc = runDashboardOwned
 var runInternalServerFunc = func(cmd *cobra.Command, args []string) error { return serverCmd.RunE(cmd, args) }
-var ensureAndroidCapabilities = androidtools.EnsureCapabilities
+var ensureEmulatorRuntime = androidtools.EnsureEmulatorReadyAt
 
 var rootCmd = &cobra.Command{
 	Use:           "credimi-runner",
@@ -757,7 +757,7 @@ func provisionInternalRuntimeAtForOS(ctx context.Context, configDir, sdkRoot, go
 	if err := runnerplacement.ValidateDeviceTypes(deviceTypes(cfg), goos); err != nil {
 		return err
 	}
-	return androidtools.EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, ensureAndroidCapabilities)
+	return ensureEmulatorRuntime(ctx, cfg, goos, sdkRoot, nil)
 }
 
 func deviceTypes(cfg runnerconfig.Config) []runnerconfig.DeviceType {

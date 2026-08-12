@@ -17,15 +17,26 @@ type EmulatorProgress func(string)
 // emulators. It is idempotent and returns only after the executable, SDK
 // packages, AVD, and Credimi golden assets are all usable.
 func EnsureEmulatorReady(ctx context.Context, cfg runnerconfig.Config, goos string, progress EmulatorProgress) error {
+	return EnsureEmulatorReadyAt(ctx, cfg, goos, effectiveSDKRoot(cfg, goos), progress)
+}
+
+// EnsureEmulatorReadyAt is the explicit-SDK-root form used by the runner
+// entrypoint. The persistent SDK volume must be the same one used later by
+// avdctl and the emulator process.
+func EnsureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, progress EmulatorProgress) error {
+	sdkRoot = strings.TrimSpace(sdkRoot)
+	if sdkRoot == "" {
+		sdkRoot = effectiveSDKRoot(cfg, goos)
+	}
 	if !hasEnabledEmulator(cfg) {
-		return EnsureRuntimeCapabilities(ctx, cfg, goos)
+		return EnsureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, EnsureCapabilities)
 	}
 	emulator, err := firstEnabledEmulator(cfg)
 	if err != nil {
 		return err
 	}
 	progressStage(progress, "Checking Android SDK")
-	if err := ensureRuntimeCapabilitiesWithoutAVD(ctx, cfg, goos); err != nil {
+	if err := ensureRuntimeCapabilitiesWithoutAVDAt(ctx, cfg, goos, sdkRoot); err != nil {
 		return err
 	}
 	avdHome := effectiveAVDHome(cfg)
@@ -51,10 +62,10 @@ func EnsureEmulatorReady(ctx context.Context, cfg runnerconfig.Config, goos stri
 	if err != nil {
 		return err
 	}
-	if !sdkPackageInstalled(effectiveSDKRoot(cfg, goos), baseSystemImage) {
+	if !sdkPackageInstalled(sdkRoot, baseSystemImage) {
 		progressStage(progress, "Installing Android system image")
 	}
-	if err := EnsureCapabilities(ctx, effectiveSDKRoot(cfg, goos), true, baseSystemImage); err != nil {
+	if err := EnsureCapabilities(ctx, sdkRoot, true, baseSystemImage); err != nil {
 		return fmt.Errorf("provision Android system image required by AVD %q: %w", baseName, err)
 	}
 	goldenRoot, goldenLeaf := effectiveGoldenPath(emulator.AndroidEmulator.GoldenSource, baseName)
@@ -68,11 +79,11 @@ func EnsureEmulatorReady(ctx context.Context, cfg runnerconfig.Config, goos stri
 		return fmt.Errorf("Credimi golden assets %q are not present under %s", goldenLeaf, goldenRoot)
 	}
 	progressStage(progress, "Verifying emulator runtime")
-	return verifyRuntimeCapabilities(effectiveSDKRoot(cfg, goos), goos, true, baseSystemImage)
+	return verifyRuntimeCapabilities(sdkRoot, goos, true, baseSystemImage)
 }
 
-func ensureRuntimeCapabilitiesWithoutAVD(ctx context.Context, cfg runnerconfig.Config, goos string) error {
-	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, "", EnsureCapabilities, false)
+func ensureRuntimeCapabilitiesWithoutAVDAt(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string) error {
+	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, EnsureCapabilities, false)
 }
 
 func hasEnabledEmulator(cfg runnerconfig.Config) bool {
