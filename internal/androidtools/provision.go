@@ -180,7 +180,10 @@ func verifyRuntimeCapabilities(sdkRoot, goos string, needsEmulator bool, systemI
 		return nil
 	}
 	if !emulatorAvailable(sdkRoot) {
-		return errors.New("Android emulator executable is unavailable; install the emulator package in the persistent or bootstrap SDK")
+		return errors.New("Android emulator executable is unavailable in the persistent SDK")
+	}
+	if !platformToolsAvailable(sdkRoot) {
+		return errors.New("Android platform-tools are unavailable in the persistent SDK")
 	}
 	if _, err := exec.LookPath("emulator"); err != nil {
 		return fmt.Errorf("Android emulator is not resolvable from PATH: %w", err)
@@ -403,11 +406,10 @@ func sdkPackageInstalled(sdkRoot, packageName string) bool {
 }
 
 func platformToolsAvailable(sdkRoot string) bool {
-	if fileExists(filepath.Join(sdkRoot, "platform-tools", "adb")) {
-		return true
-	}
-	bootstrap := os.Getenv("ANDROID_SDK_BOOTSTRAP")
-	return bootstrap != "" && fileExists(filepath.Join(bootstrap, "platform-tools", "adb"))
+	// An emulator validates ANDROID_SDK_ROOT itself. It therefore needs the
+	// platform-tools directory in that exact mutable SDK, not just an adb
+	// fallback from the immutable bootstrap image.
+	return fileExists(filepath.Join(sdkRoot, "platform-tools", "adb"))
 }
 
 func ensureSDKLicenses(sdkRoot string) error {

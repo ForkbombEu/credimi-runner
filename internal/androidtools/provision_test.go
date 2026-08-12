@@ -159,7 +159,7 @@ func TestEnsureSDKLicensesHandlesMissingBootstrapAndExistingFiles(t *testing.T) 
 	}
 }
 
-func TestAndroidToolsCanUseBootstrapPlatformToolsButNotEmulator(t *testing.T) {
+func TestAndroidToolsRequirePersistentPlatformToolsAndEmulator(t *testing.T) {
 	root := t.TempDir()
 	bootstrap := t.TempDir()
 	for _, relative := range []string{"platform-tools/adb", "emulator/emulator"} {
@@ -172,8 +172,8 @@ func TestAndroidToolsCanUseBootstrapPlatformToolsButNotEmulator(t *testing.T) {
 		}
 	}
 	t.Setenv("ANDROID_SDK_BOOTSTRAP", bootstrap)
-	if !platformToolsAvailable(root) {
-		t.Fatal("bootstrap platform-tools were not discovered")
+	if platformToolsAvailable(root) {
+		t.Fatal("bootstrap platform-tools were accepted as persistent runtime tools")
 	}
 	if emulatorAvailable(root) {
 		t.Fatal("bootstrap emulator was accepted as a persistent runtime emulator")
@@ -194,6 +194,16 @@ func TestVerifyRuntimeCapabilitiesExplainsEachMissingEmulatorRequirement(t *test
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(emulator, nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRuntimeCapabilities(root, "darwin", true, image); err == nil || !strings.Contains(err.Error(), "platform-tools") {
+		t.Fatalf("missing platform-tools error = %v", err)
+	}
+	platformTools := filepath.Join(root, "platform-tools", "adb")
+	if err := os.MkdirAll(filepath.Dir(platformTools), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(platformTools, nil, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", t.TempDir())
@@ -262,14 +272,17 @@ func TestEnsureCapabilitiesEmulatorInstallsSystemImageOnce(t *testing.T) {
 	}
 }
 
-func TestEnsureCapabilitiesInstallsPersistentEmulatorDespiteBootstrap(t *testing.T) {
+func TestEnsureCapabilitiesInstallsPersistentToolsDespiteBootstrap(t *testing.T) {
 	root, bootstrap := t.TempDir(), t.TempDir()
 	installFakeSDKManager(t)
-	if err := os.MkdirAll(filepath.Join(bootstrap, "emulator"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bootstrap, "emulator", "emulator"), nil, 0o755); err != nil {
-		t.Fatal(err)
+	for _, relative := range []string{"emulator/emulator", "platform-tools/adb"} {
+		path := filepath.Join(bootstrap, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("ANDROID_SDK_BOOTSTRAP", bootstrap)
 	var got []string
@@ -279,8 +292,11 @@ func TestEnsureCapabilitiesInstallsPersistentEmulatorDespiteBootstrap(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(got, " "), "emulator") {
-		t.Fatalf("bootstrap emulator incorrectly suppressed persistent installation: %q", got)
+	joined := strings.Join(got, " ")
+	for _, packageName := range []string{"platform-tools", "emulator"} {
+		if !strings.Contains(joined, packageName) {
+			t.Fatalf("bootstrap %s incorrectly suppressed persistent installation: %q", packageName, got)
+		}
 	}
 }
 
@@ -658,6 +674,7 @@ func TestEnsureRuntimeCapabilitiesTreatsRedroidAsAndroidCapability(t *testing.T)
 
 func TestVerifyRuntimeCapabilitiesRequiresUsableEmulatorTooling(t *testing.T) {
 	root := t.TempDir()
+	installPersistentPlatformTools(t, root)
 	if err := os.MkdirAll(filepath.Join(root, "emulator"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -688,6 +705,7 @@ func TestVerifyRuntimeCapabilitiesRequiresUsableEmulatorTooling(t *testing.T) {
 
 func TestVerifyRuntimeCapabilitiesRejectsMissingImageAndLicenses(t *testing.T) {
 	root := t.TempDir()
+	installPersistentPlatformTools(t, root)
 	if err := os.MkdirAll(filepath.Join(root, "emulator", "emulator"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -719,6 +737,7 @@ func TestVerifyRuntimeCapabilitiesRejectsMissingImageAndLicenses(t *testing.T) {
 func TestEnsureRuntimeCapabilitiesVerifiesDefaultEmulatorPath(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
+	installPersistentPlatformTools(t, root)
 	if err := os.MkdirAll(filepath.Join(root, "emulator"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -754,6 +773,17 @@ func TestEnsureRuntimeCapabilitiesVerifiesDefaultEmulatorPath(t *testing.T) {
 	}}
 	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", root, nil); err != nil {
 		t.Fatalf("default emulator capability verification failed: %v", err)
+	}
+}
+
+func installPersistentPlatformTools(t *testing.T, sdkRoot string) {
+	t.Helper()
+	adb := filepath.Join(sdkRoot, "platform-tools", "adb")
+	if err := os.MkdirAll(filepath.Dir(adb), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(adb, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
 	}
 }
 
