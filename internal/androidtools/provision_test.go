@@ -77,6 +77,17 @@ func TestEnsureCapabilitiesPhysicalOnlySkipsEmulator(t *testing.T) {
 	}
 }
 
+func TestEnsureCapabilitiesWithRunnerReportsPackageInstallFailure(t *testing.T) {
+	installFakeSDKManager(t)
+	root := t.TempDir()
+	err := EnsureCapabilitiesWithRunner(context.Background(), root, false, "", func(context.Context, string, ...string) error {
+		return errors.New("sdkmanager failed")
+	})
+	if err == nil || !strings.Contains(err.Error(), "install Android SDK packages") || !strings.Contains(err.Error(), "sdkmanager failed") {
+		t.Fatalf("package install error = %v", err)
+	}
+}
+
 func TestEnsureCapabilitiesEmulatorInstallsSystemImageOnce(t *testing.T) {
 	installFakeSDKManager(t)
 	root := t.TempDir()
@@ -157,6 +168,32 @@ func TestEnsureAVDIsIdempotentAndUsesPersistentHome(t *testing.T) {
 	}
 	if len(calls) != 1 {
 		t.Fatalf("existing AVD was recreated: %#v", calls)
+	}
+}
+
+func TestEnsureAVDReportsInvalidConfigurationAndMissingManager(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		name        string
+		avdName     string
+		systemImage string
+		want        string
+	}{
+		{name: "missing name", systemImage: "system-images;android-35;google_apis;x86_64", want: "AVD name and system image are required"},
+		{name: "missing image", avdName: "credimi", want: "AVD name and system image are required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := EnsureAVD(context.Background(), root, t.TempDir(), tc.avdName, tc.systemImage, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("EnsureAVD() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Setenv("PATH", t.TempDir())
+	err := EnsureAVD(context.Background(), root, t.TempDir(), "credimi", "system-images;android-35;google_apis;x86_64", nil)
+	if err == nil || !strings.Contains(err.Error(), "avdmanager is unavailable") {
+		t.Fatalf("missing avdmanager error = %v", err)
 	}
 }
 
@@ -273,6 +310,12 @@ func TestConfigureStableEnvironmentIncludesRunnerOwnedTools(t *testing.T) {
 		if !strings.Contains(path, filepath.Join(root, part)) {
 			t.Fatalf("PATH %q does not include %s", path, filepath.Join(root, part))
 		}
+	}
+}
+
+func TestConfigureStableEnvironmentRejectsEmptySDKRoot(t *testing.T) {
+	if err := ConfigureStableEnvironmentWithAVD("", t.TempDir()); err == nil || !strings.Contains(err.Error(), "SDK root is required") {
+		t.Fatalf("empty stable environment error = %v", err)
 	}
 }
 
@@ -413,6 +456,98 @@ func TestEnsureRuntimeCapabilitiesTreatsRedroidAsAndroidCapability(t *testing.T)
 	}
 	if !called {
 		t.Fatal("redroid did not request required local Android tooling")
+	}
+}
+
+func TestVerifyRuntimeCapabilitiesRequiresUsableEmulatorTooling(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "emulator"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "emulator", "emulator"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "licenses"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "system-images", "android-35", "google_apis", "x86_64"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Join(root, "emulator"))
+	if err := verifyRuntimeCapabilities(root, "darwin", true, ""); err != nil {
+		t.Fatalf("complete emulator tooling rejected: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(root, "emulator", "emulator")); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRuntimeCapabilities(root, "darwin", true, ""); err == nil || !strings.Contains(err.Error(), "executable is unavailable") {
+		t.Fatalf("missing emulator error = %v", err)
+	}
+}
+
+func TestVerifyRuntimeCapabilitiesRejectsMissingImageAndLicenses(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "emulator", "emulator"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the directory with the executable expected by LookPath.
+	if err := os.RemoveAll(filepath.Join(root, "emulator", "emulator")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "emulator", "emulator"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "licenses"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Join(root, "emulator"))
+	if err := verifyRuntimeCapabilities(root, "darwin", true, "system-images;android-35;google_apis;x86_64"); err == nil || !strings.Contains(err.Error(), "system image") {
+		t.Fatalf("missing system image error = %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "licenses")); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRuntimeCapabilities(root, "darwin", true, ""); err == nil || !strings.Contains(err.Error(), "licenses") {
+		t.Fatalf("missing licenses error = %v", err)
+	}
+}
+
+func TestEnsureRuntimeCapabilitiesVerifiesDefaultEmulatorPath(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "emulator"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "emulator", "emulator"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "licenses"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "system-images", "android-35", "google_apis", "x86_64"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(filepath.ListSeparator)+filepath.Join(root, "emulator"))
+	avdHome := t.TempDir()
+	if err := os.Mkdir(filepath.Join(avdHome, "credimi.avd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.ini"), []byte("path=credimi.avd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANDROID_AVD_HOME", avdHome)
+	cfg := runnerconfig.Bootstrap()
+	cfg.Storage.StateDir = t.TempDir()
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "runner/emulator", Name: "Emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", SystemImage: "system-images;android-35;google_apis;x86_64"},
+	}}
+	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", root, nil); err != nil {
+		t.Fatalf("default emulator capability verification failed: %v", err)
 	}
 }
 

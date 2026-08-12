@@ -337,5 +337,41 @@ func runtimeTopologyChanged(oldValues, newValues Values, goos string) bool {
 	if oldErr != nil || newErr != nil {
 		return (oldErr == nil) != (newErr == nil)
 	}
-	return oldSpec != newSpec
+	return topologyProjection(oldSpec) != topologyProjection(newSpec)
+}
+
+// runnerTopologyProjection contains only values rendered into the runner
+// service topology. Device capability flags are deliberately excluded: the
+// unified Linux runner already exposes the stable capability surface needed
+// for a later emulator or device registration.
+type runnerTopology struct {
+	Image            string
+	PullPolicy       string
+	NetworkMode      string
+	UsesHostADB      bool
+	HasKVM           bool
+	StateVolume      string
+	ToolCacheVolume  string
+	SDKVolume        string
+	ADBKeysPath      string
+	HostAndroidDir   string
+	HostGoldenRoot   string
+	ContainerAVDHome string
+}
+
+func topologyProjection(spec sharedRunnerRuntime) runnerTopology {
+	return runnerTopology{
+		Image:            spec.Image,
+		PullPolicy:       spec.PullPolicy,
+		NetworkMode:      spec.NetworkMode,
+		UsesHostADB:      spec.UsesHostADB,
+		HasKVM:           spec.HasKVM,
+		StateVolume:      spec.StateVolume,
+		ToolCacheVolume:  spec.ToolCacheVolume,
+		SDKVolume:        spec.SDKVolume,
+		ADBKeysPath:      spec.ADBKeysPath,
+		HostAndroidDir:   spec.HostAndroidDir,
+		HostGoldenRoot:   spec.HostGoldenRoot,
+		ContainerAVDHome: spec.ContainerAVDHome,
+	}
 }

@@ -19,6 +19,7 @@ var (
 	ErrDeviceOffline          = errors.New("configured device offline")
 	ErrDeviceUnauthorized     = errors.New("configured device unauthorized")
 	ErrDeviceMismatch         = errors.New("configured device mismatch")
+	ErrADBUnavailable         = errors.New("ADB device inventory unavailable")
 )
 
 type RunnerReadiness struct {
@@ -67,13 +68,13 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 				}
 				state, ok := ready.Devices[device.ID]
 				if !ok {
-					return ready, ErrDeviceMissing
+					return ready, fmt.Errorf("%w: %s", ErrDeviceMissing, device.ID)
 				}
 				if device.Serial != "" && state.Serial != "" && device.Serial != state.Serial {
-					return ready, ErrDeviceMismatch
+					return ready, fmt.Errorf("%w: %s (configured %s, runner reported %s)", ErrDeviceMismatch, device.ID, device.Serial, state.Serial)
 				}
 				if err := readinessStateError(state.State); err != nil {
-					return ready, err
+					return ready, fmt.Errorf("%w: %s", err, device.ID)
 				}
 			}
 			if response.StatusCode != http.StatusOK {

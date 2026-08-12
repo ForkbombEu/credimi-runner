@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +63,71 @@ func TestReadinessFailureExplainsUnauthorizedDevice(t *testing.T) {
 	}
 	if !errors.Is(err, ErrDeviceUnauthorized) {
 		t.Fatalf("ReadinessFailure() does not retain ErrDeviceUnauthorized")
+	}
+}
+
+func TestReadinessFailureExplainsADBUnavailable(t *testing.T) {
+	err := ReadinessFailure(dashboardruntime.Values{"CREDIMI_DEVICE_COUNT": "1"}, "127.0.0.1:8050", ErrADBUnavailable, context.DeadlineExceeded)
+	if !strings.Contains(err.Error(), "ADB is unavailable") || !errors.Is(err, ErrADBUnavailable) {
+		t.Fatalf("ADB readiness error = %v", err)
+	}
+}
+
+func TestWaitForRunnerReadyReportsMissingPhoneBeforeListenerDeadline(t *testing.T) {
+	adbDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adbDir, "adb"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", adbDir)
+	previous := hostADBDevices
+	hostADBDevices = func(context.Context) (string, error) {
+		return "List of devices attached\n", nil
+	}
+	t.Cleanup(func() { hostADBDevices = previous })
+
+	started := time.Now()
+	err := waitForRunnerReady(context.Background(), &http.Client{}, dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":       "acme/runner",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "acme/runner/phone",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "usb",
+		"CREDIMI_DEVICE_1_SERIAL": "usb-1",
+		"RUNNER_HOST":             "127.0.0.1",
+		"RUNNER_PORT":             "1",
+	}, nil)
+	if !errors.Is(err, ErrDeviceMissing) || !strings.Contains(err.Error(), "not available") || !strings.Contains(err.Error(), "acme/runner/phone") || !strings.Contains(err.Error(), "usb-1") {
+		t.Fatalf("missing phone readiness error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("missing phone took too long to report: %s", elapsed)
+	}
+}
+
+func TestWaitForRunnerReadyReportsADBInventoryFailure(t *testing.T) {
+	adbDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adbDir, "adb"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", adbDir)
+	previous := hostADBDevices
+	hostADBDevices = func(context.Context) (string, error) {
+		return "", errors.New("adb server unavailable")
+	}
+	t.Cleanup(func() { hostADBDevices = previous })
+
+	err := waitForRunnerReady(context.Background(), &http.Client{}, dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":       "acme/runner",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "acme/runner/phone",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "usb",
+		"CREDIMI_DEVICE_1_SERIAL": "usb-1",
+		"RUNNER_HOST":             "127.0.0.1",
+		"RUNNER_PORT":             "1",
+	}, nil)
+	if err == nil || !errors.Is(err, ErrADBUnavailable) || !strings.Contains(err.Error(), "ADB is unavailable") || !strings.Contains(err.Error(), "adb server unavailable") {
+		t.Fatalf("ADB inventory readiness error = %v", err)
 	}
 }
 
@@ -325,6 +392,45 @@ func TestRuntimeLifecycleWaitsForQuickTunnelURL(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleQuickTunnelUsesManagerStateAndReportsMissingResolver(t *testing.T) {
+	manager := &lifecycleManager{status: dashboardruntime.RuntimeStatus{PublicURL: "https://current.trycloudflare.com"}}
+	lifecycle := RuntimeLifecycle{Manager: manager, Values: dashboardruntime.Values{"CREDIMI_SERVICE_MODE": "auto"}}
+	url, _, err := lifecycle.registrationEndpoint(context.Background())
+	if err != nil || url != "https://current.trycloudflare.com" {
+		t.Fatalf("manager quick tunnel endpoint = %q, err=%v", url, err)
+	}
+
+	if _, _, err := (RuntimeLifecycle{Values: dashboardruntime.Values{"CREDIMI_SERVICE_MODE": "auto"}}).registrationEndpoint(context.Background()); err == nil || !strings.Contains(err.Error(), "discovery is unavailable") {
+		t.Fatalf("missing quick tunnel resolver error = %v", err)
+	}
+}
+
+func TestRuntimeLifecycleVerifiesQuickTunnelBeforeReturningEndpoint(t *testing.T) {
+	attempts := 0
+	verified := 0
+	lifecycle := RuntimeLifecycle{
+		Values: dashboardruntime.Values{"CREDIMI_SERVICE_MODE": "auto", "CREDIMI_RUNNER_ID": "acme/runner"},
+		QuickTunnelURL: func(context.Context) (string, error) {
+			attempts++
+			return "https://same.trycloudflare.com", nil
+		},
+		VerifyPublicURL: func(context.Context, string) error {
+			verified++
+			if verified == 1 {
+				return errors.New("public proxy is still starting")
+			}
+			return nil
+		},
+	}
+	url, _, err := lifecycle.registrationEndpoint(context.Background())
+	if err != nil || url != "https://same.trycloudflare.com" {
+		t.Fatalf("verified quick tunnel endpoint = %q, err=%v", url, err)
+	}
+	if attempts != 2 || verified != 2 {
+		t.Fatalf("quick tunnel verification attempts=%d verified=%d", attempts, verified)
+	}
+}
+
 func TestRuntimeLifecycleRegisterRunningWaitsForRunnerReadiness(t *testing.T) {
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -429,6 +535,97 @@ func TestRuntimeLifecycleRunnerRegistrationFailureStopsDeviceRegistration(t *tes
 	}
 }
 
+func TestRuntimeLifecycleRegisterReportsInvalidAndFailedDeviceRegistration(t *testing.T) {
+	baseValues := dashboardruntime.Values{
+		"CREDIMI_USER_API_KEY":        "key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_SERVICE_MODE":        "manual",
+		"RUNNER_PUBLIC_URL":           "https://runner.example",
+		"CREDIMI_DEVICE_COUNT":        "1",
+		"CREDIMI_DEVICE_1_NAME":       "Phone",
+		"CREDIMI_DEVICE_1_TYPE":       "android_phone",
+		"CREDIMI_DEVICE_1_MODE":       "usb",
+		"CREDIMI_DEVICE_1_SERIAL":     "usb-1",
+	}
+	t.Run("invalid ID", func(t *testing.T) {
+		var paths []string
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer api.Close()
+		values := dashboardruntime.Values{}
+		for key, value := range baseValues {
+			values[key] = value
+		}
+		values["CREDIMI_URL"] = api.URL
+		if err := (RuntimeLifecycle{Values: values, GOOS: "darwin", WaitReady: func(context.Context, dashboardruntime.Values) error { return nil }}).Register(context.Background()); err == nil || !strings.Contains(err.Error(), "CREDIMI_DEVICE_1_ID is required") {
+			t.Fatalf("invalid device ID error = %v", err)
+		}
+		if got, want := strings.Join(paths, ","), "/api/mobile-runner"; got != want {
+			t.Fatalf("invalid ID calls = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("device API failure", func(t *testing.T) {
+		var paths []string
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			paths = append(paths, r.URL.Path)
+			if r.URL.Path == "/api/mobile-device" {
+				http.Error(w, "device unavailable", http.StatusBadGateway)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer api.Close()
+		values := dashboardruntime.Values{}
+		for key, value := range baseValues {
+			values[key] = value
+		}
+		values["CREDIMI_URL"] = api.URL
+		values["CREDIMI_DEVICE_1_ID"] = "acme/runner/phone"
+		err := (RuntimeLifecycle{Values: values, GOOS: "darwin", WaitReady: func(context.Context, dashboardruntime.Values) error { return nil }}).Register(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "register device") || !strings.Contains(err.Error(), "device unavailable") {
+			t.Fatalf("device registration error = %v", err)
+		}
+		if got, want := strings.Join(paths, ","), "/api/mobile-runner,/api/mobile-device"; got != want {
+			t.Fatalf("device failure calls = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestRuntimeLifecycleRegisterReportsDeviceReconcileFailure(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-device/reconcile" {
+			http.Error(w, "reconcile unavailable", http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+	values := dashboardruntime.Values{
+		"CREDIMI_URL":                 api.URL,
+		"CREDIMI_USER_API_KEY":        "key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_SERVICE_MODE":        "manual",
+		"RUNNER_PUBLIC_URL":           "https://runner.example",
+		"CREDIMI_DEVICE_COUNT":        "1",
+		"CREDIMI_DEVICE_1_ID":         "acme/runner/phone",
+		"CREDIMI_DEVICE_1_NAME":       "Phone",
+		"CREDIMI_DEVICE_1_TYPE":       "android_phone",
+		"CREDIMI_DEVICE_1_MODE":       "usb",
+		"CREDIMI_DEVICE_1_SERIAL":     "usb-1",
+	}
+	err := (RuntimeLifecycle{Values: values, GOOS: "darwin", WaitReady: func(context.Context, dashboardruntime.Values) error { return nil }}).Register(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "reconcile configured devices") || !strings.Contains(err.Error(), "reconcile unavailable") {
+		t.Fatalf("device reconcile error = %v", err)
+	}
+}
+
 func TestWaitForRunnerReadyIgnoresDeferredManagedDevice(t *testing.T) {
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -528,7 +725,7 @@ func TestWaitForRunnerReadyReportsMissingPhysicalDeviceImmediately(t *testing.T)
 		"RUNNER_HOST":             host,
 		"RUNNER_PORT":             port,
 	}, nil)
-	if !errors.Is(err, ErrDeviceMissing) || !strings.Contains(err.Error(), "configured device is not available") {
+	if !errors.Is(err, ErrDeviceMissing) || !strings.Contains(err.Error(), "configured device is not available") || !strings.Contains(err.Error(), "runner-1/phone") {
 		t.Fatalf("missing physical device error = %v", err)
 	}
 }

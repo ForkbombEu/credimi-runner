@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -27,6 +28,36 @@ func TestValidateReadinessRequiresExactConfiguredIdentity(t *testing.T) {
 	_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_SERIAL": "serial-1", "CREDIMI_DEVICE_1_MODE": "usb"})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateReadinessExplainsMissingAndMismatchedDevice(t *testing.T) {
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":       "runner-1",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "runner-1/device-1",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "usb",
+		"CREDIMI_DEVICE_1_SERIAL": "serial-1",
+	}
+	for name, body := range map[string]string{
+		"missing":  `{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{}}`,
+		"mismatch": `{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/device-1":{"serial":"serial-2","state":"device"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+			defer server.Close()
+			_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, values)
+			if err == nil || !strings.Contains(err.Error(), "runner-1/device-1") {
+				t.Fatalf("readiness error = %v", err)
+			}
+			if name == "missing" && !errors.Is(err, ErrDeviceMissing) {
+				t.Fatalf("missing error = %v", err)
+			}
+			if name == "mismatch" && !errors.Is(err, ErrDeviceMismatch) {
+				t.Fatalf("mismatch error = %v", err)
+			}
+		})
 	}
 }
 

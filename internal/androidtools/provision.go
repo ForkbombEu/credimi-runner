@@ -5,6 +5,7 @@ package androidtools
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,7 @@ func EnsureRuntimeCapabilities(ctx context.Context, cfg runnerconfig.Config, goo
 }
 
 func EnsureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer) error {
+	useDefaultEnsurer := ensure == nil
 	if ensure == nil {
 		ensure = EnsureCapabilities
 	}
@@ -66,6 +68,11 @@ func EnsureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Confi
 	}
 	if err := ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome); err != nil {
 		return err
+	}
+	if useDefaultEnsurer {
+		if err := verifyRuntimeCapabilities(sdkRoot, goos, needsEmulator, systemImage); err != nil {
+			return err
+		}
 	}
 	if !needsEmulator {
 		return nil
@@ -137,7 +144,7 @@ func EnsureCapabilitiesWithRunner(ctx context.Context, sdkRoot string, needsEmul
 		packages = append(packages, "platform-tools")
 	}
 	if needsEmulator {
-		if _, err := os.Stat(filepath.Join(sdkRoot, "emulator", "emulator")); err != nil {
+		if !emulatorAvailable(sdkRoot) {
 			packages = append(packages, "emulator")
 		}
 		if image := strings.TrimSpace(systemImage); image != "" && !sdkPackageInstalled(sdkRoot, image) {
@@ -150,6 +157,39 @@ func EnsureCapabilitiesWithRunner(ctx context.Context, sdkRoot string, needsEmul
 	args := append([]string{"--sdk_root=" + sdkRoot}, packages...)
 	if err := run(ctx, manager, args...); err != nil {
 		return fmt.Errorf("install Android SDK packages %v: %w", packages, err)
+	}
+	return nil
+}
+
+func emulatorAvailable(sdkRoot string) bool {
+	if fileExists(filepath.Join(sdkRoot, "emulator", "emulator")) {
+		return true
+	}
+	bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP"))
+	return bootstrap != "" && fileExists(filepath.Join(bootstrap, "emulator", "emulator"))
+}
+
+func verifyRuntimeCapabilities(sdkRoot, goos string, needsEmulator bool, systemImage string) error {
+	if !needsEmulator {
+		return nil
+	}
+	if !emulatorAvailable(sdkRoot) {
+		return errors.New("Android emulator executable is unavailable; install the emulator package in the persistent or bootstrap SDK")
+	}
+	if _, err := exec.LookPath("emulator"); err != nil {
+		return fmt.Errorf("Android emulator is not resolvable from PATH: %w", err)
+	}
+	if strings.TrimSpace(systemImage) != "" && !sdkPackageInstalled(sdkRoot, systemImage) {
+		return fmt.Errorf("Android system image %q is unavailable under %s", systemImage, sdkRoot)
+	}
+	bootstrap := strings.TrimSpace(os.Getenv("ANDROID_SDK_BOOTSTRAP"))
+	if !fileExists(filepath.Join(sdkRoot, "licenses")) && !fileExists(filepath.Join(bootstrap, "licenses")) {
+		return errors.New("Android SDK licenses are unavailable")
+	}
+	if goos == "linux" {
+		if _, err := os.Stat("/dev/kvm"); err != nil {
+			return fmt.Errorf("/dev/kvm is required for Android emulator targets: %w", err)
+		}
 	}
 	return nil
 }

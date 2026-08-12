@@ -95,7 +95,7 @@ func TestRuntimeControlLoopKeepsDashboardAliveWhileTogglingWorkers(t *testing.T)
 	if err := writeRuntimeCommand(dir, "stop"); err != nil {
 		t.Fatal(err)
 	}
-	waitForRuntimeControl(t, filepath.Join(dir, "runtime-paused"), true)
+	waitForRuntimeState(t, dir, "stopped")
 	pauses, _ := lifecycle.counts()
 	if store.stopCount() != 1 || pauses != 1 {
 		t.Fatalf("stop state = %#v %#v", store, lifecycle)
@@ -103,7 +103,7 @@ func TestRuntimeControlLoopKeepsDashboardAliveWhileTogglingWorkers(t *testing.T)
 	if err := writeRuntimeCommand(dir, "start"); err != nil {
 		t.Fatal(err)
 	}
-	waitForRuntimeControl(t, filepath.Join(dir, "runtime-paused"), false)
+	waitForRuntimeState(t, dir, "running")
 	_, resumes := lifecycle.counts()
 	if server.startCount() != 1 || resumes != 1 {
 		t.Fatalf("start state = %#v %#v", server, lifecycle)
@@ -120,18 +120,6 @@ func TestRuntimeControlLoopKeepsDashboardAliveWhileTogglingWorkers(t *testing.T)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "runtime-control")); !os.IsNotExist(err) {
 		t.Fatalf("runtime control request was not consumed: %v", err)
-	}
-}
-
-func TestConfiguredRuntimeStartupWaitsForSetupRecovery(t *testing.T) {
-	if shouldStartConfiguredRuntime(false, false) {
-		t.Fatal("unconfigured runner entered normal startup")
-	}
-	if shouldStartConfiguredRuntime(true, true) {
-		t.Fatal("setup-pending runner entered normal startup")
-	}
-	if !shouldStartConfiguredRuntime(true, false) {
-		t.Fatal("configured runner skipped normal startup")
 	}
 }
 
@@ -163,6 +151,37 @@ func TestRuntimeControlLoopStartsSetupRuntimeInOrder(t *testing.T) {
 	}
 	if got, want := strings.Join(ordered, ","), "workers,resume,heartbeat"; got != want {
 		t.Fatalf("setup runtime order = %q, want %q", got, want)
+	}
+}
+
+func TestRuntimeControlLoopStartsRegisteredRuntimeInOrder(t *testing.T) {
+	dir := t.TempDir()
+	events := make(chan string, 3)
+	server := orderedRuntimeControlServerFake{events: events}
+	lifecycle := orderedRuntimeControlLifecycleFake{events: events}
+	store := &runtimeControlStoreFake{}
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := startRuntimeControlLoop(ctx, dir, &server, &lifecycle, store, nil)
+	t.Cleanup(func() {
+		cancel()
+		stop()
+	})
+
+	if err := os.WriteFile(filepath.Join(dir, "runtime-control"), []byte("registration-ready\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForRuntimeControl(t, filepath.Join(dir, "runtime-state"), true)
+	ordered := make([]string, 0, 3)
+	for range 3 {
+		select {
+		case event := <-events:
+			ordered = append(ordered, event)
+		case <-time.After(time.Second):
+			t.Fatalf("registered runtime order incomplete: %v", ordered)
+		}
+	}
+	if got, want := strings.Join(ordered, ","), "workers,resume,heartbeat"; got != want {
+		t.Fatalf("registered runtime order = %q, want %q", got, want)
 	}
 }
 

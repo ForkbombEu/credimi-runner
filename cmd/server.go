@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
@@ -103,8 +102,6 @@ var serverCmd = &cobra.Command{
 		srv := server.NewRunnerService(store, instance)
 		lifecycleCfg := server.LoadRunnerLifecycleConfig(instance)
 		lifecycleClient := server.NewRunnerLifecycleClient(lifecycleCfg, http.DefaultClient, store)
-		configured := configDir != "" && fileExists(filepath.Join(configDir, "config.toml"))
-		setupPending := configDir != "" && fileExists(filepath.Join(configDir, "setup-pending"))
 		heartbeatCtx, stopHeartbeat := context.WithCancel(serveCtx)
 		defer stopHeartbeat()
 		var heartbeatOnce sync.Once
@@ -145,35 +142,11 @@ var serverCmd = &cobra.Command{
 		}()
 		serverSignalReadyHook()
 
-		if shouldStartConfiguredRuntime(configured, setupPending) {
-			if err := srv.StartExistingWorkers(serveCtx); err != nil {
-				serveSpan.RecordError(err)
-				serveSpan.SetStatus(codes.Error, "start existing workers failed")
-				cluelog.Printf(serveCtx, "Warning: failed to start some existing workers: %v", err)
-				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to start existing workers", err)
-			}
-
-			// `serve` may be started directly by Compose, Coolify, or the CLI rather
-			// than through the dashboard lifecycle controller. Ensure every indexed
-			// child exists before the first heartbeat reports its state to Credimi.
-			if err := registerConfiguredDevices(serveCtx); err != nil {
-				cluelog.Printf(serveCtx, "Warning: failed to register configured devices: %v", err)
-				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to register configured devices", err)
-			}
-			if err := lifecycleClient.Resume(serveCtx, "runner_startup"); err != nil {
-				cluelog.Printf(serveCtx, "Warning: failed to send runner lifecycle resume: %v", err)
-				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send runner lifecycle resume", err)
-			}
-			_ = writeRuntimeState(configDir, "running")
-			// Do not leave a newly started runner and its devices offline until the
-			// first periodic tick (normally 30 seconds). Resume records host state;
-			// this immediate heartbeat records the per-device readiness inventory.
-			if err := lifecycleClient.Heartbeat(serveCtx); err != nil {
-				cluelog.Printf(serveCtx, "Warning: failed to send initial runner heartbeat: %v", err)
-				observability.Error(serveCtx, "credimi-runner.lifecycle", "failed to send initial runner heartbeat", err)
-			}
-			startHeartbeatLoop()
-		}
+		// The Dashboard is the sole registration owner. It verifies the runner,
+		// registers the runner and devices, then writes a runtime-control command
+		// to start execution. Starting workers or sending lifecycle calls here
+		// would race that registration and can advertise a runner before Credimi
+		// knows about it.
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigc)
@@ -228,10 +201,6 @@ var serverCmd = &cobra.Command{
 	},
 }
 
-func shouldStartConfiguredRuntime(configured, setupPending bool) bool {
-	return configured && !setupPending
-}
-
 func startRuntimeControlLoop(ctx context.Context, configDir string, srv interface {
 	StartExistingWorkers(context.Context) error
 }, lifecycle interface {
@@ -254,7 +223,7 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 				}
 				_ = os.Remove(filepath.Join(configDir, "runtime-control"))
 				switch strings.TrimSpace(string(raw)) {
-				case "setup-ready":
+				case "setup-ready", "registration-ready":
 					if err := srv.StartExistingWorkers(controlCtx); err != nil {
 						_ = writeRuntimeState(configDir, "failed: "+err.Error())
 						continue
@@ -274,15 +243,17 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 				case "stop":
 					store.StopAll()
 					_ = lifecycle.Pause(controlCtx, "dashboard_stop")
-					_ = os.WriteFile(filepath.Join(configDir, "runtime-paused"), []byte("paused\n"), 0o600)
-					_ = writeRuntimeState(configDir, "paused")
+					_ = writeRuntimeState(configDir, "stopped")
 				case "start":
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
 						if err := lifecycle.Resume(controlCtx, "dashboard_start"); err != nil {
 							_ = writeRuntimeState(configDir, "failed: "+err.Error())
 							continue
 						}
-						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
+						if err := lifecycle.Heartbeat(controlCtx); err != nil {
+							_ = writeRuntimeState(configDir, "failed: "+err.Error())
+							continue
+						}
 						_ = writeRuntimeState(configDir, "running")
 						if onRuntimeReady != nil {
 							onRuntimeReady()
@@ -299,7 +270,10 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 							_ = writeRuntimeState(configDir, "failed: "+err.Error())
 							continue
 						}
-						_ = os.Remove(filepath.Join(configDir, "runtime-paused"))
+						if err := lifecycle.Heartbeat(controlCtx); err != nil {
+							_ = writeRuntimeState(configDir, "failed: "+err.Error())
+							continue
+						}
 						_ = writeRuntimeState(configDir, "running")
 						if onRuntimeReady != nil {
 							onRuntimeReady()
@@ -344,35 +318,6 @@ func writeRuntimeState(configDir, state string) error {
 		return err
 	}
 	return os.Rename(temporaryPath, filepath.Join(configDir, "runtime-state"))
-}
-
-func registerConfiguredDevices(ctx context.Context) error {
-	config, err := dashboardruntime.RuntimeConfigFromEnvironment()
-	if err != nil {
-		return err
-	}
-	apiKey := config.Host["CREDIMI_USER_API_KEY"]
-	if apiKey == "" {
-		apiKey = config.Host["CREDIMI_INTERNAL_ADMIN_KEY"]
-	}
-	if apiKey == "" || config.Host["CREDIMI_URL"] == "" {
-		return fmt.Errorf("Credimi URL and API key are required to register devices")
-	}
-	client := &dashboardruntime.CredimiClient{BaseURL: config.Host["CREDIMI_URL"], APIKey: apiKey, HTTPClient: http.DefaultClient}
-	for _, device := range config.Devices {
-		if err := client.RegisterMobileDevice(ctx, dashboardruntime.RegisterDeviceRequest{
-			Organization: config.Host["CREDIMI_RUNNER_ORGANIZATION"],
-			RunnerID:     config.Host["CREDIMI_RUNNER_ID"],
-			DeviceID:     device.ID,
-			Name:         device.Name,
-			Description:  device.Description,
-			Type:         device.Type,
-			Serial:       device.Serial,
-		}); err != nil {
-			return fmt.Errorf("register device %q: %w", device.ID, err)
-		}
-	}
-	return nil
 }
 
 func setRunnerBootID() error {

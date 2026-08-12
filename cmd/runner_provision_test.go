@@ -24,6 +24,7 @@ type fakeContainerLauncherManager struct {
 	updated                  int
 	startErr                 error
 	configured               []dashboardruntime.Values
+	verifiedURLs             []string
 }
 
 func (m *fakeContainerLauncherManager) Start(context.Context) error {
@@ -57,6 +58,13 @@ func (m *fakeContainerLauncherManager) QuickTunnelURL(context.Context) (string, 
 	return "https://example.trycloudflare.com", nil
 }
 
+func (m *fakeContainerLauncherManager) VerifyPublicURL(_ context.Context, publicURL string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.verifiedURLs = append(m.verifiedURLs, publicURL)
+	return nil
+}
+
 func (m *fakeContainerLauncherManager) Status(context.Context) dashboardruntime.RuntimeStatus {
 	return dashboardruntime.RuntimeStatus{}
 }
@@ -79,6 +87,12 @@ func (m *fakeContainerLauncherManager) updateCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.updated
+}
+
+func (m *fakeContainerLauncherManager) verifiedCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.verifiedURLs)
 }
 
 func TestProvisionInternalRuntimeToleratesMissingOrEmptyConfig(t *testing.T) {
@@ -159,6 +173,118 @@ func TestRunContainerLauncherClearsStaleQuickTunnelURLBeforeStart(t *testing.T) 
 	}
 }
 
+func TestRunContainerLauncherRuntimeStartRestartsOuterRuntime(t *testing.T) {
+	oldOpen, oldSignal, oldFactory := dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldOpen, oldSignal, oldFactory
+	})
+	dashboardOpen = false
+	dir := t.TempDir()
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	signals := make(chan os.Signal, 1)
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- runContainerLauncher(command, dir, map[string]string{"CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example"})
+	}()
+	socket := filepath.Join(dir, "control.sock")
+	waitForPath(t, socket)
+	handle, err := launcher.RequestRuntimeActionAsync(context.Background(), socket, "start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status, statusErr := launcher.RequestOperationStatus(context.Background(), socket, handle.ID)
+		if statusErr == nil && status.Phase == launcher.PhaseSucceeded {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	status, err := launcher.RequestOperationStatus(context.Background(), socket, handle.ID)
+	if err != nil || status.Phase != launcher.PhaseSucceeded {
+		t.Fatalf("outer runtime start status = %#v, err=%v", status, err)
+	}
+	started, _, _, _ := manager.snapshot()
+	if started < 2 {
+		t.Fatalf("outer runtime start did not restart manager: starts=%d", started)
+	}
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("container launcher did not stop")
+	}
+}
+
+func TestRunContainerLauncherRuntimeStopKeepsControlPlaneAndClearsURL(t *testing.T) {
+	oldOpen, oldSignal, oldFactory := dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldOpen, oldSignal, oldFactory
+	})
+	dashboardOpen = false
+	dir := t.TempDir()
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	signals := make(chan os.Signal, 1)
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- runContainerLauncher(command, dir, map[string]string{"CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example"})
+	}()
+	socket := filepath.Join(dir, "control.sock")
+	waitForPath(t, socket)
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			if raw, err := os.ReadFile(filepath.Join(dir, "runtime-control")); err == nil && strings.TrimSpace(string(raw)) == "stop" {
+				_ = writeRuntimeState(dir, "stopped")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	handle, err := launcher.RequestRuntimeActionAsync(context.Background(), socket, "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		status, statusErr := launcher.RequestOperationStatus(context.Background(), socket, handle.ID)
+		if statusErr == nil && status.Phase == launcher.PhaseSucceeded {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	status, err := launcher.RequestOperationStatus(context.Background(), socket, handle.ID)
+	if err != nil || status.Phase != launcher.PhaseSucceeded {
+		t.Fatalf("outer runtime stop status = %#v, err=%v", status, err)
+	}
+	if stopped, _, _, _ := manager.snapshot(); stopped < 1 {
+		t.Fatalf("outer runtime stop did not stop exposure services: stops=%d", stopped)
+	}
+	if _, err := launcher.ReadQuickTunnelURL(dir); err == nil {
+		t.Fatal("quick tunnel state survived explicit stop")
+	}
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("container launcher did not stop")
+	}
+}
+
 func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	oldImage, oldPolicy, oldOpen, oldSignal, oldFactory := bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager
 	t.Cleanup(func() {
@@ -220,6 +346,9 @@ func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	}
 	if got := configured[0]["ANDROID_RUNNER_IMAGE"]; got != "published:stable" {
 		t.Fatalf("reconciliation used bootstrap image instead of TOML: %q", got)
+	}
+	if manager.verifiedCount() == 0 {
+		t.Fatalf("quick tunnel URL was not verified: %#v", manager.verifiedURLs)
 	}
 	if got, err := launcher.ReadQuickTunnelURL(dir); err != nil || got != "https://example.trycloudflare.com" {
 		t.Fatalf("launcher did not publish the reconciled quick tunnel URL: %q, %v", got, err)

@@ -568,6 +568,59 @@ func TestWriteSetupRuntimeControlIsPrivateAndActionable(t *testing.T) {
 	}
 }
 
+func TestWriteRuntimeReadyControlSupportsNormalRegistration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime-control")
+	if err := writeRuntimeReadyControl(path, "registration-ready"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || string(raw) != "registration-ready\n" {
+		t.Fatalf("registration runtime control = %q, err = %v", raw, err)
+	}
+	if err := writeRuntimeReadyControl(path, "start"); err == nil || !strings.Contains(err.Error(), "unsupported runtime ready action") {
+		t.Fatalf("invalid runtime ready action = %v", err)
+	}
+}
+
+func TestProvisionRuntimeCapabilitiesWithoutAndroidTargets(t *testing.T) {
+	s := newTestServer(t)
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Storage.StateDir = t.TempDir()
+	if err := runnerconfig.WriteFile(s.cfg.Path(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.provisionRuntimeCapabilities(context.Background()); err != nil {
+		t.Fatalf("iOS-only runtime capability provisioning failed: %v", err)
+	}
+}
+
+func TestRuntimeOperationalUsesSingleStateMarker(t *testing.T) {
+	dir := t.TempDir()
+	if !runtimeOperational(dir) {
+		t.Fatal("missing runtime state should be operational for first start")
+	}
+	for _, state := range []string{"running", "starting"} {
+		if err := os.WriteFile(filepath.Join(dir, "runtime-state"), []byte(state+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !runtimeOperational(dir) {
+			t.Fatalf("state %q reported non-operational", state)
+		}
+	}
+	for _, state := range []string{"stopped", "paused", "failed: device missing"} {
+		if err := os.WriteFile(filepath.Join(dir, "runtime-state"), []byte(state+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if runtimeOperational(dir) {
+			t.Fatalf("state %q reported operational", state)
+		}
+	}
+}
+
 func TestSetupRuntimeHandoffReportsControlWriteFailure(t *testing.T) {
 	s := newTestServer(t)
 	s.runtimeControlFile = filepath.Join(t.TempDir(), "missing", "runtime-control")

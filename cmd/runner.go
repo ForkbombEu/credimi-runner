@@ -30,12 +30,15 @@ var configPath string
 var bootstrapImage string
 var bootstrapPullPolicy string
 
+const quickTunnelResolutionTimeout = 2 * time.Minute
+
 type containerLauncherManager interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 	UpdateImage(context.Context) error
 	Configure(dashboardruntime.Values)
 	Status(context.Context) dashboardruntime.RuntimeStatus
+	VerifyPublicURL(context.Context, string) error
 	Close() error
 }
 
@@ -150,6 +153,15 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	defer manager.Close()
 	var valuesMu sync.RWMutex
 	currentValues := normalized
+	snapshotValues := func() dashboardruntime.Values {
+		valuesMu.RLock()
+		defer valuesMu.RUnlock()
+		copy := make(dashboardruntime.Values, len(currentValues))
+		for key, value := range currentValues {
+			copy[key] = value
+		}
+		return copy
+	}
 	var refreshQuickTunnelURL func(context.Context, dashboardruntime.Values) error
 	reconcile := func(ctx context.Context) error {
 		config, err := dashboard.LoadConfig(configDir)
@@ -206,7 +218,11 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		if !ok {
 			return errors.New("quick tunnel URL discovery is unavailable")
 		}
-		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Cloudflared can publish the hostname well after its container has
+		// started. Keep querying the same launcher-owned diagnostics endpoint for
+		// a bounded minutes-scale window instead of failing while the tunnel is
+		// still establishing its connection.
+		deadline, cancel := context.WithTimeout(ctx, quickTunnelResolutionTimeout)
 		defer cancel()
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -214,7 +230,11 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		for {
 			url, err := resolver.QuickTunnelURL(deadline)
 			if err == nil && strings.TrimSpace(url) != "" {
-				return launcher.WriteQuickTunnelURL(configDir, url)
+				if verifyErr := manager.VerifyPublicURL(deadline, url); verifyErr != nil {
+					lastErr = verifyErr
+				} else {
+					return launcher.WriteQuickTunnelURL(configDir, url)
+				}
 			}
 			if err != nil {
 				lastErr = err
@@ -236,9 +256,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		if err := manager.UpdateImage(ctx); err != nil {
 			return err
 		}
-		valuesMu.RLock()
-		values := currentValues
-		valuesMu.RUnlock()
+		values := snapshotValues()
 		return refreshQuickTunnelURL(ctx, values)
 	}
 	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), upgrade, func() bool {
@@ -250,11 +268,34 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 			return launcher.ReadQuickTunnelURL(configDir)
 		},
 		RuntimeStart: func(ctx context.Context) error {
-			return requestRuntimeCommandAndWait(ctx, configDir, "start", "running")
+			if err := manager.Start(ctx); err != nil {
+				return err
+			}
+			return refreshQuickTunnelURL(ctx, snapshotValues())
 		},
-		RuntimeStop: func(ctx context.Context) error { return requestRuntimeCommandAndWait(ctx, configDir, "stop", "paused") },
+		RuntimeStop: func(ctx context.Context) error {
+			if err := manager.Stop(ctx); err != nil {
+				return err
+			}
+			if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+				return err
+			}
+			return requestRuntimeCommandAndWait(ctx, configDir, "stop", "stopped")
+		},
 		RuntimeRestart: func(ctx context.Context) error {
-			return requestRuntimeCommandAndWait(ctx, configDir, "restart", "running")
+			if err := manager.Stop(ctx); err != nil {
+				return err
+			}
+			if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
+				return err
+			}
+			if err := requestRuntimeCommandAndWait(ctx, configDir, "stop", "stopped"); err != nil {
+				return err
+			}
+			if err := manager.Start(ctx); err != nil {
+				return err
+			}
+			return refreshQuickTunnelURL(ctx, snapshotValues())
 		},
 	})
 	if err != nil {
@@ -273,7 +314,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	if err := manager.Start(cmd.Context()); err != nil {
 		return err
 	}
-	if err := refreshQuickTunnelURL(cmd.Context(), currentValues); err != nil {
+	if err := refreshQuickTunnelURL(cmd.Context(), snapshotValues()); err != nil {
 		return err
 	}
 	defer manager.Stop(context.Background())

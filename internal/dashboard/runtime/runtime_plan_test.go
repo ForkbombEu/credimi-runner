@@ -91,6 +91,38 @@ func TestDiffValuesClassifiesOnlyTopologyChangingDeviceEditsAsRecreate(t *testin
 	}
 }
 
+func TestDiffValuesDoesNotRecreateUnifiedRunnerForAddedEmulator(t *testing.T) {
+	phone := Values{
+		"ANDROID_RUNNER_IMAGE":      "runner:shared",
+		"ANDROID_PULL_POLICY":       "never",
+		"CREDIMI_RUNNER_ID":         "acme/runner",
+		"CREDIMI_DEVICE_COUNT":      "1",
+		"CREDIMI_DEVICE_1_ID":       "acme/runner/phone",
+		"CREDIMI_DEVICE_1_TYPE":     "android_phone",
+		"CREDIMI_DEVICE_1_MODE":     "usb",
+		"CREDIMI_DEVICE_1_SERIAL":   "usb-1",
+		"CREDIMI_DEVICE_1_ENABLED":  "true",
+		"CREDIMI_SERVICE_MODE":      "auto",
+		"ANDROID_STATE_VOLUME":      "state",
+		"ANDROID_TOOL_CACHE_VOLUME": "tools",
+		"ANDROID_SDK_VOLUME":        "sdk",
+	}
+	withEmulator := cloneValues(phone)
+	withEmulator["CREDIMI_DEVICE_COUNT"] = "2"
+	withEmulator["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
+	withEmulator["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
+	withEmulator["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	withEmulator["CREDIMI_DEVICE_2_ENABLED"] = "true"
+
+	diff := DiffValuesForOS(phone, withEmulator, "linux")
+	if containsApplyClass(diff.Classes, ApplyComposeRecreate) {
+		t.Fatalf("adding an emulator recreated the unified runner: %#v", diff)
+	}
+	if !containsApplyClass(diff.Classes, ApplyCredimiUpdateRequired) {
+		t.Fatalf("adding an emulator did not request registration update: %#v", diff)
+	}
+}
+
 func TestRuntimePlanReadinessUsesIndexedDevices(t *testing.T) {
 	phone := Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/pixel", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb"}
 	if !RunnerAPIReachableFromHost(phone, "linux") || !RunnerReadinessRequiredBeforeRegistration(phone, "linux") || !DeviceReadinessRequired(phone, "linux") {

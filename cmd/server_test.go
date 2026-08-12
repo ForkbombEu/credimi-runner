@@ -3,76 +3,15 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
-	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/stretchr/testify/require"
 )
-
-func TestRegisterConfiguredDevicesUsesTypedInventory(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/mobile-device" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-	dir := t.TempDir()
-	cfg := runnerconfig.Bootstrap()
-	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
-	cfg.Credimi = runnerconfig.CredimiConfig{URL: server.URL, AuthMode: "user", UserAPIKey: "key"}
-	cfg.Temporal.Address = "temporal.example:7233"
-	cfg.Server.APIListen, cfg.Server.DashboardListen = "127.0.0.1:8050", "127.0.0.1:8051"
-	cfg.Storage.StateDir, cfg.Storage.ArtifactRetention = filepath.Join(dir, "state"), runnerconfig.Duration(time.Second)
-	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "runner", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"}}}
-	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", dir)
-	if err := registerConfiguredDevices(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRegisterConfiguredDevicesRequiresConfig(t *testing.T) {
-	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
-	if err := registerConfiguredDevices(context.Background()); err == nil || !strings.Contains(err.Error(), "config.toml is required") {
-		t.Fatalf("missing config error = %v", err)
-	}
-}
-
-func TestRegisterConfiguredDevicesSurfacesCredimiFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "device registration failed", http.StatusBadGateway)
-	}))
-	defer server.Close()
-	dir := t.TempDir()
-	cfg := runnerconfig.Bootstrap()
-	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
-	cfg.Credimi = runnerconfig.CredimiConfig{URL: server.URL, AuthMode: "user", UserAPIKey: "key"}
-	cfg.Temporal.Address = "temporal.example:7233"
-	cfg.Server.APIListen, cfg.Server.DashboardListen = "127.0.0.1:8050", "127.0.0.1:8051"
-	cfg.Storage.StateDir, cfg.Storage.ArtifactRetention = filepath.Join(dir, "state"), runnerconfig.Duration(time.Second)
-	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "runner", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"}}}
-	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", dir)
-	if err := registerConfiguredDevices(context.Background()); err == nil || !strings.Contains(err.Error(), "register device") {
-		t.Fatalf("device registration error = %v", err)
-	}
-}
 
 func TestServerCmdRunE_ListenError(t *testing.T) {
 	origHost, origPort, origDebug := host, port, debug

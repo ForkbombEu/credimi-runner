@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 )
 
 const RunnerReadinessTimeout = 2 * time.Minute
+
+const QuickTunnelDiscoveryTimeout = 2 * time.Minute
 
 type runtimeProgressStarter interface {
 	StartWithProgress(context.Context, func(string)) error
@@ -30,10 +33,11 @@ type RuntimeLifecycle struct {
 	Values  dashboardruntime.Values
 	GOOS    string
 
-	HTTPClient     *http.Client
-	WaitReady      func(context.Context, dashboardruntime.Values) error
-	QuickTunnelURL func(context.Context) (string, error)
-	SetPublicURL   func(string)
+	HTTPClient      *http.Client
+	WaitReady       func(context.Context, dashboardruntime.Values) error
+	QuickTunnelURL  func(context.Context) (string, error)
+	VerifyPublicURL func(context.Context, string) error
+	SetPublicURL    func(string)
 }
 
 func (l RuntimeLifecycle) Start(ctx context.Context, progress func(string)) error {
@@ -218,6 +222,13 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 	// which configured physical device is missing. Managed targets are deferred
 	// by DeviceReadinessRequired until their execution provisions them.
 	for {
+		// A physical phone is a host-side prerequisite. When it is absent, the
+		// runner may keep its process alive while deliberately withholding its
+		// readiness response. Check the host ADB catalog before waiting for the
+		// listener deadline so the dashboard reports the actionable device error.
+		if deviceErr := probePhysicalDeviceReadiness(values); deviceErr != nil {
+			return ReadinessFailure(values, address, deviceErr, nil)
+		}
 		if manager != nil {
 			status := manager.Status(deadline)
 			if status.Observed && !status.RunnerRunning {
@@ -244,6 +255,52 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		case <-ticker.C:
 		}
 	}
+}
+
+var hostADBDevices = func(ctx context.Context) (string, error) {
+	output, err := exec.CommandContext(ctx, "adb", "devices").CombinedOutput()
+	return string(output), err
+}
+
+func probePhysicalDeviceReadiness(values dashboardruntime.Values) error {
+	if !dashboardruntime.DeviceReadinessRequired(values, "") {
+		return nil
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("%w while checking configured physical devices: install Android platform-tools: %v", ErrADBUnavailable, err)
+	}
+	inventory, err := dashboardruntime.ParseRuntimeConfig(values)
+	if err != nil {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	output, err := hostADBDevices(probeCtx)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrADBUnavailable, err)
+	}
+	states := make(map[string]string)
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] != "List" {
+			states[fields[0]] = fields[1]
+		}
+	}
+	for _, device := range inventory.Devices {
+		if !device.Enabled || device.Type != "android_phone" || device.Mode == "no_device" || strings.TrimSpace(device.Serial) == "" {
+			continue
+		}
+		switch states[device.Serial] {
+		case "device":
+		case "offline":
+			return fmt.Errorf("%w: %s (%s)", ErrDeviceOffline, device.ID, device.Serial)
+		case "unauthorized":
+			return fmt.Errorf("%w: %s (%s)", ErrDeviceUnauthorized, device.ID, device.Serial)
+		default:
+			return fmt.Errorf("%w: %s (%s)", ErrDeviceMissing, device.ID, device.Serial)
+		}
+	}
+	return nil
 }
 
 func runnerExitedDuringStartup(ctx context.Context, manager dashboardruntime.Manager, status dashboardruntime.RuntimeStatus) error {
@@ -283,6 +340,8 @@ func ReadinessFailure(values dashboardruntime.Values, address string, lastErr, d
 		return fmt.Errorf("runner did not become ready on %s: a configured device is offline; reconnect it and inspect its device readiness: %w", address, cause)
 	case errors.Is(cause, ErrDeviceUnauthorized):
 		return fmt.Errorf("runner did not become ready on %s: a configured device is unauthorized; unlock it and accept its USB debugging prompt: %w", address, cause)
+	case errors.Is(cause, ErrADBUnavailable):
+		return fmt.Errorf("runner did not become ready on %s: cannot verify configured physical devices because ADB is unavailable; install Android platform-tools and check the ADB server: %w", address, cause)
 	}
 
 	return fmt.Errorf("runner did not become ready on %s: the runner never opened its listener; %s: %w", address, readinessNextStep(values), cause)
@@ -328,7 +387,11 @@ func (l RuntimeLifecycle) registrationEndpoint(ctx context.Context) (string, str
 		if resolver == nil {
 			return "", "", errors.New("quick tunnel URL discovery is unavailable")
 		}
-		deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+		// Cloudflared may spend close to a minute creating a quick tunnel and
+		// publishing its diagnostics endpoint. Keep polling the same tunnel for
+		// a bounded, minutes-scale window instead of reporting a false setup
+		// failure while cloudflared is still starting.
+		deadline, cancel := context.WithTimeout(ctx, QuickTunnelDiscoveryTimeout)
 		defer cancel()
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -336,7 +399,16 @@ func (l RuntimeLifecycle) registrationEndpoint(ctx context.Context) (string, str
 		for {
 			publicURL, err := resolver(deadline)
 			if err == nil && strings.TrimSpace(publicURL) != "" {
-				return strings.TrimSpace(publicURL), "", nil
+				publicURL = strings.TrimSpace(publicURL)
+				if l.VerifyPublicURL != nil {
+					if verifyErr := l.VerifyPublicURL(deadline, publicURL); verifyErr != nil {
+						lastErr = verifyErr
+					} else {
+						return publicURL, "", nil
+					}
+				} else {
+					return publicURL, "", nil
+				}
 			}
 			if err != nil {
 				lastErr = err

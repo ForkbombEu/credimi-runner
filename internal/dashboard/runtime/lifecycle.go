@@ -190,6 +190,10 @@ var quickTunnelHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 } = http.DefaultClient
 
+var publicRuntimeHTTPClient interface {
+	Do(*http.Request) (*http.Response, error)
+} = http.DefaultClient
+
 func NewLifecycleManager(binary, configDir string, values Values, runner Runner) *LifecycleManager {
 	return NewLifecycleManagerForOS(binary, configDir, values, runner, runtime.GOOS)
 }
@@ -432,24 +436,33 @@ func (m *LifecycleManager) Stop(ctx context.Context) (result error) {
 	}()
 	if len(plan.ComposeServices) > 0 {
 		m.stopComposeLogFollowerLocked()
-		if _, err := m.run(ctx, m.composeSpec(plan, "down", "--remove-orphans")); err != nil {
-			m.status.LastError = err.Error()
-			return err
-		}
-		if err := m.verifyComposeStoppedLocked(ctx, plan); err != nil {
-			m.status.LastError = err.Error()
-			return err
+		services := composeExposureServices(plan)
+		if len(services) > 0 {
+			args := append([]string{"stop"}, services...)
+			if _, err := m.run(ctx, m.composeSpec(plan, args...)); err != nil {
+				m.status.LastError = err.Error()
+				return err
+			}
+			if err := m.verifyComposeStoppedLocked(ctx, plan, services...); err != nil {
+				m.status.LastError = err.Error()
+				return err
+			}
 		}
 	}
 
-	m.status.RunnerRunning = false
+	// Stop is an operational stop, not destruction of the unified runner
+	// container. Dashboard/GoA stays available so a later Start can restore the
+	// execution and exposure services without recreating the control plane.
+	m.status.RunnerRunning = containsService(plan.ComposeServices, "runner")
 	m.status.ComposeRunning = false
 	m.status.PublicURL = ""
 	return nil
 }
 
-func (m *LifecycleManager) verifyComposeStoppedLocked(ctx context.Context, plan RuntimePlan) error {
-	output, err := m.run(ctx, m.composeSpec(plan, "ps", "-q"))
+func (m *LifecycleManager) verifyComposeStoppedLocked(ctx context.Context, plan RuntimePlan, services ...string) error {
+	args := []string{"ps", "-q"}
+	args = append(args, services...)
+	output, err := m.run(ctx, m.composeSpec(plan, args...))
 	if err != nil {
 		return fmt.Errorf("verify managed Compose services stopped: %w", err)
 	}
@@ -459,6 +472,16 @@ func (m *LifecycleManager) verifyComposeStoppedLocked(ctx context.Context, plan 
 		}
 	}
 	return nil
+}
+
+func composeExposureServices(plan RuntimePlan) []string {
+	services := make([]string, 0, len(plan.ComposeServices))
+	for _, service := range plan.ComposeServices {
+		if service != "runner" {
+			services = append(services, service)
+		}
+	}
+	return services
 }
 
 func looksLikeContainerID(value string) bool {
@@ -796,7 +819,7 @@ func configuredDeviceReady(ctx context.Context, values Values) bool {
 		return true
 	}
 	for _, device := range inventory.Devices {
-		if !device.Enabled || device.Mode == "" || device.Mode == "no_device" || device.Type == "redroid" {
+		if !device.Enabled || device.Mode == "" || device.Mode == "no_device" || device.Type == "redroid" || device.Type == "android_emulator" || device.Type == "ios_simulator" {
 			continue
 		}
 		if device.Serial == "" {
@@ -842,6 +865,37 @@ func (m *LifecycleManager) QuickTunnelURL(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("decode quick tunnel diagnostics: %w", err)
 	}
 	return ParseQuickTunnelHostname(payload.Hostname)
+}
+
+// VerifyPublicURL proves that the published endpoint reaches this runner,
+// rather than merely accepting a hostname from cloudflared diagnostics.
+func (m *LifecycleManager) VerifyPublicURL(ctx context.Context, publicURL string) error {
+	m.mu.Lock()
+	expectedRunnerID := strings.TrimSpace(m.values["CREDIMI_RUNNER_ID"])
+	m.mu.Unlock()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(strings.TrimSpace(publicURL), "/")+"/readyz", nil)
+	if err != nil {
+		return fmt.Errorf("build public runner readiness request: %w", err)
+	}
+	response, err := publicRuntimeHTTPClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("probe public runner endpoint: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("public runner endpoint returned %s", response.Status)
+	}
+	var readiness struct {
+		Service  string `json:"service"`
+		RunnerID string `json:"runner_id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&readiness); err != nil {
+		return fmt.Errorf("decode public runner readiness: %w", err)
+	}
+	if readiness.Service != "credimi-runner" || (expectedRunnerID != "" && readiness.RunnerID != expectedRunnerID) {
+		return fmt.Errorf("public endpoint identified runner %q, expected %q", readiness.RunnerID, expectedRunnerID)
+	}
+	return nil
 }
 
 // ParseQuickTunnelHostname validates and normalizes cloudflared's structured

@@ -184,7 +184,7 @@ func TestLifecycleManagerVerboseLogCapturesLifecycleAndDockerProgress(t *testing
 func TestLifecycleManagerStartLogFollower(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_SERVICE_MODE": "manual",
+		"CREDIMI_SERVICE_MODE": "auto",
 	}, runner)
 	manager.StartLogFollower()
 	if len(runner.starts) != 1 {
@@ -255,6 +255,20 @@ func TestConfiguredDeviceReadyUsesADBState(t *testing.T) {
 	}
 	if configuredDeviceReady(context.Background(), values) {
 		t.Fatal("missing adb should not be ready")
+	}
+}
+
+func TestConfiguredDeviceReadyAcceptsEmulatorWithoutSerial(t *testing.T) {
+	values := Values{
+		"CREDIMI_RUNNER_ID":        "acme/runner",
+		"CREDIMI_DEVICE_COUNT":     "1",
+		"CREDIMI_DEVICE_1_ID":      "acme/runner/emulator",
+		"CREDIMI_DEVICE_1_TYPE":    "android_emulator",
+		"CREDIMI_DEVICE_1_MODE":    "emulator",
+		"CREDIMI_DEVICE_1_ENABLED": "true",
+	}
+	if !configuredDeviceReady(context.Background(), values) {
+		t.Fatal("configured emulator without an execution-time serial must be ready")
 	}
 }
 
@@ -568,7 +582,7 @@ func TestLifecycleManagerStartReportsDockerStageFailures(t *testing.T) {
 func TestVerifyComposeStoppedRejectsRemainingContainer(t *testing.T) {
 	runner := &fakeRunner{runOutput: []byte("0123456789abcdef\n")}
 	manager := NewLifecycleManager("credimi-runner", t.TempDir(), Values{
-		"CREDIMI_SERVICE_MODE": "manual",
+		"CREDIMI_SERVICE_MODE": "auto",
 	}, runner)
 	if err := manager.Stop(context.Background()); err == nil || !strings.Contains(err.Error(), "still running") {
 		t.Fatalf("Stop error = %v", err)
@@ -829,6 +843,56 @@ func TestLifecycleManagerReportsStructuredQuickTunnelFailures(t *testing.T) {
 			_, err := manager.QuickTunnelURL(context.Background())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("quick tunnel error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLifecycleManagerVerifiesPublicRunnerIdentity(t *testing.T) {
+	previous := publicRuntimeHTTPClient
+	t.Cleanup(func() { publicRuntimeHTTPClient = previous })
+	var requested string
+	publicRuntimeHTTPClient = httpClientFunc(func(request *http.Request) (*http.Response, error) {
+		requested = request.URL.String()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"service":"credimi-runner","runner_id":"acme/runner"}`)),
+		}, nil
+	})
+	manager := &LifecycleManager{values: Values{"CREDIMI_RUNNER_ID": "acme/runner"}}
+	if err := manager.VerifyPublicURL(context.Background(), "https://runner.example/"); err != nil {
+		t.Fatalf("VerifyPublicURL() error = %v", err)
+	}
+	if requested != "https://runner.example/readyz" {
+		t.Fatalf("public readiness URL = %q", requested)
+	}
+
+	publicRuntimeHTTPClient = httpClientFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Status:     "502 Bad Gateway",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	})
+	if err := manager.VerifyPublicURL(context.Background(), "https://runner.example"); err == nil || !strings.Contains(err.Error(), "502 Bad Gateway") {
+		t.Fatalf("VerifyPublicURL() accepted proxy failure: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{name: "malformed", body: "{", want: "decode public runner readiness"},
+		{name: "wrong runner", body: `{"service":"credimi-runner","runner_id":"other/runner"}`, want: "identified runner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			publicRuntimeHTTPClient = httpClientFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))}, nil
+			})
+			if err := manager.VerifyPublicURL(context.Background(), "https://runner.example"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("VerifyPublicURL() error = %v, want %q", err, tc.want)
 			}
 		})
 	}
