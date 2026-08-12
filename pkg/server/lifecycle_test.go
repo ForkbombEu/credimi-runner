@@ -185,8 +185,33 @@ func TestRunnerLifecycleHeartbeatReportsConfiguredDeviceReadiness(t *testing.T) 
 	}, devices)
 }
 
+func TestRunnerLifecycleHeartbeatReloadsDevicesAddedAfterStartup(t *testing.T) {
+	recorder, client := newLifecycleClientForServer(t, http.StatusOK, nil)
+	liveDevices := []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}
+	client.inventory = func() ([]LifecycleDevice, bool) {
+		return append([]LifecycleDevice(nil), liveDevices...), true
+	}
+	client.readiness = func() Readiness {
+		return Readiness{Devices: map[string]DeviceReady{
+			"owner/phone":    {Ready: true, State: "device"},
+			"owner/emulator": {Ready: true},
+		}}
+	}
+
+	require.NoError(t, client.Heartbeat(context.Background()))
+	require.Equal(t, []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}, recorder.get(0).Body.Devices)
+
+	liveDevices = append(liveDevices, LifecycleDevice{DeviceID: "owner/emulator", Online: true})
+	require.NoError(t, client.Heartbeat(context.Background()))
+	require.Equal(t, []LifecycleDevice{
+		{DeviceID: "owner/phone", Online: true},
+		{DeviceID: "owner/emulator", Online: true},
+	}, recorder.get(1).Body.Devices)
+}
+
 func TestRunnerLifecycleSetDevicesCopiesCallerInventory(t *testing.T) {
 	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{}, nil, nil)
+	client.inventory = nil
 	devices := []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}
 	client.SetDevices(devices)
 	devices[0].Online = false
@@ -281,6 +306,9 @@ func TestRunnerLifecycleMissingCredentialsDoesNotMakeHTTPCalls(t *testing.T) {
 		HeartbeatInterval: time.Second,
 		RequestTimeout:    time.Second,
 	}, srv.Client(), NewProcessStore())
+	// Unit tests exercise the explicit client inventory; never inherit a live
+	// runner's config directory from the test process environment.
+	client.inventory = nil
 	client.warnf = func(string, ...any) {}
 
 	require.NoError(t, client.Resume(context.Background(), "runner_startup"))
@@ -475,6 +503,9 @@ func newLifecycleClientForServer(
 		HeartbeatInterval: time.Second,
 		RequestTimeout:    time.Second,
 	}, srv.Client(), NewProcessStore())
+	// Unit tests exercise the explicit client inventory; never inherit a live
+	// runner's config directory from the test process environment.
+	client.inventory = nil
 	client.warnf = func(string, ...any) {}
 
 	return recorder, client

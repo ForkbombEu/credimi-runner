@@ -71,6 +71,7 @@ type RunnerLifecycleClient struct {
 	newTicker  func(time.Duration) lifecycleTicker
 	warnf      func(string, ...any)
 	devices    []LifecycleDevice
+	inventory  func() ([]LifecycleDevice, bool)
 	readiness  func() Readiness
 }
 
@@ -109,8 +110,9 @@ func NewRunnerLifecycleClient(cfg RunnerLifecycleConfig, httpClient HTTPClient, 
 		newTicker: func(interval time.Duration) lifecycleTicker {
 			return timeTicker{ticker: time.NewTicker(interval)}
 		},
-		warnf:   log.Printf,
-		devices: append([]LifecycleDevice(nil), cfg.Devices...),
+		warnf:     log.Printf,
+		devices:   append([]LifecycleDevice(nil), cfg.Devices...),
+		inventory: currentLifecycleInventory,
 		readiness: func() Readiness {
 			return NewReadinessService().Check()
 		},
@@ -143,6 +145,15 @@ func (c *RunnerLifecycleClient) Heartbeat(ctx context.Context) error {
 // reported offline, so it never hides healthy siblings behind a host pause.
 func (c *RunnerLifecycleClient) currentDevices() []LifecycleDevice {
 	devices := append([]LifecycleDevice(nil), c.devices...)
+	// The runner container stays alive while Dashboard mutations change the
+	// typed TOML inventory. Reload it for every lifecycle request so a newly
+	// added device is included in the next heartbeat instead of remaining
+	// registered-but-offline until the container is restarted.
+	if c.inventory != nil {
+		if current, ok := c.inventory(); ok {
+			devices = current
+		}
+	}
 	if c.readiness == nil {
 		return devices
 	}
@@ -167,6 +178,18 @@ func (c *RunnerLifecycleClient) currentDevices() []LifecycleDevice {
 		}
 	}
 	return devices
+}
+
+func currentLifecycleInventory() ([]LifecycleDevice, bool) {
+	inventory, err := dashboardruntime.RuntimeConfigFromEnvironment()
+	if err != nil {
+		return nil, false
+	}
+	devices := make([]LifecycleDevice, 0, len(inventory.Devices))
+	for _, device := range inventory.Devices {
+		devices = append(devices, LifecycleDevice{DeviceID: device.ID, Online: device.Enabled})
+	}
+	return devices, true
 }
 
 func (c *RunnerLifecycleClient) SetDevices(devices []LifecycleDevice) {
