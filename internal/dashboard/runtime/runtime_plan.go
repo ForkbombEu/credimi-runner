@@ -239,7 +239,10 @@ func DeviceReadinessRequired(values Values, goos string) bool {
 	}
 	if inventory, err := ParseRuntimeConfig(normalized); err == nil {
 		for _, device := range inventory.Devices {
-			if device.Enabled && device.Type != "redroid" && device.Mode != "no_device" {
+			// Emulators, simulators, and Redroid are provisioned per execution,
+			// after runner registration. Only a physical Android connection is a
+			// prerequisite for the runner's initial readiness.
+			if device.Enabled && device.Type == "android_phone" && device.Mode != "no_device" {
 				return true
 			}
 		}

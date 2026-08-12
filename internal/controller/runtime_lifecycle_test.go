@@ -484,7 +484,7 @@ func TestWaitForRunnerReadyDoesNotBlockOnNewEmulator(t *testing.T) {
 	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/health":
-			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
+			http.Error(w, "ADB is not available until the emulator starts", http.StatusServiceUnavailable)
 		case "/readyz":
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/emulator":{"state":"missing","ready":false}}}`))
@@ -501,6 +501,35 @@ func TestWaitForRunnerReadyDoesNotBlockOnNewEmulator(t *testing.T) {
 		"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/emulator", "CREDIMI_DEVICE_1_TYPE": "android_emulator", "CREDIMI_DEVICE_1_MODE": "emulator", "RUNNER_HOST": host, "RUNNER_PORT": port,
 	}, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWaitForRunnerReadyReportsMissingPhysicalDeviceImmediately(t *testing.T) {
+	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/readyz" {
+			http.NotFound(w, request)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/phone":{"serial":"usb-1","state":"missing","ready":false}}}`))
+	}))
+	defer runner.Close()
+	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = waitForRunnerReady(context.Background(), runner.Client(), dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":       "runner-1",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "runner-1/phone",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "usb",
+		"CREDIMI_DEVICE_1_SERIAL": "usb-1",
+		"RUNNER_HOST":             host,
+		"RUNNER_PORT":             port,
+	}, nil)
+	if !errors.Is(err, ErrDeviceMissing) || !strings.Contains(err.Error(), "configured device is not available") {
+		t.Fatalf("missing physical device error = %v", err)
 	}
 }
 

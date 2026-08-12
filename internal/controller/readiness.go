@@ -59,9 +59,6 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 	if want := strings.TrimSpace(values["CREDIMI_RUNNER_ID"]); want != "" && ready.RunnerID != want {
 		return ready, ErrRunnerIdentityMismatch
 	}
-	if response.StatusCode != http.StatusOK && deviceRequired {
-		return ready, ErrRunnerNotReady
-	}
 	if deviceRequired {
 		if inventory, inventoryErr := dashboardruntime.ParseRuntimeConfig(values); inventoryErr == nil {
 			for _, device := range inventory.Devices {
@@ -78,6 +75,9 @@ func ValidateReadiness(ctx context.Context, client *http.Client, endpoint string
 				if err := readinessStateError(state.State); err != nil {
 					return ready, err
 				}
+			}
+			if response.StatusCode != http.StatusOK {
+				return ready, ErrRunnerNotReady
 			}
 			return ready, nil
 		}

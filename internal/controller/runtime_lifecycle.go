@@ -213,19 +213,10 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
-	// Registration establishes the runner and its device inventory in Credimi.
-	// A newly configured emulator has no ADB serial until it is provisioned, so
-	// waiting for every device here creates a deadlock: the runner cannot
-	// register its device, and its device heartbeat is rejected as unknown.
-	// Verify the listener and runner identity only; individual target readiness
-	// remains exposed through /readyz and the dashboard inventory.
-	identityValues := dashboardruntime.Values{}
-	for key, value := range values {
-		if key == "CREDIMI_DEVICE_COUNT" || strings.HasPrefix(key, "CREDIMI_DEVICE_") {
-			continue
-		}
-		identityValues[key] = value
-	}
+	// /readyz provides typed target state. Do not gate registration on the
+	// legacy /health endpoint: it runs a global ADB command and cannot explain
+	// which configured physical device is missing. Managed targets are deferred
+	// by DeviceReadinessRequired until their execution provisions them.
 	for {
 		if manager != nil {
 			status := manager.Status(deadline)
@@ -236,14 +227,13 @@ func waitForRunnerReady(ctx context.Context, client *http.Client, values dashboa
 		connection, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(deadline, "tcp", address)
 		if err == nil {
 			_ = connection.Close()
-			if healthErr := runnerHealth(deadline, client, host, port); healthErr == nil {
-				if _, readyErr := ValidateReadiness(deadline, client, "http://"+address, identityValues); readyErr == nil {
-					return nil
-				} else {
-					lastErr = readyErr
-				}
+			if _, readyErr := ValidateReadiness(deadline, client, "http://"+address, values); readyErr == nil {
+				return nil
 			} else {
-				lastErr = healthErr
+				if errors.Is(readyErr, ErrDeviceMissing) || errors.Is(readyErr, ErrDeviceOffline) || errors.Is(readyErr, ErrDeviceUnauthorized) || errors.Is(readyErr, ErrDeviceMismatch) {
+					return ReadinessFailure(values, address, readyErr, nil)
+				}
+				lastErr = readyErr
 			}
 		} else {
 			lastErr = err
@@ -376,22 +366,6 @@ func (l RuntimeLifecycle) httpClient() *http.Client {
 		return l.HTTPClient
 	}
 	return http.DefaultClient
-}
-
-func runnerHealth(ctx context.Context, client *http.Client, host, port string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+net.JoinHostPort(host, port)+"/health", nil)
-	if err != nil {
-		return err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("runner health returned %s", response.Status)
-	}
-	return nil
 }
 
 func boolPointer(value bool) *bool { return &value }

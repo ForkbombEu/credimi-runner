@@ -40,7 +40,7 @@ func TestValidateReadinessClassifiesDeviceFailures(t *testing.T) {
 				_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/device-1":{"serial":"serial-1","state":"` + test.state + `","ready":false}}}`))
 			}))
 			defer server.Close()
-			_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_SERIAL": "serial-1", "CREDIMI_DEVICE_1_MODE": "usb"})
+			_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_SERIAL": "serial-1", "CREDIMI_DEVICE_1_MODE": "usb"})
 			if !errors.Is(err, test.want) {
 				t.Fatalf("err = %v, want %v", err, test.want)
 			}
