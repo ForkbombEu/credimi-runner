@@ -25,6 +25,8 @@ type fakeContainerLauncherManager struct {
 	startErr                 error
 	configured               []dashboardruntime.Values
 	verifiedURLs             []string
+	composePath              string
+	composeAtStop            string
 }
 
 func (m *fakeContainerLauncherManager) Start(context.Context) error {
@@ -38,6 +40,11 @@ func (m *fakeContainerLauncherManager) Stop(context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopped++
+	if m.composePath != "" {
+		if content, err := os.ReadFile(m.composePath); err == nil {
+			m.composeAtStop = string(content)
+		}
+	}
 	return nil
 }
 
@@ -81,6 +88,12 @@ func (m *fakeContainerLauncherManager) snapshot() (int, int, int, []dashboardrun
 	defer m.mu.Unlock()
 	configured := append([]dashboardruntime.Values(nil), m.configured...)
 	return m.started, m.stopped, m.closed, configured
+}
+
+func (m *fakeContainerLauncherManager) composeAtStopSnapshot() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.composeAtStop
 }
 
 func (m *fakeContainerLauncherManager) updateCount() int {
@@ -295,7 +308,10 @@ func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	signals := make(chan os.Signal, 1)
 	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
 	manager := &fakeContainerLauncherManager{}
-	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	newContainerLauncherManager = func(_ string, configDir string, _ dashboardruntime.Values) containerLauncherManager {
+		manager.composePath = filepath.Join(configDir, "docker-compose.yaml")
+		return manager
+	}
 	command := &cobra.Command{}
 	command.SetContext(context.Background())
 	runDone := make(chan error, 1)
@@ -350,8 +366,66 @@ func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	if manager.verifiedCount() == 0 {
 		t.Fatalf("quick tunnel URL was not verified: %#v", manager.verifiedURLs)
 	}
+	composeAtStop := manager.composeAtStopSnapshot()
+	if !strings.Contains(composeAtStop, "  caddy:\n") || !strings.Contains(composeAtStop, "  tunnel:\n") {
+		t.Fatalf("final Compose topology was not written before bootstrap stop:\n%s", composeAtStop)
+	}
 	if got, err := launcher.ReadQuickTunnelURL(dir); err != nil || got != "https://example.trycloudflare.com" {
 		t.Fatalf("launcher did not publish the reconciled quick tunnel URL: %q, %v", got, err)
+	}
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("container launcher did not stop")
+	}
+}
+
+func TestRunContainerLauncherReportsComposeWriteFailureDuringReconcile(t *testing.T) {
+	oldImage, oldPolicy, oldOpen, oldSignal, oldFactory, oldWrite := bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager, writeComposeFileForOS
+	t.Cleanup(func() {
+		bootstrapImage, bootstrapPullPolicy, dashboardOpen, dashboardSignalSource, newContainerLauncherManager, writeComposeFileForOS = oldImage, oldPolicy, oldOpen, oldSignal, oldFactory, oldWrite
+	})
+	bootstrapImage, bootstrapPullPolicy, dashboardOpen = "credimi-runner:local", "never", false
+	want := errors.New("compose file is not writable")
+	writeComposeFileForOS = func(string, dashboardruntime.Values, string) error { return want }
+	dir := t.TempDir()
+	signals := make(chan os.Signal, 1)
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- runContainerLauncher(command, dir, map[string]string{
+			"ANDROID_RUNNER_IMAGE": "credimi-runner:local",
+			"ANDROID_PULL_POLICY":  "never",
+		})
+	}()
+	socket := filepath.Join(dir, "control.sock")
+	waitForPath(t, socket)
+
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Server.APIListen = "127.0.0.1:19050"
+	cfg.Exposure.Mode = "quick_tunnel"
+	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "if-not-present", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+	}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	err := launcher.RequestReconcile(context.Background(), socket)
+	if err == nil || !strings.Contains(err.Error(), "write compose file for configuration reconciliation") || !strings.Contains(err.Error(), want.Error()) {
+		t.Fatalf("compose write failure = %v", err)
 	}
 	signals <- syscall.SIGTERM
 	select {

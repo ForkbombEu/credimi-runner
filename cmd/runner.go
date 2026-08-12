@@ -46,6 +46,8 @@ var newContainerLauncherManager = func(binaryPath, configDir string, values dash
 	return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 }
 
+var writeComposeFileForOS = dashboardruntime.WriteComposeFileForOS
+
 var runInternalDashboardFunc = runDashboardOwned
 var runInternalServerFunc = func(cmd *cobra.Command, args []string) error { return serverCmd.RunE(cmd, args) }
 var ensureAndroidCapabilities = androidtools.EnsureCapabilities
@@ -183,6 +185,14 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		diff := dashboardruntime.DiffValuesForOS(previous, next, stdruntime.GOOS)
 		manager.Configure(next)
 		if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
+			// The first reconcile replaces the runner-only bootstrap Compose
+			// file with the final topology. Write it before Stop: Stop uses the
+			// active Compose model to target exposure services, and the bootstrap
+			// model deliberately has no caddy or tunnel service yet.
+			if err := writeComposeFileForOS(configDir, next, stdruntime.GOOS); err != nil {
+				manager.Configure(previous)
+				return fmt.Errorf("write compose file for configuration reconciliation: %w", err)
+			}
 			if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
 				manager.Configure(previous)
 				return err
