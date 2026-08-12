@@ -103,6 +103,7 @@
   // ── Global busy overlay for runtime-changing requests ───────────────────
   const setupBusyKey = 'credimi-runner:setup-startup-busy';
   let busyLogTimer = null;
+	let busyControllerTimer = null;
   let busyStartupTimer = null;
   let busyLogSeen = new Set();
   let busyStartupNextID = 0;
@@ -130,6 +131,22 @@
       (data.lines || []).slice(-24).forEach(appendBusyLog);
     } catch (_) {}
   }
+	async function pollBusyControllerOperation() {
+		try {
+			const res = await fetch(dashboardURL('/api/controller/operations/current'), { headers: { Accept: 'application/json' } });
+			if (!res.ok) return;
+			const snapshot = await res.json();
+			const phase = String(snapshot.phase || snapshot.Phase || '');
+			const message = String(snapshot.message || snapshot.Message || '').trim();
+			if (phase !== 'queued' && phase !== 'running') return;
+			if (message) {
+				const overlay = busyOverlay();
+				const messageNode = overlay && $('[data-busy-message]', overlay);
+				if (messageNode) messageNode.textContent = message;
+				appendBusyLog(message);
+			}
+		} catch (_) {}
+	}
   async function pollBusyStartupStatus() {
     try {
       const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
@@ -166,18 +183,28 @@
     if (!overlay) return;
     const messageNode = $('[data-busy-message]', overlay);
     if (messageNode && message) messageNode.textContent = message;
+		const titleNode = $('[data-busy-title]', overlay);
+		if (titleNode) titleNode.textContent = options.title || 'Applying runtime change';
     const log = busyLogNode();
     busyLogSeen = new Set();
     if (log) log.textContent = '';
     busyStartupNextID = 0;
-    appendBusyLog(message || 'Starting runtime operation.');
-    appendBusyLog('Writing configuration and preparing Docker services.');
-    appendBusyLog('Large runner images can take several minutes the first time.');
+		appendBusyLog(message || 'Starting runtime operation.');
+		if (options.controllerProgress) appendBusyLog('Waiting for device preparation to start.');
+		else {
+			appendBusyLog('Writing configuration and preparing Docker services.');
+			appendBusyLog('Large runner images can take several minutes the first time.');
+		}
     clearInterval(busyLogTimer);
+		clearInterval(busyControllerTimer);
     if (options.runtimeLogs !== false) {
       pollBusyLogs();
       busyLogTimer = setInterval(pollBusyLogs, 1500);
     }
+		if (options.controllerProgress) {
+			pollBusyControllerOperation();
+			busyControllerTimer = setInterval(pollBusyControllerOperation, 500);
+		}
     overlay.hidden = false;
     document.body.classList.add('busy-lock');
   }
@@ -185,8 +212,10 @@
     const overlay = busyOverlay();
     if (!overlay) return;
     clearInterval(busyLogTimer);
+		clearInterval(busyControllerTimer);
     clearInterval(busyStartupTimer);
     busyLogTimer = null;
+		busyControllerTimer = null;
     busyStartupTimer = null;
     overlay.hidden = true;
     document.body.classList.remove('busy-lock');
@@ -209,7 +238,7 @@
     if (!el) return null;
     const trigger = el.closest('[data-runtime-action],[data-config-form],[data-setup-form]');
     if (!trigger) return null;
-    if (trigger.matches('[data-config-form]') && !trigger.matches('[data-setup-form]') && trigger.dataset.busyActive !== '1') {
+		if (trigger.matches('[data-config-form]') && !trigger.matches('[data-setup-form]') && !trigger.matches('[data-device-add-form]') && trigger.dataset.busyActive !== '1') {
       return null;
     }
     return trigger;
@@ -224,7 +253,10 @@
       showSetupBusy(message);
       return;
     }
-    showBusy(message);
+		showBusy(message, {
+			title: trigger.dataset.busyTitle,
+			controllerProgress: trigger.dataset.busyControllerProgress === 'true',
+		});
   });
   document.body.addEventListener('htmx:afterRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);

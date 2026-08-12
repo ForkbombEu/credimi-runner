@@ -365,6 +365,8 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 	for _, want := range []string{
 		`Configured inventory`,
 		`Add device`,
+		`data-busy-title="Adding device"`,
+		`data-busy-controller-progress="true"`,
 		`IDs are created from the device name and cannot be edited`,
 		`Detected devices`,
 	} {
@@ -391,6 +393,23 @@ func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
 	}
 	if !strings.Contains(string(script), "if (!runtimeOperationActive) hideBusy();") {
 		t.Fatal("main swaps must not dismiss an active runtime operation overlay")
+	}
+}
+
+func TestStaticAppShowsDeviceProvisioningProgress(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`/api/controller/operations/current`,
+		`pollBusyControllerOperation`,
+		`trigger.matches('[data-device-add-form]')`,
+		`controllerProgress: trigger.dataset.busyControllerProgress === 'true'`,
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("device operation progress UI missing %q", want)
+		}
 	}
 }
 
