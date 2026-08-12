@@ -702,28 +702,30 @@ func TestWaitForRunnerReadyDoesNotBlockOnNewEmulator(t *testing.T) {
 }
 
 func TestWaitForRunnerReadyReportsMissingPhysicalDeviceImmediately(t *testing.T) {
-	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/readyz" {
-			http.NotFound(w, request)
-			return
-		}
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/phone":{"serial":"usb-1","state":"missing","ready":false}}}`))
-	}))
-	defer runner.Close()
-	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
-	if err != nil {
+	// Keep this test independent of the host running the suite. The readiness
+	// path intentionally checks host ADB before waiting for the runner listener,
+	// so provide the smallest deterministic ADB inventory for the missing-phone
+	// scenario instead of relying on a developer's installed adb binary.
+	adbDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adbDir, "adb"), []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err = waitForRunnerReady(context.Background(), runner.Client(), dashboardruntime.Values{
+	t.Setenv("PATH", adbDir)
+	previous := hostADBDevices
+	hostADBDevices = func(context.Context) (string, error) {
+		return "List of devices attached\n", nil
+	}
+	t.Cleanup(func() { hostADBDevices = previous })
+
+	err := waitForRunnerReady(context.Background(), &http.Client{}, dashboardruntime.Values{
 		"CREDIMI_RUNNER_ID":       "runner-1",
 		"CREDIMI_DEVICE_COUNT":    "1",
 		"CREDIMI_DEVICE_1_ID":     "runner-1/phone",
 		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
 		"CREDIMI_DEVICE_1_MODE":   "usb",
 		"CREDIMI_DEVICE_1_SERIAL": "usb-1",
-		"RUNNER_HOST":             host,
-		"RUNNER_PORT":             port,
+		"RUNNER_HOST":             "127.0.0.1",
+		"RUNNER_PORT":             "1",
 	}, nil)
 	if !errors.Is(err, ErrDeviceMissing) || !strings.Contains(err.Error(), "configured device is not available") || !strings.Contains(err.Error(), "runner-1/phone") {
 		t.Fatalf("missing physical device error = %v", err)
