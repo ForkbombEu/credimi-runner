@@ -205,7 +205,7 @@ func TestLoadStorePreservesEmulatorActivityEnvironment(t *testing.T) {
 	cfg.Devices = []config.DeviceConfig{{
 		ID: "acme/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true,
 		AndroidEmulator: &config.AndroidEmulatorConfig{
-			AVDName: "credimi", BaseName: "credimi-base", GoldenSource: "/avd-golden/credimi-base",
+			BaseName: "credimi-base", GoldenSource: "/avd-golden/credimi-base",
 			ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", APILevel: 35, MemoryMB: 2048, Cores: 2,
 		},
 	}}
@@ -221,7 +221,7 @@ func TestLoadStorePreservesEmulatorActivityEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	device := inventory.Devices[0]
-	if device.Values["BASE_NAME"] != "credimi-base" || device.Values["GOLDEN_PATH"] != "/avd-golden/credimi-base" {
+	if device.Values["BASE_NAME"] != "credimi-base" || device.Values["AVD_NAME"] != "credimi-base" || device.Values["GOLDEN_PATH"] != "/avd-golden/credimi-base" {
 		t.Fatalf("emulator activity environment = %#v", device.Values)
 	}
 }
@@ -280,7 +280,7 @@ func TestParseRuntimeConfigPreservesMultiDeviceInventory(t *testing.T) {
 	values := Values{
 		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "3",
 		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "phone", "CREDIMI_DEVICE_1_WIFI_PORT": "5555", "CREDIMI_DEVICE_1_ENABLED": "true",
-		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_MODE": "emulator", "CREDIMI_DEVICE_2_AVD_NAME": "pixel", "CREDIMI_DEVICE_2_PORT": "5556",
+		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_MODE": "emulator", "CREDIMI_DEVICE_2_BASE_NAME": "pixel", "CREDIMI_DEVICE_2_PORT": "5556",
 		"CREDIMI_DEVICE_3_ID": "acme/runner/redroid", "CREDIMI_DEVICE_3_TYPE": "redroid", "CREDIMI_DEVICE_3_MODE": "redroid", "CREDIMI_DEVICE_3_WIFI_IP": "redroid", "CREDIMI_DEVICE_3_WIFI_PORT": "5555", "CREDIMI_DEVICE_3_ENABLED": "false",
 	}
 	parsed, err := ParseRuntimeConfig(values)
@@ -335,7 +335,7 @@ func TestParseRuntimeConfigRejectsMalformedInventory(t *testing.T) {
 		{"bad enabled", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_ENABLED": "sometimes"}},
 		{"duplicate ID", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_2_ID": "acme/runner/one"}},
 		{"duplicate name", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_NAME": "same"}},
-		{"duplicate AVD", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_emulator", "CREDIMI_DEVICE_1_AVD_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_AVD_NAME": "same"}},
+		{"duplicate emulator", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_emulator", "CREDIMI_DEVICE_1_BASE_NAME": "one", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_BASE_NAME": "two"}},
 		{"duplicate serial", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "same:5555", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "redroid", "CREDIMI_DEVICE_2_WIFI_IP": "same", "CREDIMI_DEVICE_2_WIFI_PORT": "5555"}},
 		{"duplicate port", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_PORT": "5555", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_PORT": "5555"}},
 		{"duplicate container", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_CONTAINER_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_CONTAINER_NAME": "same"}},

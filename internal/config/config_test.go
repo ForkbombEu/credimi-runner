@@ -33,7 +33,7 @@ func physical(id, name, transport, serial string) DeviceConfig {
 
 func TestValidateForPlatformAcceptsSupportedInventory(t *testing.T) {
 	linux := validConfig()
-	linux.Devices = []DeviceConfig{physical("acme/runner/pixel", "Pixel", "wifi", "wifi:5555"), {ID: "acme/runner/emulator", Name: "Emulator", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 4096, Cores: 4}}, {ID: "acme/runner/redroid", Name: "Redroid", Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
+	linux.Devices = []DeviceConfig{physical("acme/runner/pixel", "Pixel", "wifi", "wifi:5555"), {ID: "acme/runner/emulator", Name: "Emulator", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 4096, Cores: 4}}, {ID: "acme/runner/redroid", Name: "Redroid", Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
 	if err := ValidateForPlatform(linux, "linux"); err != nil {
 		t.Fatal(err)
 	}
@@ -168,12 +168,12 @@ func TestValidateForPlatformRejectsInvalidCombinations(t *testing.T) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/r", Name: "R", Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "r", Image: "r", DataDir: "/d", DataArchive: "/a"}}}
 		}},
 		{"unsupported emulator platform", "windows", "require Linux or macOS", func(c *Config) {
-			c.Devices = []DeviceConfig{{ID: "acme/runner/emulator", Name: "E", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}}
+			c.Devices = []DeviceConfig{{ID: "acme/runner/emulator", Name: "E", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}}
 		}},
 		{"duplicate emulator", "linux", "only one Android emulator", func(c *Config) {
-			emulator := DeviceConfig{ID: "acme/runner/emulator", Name: "E", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}
+			emulator := DeviceConfig{ID: "acme/runner/emulator", Name: "E", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}
 			second := emulator
-			second.ID, second.Name, second.AndroidEmulator = "acme/runner/emulator-2", "E2", &AndroidEmulatorConfig{AVDName: "avd-2", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}
+			second.ID, second.Name, second.AndroidEmulator = "acme/runner/emulator-2", "E2", &AndroidEmulatorConfig{APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}
 			c.Devices = []DeviceConfig{emulator, second}
 		}},
 	}
@@ -259,6 +259,29 @@ func TestManagedExposureRoundTripsTypedTOML(t *testing.T) {
 	}
 	if loaded.Exposure.Domain != "runner.example.com" || loaded.Exposure.CaddySite != ":80" || loaded.Exposure.CloudflareToken != "secret" {
 		t.Fatalf("managed exposure = %#v", loaded.Exposure)
+	}
+}
+
+func TestEmulatorBaseNameIsTheOnlyTypedAVDIdentifier(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := validConfig()
+	cfg.Devices = []DeviceConfig{{ID: "acme/runner/emulator", Name: "Emulator", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{BaseName: "credimi", APILevel: 35, ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}}
+	if err := WriteFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Devices[0].AndroidEmulator.BaseName != "credimi" {
+		t.Fatalf("base name = %q", loaded.Devices[0].AndroidEmulator.BaseName)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "avd_name") {
+		t.Fatalf("typed TOML contains derived avd_name:\n%s", data)
 	}
 }
 
@@ -382,11 +405,11 @@ func TestValidateForPlatformRejectsDuplicateDeviceIdentityAndLimits(t *testing.T
 			},
 		},
 		{
-			name: "duplicate AVD",
-			want: "duplicate devices[1].android_emulator.avd_name",
+			name: "duplicate emulator",
+			want: "only one Android emulator",
 			devices: []DeviceConfig{
-				{ID: "acme/runner/a", Name: "A", Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "same", APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "a", GoldenSource: "/a", MemoryMB: 1, Cores: 1}},
-				{ID: "acme/runner/b", Name: "B", Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "same", APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "b", GoldenSource: "/b", MemoryMB: 1, Cores: 1}},
+				{ID: "acme/runner/a", Name: "A", Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "a", GoldenSource: "/a", MemoryMB: 1, Cores: 1}},
+				{ID: "acme/runner/b", Name: "B", Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "b", GoldenSource: "/b", MemoryMB: 1, Cores: 1}},
 			},
 		},
 		{
@@ -496,15 +519,15 @@ func TestValidationHelpersCoverSupportedModesAndDeviceErrors(t *testing.T) {
 		goos       string
 	}{
 		{"missing physical subtype", "requires", DeviceConfig{Type: DeviceAndroidPhysical, AndroidEmulator: &AndroidEmulatorConfig{}}, "linux"},
-		{"missing emulator field", "is required", DeviceConfig{Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "a", APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "", MemoryMB: 1, Cores: 1}}, "linux"},
-		{"bad emulator resources", "must be positive", DeviceConfig{Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "a", APILevel: 0, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "/x", MemoryMB: 1, Cores: 1}}, "linux"},
+		{"missing emulator field", "is required", DeviceConfig{Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "", MemoryMB: 1, Cores: 1}}, "linux"},
+		{"bad emulator resources", "must be positive", DeviceConfig{Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{APILevel: 0, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "/x", MemoryMB: 1, Cores: 1}}, "linux"},
 		{"missing redroid field", "is required", DeviceConfig{Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "r", Image: "", DataDir: "/d", DataArchive: "/a", ADBPort: 5555}}, "linux"},
 		{"ios missing udid", "udid is required", DeviceConfig{Type: DeviceIOSSimulator, IOSSimulator: &IOSSimulatorConfig{}}, "darwin"},
 		{"unknown type", "unsupported", DeviceConfig{Type: "other", AndroidPhysical: &AndroidPhysicalConfig{}}, "linux"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateDevice(tc.device, "device", tc.goos, map[string]struct{}{}, map[string]struct{}{})
+			err := validateDevice(tc.device, "device", tc.goos, map[string]struct{}{})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error=%v want=%q", err, tc.want)
 			}

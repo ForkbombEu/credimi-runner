@@ -632,7 +632,7 @@ func TestEnsureRuntimeCapabilitiesProvisionsConfiguredEmulatorAssets(t *testing.
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
-		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "pixel", SystemImage: "system-images;android-35;google_apis;arm64-v8a"},
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "pixel", SystemImage: "system-images;android-35;google_apis;arm64-v8a"},
 	}}
 	needsEmulator := false
 	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", root, func(_ context.Context, _ string, emulator bool, image string) error {
@@ -659,7 +659,7 @@ func TestEnsureRuntimeCapabilitiesReusesConfiguredAVDHome(t *testing.T) {
 	cfg := runnerconfig.Bootstrap()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
-		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", SystemImage: "system-images;android-35;google_apis;x86_64"},
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", SystemImage: "system-images;android-35;google_apis;x86_64"},
 	}}
 	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "linux", root, func(context.Context, string, bool, string) error { return nil }); err != nil {
 		t.Fatalf("existing mounted AVD was not reused: %v", err)
@@ -789,7 +789,7 @@ func TestEnsureRuntimeCapabilitiesVerifiesDefaultEmulatorPath(t *testing.T) {
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "runner/emulator", Name: "Emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
-		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", SystemImage: "system-images;android-35;google_apis;x86_64"},
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", SystemImage: "system-images;android-35;google_apis;x86_64"},
 	}}
 	if err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", root, nil); err != nil {
 		t.Fatalf("default emulator capability verification failed: %v", err)

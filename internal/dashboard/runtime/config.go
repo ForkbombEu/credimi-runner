@@ -140,7 +140,7 @@ func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
 				values[prefix+"SERIAL"] = device.AndroidPhysical.Serial
 			}
 		case runnerconfig.DeviceAndroidEmulator:
-			values[prefix+"MODE"], values[prefix+"AVD_NAME"] = "emulator", device.AndroidEmulator.AVDName
+			values[prefix+"MODE"], values[prefix+"AVD_NAME"] = "emulator", device.AndroidEmulator.BaseName
 			values[prefix+"BASE_NAME"] = device.AndroidEmulator.BaseName
 			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
 		case runnerconfig.DeviceRedroid:
@@ -214,7 +214,8 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 			entry.Type, entry.AndroidPhysical = runnerconfig.DeviceAndroidPhysical, physical
 		case "android_emulator":
 			abi := DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
-			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, MemoryMB: 2048, Cores: 2}
+			baseName := defaultIfEmpty(device.Values["BASE_NAME"], DefaultBaseName)
+			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, BaseName: baseName, GoldenSource: "/avd-golden/" + baseName + "-golden", APILevel: 35, MemoryMB: 2048, Cores: 2}
 		case "redroid":
 			host, port := device.WiFiIP, device.WiFiPort
 			if host == "" {

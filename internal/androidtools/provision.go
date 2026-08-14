@@ -88,7 +88,7 @@ func ensureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Confi
 		if !device.Enabled || device.Type != runnerconfig.DeviceAndroidEmulator || device.AndroidEmulator == nil {
 			continue
 		}
-		if err := EnsureAVD(ctx, sdkRoot, avdHome, device.AndroidEmulator.AVDName, device.AndroidEmulator.SystemImage, nil); err != nil {
+		if err := EnsureAVD(ctx, sdkRoot, avdHome, device.AndroidEmulator.BaseName, device.AndroidEmulator.SystemImage, nil); err != nil {
 			return err
 		}
 	}

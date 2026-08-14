@@ -62,7 +62,7 @@ func TestEnsureEmulatorReadyReusesMountedAssetsAndEmptySerial(t *testing.T) {
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
-		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", BaseName: "credimi", GoldenSource: filepath.Join(goldenRoot, "credimi-golden"), SystemImage: "system-images;android-35;google_apis;x86_64"},
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: filepath.Join(goldenRoot, "credimi-golden"), SystemImage: "system-images;android-35;google_apis;x86_64"},
 	}}
 	if err := EnsureEmulatorReady(context.Background(), cfg, "darwin", nil); err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestEnsureEmulatorReadyDownloadsMissingAssets(t *testing.T) {
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
-		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", BaseName: "credimi", GoldenSource: filepath.Join(goldenRoot, "credimi-golden"), SystemImage: "system-images;android-35;google_apis;x86_64"},
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: filepath.Join(goldenRoot, "credimi-golden"), SystemImage: "system-images;android-35;google_apis;x86_64"},
 	}}
 	var stages []string
 	if err := EnsureEmulatorReady(context.Background(), cfg, "darwin", func(stage string) { stages = append(stages, stage) }); err != nil {
@@ -274,7 +274,7 @@ func emulatorReadyFixture(t *testing.T) (root, avdHome, goldenRoot string, cfg r
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
-		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", BaseName: "credimi", GoldenSource: filepath.Join(goldenRoot, "credimi-golden"), SystemImage: "system-images;android-35;google_apis;x86_64"},
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: filepath.Join(goldenRoot, "credimi-golden"), SystemImage: "system-images;android-35;google_apis;x86_64"},
 	}}
 	return root, avdHome, goldenRoot, cfg
 }

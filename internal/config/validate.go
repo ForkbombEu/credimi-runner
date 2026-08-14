@@ -69,7 +69,7 @@ func ValidateForPlatform(cfg Config, goos string) error {
 		return err
 	}
 
-	ids, names, serials, avds := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
+	ids, names, serials := map[string]struct{}{}, map[string]struct{}{}, map[string]struct{}{}
 	emulators, simulators := 0, 0
 	for index, device := range cfg.Devices {
 		label := fmt.Sprintf("devices[%d]", index)
@@ -88,7 +88,7 @@ func ValidateForPlatform(cfg Config, goos string) error {
 		if err := unique(names, device.Name, label+".name"); err != nil {
 			return err
 		}
-		if err := validateDevice(device, label, goos, serials, avds); err != nil {
+		if err := validateDevice(device, label, goos, serials); err != nil {
 			return err
 		}
 		switch device.Type {
@@ -107,7 +107,7 @@ func ValidateForPlatform(cfg Config, goos string) error {
 	return nil
 }
 
-func validateDevice(device DeviceConfig, label, goos string, serials, avds map[string]struct{}) error {
+func validateDevice(device DeviceConfig, label, goos string, serials map[string]struct{}) error {
 	subtables := 0
 	if device.AndroidPhysical != nil {
 		subtables++
@@ -167,7 +167,7 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if goos != "linux" && goos != "darwin" {
 			return errorsf("Android emulator devices require Linux or macOS")
 		}
-		for name, value := range map[string]string{"avd_name": device.AndroidEmulator.AVDName, "abi": device.AndroidEmulator.ABI, "system_image": device.AndroidEmulator.SystemImage, "base_name": device.AndroidEmulator.BaseName, "golden_source": device.AndroidEmulator.GoldenSource} {
+		for name, value := range map[string]string{"abi": device.AndroidEmulator.ABI, "system_image": device.AndroidEmulator.SystemImage, "base_name": device.AndroidEmulator.BaseName, "golden_source": device.AndroidEmulator.GoldenSource} {
 			if err := required(label+".android_emulator."+name, value); err != nil {
 				return err
 			}
@@ -175,7 +175,7 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if device.AndroidEmulator.APILevel <= 0 || device.AndroidEmulator.MemoryMB <= 0 || device.AndroidEmulator.Cores <= 0 {
 			return fmt.Errorf("%s.android_emulator API level, memory_mb, and cores must be positive", label)
 		}
-		return unique(avds, device.AndroidEmulator.AVDName, label+".android_emulator.avd_name")
+		return nil
 	case DeviceRedroid:
 		if device.Redroid == nil {
 			return fmt.Errorf("%s.type redroid requires [devices.redroid]", label)

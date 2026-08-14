@@ -839,18 +839,18 @@ func TestProvisionInternalRuntimeUsesAuthoritativeEmulatorReadiness(t *testing.T
 	cfg.Server.APIListen, cfg.Server.DashboardListen = "127.0.0.1:8050", "127.0.0.1:8051"
 	cfg.Storage.StateDir, cfg.Storage.ArtifactRetention = filepath.Join(dir, "state"), runnerconfig.Duration(1)
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "runner", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/emulator", Name: "Emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{AVDName: "credimi", BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, ABI: "x86_64", MemoryMB: 2048, Cores: 2, SystemImage: "system-images;android-35;google_apis;x86_64"}}}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/emulator", Name: "Emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, ABI: "x86_64", MemoryMB: 2048, Cores: 2, SystemImage: "system-images;android-35;google_apis;x86_64"}}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
 	previousEnsure := ensureEmulatorRuntime
-	var gotRoot, gotAVDName string
+	var gotRoot, gotBaseName string
 	ensureEmulatorRuntime = func(_ context.Context, got runnerconfig.Config, gotGOOS, root string, _ androidtools.EmulatorProgress) error {
 		gotRoot = root
 		if gotGOOS != "linux" {
 			t.Fatalf("GOOS = %q", gotGOOS)
 		}
-		gotAVDName = got.Devices[0].AndroidEmulator.AVDName
+		gotBaseName = got.Devices[0].AndroidEmulator.BaseName
 		return errors.New("base AVD image is unavailable")
 	}
 	t.Cleanup(func() { ensureEmulatorRuntime = previousEnsure })
@@ -858,8 +858,8 @@ func TestProvisionInternalRuntimeUsesAuthoritativeEmulatorReadiness(t *testing.T
 	if err := provisionInternalRuntimeAtForOS(context.Background(), dir, sdkRoot, "linux"); err == nil || !strings.Contains(err.Error(), "base AVD image is unavailable") {
 		t.Fatalf("provisioning error = %v", err)
 	}
-	if gotRoot != sdkRoot || gotAVDName != "credimi" {
-		t.Fatalf("emulator readiness input root=%q avd=%q", gotRoot, gotAVDName)
+	if gotRoot != sdkRoot || gotBaseName != "credimi" {
+		t.Fatalf("emulator readiness input root=%q base=%q", gotRoot, gotBaseName)
 	}
 }
 

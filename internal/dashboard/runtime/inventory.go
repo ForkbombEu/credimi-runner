@@ -126,7 +126,7 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 		}
 		block["ID"] = id
 		for key, value := range map[string]string{
-			"device ID": id, "device name": block["NAME"], "AVD name": block["AVD_NAME"],
+			"device ID": id, "device name": block["NAME"],
 			"port": block["PORT"], "container name": block["CONTAINER_NAME"], "work path": block["WORK_DIR"],
 		} {
 			if strings.TrimSpace(value) == "" {
@@ -170,6 +170,9 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 			if err != nil {
 				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("CREDIMI_DEVICE_%d_ENABLED must be boolean", index)
 			}
+		}
+		if block["TYPE"] == "android_emulator" && strings.TrimSpace(block["BASE_NAME"]) != "" {
+			block["AVD_NAME"] = strings.TrimSpace(block["BASE_NAME"])
 		}
 		serial := strings.TrimSpace(block["SERIAL"])
 		wifiIP, wifiPort := strings.TrimSpace(block["WIFI_IP"]), strings.TrimSpace(block["WIFI_PORT"])
@@ -353,6 +356,7 @@ func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values
 		delete(values, prefix+"SERIAL")
 		delete(values, prefix+"WIFI_IP")
 		delete(values, prefix+"WIFI_PORT")
+		delete(values, prefix+"AVD_NAME")
 		switch {
 		case device.Type == "android_phone" && device.Mode == "wifi":
 			wifiPort := strings.TrimSpace(device.WiFiPort)
@@ -373,6 +377,12 @@ func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values
 		case device.Type == "android_phone" && device.Mode == "usb":
 			if serial := strings.TrimSpace(device.Serial); serial != "" {
 				values[prefix+"SERIAL"] = serial
+			}
+		case device.Type == "android_emulator":
+			baseName := strings.TrimSpace(device.Values["BASE_NAME"])
+			if baseName != "" {
+				values[prefix+"BASE_NAME"] = baseName
+				values[prefix+"AVD_NAME"] = baseName
 			}
 		}
 	}

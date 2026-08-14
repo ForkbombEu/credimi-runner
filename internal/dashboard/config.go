@@ -378,7 +378,7 @@ func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
 			}
 		case runnerconfig.DeviceAndroidEmulator:
 			values[prefix+"MODE"] = "emulator"
-			values[prefix+"AVD_NAME"] = device.AndroidEmulator.AVDName
+			values[prefix+"AVD_NAME"] = device.AndroidEmulator.BaseName
 			values[prefix+"BASE_NAME"] = device.AndroidEmulator.BaseName
 			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
 		case runnerconfig.DeviceRedroid:
@@ -472,7 +472,11 @@ func configFromValues(values map[string]string) (runnerconfig.Config, error) {
 		case "android_emulator":
 			entry.Type = runnerconfig.DeviceAndroidEmulator
 			abi := dashboardruntime.DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
-			entry.AndroidEmulator = &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], BaseName: device.Values["BASE_NAME"], GoldenSource: device.Values["GOLDEN_PATH"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, APILevel: 35, MemoryMB: 2048, Cores: 2}
+			baseName := device.Values["BASE_NAME"]
+			if strings.TrimSpace(baseName) == "" {
+				baseName = dashboardruntime.DefaultBaseName
+			}
+			entry.AndroidEmulator = &runnerconfig.AndroidEmulatorConfig{BaseName: baseName, GoldenSource: device.Values["GOLDEN_PATH"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, APILevel: 35, MemoryMB: 2048, Cores: 2}
 		case "redroid":
 			entry.Type = runnerconfig.DeviceRedroid
 			port := device.WiFiPort

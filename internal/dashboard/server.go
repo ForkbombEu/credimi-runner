@@ -956,7 +956,7 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 		Values:      dashboardruntime.Values{},
 	}
 	for formKey, valueKey := range map[string]string{
-		"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID",
+		"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "ios_udid": "IOS_UDID",
 		"base_name":        "BASE_NAME",
 		"android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH",
 		"redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH",
@@ -1138,7 +1138,6 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	case "android_emulator":
 		androidKeysDir, avdHome, goldenRoot := emulatorAssetPaths()
 		set("BASE_NAME", "credimi")
-		set("AVD_NAME", device.Values["BASE_NAME"])
 		set("ANDROID_KEYS_DIR", androidKeysDir)
 		set("HOST_AVD_HOME_PATH", avdHome)
 		set("HOST_AVD_GOLDEN_PATH", goldenRoot)

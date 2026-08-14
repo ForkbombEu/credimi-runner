@@ -1386,7 +1386,7 @@ func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	emulator := dashboardruntime.DeviceRuntimeConfig{Type: "android_emulator", Mode: "emulator"}
 	applyDeviceDefaults(&emulator)
-	if emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["AVD_NAME"] != "credimi" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
+	if emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["AVD_NAME"] != "" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
 		t.Fatalf("emulator defaults = %#v", emulator.Values)
 	}
 	redroid := dashboardruntime.DeviceRuntimeConfig{Type: "redroid", Mode: "no_device", Values: dashboardruntime.Values{}}
@@ -1396,7 +1396,7 @@ func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	}
 }
 
-func TestSetupDevicesPersistsEmulatorAVDName(t *testing.T) {
+func TestSetupDevicesUsesBaseNameAsEmulatorID(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/mobile-device/preview-id" {
 			http.NotFound(w, r)
@@ -1430,7 +1430,7 @@ func TestSetupDevicesPersistsEmulatorAVDName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(devices) != 1 || devices[0].Values["AVD_NAME"] != "credimi" {
+	if len(devices) != 1 || devices[0].Values["BASE_NAME"] != "credimi" || devices[0].Values["AVD_NAME"] != "" {
 		t.Fatalf("emulator device = %#v", devices)
 	}
 	store, err := dashboardruntime.LoadStore(t.TempDir())
@@ -1439,6 +1439,9 @@ func TestSetupDevicesPersistsEmulatorAVDName(t *testing.T) {
 	}
 	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(values), Devices: devices}); err != nil {
 		t.Fatalf("emulator inventory must persist: %v", err)
+	}
+	if store.Values["CREDIMI_DEVICE_1_AVD_NAME"] != "credimi" {
+		t.Fatalf("derived emulator compatibility name = %#v", store.Values)
 	}
 }
 

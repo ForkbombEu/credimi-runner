@@ -128,7 +128,6 @@ type AndroidPhysicalConfig struct {
 }
 
 type AndroidEmulatorConfig struct {
-	AVDName      string `toml:"avd_name"`
 	APILevel     int    `toml:"api_level"`
 	ABI          string `toml:"abi"`
 	SystemImage  string `toml:"system_image"`
