@@ -17,11 +17,22 @@ func TestDockerfileBuildsOnlyTheRunnerImage(t *testing.T) {
 	require.Contains(t, dockerfile, "ENTRYPOINT [\"/usr/local/bin/credimi-runner\"]")
 	require.NotContains(t, dockerfile, "AS agent")
 	require.NotContains(t, dockerfile, "agent-config.json")
-	require.Contains(t, dockerfile, `"build-tools;35.0.0"`)
 	require.Contains(t, dockerfile, "/usr/local/bin/aapt2")
 	require.NotContains(t, dockerfile, `"platform-tools" "emulator" "build-tools;35.0.0"`)
-	require.NotContains(t, dockerfile, "/opt/android-sdk-bootstrap/platform-tools")
 	require.NotContains(t, dockerfile, "/opt/android-sdk-bootstrap/emulator")
+}
+
+func TestDockerfileBootstrapsADBForFreshPersistentVolumes(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "Dockerfile"))
+	require.NoError(t, err)
+	dockerfile := string(content)
+
+	require.Contains(t, dockerfile,
+		`PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:/opt/android-sdk-bootstrap/cmdline-tools/latest/bin:/opt/android-sdk-bootstrap/platform-tools:/root/.maestro/bin:$PATH`,
+	)
+	require.Contains(t, dockerfile,
+		`sdkmanager --sdk_root="$ANDROID_SDK_BOOTSTRAP" "platform-tools" "build-tools;35.0.0"`,
+	)
 }
 
 func TestDockerfileKeepsPersistentEmulatorAndAVDCTL(t *testing.T) {
