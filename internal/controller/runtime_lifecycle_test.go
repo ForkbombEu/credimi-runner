@@ -374,6 +374,37 @@ func TestRuntimeLifecycleEndpointsAndStop(t *testing.T) {
 	}
 }
 
+func TestRuntimeLifecycleManualRegistrationUsesConfiguredPublicPort(t *testing.T) {
+	var request dashboardruntime.RegisterRunnerRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer api.Close()
+
+	lifecycle := RuntimeLifecycle{
+		Manager: &lifecycleManager{},
+		Values: dashboardruntime.Values{
+			"CREDIMI_URL":                 api.URL,
+			"CREDIMI_USER_API_KEY":        "key",
+			"CREDIMI_RUNNER_ID":           "acme/runner",
+			"CREDIMI_RUNNER_NAME":         "runner",
+			"CREDIMI_RUNNER_ORGANIZATION": "acme",
+			"CREDIMI_SERVICE_MODE":        "manual",
+			"RUNNER_PUBLIC_URL":           "https://runner.example",
+			"RUNNER_PUBLIC_PORT":          "8050",
+		},
+	}
+	if err := lifecycle.Register(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if request.IP != "https://runner.example" || request.Port != "8050" {
+		t.Fatalf("registration request = %#v", request)
+	}
+}
+
 func TestRuntimeLifecycleWaitsForQuickTunnelURL(t *testing.T) {
 	attempts := 0
 	lifecycle := RuntimeLifecycle{

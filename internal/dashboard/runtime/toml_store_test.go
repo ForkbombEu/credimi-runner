@@ -44,3 +44,38 @@ func TestStoreUsesTypedTOMLForDeviceInventory(t *testing.T) {
 		t.Fatalf("reloaded=%#v err=%v", reloaded, err)
 	}
 }
+
+func TestValuesWithRuntimeDevicesPreservesAuthoritativeSecondSerial(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), testTOMLConfig(dir)); err != nil {
+		t.Fatal(err)
+	}
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := DeviceRuntimeConfig{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "SERIAL_TWO", WiFiIP: "192.0.2.2", WiFiPort: "5555", Values: Values{}}
+	devices := append(first.Devices, second)
+	values := ValuesWithRuntimeDevices(store.Snapshot(), devices)
+	if values["CREDIMI_DEVICE_2_SERIAL"] != "SERIAL_TWO" {
+		t.Fatalf("second serial values = %#v", values)
+	}
+	if values["CREDIMI_DEVICE_2_WIFI_IP"] != "192.0.2.2" || values["CREDIMI_DEVICE_2_WIFI_PORT"] != "5555" {
+		t.Fatalf("second Wi-Fi values = %#v", values)
+	}
+	if err := store.SaveRuntimeConfig(RunnerRuntimeConfig{Host: store.Snapshot(), Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := reloaded.RuntimeConfig()
+	if err != nil || len(config.Devices) != 2 || config.Devices[1].Serial != "SERIAL_TWO" {
+		t.Fatalf("round-tripped devices = %#v err=%v", config.Devices, err)
+	}
+}

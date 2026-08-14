@@ -293,6 +293,26 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 			t.Fatalf("setup device provisioning missing %q", want)
 		}
 	}
+	if strings.Count(html, `name="CREDIMI_RUNNER_TYPE"`) != 2 || strings.Count(html, `name="CREDIMI_RUNNER_DEVICE_MODE"`) != 2 {
+		t.Fatalf("each rendered device card should have one canonical type and mode field: %s", html)
+	}
+	if strings.Contains(html, `type="radio" name="CREDIMI_RUNNER_TYPE"`) || strings.Contains(html, `type="radio" name="CREDIMI_RUNNER_DEVICE_MODE"`) {
+		t.Fatalf("device radios must use UI-only names: %s", html)
+	}
+	for _, want := range []string{"data-device-type-value", "data-device-mode-value", "data-device-type-ui", "data-device-mode-ui"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("setup device card missing %q", want)
+		}
+	}
+	script, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"initializeDeviceProvisionCard", "device_type_ui_${id}", "device_mode_ui_${id}"} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("device card initialization missing %q", want)
+		}
+	}
 }
 
 func TestRenderer_ShowsIOSSimulatorOnDarwin(t *testing.T) {

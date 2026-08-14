@@ -87,6 +87,73 @@ func TestConfigApplyWritesTypedTOML(t *testing.T) {
 	}
 }
 
+func TestConfigCompatibilityRoundTripsManualPublicPort(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), dashboardTestConfig(dir)); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := runner.Snapshot()
+	values["RUNNER_PUBLIC_PORT"] = "8050"
+	typed, err := configFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), typed); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compatibility, err := valuesFromTOML(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility["RUNNER_PUBLIC_PORT"] != "8050" {
+		t.Fatalf("compatibility public port = %q", compatibility["RUNNER_PUBLIC_PORT"])
+	}
+}
+
+func TestConfigApplyPersistsManualPublicPortEdit(t *testing.T) {
+	dir := t.TempDir()
+	cfg := dashboardTestConfig(dir)
+	cfg.Exposure.PublicPort = "8050"
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Apply(map[string]string{"RUNNER_PUBLIC_PORT": "9000"}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Get("RUNNER_PUBLIC_PORT") != "9000" {
+		t.Fatalf("reloaded manual public port = %q", reloaded.Get("RUNNER_PUBLIC_PORT"))
+	}
+}
+
+func TestValidatePortRange(t *testing.T) {
+	for _, value := range []string{"abc", "0", "65536", "99999", "00000"} {
+		if errs := Validate(map[string]string{"RUNNER_PUBLIC_PORT": value}); errs["RUNNER_PUBLIC_PORT"] == "" {
+			t.Fatalf("invalid public port %q accepted", value)
+		}
+	}
+	for _, value := range []string{"1", "80", "8050", "65535", ""} {
+		if errs := Validate(map[string]string{"RUNNER_PUBLIC_PORT": value}); errs["RUNNER_PUBLIC_PORT"] != "" {
+			t.Fatalf("valid public port %q rejected: %v", value, errs)
+		}
+	}
+}
+
 func TestConfigHelpersAndFieldGroups(t *testing.T) {
 	if maskSecret("short") != "short" {
 		t.Fatal("short secret changed")

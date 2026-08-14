@@ -910,8 +910,9 @@
       if (template && list) {
         const card = template.content.cloneNode(true);
         list.appendChild(card);
-        list.lastElementChild.querySelector('[data-setup-device-remove]').hidden = false;
-        updateDeviceFields(list.lastElementChild);
+        const newCard = list.lastElementChild;
+        newCard.querySelector('[data-setup-device-remove]').hidden = false;
+        initializeDeviceProvisionCard(newCard);
       }
       return;
     }
@@ -1040,8 +1041,6 @@
       }
       params.set(input.name, input.value || '');
     });
-    const runnerType = root.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked');
-    if (runnerType) params.set('CREDIMI_RUNNER_TYPE', runnerType.value || '');
     return params;
   };
   const setCallout = (el, tone, message) => {
@@ -1305,7 +1304,7 @@
     const derived = deriveHomeDefaults(root);
     switch (type) {
       case 'android_emulator':
-        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'emulator');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
@@ -1323,7 +1322,7 @@
         setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
       case 'ios_simulator':
-        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'simulator');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
@@ -1438,6 +1437,38 @@
     refreshIOSSimulatorPanel(root);
     refreshAndroidEmulatorAssetsPanel(root);
   };
+  let nextDeviceProvisionID = 0;
+  const initializeDeviceProvisionCard = (card) => {
+    if (!card || !card.matches('[data-device-provision]')) return;
+    const id = card.dataset.deviceProvisionId || `device-${++nextDeviceProvisionID}`;
+    card.dataset.deviceProvisionId = id;
+    card.querySelectorAll('[data-device-type-ui]').forEach((radio) => {
+      radio.name = `device_type_ui_${id}`;
+    });
+    card.querySelectorAll('[data-device-mode-ui]').forEach((radio) => {
+      radio.name = `device_mode_ui_${id}`;
+    });
+
+    const typeRadio = card.querySelector('[data-device-type-ui]:checked');
+    const typeField = card.querySelector('[data-device-type-value]');
+    if (typeRadio && typeField) typeField.value = typeRadio.value || '';
+
+    const modeField = card.querySelector('[data-device-mode-value]');
+    if (modeField) {
+      const type = typeField ? typeField.value : '';
+      if (type === 'android_phone') {
+        const modeRadio = card.querySelector('[data-device-mode-ui]:checked');
+        if (modeRadio) modeField.value = modeRadio.value || '';
+      } else if (type === 'android_emulator') {
+        modeField.value = 'emulator';
+      } else if (type === 'ios_simulator') {
+        modeField.value = 'simulator';
+      } else if (type === 'redroid') {
+        modeField.value = 'no_device';
+      }
+    }
+    updateDeviceFields(card);
+  };
   document.addEventListener('change', (e) => {
     const select = e.target.closest('[data-android-phone-device-select]');
     if (!select) return;
@@ -1452,10 +1483,11 @@
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
-      updateDeviceFields(root);
+      applyRunnerTypeDefaults(root, radio.value);
+      initializeDeviceProvisionCard(root);
       markDirty();
       const finish = () => {
-        updateDeviceFields(root);
+        initializeDeviceProvisionCard(root);
         const sshEnabled = root.querySelector('[data-avdctl-ssh-enabled]');
         if (sshEnabled) sshEnabled.checked = radio.value === 'redroid' && !!fieldValue(root, 'AVDCTL_SSH_TARGET');
         syncAVDCTLSSH(root);
@@ -1468,7 +1500,11 @@
     }
   });
   document.addEventListener('change', (e) => {
-    if (e.target.name === 'CREDIMI_RUNNER_DEVICE_MODE' || e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
+    if (e.target.matches('[data-device-mode-ui]')) {
+      initializeDeviceProvisionCard(e.target.closest('[data-device-provision]'));
+      return;
+    }
+    if (e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
       updateDeviceFields(e.target.closest('[data-device-provision]') || e.target.closest('form') || document);
     }
   });
@@ -1573,8 +1609,7 @@
   });
   const initDeviceFields = () => {
     $$('form').forEach((form) => {
-      form.querySelectorAll('[data-device-provision]').forEach(updateDeviceFields);
-      if (!form.querySelector('[data-device-provision]') && form.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked')) updateDeviceFields(form);
+      form.querySelectorAll('[data-device-provision]').forEach(initializeDeviceProvisionCard);
     });
   };
   initDeviceFields();

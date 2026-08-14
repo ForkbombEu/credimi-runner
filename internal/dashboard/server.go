@@ -963,11 +963,14 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	} {
 		value := strings.TrimSpace(r.FormValue(formKey))
 		if value == "" {
-			value = strings.TrimSpace(r.FormValue(map[string]string{"wifi_ip": "CREDIMI_RUNNER_WIFI_IP", "wifi_port": "CREDIMI_RUNNER_WIFI_PORT", "base_name": "BASE_NAME", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"}[formKey]))
+			value = strings.TrimSpace(r.FormValue(map[string]string{"serial": "CREDIMI_RUNNER_SERIAL", "wifi_ip": "CREDIMI_RUNNER_WIFI_IP", "wifi_port": "CREDIMI_RUNNER_WIFI_PORT", "base_name": "BASE_NAME", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"}[formKey]))
 		}
 		if value != "" {
 			device.Values[valueKey] = value
 		}
+	}
+	if device.Serial != "" {
+		device.Values["SERIAL"] = device.Serial
 	}
 	created := true
 	if deviceID != "" {
@@ -980,6 +983,9 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 				if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
 					device.Values[valueKey] = value
 				}
+			}
+			if device.Serial != "" {
+				device.Values["SERIAL"] = device.Serial
 			}
 			config.Devices[index] = device
 			created = false

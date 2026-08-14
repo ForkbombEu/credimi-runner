@@ -115,6 +115,7 @@ func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
 		values["CREDIMI_SERVICE_MODE"] = "auto"
 	}
 	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
+	values["RUNNER_PUBLIC_PORT"] = cfg.Exposure.PublicPort
 	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
 	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
 	for i, device := range cfg.Devices {
@@ -167,7 +168,7 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 	default:
 		cfg.Exposure.Mode = "quick_tunnel"
 	}
-	cfg.Exposure.PublicURL, cfg.Exposure.CloudflareToken = values["RUNNER_PUBLIC_URL"], values["CLOUDFLARE_TUNNEL_TOKEN"]
+	cfg.Exposure.PublicURL, cfg.Exposure.PublicPort, cfg.Exposure.CloudflareToken = values["RUNNER_PUBLIC_URL"], values["RUNNER_PUBLIC_PORT"], values["CLOUDFLARE_TUNNEL_TOKEN"]
 	runtimeCfg, err := parseRunnerRuntimeConfig(values)
 	if err != nil && strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
 		return cfg, err

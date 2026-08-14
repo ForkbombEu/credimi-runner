@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -198,6 +199,9 @@ func validateAuth(cfg CredimiConfig) error {
 }
 
 func validateExposure(cfg ExposureConfig) error {
+	if port := strings.TrimSpace(cfg.PublicPort); port != "" && !validPort(port) {
+		return errorsf("exposure.public_port must be a valid TCP port")
+	}
 	switch cfg.Mode {
 	case "manual":
 		if strings.TrimSpace(cfg.PublicURL) == "" {
@@ -219,6 +223,16 @@ func validateExposure(cfg ExposureConfig) error {
 		return errorsf("exposure.mode must be manual, quick_tunnel, or named_tunnel")
 	}
 	return nil
+}
+
+func validPort(value string) bool {
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	port, err := strconv.Atoi(value)
+	return err == nil && port >= 1 && port <= 65535
 }
 
 func validateAndroid(cfg AndroidConfig) error {

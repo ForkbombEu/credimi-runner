@@ -1671,6 +1671,77 @@ func TestServerSetupRenderHelpers(t *testing.T) {
 	}
 }
 
+func TestSetupDevicesParsesTwoUSBDevicesInCardOrder(t *testing.T) {
+	var previewCount int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		previewCount++
+		_ = json.NewEncoder(w).Encode(map[string]string{"device_id": fmt.Sprintf("acme/runner/device-%d", previewCount)})
+	}))
+	defer api.Close()
+
+	s := newTestServer(t)
+	form := url.Values{
+		"CREDIMI_DEVICE_NAME":        {"Pixel One", "Pixel Two"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone", "android_phone"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"usb", "usb"},
+		"CREDIMI_RUNNER_SERIAL":      {"SERIAL_ONE", "SERIAL_TWO"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := s.setupDevices(req, map[string]string{
+		"CREDIMI_URL":                 api.URL,
+		"CREDIMI_USER_API_KEY":        "key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("devices = %#v", devices)
+	}
+	for index, want := range []struct{ name, serial string }{{"Pixel One", "SERIAL_ONE"}, {"Pixel Two", "SERIAL_TWO"}} {
+		if devices[index].Name != want.name || devices[index].Type != "android_phone" || devices[index].Mode != "usb" || devices[index].Serial != want.serial {
+			t.Fatalf("device %d = %#v", index+1, devices[index])
+		}
+	}
+}
+
+func TestSetupDevicesKeepsMixedTypesAndModesInCardOrder(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"device_id": "acme/runner/device" + r.URL.Path})
+	}))
+	defer api.Close()
+
+	s := newTestServer(t)
+	form := url.Values{
+		"CREDIMI_DEVICE_NAME":        {"USB phone", "Emulator"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone", "android_emulator"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"usb", "emulator"},
+		"CREDIMI_RUNNER_SERIAL":      {"SERIAL_ONE", ""},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := s.setupDevices(req, map[string]string{
+		"CREDIMI_URL":                 api.URL,
+		"CREDIMI_USER_API_KEY":        "key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].Type != "android_phone" || devices[0].Mode != "usb" || devices[0].Serial != "SERIAL_ONE" || devices[1].Type != "android_emulator" || devices[1].Mode != "emulator" {
+		t.Fatalf("mixed devices = %#v", devices)
+	}
+}
+
 func TestServerSaveOverviewPublishedConfig(t *testing.T) {
 	transport := http.DefaultTransport
 	var payload dashboardruntime.RegisterRunnerRequest
@@ -2712,7 +2783,7 @@ func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 		"name":                           {"Second phone"},
 		"type":                           {"android_phone"},
 		"mode":                           {"usb"},
-		"serial":                         {"usb-2"},
+		"CREDIMI_RUNNER_SERIAL":          {"usb-2"},
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
@@ -2729,7 +2800,7 @@ func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Devices) != 2 || config.Devices[1].ID != "acme/runner/second-phone" {
+	if len(config.Devices) != 2 || config.Devices[1].ID != "acme/runner/second-phone" || config.Devices[1].Serial != "usb-2" {
 		t.Fatalf("created device inventory = %#v", config.Devices)
 	}
 }

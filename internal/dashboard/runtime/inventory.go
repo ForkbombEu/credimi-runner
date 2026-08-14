@@ -9,8 +9,8 @@ import (
 )
 
 // DeviceRuntimeConfig is the immutable local configuration for one execution
-// target. Values contains only device-scoped values, keyed without the
-// CREDIMI_DEVICE_<n>_ prefix.
+// target. Its explicit fields are authoritative; Values contains additional
+// device-scoped settings, keyed without the CREDIMI_DEVICE_<n>_ prefix.
 type DeviceRuntimeConfig struct {
 	Index       int
 	ID          string
@@ -330,6 +330,15 @@ func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values
 		values[prefix+"TYPE"] = device.Type
 		values[prefix+"MODE"] = device.Mode
 		values[prefix+"ENABLED"] = strconv.FormatBool(device.Enabled)
+		if serial := strings.TrimSpace(device.Serial); serial != "" {
+			values[prefix+"SERIAL"] = serial
+		}
+		if wifiIP := strings.TrimSpace(device.WiFiIP); wifiIP != "" {
+			values[prefix+"WIFI_IP"] = wifiIP
+		}
+		if wifiPort := strings.TrimSpace(device.WiFiPort); wifiPort != "" {
+			values[prefix+"WIFI_PORT"] = wifiPort
+		}
 	}
 	return values
 }

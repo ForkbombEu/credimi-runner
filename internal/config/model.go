@@ -80,6 +80,7 @@ type ServerConfig struct {
 type ExposureConfig struct {
 	Mode            string `toml:"mode"`
 	PublicURL       string `toml:"public_url"`
+	PublicPort      string `toml:"public_port"`
 	CloudflareToken string `toml:"cloudflare_token"`
 }
 

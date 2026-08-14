@@ -192,13 +192,27 @@ func Validate(vals map[string]string) map[string]string {
 					errs[f.Key] = "Not a valid URL."
 				}
 			}
-		case "RUNNER_PORT":
-			if !regexp.MustCompile(`^\d{1,5}$`).MatchString(v) {
+		case "RUNNER_PORT", "RUNNER_PUBLIC_PORT":
+			if !validatePort(v) {
 				errs[f.Key] = "Must be a port number."
 			}
 		}
 	}
 	return errs
+}
+
+func validatePort(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return true
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	port, err := strconv.Atoi(value)
+	return err == nil && port >= 1 && port <= 65535
 }
 
 // Apply validates and persists incoming form values as typed TOML atomically.
@@ -335,6 +349,7 @@ func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
 		values["CREDIMI_SERVICE_MODE"] = "manual"
 	}
 	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
+	values["RUNNER_PUBLIC_PORT"] = cfg.Exposure.PublicPort
 	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
 	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
 	for i, device := range cfg.Devices {
@@ -411,6 +426,7 @@ func configFromValues(values map[string]string) (runnerconfig.Config, error) {
 		cfg.Exposure.Mode = "quick_tunnel"
 	}
 	cfg.Exposure.PublicURL = normalized["RUNNER_PUBLIC_URL"]
+	cfg.Exposure.PublicPort = normalized["RUNNER_PUBLIC_PORT"]
 	cfg.Exposure.CloudflareToken = normalized["CLOUDFLARE_TUNNEL_TOKEN"]
 	parsed, err := dashboardruntime.ParseRuntimeConfig(normalized)
 	if err != nil && strings.TrimSpace(normalized["CREDIMI_DEVICE_COUNT"]) != "" {

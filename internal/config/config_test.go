@@ -160,6 +160,22 @@ func TestLoadWriteAndRedactConfig(t *testing.T) {
 	}
 }
 
+func TestExposurePublicPortRoundTripsTypedTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := validConfig()
+	cfg.Exposure = ExposureConfig{Mode: "manual", PublicURL: "https://runner.example", PublicPort: "8050"}
+	if err := WriteFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Exposure.PublicPort != "8050" {
+		t.Fatalf("public port = %q", loaded.Exposure.PublicPort)
+	}
+}
+
 func TestDefaultsPathsAndLoadResolution(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	state, err := DefaultStateDir()
