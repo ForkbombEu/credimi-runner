@@ -350,6 +350,8 @@ func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
 	}
 	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
 	values["RUNNER_PUBLIC_PORT"] = cfg.Exposure.PublicPort
+	values["RUNNER_DOMAIN"] = cfg.Exposure.Domain
+	values["RUNNER_CADDY_SITE"] = defaultValue(cfg.Exposure.CaddySite, dashboardruntime.DefaultRunnerCaddySite)
 	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
 	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
 	for i, device := range cfg.Devices {
@@ -436,6 +438,11 @@ func configFromValues(values map[string]string) (runnerconfig.Config, error) {
 	}
 	cfg.Exposure.PublicURL = normalized["RUNNER_PUBLIC_URL"]
 	cfg.Exposure.PublicPort = normalized["RUNNER_PUBLIC_PORT"]
+	cfg.Exposure.Domain = normalized["RUNNER_DOMAIN"]
+	cfg.Exposure.CaddySite = strings.TrimSpace(normalized["RUNNER_CADDY_SITE"])
+	if cfg.Exposure.CaddySite == "" {
+		cfg.Exposure.CaddySite = dashboardruntime.DefaultRunnerCaddySite
+	}
 	cfg.Exposure.CloudflareToken = normalized["CLOUDFLARE_TUNNEL_TOKEN"]
 	parsed, err := dashboardruntime.ParseRuntimeConfig(normalized)
 	if err != nil && strings.TrimSpace(normalized["CREDIMI_DEVICE_COUNT"]) != "" {

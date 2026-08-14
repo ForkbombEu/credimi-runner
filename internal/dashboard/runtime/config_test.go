@@ -30,6 +30,40 @@ func TestLoadStoreMissingTOML(t *testing.T) {
 	}
 }
 
+func TestManagedExposureValuesRoundTripThroughTypedStore(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testTOMLConfig(dir)
+	cfg.Exposure = config.ExposureConfig{Mode: "named_tunnel", Domain: "runner.example.com", CaddySite: ":80", CloudflareToken: "secret"}
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"CREDIMI_SERVICE_MODE": "cloudflare-managed", "RUNNER_DOMAIN": "runner.example.com", "RUNNER_CADDY_SITE": ":80", "CLOUDFLARE_TUNNEL_TOKEN": "secret",
+	} {
+		if store.Values[key] != want {
+			t.Fatalf("%s = %q, want %q", key, store.Values[key], want)
+		}
+	}
+	values := store.Snapshot()
+	values["RUNNER_DOMAIN"] = "new.example.com"
+	values["RUNNER_CADDY_SITE"] = ":8080"
+	values["CLOUDFLARE_TUNNEL_TOKEN"] = "new-secret"
+	if err := store.Save(values); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := config.LoadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Exposure.Domain != "new.example.com" || reloaded.Exposure.CaddySite != ":8080" || reloaded.Exposure.CloudflareToken != "new-secret" {
+		t.Fatalf("saved managed exposure = %#v", reloaded.Exposure)
+	}
+}
+
 func TestDefaultEmulatorABIFollowsNativeHostArchitecture(t *testing.T) {
 	for _, test := range []struct {
 		goos, goarch, want string

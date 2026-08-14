@@ -240,8 +240,17 @@ func validateExposure(cfg ExposureConfig) error {
 			return errorsf("quick_tunnel must not configure cloudflare_token")
 		}
 	case "named_tunnel":
+		if strings.TrimSpace(cfg.Domain) == "" {
+			return errorsf("named_tunnel requires domain")
+		}
 		if strings.TrimSpace(cfg.CloudflareToken) == "" {
 			return errorsf("named_tunnel requires cloudflare_token")
+		}
+		if strings.Contains(cfg.Domain, "://") {
+			parsed, err := url.ParseRequestURI(cfg.Domain)
+			if err != nil || parsed.Host == "" {
+				return errorsf("exposure.domain must be a hostname or absolute URL")
+			}
 		}
 	default:
 		return errorsf("exposure.mode must be manual, quick_tunnel, or named_tunnel")

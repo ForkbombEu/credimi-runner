@@ -246,6 +246,22 @@ func TestExposurePublicPortRoundTripsTypedTOML(t *testing.T) {
 	}
 }
 
+func TestManagedExposureRoundTripsTypedTOML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := validConfig()
+	cfg.Exposure = ExposureConfig{Mode: "named_tunnel", Domain: "runner.example.com", CaddySite: ":80", CloudflareToken: "secret"}
+	if err := WriteFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Exposure.Domain != "runner.example.com" || loaded.Exposure.CaddySite != ":80" || loaded.Exposure.CloudflareToken != "secret" {
+		t.Fatalf("managed exposure = %#v", loaded.Exposure)
+	}
+}
+
 func TestDefaultsPathsAndLoadResolution(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	state, err := DefaultStateDir()
@@ -417,7 +433,7 @@ func TestLoadExplicitPathAndRedactsEverySecret(t *testing.T) {
 	cfg := validConfig()
 	cfg.Credimi.InternalAdminKey = ""
 	cfg.Server.DashboardToken = "dashboard-secret"
-	cfg.Exposure = ExposureConfig{Mode: "named_tunnel", CloudflareToken: "cloudflare-secret"}
+	cfg.Exposure = ExposureConfig{Mode: "named_tunnel", Domain: "runner.example.com", CloudflareToken: "cloudflare-secret"}
 	if err := WriteFile(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +470,7 @@ func TestValidationHelpersCoverSupportedModesAndDeviceErrors(t *testing.T) {
 			t.Fatalf("auth %#v: %v", auth, err)
 		}
 	}
-	for _, exposure := range []ExposureConfig{{Mode: "manual", PublicURL: "https://runner.example"}, {Mode: "quick_tunnel"}, {Mode: "named_tunnel", CloudflareToken: "token"}} {
+	for _, exposure := range []ExposureConfig{{Mode: "manual", PublicURL: "https://runner.example"}, {Mode: "quick_tunnel"}, {Mode: "named_tunnel", Domain: "runner.example.com", CloudflareToken: "token"}} {
 		if err := validateExposure(exposure); err != nil {
 			t.Fatalf("exposure %#v: %v", exposure, err)
 		}
