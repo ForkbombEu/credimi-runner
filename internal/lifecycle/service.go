@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -103,9 +105,12 @@ func deviceRegistration(host Host, target device.Device) map[string]any {
 	serial := ""
 	if target.AndroidPhysical != nil {
 		serial = target.AndroidPhysical.Serial
+		if target.AndroidPhysical.Transport == "wifi" {
+			serial = net.JoinHostPort(target.AndroidPhysical.WiFiIP, target.AndroidPhysical.WiFiPort)
+		}
 	}
 	if target.Redroid != nil {
-		serial = target.Redroid.Serial
+		serial = net.JoinHostPort(target.Redroid.Host, strconv.Itoa(target.Redroid.ADBPort))
 	}
 	if target.IOSSimulator != nil {
 		serial = target.IOSSimulator.UDID

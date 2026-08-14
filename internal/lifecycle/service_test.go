@@ -50,7 +50,7 @@ func testRegistry(t *testing.T) *device.Registry {
 	t.Helper()
 	registry, err := device.NewRegistry([]config.DeviceConfig{
 		{ID: "acme/runner/phone", Name: "Phone", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Serial: "phone"}},
-		{ID: "acme/runner/disabled", Name: "Disabled", Type: config.DeviceRedroid, Enabled: false, Redroid: &config.RedroidConfig{Serial: "redroid"}},
+		{ID: "acme/runner/disabled", Name: "Disabled", Type: config.DeviceRedroid, Enabled: false, Redroid: &config.RedroidConfig{Host: "redroid", ADBPort: 5555}},
 	})
 	require.NoError(t, err)
 	return registry
@@ -198,7 +198,7 @@ func TestStartSendsPeriodicHeartbeatsUntilStopped(t *testing.T) {
 func TestDefaultProbeTreatsIdleRedroidAsReady(t *testing.T) {
 	registry, err := device.NewRegistry([]config.DeviceConfig{{
 		ID: "acme/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true,
-		Redroid: &config.RedroidConfig{Serial: "10.0.0.4:5555"},
+		Redroid: &config.RedroidConfig{Host: "10.0.0.4", ADBPort: 5555},
 	}})
 	require.NoError(t, err)
 	service, err := New(Config{CredimiURL: "https://credimi.example", APIKey: "key", Host: Host{ID: "acme/runner"}}, registry, nil, nil)

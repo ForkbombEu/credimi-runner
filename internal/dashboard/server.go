@@ -972,25 +972,60 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	if device.Serial != "" {
 		device.Values["SERIAL"] = device.Serial
 	}
+	normalizeDeviceAddress := func() {
+		device.WiFiIP = strings.TrimSpace(device.Values["WIFI_IP"])
+		device.WiFiPort = strings.TrimSpace(device.Values["WIFI_PORT"])
+		switch {
+		case device.Type == "android_phone" && device.Mode == "wifi":
+			if device.WiFiPort == "" {
+				device.WiFiPort = dashboardruntime.DefaultWiFiPort
+			}
+			device.Serial = dashboardruntime.AndroidWiFiSerial(device.WiFiIP, device.WiFiPort)
+			device.Values["WIFI_IP"], device.Values["WIFI_PORT"] = device.WiFiIP, device.WiFiPort
+			device.Values["SERIAL"] = device.Serial
+		case device.Type == "android_phone" && device.Mode == "no_device":
+			device.Serial, device.WiFiIP, device.WiFiPort = "", "", ""
+			delete(device.Values, "SERIAL")
+			delete(device.Values, "WIFI_IP")
+			delete(device.Values, "WIFI_PORT")
+		case device.Type == "android_phone" && device.Mode == "usb":
+			device.Serial = strings.TrimSpace(device.Values["SERIAL"])
+			device.WiFiIP, device.WiFiPort = "", ""
+			delete(device.Values, "WIFI_IP")
+			delete(device.Values, "WIFI_PORT")
+		case device.Type == "redroid":
+			if device.WiFiPort == "" {
+				device.WiFiPort = dashboardruntime.DefaultWiFiPort
+			}
+			device.Serial = dashboardruntime.AndroidWiFiSerial(device.WiFiIP, device.WiFiPort)
+			device.Values["WIFI_IP"], device.Values["WIFI_PORT"] = device.WiFiIP, device.WiFiPort
+			device.Values["SERIAL"] = device.Serial
+		default:
+			device.Serial, device.WiFiIP, device.WiFiPort = "", "", ""
+			delete(device.Values, "SERIAL")
+			delete(device.Values, "WIFI_IP")
+			delete(device.Values, "WIFI_PORT")
+		}
+	}
 	created := true
 	if deviceID != "" {
 		for index := range config.Devices {
 			if config.Devices[index].ID != deviceID {
 				continue
 			}
-			device.Values = config.Devices[index].Values
-			for formKey, valueKey := range map[string]string{"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "avd_name": "AVD_NAME", "ios_udid": "IOS_UDID", "base_name": "BASE_NAME", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"} {
-				if value := strings.TrimSpace(r.FormValue(formKey)); value != "" {
-					device.Values[valueKey] = value
-				}
+			submittedValues := device.Values
+			device.Values = dashboardruntime.Values(cloneStringMap(config.Devices[index].Values))
+			for key, value := range submittedValues {
+				device.Values[key] = value
 			}
-			if device.Serial != "" {
-				device.Values["SERIAL"] = device.Serial
-			}
+			normalizeDeviceAddress()
 			config.Devices[index] = device
 			created = false
 			break
 		}
+	}
+	if created {
+		normalizeDeviceAddress()
 	}
 	if created {
 		// Previewing an available canonical ID is part of normal creation. It
@@ -1458,12 +1493,32 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 		if device.Mode == "" {
 			device.Mode = "usb"
 		}
-		device.Values["SERIAL"] = device.Serial
-		if value := value("WIFI_IP"); value != "" {
-			device.Values["WIFI_IP"] = value
+		device.WiFiIP = value("WIFI_IP")
+		device.WiFiPort = value("WIFI_PORT")
+		switch {
+		case device.Type == "android_phone" && device.Mode == "wifi":
+			if device.WiFiPort == "" {
+				device.WiFiPort = dashboardruntime.DefaultWiFiPort
+			}
+			device.Serial = dashboardruntime.AndroidWiFiSerial(device.WiFiIP, device.WiFiPort)
+		case device.Type == "android_phone" && device.Mode == "no_device":
+			device.Serial, device.WiFiIP, device.WiFiPort = "", "", ""
+		case device.Type == "redroid":
+			if device.WiFiPort == "" {
+				device.WiFiPort = dashboardruntime.DefaultWiFiPort
+			}
+			device.Serial = dashboardruntime.AndroidWiFiSerial(device.WiFiIP, device.WiFiPort)
+		case device.Type == "android_phone" && device.Mode == "usb":
+			device.WiFiIP, device.WiFiPort = "", ""
 		}
-		if value := value("WIFI_PORT"); value != "" {
-			device.Values["WIFI_PORT"] = value
+		if device.Serial != "" {
+			device.Values["SERIAL"] = device.Serial
+		}
+		if device.WiFiIP != "" {
+			device.Values["WIFI_IP"] = device.WiFiIP
+		}
+		if device.WiFiPort != "" {
+			device.Values["WIFI_PORT"] = device.WiFiPort
 		}
 		for _, field := range []string{"BASE_NAME", "ANDROID_KEYS_DIR", "GOLDEN_PATH", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR", "REDROID_DATA_TAR", "IOS_UDID"} {
 			if fieldValue := value(field); fieldValue != "" {

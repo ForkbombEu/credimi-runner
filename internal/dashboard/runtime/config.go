@@ -128,13 +128,24 @@ func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
 		values[prefix+"TYPE"], values[prefix+"ENABLED"] = legacyType, strconv.FormatBool(device.Enabled)
 		switch device.Type {
 		case runnerconfig.DeviceAndroidPhysical:
-			values[prefix+"MODE"], values[prefix+"SERIAL"] = device.AndroidPhysical.Transport, device.AndroidPhysical.Serial
+			values[prefix+"MODE"] = device.AndroidPhysical.Transport
+			switch device.AndroidPhysical.Transport {
+			case "wifi":
+				values[prefix+"WIFI_IP"] = device.AndroidPhysical.WiFiIP
+				values[prefix+"WIFI_PORT"] = device.AndroidPhysical.WiFiPort
+				values[prefix+"SERIAL"] = AndroidWiFiSerial(device.AndroidPhysical.WiFiIP, device.AndroidPhysical.WiFiPort)
+			case "usb":
+				values[prefix+"SERIAL"] = device.AndroidPhysical.Serial
+			}
 		case runnerconfig.DeviceAndroidEmulator:
 			values[prefix+"MODE"], values[prefix+"AVD_NAME"] = "emulator", device.AndroidEmulator.AVDName
 			values[prefix+"BASE_NAME"] = device.AndroidEmulator.BaseName
 			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
 		case runnerconfig.DeviceRedroid:
-			values[prefix+"MODE"], values[prefix+"SERIAL"] = "redroid", device.Redroid.Serial
+			values[prefix+"MODE"] = "redroid"
+			values[prefix+"WIFI_IP"] = device.Redroid.Host
+			values[prefix+"WIFI_PORT"] = strconv.Itoa(device.Redroid.ADBPort)
+			values[prefix+"SERIAL"] = AndroidWiFiSerial(device.Redroid.Host, strconv.Itoa(device.Redroid.ADBPort))
 		case runnerconfig.DeviceIOSSimulator:
 			values[prefix+"MODE"], values[prefix+"IOS_UDID"] = "no_device", device.IOSSimulator.UDID
 		}
@@ -177,12 +188,40 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 		entry := runnerconfig.DeviceConfig{ID: device.ID, Name: device.Name, Description: device.Description, Enabled: device.Enabled}
 		switch device.Type {
 		case "android_phone":
-			entry.Type, entry.AndroidPhysical = runnerconfig.DeviceAndroidPhysical, &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode, Serial: device.Serial}
+			physical := &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode}
+			switch device.Mode {
+			case "wifi":
+				physical.WiFiIP = device.WiFiIP
+				if physical.WiFiIP == "" {
+					physical.WiFiIP = device.Values["WIFI_IP"]
+				}
+				physical.WiFiPort = device.WiFiPort
+				if physical.WiFiPort == "" {
+					physical.WiFiPort = device.Values["WIFI_PORT"]
+				}
+				if physical.WiFiPort == "" {
+					physical.WiFiPort = DefaultWiFiPort
+				}
+			case "usb":
+				physical.Serial = device.Serial
+			}
+			entry.Type, entry.AndroidPhysical = runnerconfig.DeviceAndroidPhysical, physical
 		case "android_emulator":
 			abi := DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
 			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", APILevel: 35, MemoryMB: 2048, Cores: 2}
 		case "redroid":
-			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{Image: "redroid:latest", Serial: device.Serial, DataDir: "/var/lib/credimi-runner/redroid", DataArchive: "/var/lib/credimi-runner/redroid.tar", ADBPort: 5555}
+			host, port := device.WiFiIP, device.WiFiPort
+			if host == "" {
+				host = device.Values["WIFI_IP"]
+			}
+			if port == "" {
+				port = device.Values["WIFI_PORT"]
+			}
+			adbPort, _ := strconv.Atoi(port)
+			if adbPort == 0 {
+				adbPort = 5555
+			}
+			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{Host: host, Image: "redroid:latest", DataDir: defaultIfEmpty(device.Values["REDROID_DATA_DIR"], "/var/lib/credimi-runner/redroid"), DataArchive: defaultIfEmpty(device.Values["REDROID_DATA_TAR"], "/var/lib/credimi-runner/redroid.tar"), ADBPort: adbPort}
 		case "ios_simulator":
 			entry.Type, entry.IOSSimulator = runnerconfig.DeviceIOSSimulator, &runnerconfig.IOSSimulatorConfig{UDID: device.Values["IOS_UDID"]}
 		default:
@@ -191,6 +230,18 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 		cfg.Devices = append(cfg.Devices, entry)
 	}
 	return cfg, nil
+}
+
+func AndroidWiFiSerial(ip, port string) string {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return ""
+	}
+	port = strings.TrimSpace(port)
+	if port == "" {
+		port = DefaultWiFiPort
+	}
+	return net.JoinHostPort(ip, port)
 }
 
 func DefaultEmulatorABI(goos, goarch string) string {

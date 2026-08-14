@@ -8,13 +8,13 @@ import (
 )
 
 func TestManagerReconcilesWithoutRestartingProcess(t *testing.T) {
-	registry, err := NewRegistry([]config.DeviceConfig{{ID: "inventory/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "one"}}})
+	registry, err := NewRegistry([]config.DeviceConfig{{ID: "inventory/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "one"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	called := false
 	manager := Manager{Registry: registry, Apply: func(context.Context, []config.DeviceConfig) error { called = true; return nil }}
-	if err := manager.Reconcile(context.Background(), []config.DeviceConfig{{ID: "inventory/runner/two", Name: "Two", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "two"}}}); err != nil {
+	if err := manager.Reconcile(context.Background(), []config.DeviceConfig{{ID: "inventory/runner/two", Name: "Two", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "two"}}}); err != nil {
 		t.Fatal(err)
 	}
 	if !called {

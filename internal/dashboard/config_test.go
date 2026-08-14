@@ -19,7 +19,7 @@ func dashboardTestConfig(dir string) config.Config {
 		Server:        config.ServerConfig{APIListen: "127.0.0.1:8050", DashboardListen: "127.0.0.1:8051", ReadHeaderTimeout: config.Duration(1), ShutdownTimeout: config.Duration(1)},
 		Exposure:      config.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
 		Storage:       config.StorageConfig{StateDir: filepath.Join(dir, "state"), ArtifactRetention: config.Duration(1)},
-		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "one:5555"}}},
+		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "one"}}},
 	}
 }
 
@@ -35,7 +35,7 @@ func TestLoadConfigUsesTypedTOML(t *testing.T) {
 	if runner.Path() != filepath.Join(dir, "config.toml") || runner.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
 		t.Fatalf("runner=%#v", runner.Snapshot())
 	}
-	if runner.Get("CREDIMI_DEVICE_1_SERIAL") != "one:5555" {
+	if runner.Get("CREDIMI_DEVICE_1_SERIAL") != "one" {
 		t.Fatalf("devices=%#v", runner.Snapshot())
 	}
 }

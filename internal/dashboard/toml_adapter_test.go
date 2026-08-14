@@ -18,7 +18,7 @@ func TestConfigRoundTripsTypedTOMLWithoutDotEnv(t *testing.T) {
 		Exposure:      config.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
 		Storage:       config.StorageConfig{StateDir: filepath.Join(dir, "state"), ArtifactRetention: config.Duration(1)},
 		Android:       config.AndroidConfig{RunnerImage: "credimi-runner:local", PullPolicy: "never", Network: "runner-net", StateVolume: "runner-state", ToolCacheVolume: "runner-tools", SDKVolume: "runner-sdk", ADBKeysPath: filepath.Join(dir, "adb-keys")},
-		Devices:       []config.DeviceConfig{{ID: "acme/runner/pixel", Name: "Pixel", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "pixel:5555"}}},
+		Devices:       []config.DeviceConfig{{ID: "acme/runner/pixel", Name: "Pixel", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "pixel"}}},
 	}
 	path := filepath.Join(dir, "config.toml")
 	if err := config.WriteFile(path, cfg); err != nil {
@@ -28,7 +28,7 @@ func TestConfigRoundTripsTypedTOMLWithoutDotEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Path() != path || loaded.Get("CREDIMI_RUNNER_ID") != "acme/runner" || loaded.Get("CREDIMI_DEVICE_1_SERIAL") != "pixel:5555" || loaded.Get("ANDROID_RUNNER_IMAGE") != "credimi-runner:local" || loaded.Get("ANDROID_PULL_POLICY") != "never" || loaded.Get("ANDROID_NETWORK") != "runner-net" || loaded.Get("ANDROID_ADB_KEYS_PATH") == "" {
+	if loaded.Path() != path || loaded.Get("CREDIMI_RUNNER_ID") != "acme/runner" || loaded.Get("CREDIMI_DEVICE_1_SERIAL") != "pixel" || loaded.Get("ANDROID_RUNNER_IMAGE") != "credimi-runner:local" || loaded.Get("ANDROID_PULL_POLICY") != "never" || loaded.Get("ANDROID_NETWORK") != "runner-net" || loaded.Get("ANDROID_ADB_KEYS_PATH") == "" {
 		t.Fatalf("loaded dashboard values = %#v", loaded.Snapshot())
 	}
 	if loaded.AuthMode() != "user" {

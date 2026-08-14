@@ -589,7 +589,7 @@ func TestEnsureRuntimeCapabilitiesProvisionsPhysicalAndroid(t *testing.T) {
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "runner/phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
-		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"},
 	}}
 	if err := EnsureRuntimeCapabilities(context.Background(), cfg, "darwin"); err != nil {
 		t.Fatal(err)
@@ -611,7 +611,7 @@ func TestEnsureRuntimeCapabilitiesRejectsPhysicalSDKWithoutPersistentPlatformToo
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "runner/phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
-		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"},
 	}}
 	err := EnsureRuntimeCapabilities(context.Background(), cfg, "darwin")
 	if err == nil || !strings.Contains(err.Error(), "platform-tools are unavailable") {
@@ -674,7 +674,7 @@ func TestEnsureRuntimeCapabilitiesTreatsRedroidAsAndroidCapability(t *testing.T)
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "runner/redroid", Type: runnerconfig.DeviceRedroid, Enabled: true,
-		Redroid: &runnerconfig.RedroidConfig{Serial: "redroid:5555"},
+		Redroid: &runnerconfig.RedroidConfig{Host: "redroid", ADBPort: 5555},
 	}}
 	called := false
 	err := EnsureRuntimeCapabilitiesAtWith(context.Background(), cfg, "darwin", filepath.Join(t.TempDir(), "sdk"), func(_ context.Context, _ string, emulator bool, _ string) error {

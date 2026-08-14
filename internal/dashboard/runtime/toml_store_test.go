@@ -18,7 +18,7 @@ func TestStoreUsesTypedTOMLForDeviceInventory(t *testing.T) {
 		Exposure:      config.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
 		Storage:       config.StorageConfig{StateDir: filepath.Join(dir, "state"), ArtifactRetention: config.Duration(1)},
 		Android:       config.AndroidConfig{RunnerImage: "credimi-runner:local", PullPolicy: "never", Network: "runner-net", StateVolume: "state-volume", ToolCacheVolume: "tools-volume", SDKVolume: "sdk-volume", ADBKeysPath: filepath.Join(dir, "adb-keys")},
-		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "one:5555"}}},
+		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "one"}}},
 	}
 	if err := config.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
@@ -27,7 +27,7 @@ func TestStoreUsesTypedTOMLForDeviceInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Path != filepath.Join(dir, "config.toml") || store.Values["CREDIMI_DEVICE_1_SERIAL"] != "one:5555" || store.Values["ANDROID_RUNNER_IMAGE"] != "credimi-runner:local" || store.Values["ANDROID_PULL_POLICY"] != "never" || store.Values["ANDROID_NETWORK"] != "runner-net" {
+	if store.Path != filepath.Join(dir, "config.toml") || store.Values["CREDIMI_DEVICE_1_SERIAL"] != "one" || store.Values["ANDROID_RUNNER_IMAGE"] != "credimi-runner:local" || store.Values["ANDROID_PULL_POLICY"] != "never" || store.Values["ANDROID_NETWORK"] != "runner-net" {
 		t.Fatalf("store=%#v", store)
 	}
 	parsed, err := store.RuntimeConfig()
@@ -58,14 +58,11 @@ func TestValuesWithRuntimeDevicesPreservesAuthoritativeSecondSerial(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	second := DeviceRuntimeConfig{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "SERIAL_TWO", WiFiIP: "192.0.2.2", WiFiPort: "5555", Values: Values{}}
+	second := DeviceRuntimeConfig{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "SERIAL_TWO", Values: Values{}}
 	devices := append(first.Devices, second)
 	values := ValuesWithRuntimeDevices(store.Snapshot(), devices)
 	if values["CREDIMI_DEVICE_2_SERIAL"] != "SERIAL_TWO" {
 		t.Fatalf("second serial values = %#v", values)
-	}
-	if values["CREDIMI_DEVICE_2_WIFI_IP"] != "192.0.2.2" || values["CREDIMI_DEVICE_2_WIFI_PORT"] != "5555" {
-		t.Fatalf("second Wi-Fi values = %#v", values)
 	}
 	if err := store.SaveRuntimeConfig(RunnerRuntimeConfig{Host: store.Snapshot(), Devices: devices}); err != nil {
 		t.Fatal(err)

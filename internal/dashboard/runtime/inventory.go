@@ -152,12 +152,6 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 			}
 			seen[value] = index
 		}
-		if serial := strings.TrimSpace(block["SERIAL"]); serial != "" && (block["TYPE"] == "android_phone" || block["TYPE"] == "redroid") {
-			if other, exists := seenSerials[serial]; exists {
-				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("serial %q is already registered for device %q; choose a different serial for device %q", serial, devices[other-1].Name, block["NAME"])
-			}
-			seenSerials[serial] = index
-		}
 		switch block["TYPE"] {
 		case "android_emulator":
 			if emulatorIndex != 0 {
@@ -177,7 +171,33 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("CREDIMI_DEVICE_%d_ENABLED must be boolean", index)
 			}
 		}
-		devices = append(devices, DeviceRuntimeConfig{Index: index, ID: id, Name: block["NAME"], Description: block["DESCRIPTION"], Type: block["TYPE"], Mode: block["MODE"], Enabled: enabled, Serial: block["SERIAL"], WiFiIP: block["WIFI_IP"], WiFiPort: block["WIFI_PORT"], Values: cloneValues(block)})
+		serial := strings.TrimSpace(block["SERIAL"])
+		wifiIP, wifiPort := strings.TrimSpace(block["WIFI_IP"]), strings.TrimSpace(block["WIFI_PORT"])
+		if block["TYPE"] == "android_phone" && block["MODE"] == "wifi" {
+			if wifiPort == "" {
+				wifiPort = DefaultWiFiPort
+			}
+			serial = AndroidWiFiSerial(wifiIP, wifiPort)
+			block["WIFI_PORT"], block["SERIAL"] = wifiPort, serial
+		} else if block["TYPE"] == "android_phone" && block["MODE"] == "no_device" {
+			serial, wifiIP, wifiPort = "", "", ""
+			delete(block, "SERIAL")
+			delete(block, "WIFI_IP")
+			delete(block, "WIFI_PORT")
+		} else if block["TYPE"] == "redroid" {
+			if wifiPort == "" {
+				wifiPort = DefaultWiFiPort
+			}
+			serial = AndroidWiFiSerial(wifiIP, wifiPort)
+			block["WIFI_PORT"], block["SERIAL"] = wifiPort, serial
+		}
+		if serial != "" && (block["TYPE"] == "android_phone" || block["TYPE"] == "redroid") {
+			if other, exists := seenSerials[serial]; exists {
+				return RunnerRuntimeConfig{Host: host}, fmt.Errorf("serial %q is already registered for device %q; choose a different serial for device %q", serial, devices[other-1].Name, block["NAME"])
+			}
+			seenSerials[serial] = index
+		}
+		devices = append(devices, DeviceRuntimeConfig{Index: index, ID: id, Name: block["NAME"], Description: block["DESCRIPTION"], Type: block["TYPE"], Mode: block["MODE"], Enabled: enabled, Serial: serial, WiFiIP: wifiIP, WiFiPort: wifiPort, Values: cloneValues(block)})
 	}
 	return RunnerRuntimeConfig{Host: host, Devices: devices}, nil
 }
@@ -330,14 +350,30 @@ func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values
 		values[prefix+"TYPE"] = device.Type
 		values[prefix+"MODE"] = device.Mode
 		values[prefix+"ENABLED"] = strconv.FormatBool(device.Enabled)
-		if serial := strings.TrimSpace(device.Serial); serial != "" {
-			values[prefix+"SERIAL"] = serial
-		}
-		if wifiIP := strings.TrimSpace(device.WiFiIP); wifiIP != "" {
-			values[prefix+"WIFI_IP"] = wifiIP
-		}
-		if wifiPort := strings.TrimSpace(device.WiFiPort); wifiPort != "" {
+		delete(values, prefix+"SERIAL")
+		delete(values, prefix+"WIFI_IP")
+		delete(values, prefix+"WIFI_PORT")
+		switch {
+		case device.Type == "android_phone" && device.Mode == "wifi":
+			wifiPort := strings.TrimSpace(device.WiFiPort)
+			if wifiPort == "" {
+				wifiPort = DefaultWiFiPort
+			}
+			values[prefix+"WIFI_IP"] = strings.TrimSpace(device.WiFiIP)
 			values[prefix+"WIFI_PORT"] = wifiPort
+			values[prefix+"SERIAL"] = AndroidWiFiSerial(device.WiFiIP, wifiPort)
+		case device.Type == "redroid":
+			adbPort := strings.TrimSpace(device.WiFiPort)
+			if adbPort == "" {
+				adbPort = DefaultWiFiPort
+			}
+			values[prefix+"WIFI_IP"] = strings.TrimSpace(device.WiFiIP)
+			values[prefix+"WIFI_PORT"] = adbPort
+			values[prefix+"SERIAL"] = AndroidWiFiSerial(device.WiFiIP, adbPort)
+		case device.Type == "android_phone" && device.Mode == "usb":
+			if serial := strings.TrimSpace(device.Serial); serial != "" {
+				values[prefix+"SERIAL"] = serial
+			}
 		}
 	}
 	return values

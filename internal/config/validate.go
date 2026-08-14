@@ -129,13 +129,37 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if device.AndroidPhysical == nil {
 			return fmt.Errorf("%s.type android_physical requires [devices.android_physical]", label)
 		}
-		if device.AndroidPhysical.Transport != "wifi" && device.AndroidPhysical.Transport != "usb" {
-			return fmt.Errorf("%s.android_physical.transport must be wifi or usb", label)
+		switch device.AndroidPhysical.Transport {
+		case "usb":
+			if err := required(label+".android_physical.serial", device.AndroidPhysical.Serial); err != nil {
+				return err
+			}
+			if device.AndroidPhysical.WiFiIP != "" || device.AndroidPhysical.WiFiPort != "" {
+				return fmt.Errorf("%s.android_physical.usb must not configure Wi-Fi addressing", label)
+			}
+			return unique(serials, device.AndroidPhysical.Serial, label+".android_physical.serial")
+		case "wifi":
+			if err := required(label+".android_physical.wifi_ip", device.AndroidPhysical.WiFiIP); err != nil {
+				return err
+			}
+			if device.AndroidPhysical.Serial != "" {
+				return fmt.Errorf("%s.android_physical.wifi must not configure serial", label)
+			}
+			if device.AndroidPhysical.WiFiPort == "" {
+				device.AndroidPhysical.WiFiPort = "5555"
+			}
+			if !validPort(device.AndroidPhysical.WiFiPort) {
+				return fmt.Errorf("%s.android_physical.wifi_port must be between 1 and 65535", label)
+			}
+			return unique(serials, net.JoinHostPort(device.AndroidPhysical.WiFiIP, device.AndroidPhysical.WiFiPort), label+".android_physical.wifi")
+		case "no_device":
+			if device.AndroidPhysical.Serial != "" || device.AndroidPhysical.WiFiIP != "" || device.AndroidPhysical.WiFiPort != "" {
+				return fmt.Errorf("%s.android_physical.no_device must not configure an address", label)
+			}
+			return nil
+		default:
+			return fmt.Errorf("%s.android_physical.transport must be wifi, usb, or no_device", label)
 		}
-		if err := required(label+".android_physical.serial", device.AndroidPhysical.Serial); err != nil {
-			return err
-		}
-		return unique(serials, device.AndroidPhysical.Serial, label+".android_physical.serial")
 	case DeviceAndroidEmulator:
 		if device.AndroidEmulator == nil {
 			return fmt.Errorf("%s.type android_emulator requires [devices.android_emulator]", label)
@@ -159,7 +183,7 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if goos != "linux" && goos != "darwin" {
 			return errorsf("Redroid devices require Linux or macOS")
 		}
-		for name, value := range map[string]string{"image": device.Redroid.Image, "serial": device.Redroid.Serial, "data_dir": device.Redroid.DataDir, "data_archive": device.Redroid.DataArchive} {
+		for name, value := range map[string]string{"host": device.Redroid.Host, "image": device.Redroid.Image, "data_dir": device.Redroid.DataDir, "data_archive": device.Redroid.DataArchive} {
 			if err := required(label+".redroid."+name, value); err != nil {
 				return err
 			}
@@ -167,7 +191,7 @@ func validateDevice(device DeviceConfig, label, goos string, serials, avds map[s
 		if device.Redroid.ADBPort < 1 || device.Redroid.ADBPort > 65535 {
 			return fmt.Errorf("%s.redroid.adb_port must be between 1 and 65535", label)
 		}
-		return unique(serials, device.Redroid.Serial, label+".redroid.serial")
+		return unique(serials, net.JoinHostPort(device.Redroid.Host, strconv.Itoa(device.Redroid.ADBPort)), label+".redroid")
 	case DeviceIOSSimulator:
 		if device.IOSSimulator == nil {
 			return fmt.Errorf("%s.type ios_simulator requires [devices.ios_simulator]", label)

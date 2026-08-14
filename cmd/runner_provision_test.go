@@ -140,7 +140,7 @@ func TestRunContainerLauncherRestartRequiredRecreatesRunnerOnly(t *testing.T) {
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
-		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"},
 	}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
@@ -558,7 +558,7 @@ func TestRunContainerLauncherReconcilesLatestTOMLThroughLauncher(t *testing.T) {
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "if-not-present", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
-		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"},
 	}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
@@ -643,7 +643,7 @@ func TestRunContainerLauncherReportsComposeWriteFailureDuringReconcile(t *testin
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "if-not-present", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
-		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"},
 	}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
@@ -678,7 +678,7 @@ func TestRunContainerLauncherUpgradeRefreshesQuickTunnelState(t *testing.T) {
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "if-not-present", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
-		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"},
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"},
 	}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
@@ -797,7 +797,7 @@ func TestHydrateTypedRuntimeEnvironmentUsesTOMLAsSource(t *testing.T) {
 	cfg.Server.APIListen, cfg.Server.DashboardListen = "127.0.0.1:8050", "127.0.0.1:8051"
 	cfg.Storage.StateDir, cfg.Storage.TempDir = filepath.Join(dir, "state"), filepath.Join(dir, "tmp")
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "credimi-runner:local", PullPolicy: "never", Network: "runner-net", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"}}}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"}}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -847,7 +847,7 @@ func TestPrepareInternalRuntimeRefreshesConfigBeforeStartingServices(t *testing.
 	cfg.Server.APIListen, cfg.Server.DashboardListen = "127.0.0.1:8050", "127.0.0.1:8051"
 	cfg.Storage.StateDir, cfg.Storage.TempDir = filepath.Join(dir, "state"), filepath.Join(dir, "tmp")
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "runner:local", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone"}}}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"}}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -967,7 +967,7 @@ func TestRuntimeValuesFromConfigNormalizesTypedValues(t *testing.T) {
 	cfg.Credimi.AuthMode, cfg.Credimi.UserAPIKey = "user", "key"
 	cfg.Temporal.Address = "temporal.example:7233"
 	cfg.Android.RunnerImage = "credimi-runner:local"
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"}}}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"}}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -991,7 +991,7 @@ func TestRunPublicUsesTypedImageAfterSetupEvenWithBootstrapFlags(t *testing.T) {
 	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
 	cfg.Temporal.Address = "temporal.example:7233"
 	cfg.Android.RunnerImage, cfg.Android.PullPolicy = "published:stable", "if-not-present"
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone:5555"}}}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"}}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -1044,7 +1044,7 @@ func TestRunInternalRuntimePreparesTypedConfigBeforeStartingServer(t *testing.T)
 	cfg.Temporal.Address = "temporal.example:7233"
 	cfg.Server.APIListen = "127.0.0.1:8050"
 	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "runner:local", PullPolicy: "never", SDKVolume: "sdk"}
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "phone"}}}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "phone", WiFiPort: "5555"}}}
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}

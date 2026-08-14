@@ -1778,7 +1778,7 @@ func TestSetupDevicesKeepsIndexedOptionalFieldsWithTheirCards(t *testing.T) {
 				"SETUP_DEVICE_2_SERIAL":    {"SERIAL_TWO"},
 			},
 			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
-				if devices[0].Values["WIFI_IP"] != "192.168.1.10" || devices[0].Serial != "" || devices[1].Serial != "SERIAL_TWO" {
+				if devices[0].Values["WIFI_IP"] != "192.168.1.10" || devices[0].Serial != "192.168.1.10:5555" || devices[1].Serial != "SERIAL_TWO" {
 					t.Fatalf("devices = %#v", devices)
 				}
 			},
@@ -1798,7 +1798,7 @@ func TestSetupDevicesKeepsIndexedOptionalFieldsWithTheirCards(t *testing.T) {
 				"SETUP_DEVICE_2_WIFI_PORT": {"5555"},
 			},
 			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
-				if devices[0].Serial != "SERIAL_ONE" || devices[1].Values["WIFI_IP"] != "192.168.1.20" || devices[1].Serial != "" {
+				if devices[0].Serial != "SERIAL_ONE" || devices[1].Values["WIFI_IP"] != "192.168.1.20" || devices[1].Serial != "192.168.1.20:5555" {
 					t.Fatalf("devices = %#v", devices)
 				}
 			},
@@ -2843,8 +2843,8 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{
 		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "TEMPORAL_ADDRESS": "temporal.example:7233", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
 	}, Devices: []dashboardruntime.DeviceRuntimeConfig{
-		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "one"}},
-		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "wifi", Enabled: true, Serial: "wifi-2", Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.2", "SERIAL": "wifi-2"}},
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "one", Values: dashboardruntime.Values{}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "wifi", Enabled: true, WiFiIP: "10.0.0.2", WiFiPort: "5555", Values: dashboardruntime.Values{}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -2865,7 +2865,7 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Devices[0].Name != "Renamed One" || config.Devices[0].Mode != "wifi" || config.Devices[0].Serial != "one" || config.Devices[1].Name != "Two" || config.Devices[1].Serial != "wifi-2" {
+	if config.Devices[0].Name != "Renamed One" || config.Devices[0].Mode != "wifi" || config.Devices[0].Serial != "10.0.0.1:5555" || config.Devices[1].Name != "Two" || config.Devices[1].Serial != "10.0.0.2:5555" {
 		t.Fatalf("devices = %#v", config.Devices)
 	}
 
@@ -3410,7 +3410,7 @@ func TestServerManagedDeviceActions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(s.cfg.Snapshot()), Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/pixel", Name: "Pixel", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-1"}}, {ID: "acme/runner/pixel-2", Name: "Pixel Two", Type: "android_phone", Mode: "usb", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-2"}}}}); err != nil {
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(s.cfg.Snapshot()), Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/pixel", Name: "Pixel", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{}}, {ID: "acme/runner/pixel-2", Name: "Pixel Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-2", Values: dashboardruntime.Values{}}}}); err != nil {
 		t.Fatal(err)
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)

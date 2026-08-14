@@ -120,7 +120,9 @@ type DeviceConfig struct {
 
 type AndroidPhysicalConfig struct {
 	Transport string `toml:"transport"`
-	Serial    string `toml:"serial"`
+	Serial    string `toml:"serial,omitempty"`
+	WiFiIP    string `toml:"wifi_ip,omitempty"`
+	WiFiPort  string `toml:"wifi_port,omitempty"`
 }
 
 type AndroidEmulatorConfig struct {
@@ -136,8 +138,8 @@ type AndroidEmulatorConfig struct {
 }
 
 type RedroidConfig struct {
+	Host        string `toml:"host"`
 	Image       string `toml:"image"`
-	Serial      string `toml:"serial"`
 	DataDir     string `toml:"data_dir"`
 	DataArchive string `toml:"data_archive"`
 	ADBPort     int    `toml:"adb_port"`

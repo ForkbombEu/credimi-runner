@@ -16,7 +16,7 @@ func testTOMLConfig(dir string) config.Config {
 		Server:        config.ServerConfig{APIListen: "127.0.0.1:8050", DashboardListen: "127.0.0.1:8051", ReadHeaderTimeout: config.Duration(1), ShutdownTimeout: config.Duration(1)},
 		Exposure:      config.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
 		Storage:       config.StorageConfig{StateDir: filepath.Join(dir, "state"), ArtifactRetention: config.Duration(1)},
-		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", Serial: "one:5555"}}},
+		Devices:       []config.DeviceConfig{{ID: "acme/runner/one", Name: "One", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "one"}}},
 	}
 }
 
@@ -57,7 +57,7 @@ func TestStoreLoadsAndSavesTypedTOML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Values["CREDIMI_RUNNER_ID"] != "acme/runner" || store.Values["CREDIMI_DEVICE_1_SERIAL"] != "one:5555" {
+	if store.Values["CREDIMI_RUNNER_ID"] != "acme/runner" || store.Values["CREDIMI_DEVICE_1_SERIAL"] != "one" {
 		t.Fatalf("values=%#v", store.Values)
 	}
 	inventory, err := store.RuntimeConfig()
@@ -96,6 +96,72 @@ func TestRuntimeConfigFromEnvironmentUsesTypedConfigDirectory(t *testing.T) {
 	runtimeConfig, err := RuntimeConfigFromEnvironment()
 	if err != nil || len(runtimeConfig.Devices) != 1 {
 		t.Fatalf("runtime config = %#v err=%v", runtimeConfig, err)
+	}
+}
+
+func TestPhysicalAddressCompatibilityRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := store.Snapshot()
+	base["CREDIMI_RUNNER_ID"] = "acme/runner"
+	base["CREDIMI_RUNNER_NAME"] = "runner"
+	base["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	base["CREDIMI_URL"] = "https://credimi.example"
+	base["CREDIMI_USER_API_KEY"] = "key"
+	base["TEMPORAL_ADDRESS"] = "temporal.example:7233"
+
+	cases := []struct {
+		name       string
+		device     DeviceRuntimeConfig
+		wantSerial string
+		wantMode   string
+		check      func(*testing.T, config.Config)
+	}{
+		{name: "usb", device: DeviceRuntimeConfig{ID: "acme/runner/usb", Name: "USB", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "SERIAL_ONE", Values: Values{}}, wantSerial: "SERIAL_ONE", wantMode: "usb", check: func(t *testing.T, cfg config.Config) {
+			if got := cfg.Devices[0].AndroidPhysical.Serial; got != "SERIAL_ONE" {
+				t.Fatalf("typed USB serial = %q", got)
+			}
+		}},
+		{name: "wifi ipv6", device: DeviceRuntimeConfig{ID: "acme/runner/wifi", Name: "Wi-Fi", Type: "android_phone", Mode: "wifi", Enabled: true, WiFiIP: "2001:db8::20", WiFiPort: "5555", Values: Values{}}, wantSerial: "[2001:db8::20]:5555", wantMode: "wifi", check: func(t *testing.T, cfg config.Config) {
+			physical := cfg.Devices[0].AndroidPhysical
+			if physical.Serial != "" || physical.WiFiIP != "2001:db8::20" || physical.WiFiPort != "5555" {
+				t.Fatalf("typed Wi-Fi config = %#v", physical)
+			}
+		}},
+		{name: "no device", device: DeviceRuntimeConfig{ID: "acme/runner/idle", Name: "Idle", Type: "android_phone", Mode: "no_device", Enabled: true, Values: Values{}}, wantMode: "no_device", check: func(t *testing.T, cfg config.Config) {
+			physical := cfg.Devices[0].AndroidPhysical
+			if physical.Serial != "" || physical.WiFiIP != "" || physical.WiFiPort != "" {
+				t.Fatalf("typed no-device config = %#v", physical)
+			}
+		}},
+		{name: "redroid", device: DeviceRuntimeConfig{ID: "acme/runner/redroid", Name: "Redroid", Type: "redroid", Mode: "redroid", Enabled: true, WiFiIP: "192.0.2.20", WiFiPort: "5555", Values: Values{}}, wantSerial: "192.0.2.20:5555", wantMode: "redroid", check: func(t *testing.T, cfg config.Config) {
+			redroid := cfg.Devices[0].Redroid
+			if redroid.Host != "192.0.2.20" || redroid.ADBPort != 5555 {
+				t.Fatalf("typed Redroid config = %#v", redroid)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			values := ValuesWithRuntimeDevices(base, []DeviceRuntimeConfig{tc.device})
+			if values["CREDIMI_DEVICE_1_MODE"] != tc.wantMode {
+				t.Fatalf("mode values = %#v", values)
+			}
+			if values["CREDIMI_DEVICE_1_SERIAL"] != tc.wantSerial {
+				t.Fatalf("serial values = %#v, want %q", values, tc.wantSerial)
+			}
+			if err := store.Save(values); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := config.LoadFile(filepath.Join(dir, "config.toml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, loaded)
+		})
 	}
 }
 
@@ -179,9 +245,9 @@ func TestRuntimeConfigValidationAndSnapshot(t *testing.T) {
 func TestParseRuntimeConfigPreservesMultiDeviceInventory(t *testing.T) {
 	values := Values{
 		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "3",
-		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "wifi", "CREDIMI_DEVICE_1_SERIAL": "phone:5555", "CREDIMI_DEVICE_1_ENABLED": "true",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/phone", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "wifi", "CREDIMI_DEVICE_1_WIFI_IP": "phone", "CREDIMI_DEVICE_1_WIFI_PORT": "5555", "CREDIMI_DEVICE_1_ENABLED": "true",
 		"CREDIMI_DEVICE_2_ID": "acme/runner/emulator", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_MODE": "emulator", "CREDIMI_DEVICE_2_AVD_NAME": "pixel", "CREDIMI_DEVICE_2_PORT": "5556",
-		"CREDIMI_DEVICE_3_ID": "acme/runner/redroid", "CREDIMI_DEVICE_3_TYPE": "redroid", "CREDIMI_DEVICE_3_MODE": "no_device", "CREDIMI_DEVICE_3_SERIAL": "redroid:5555", "CREDIMI_DEVICE_3_ENABLED": "false",
+		"CREDIMI_DEVICE_3_ID": "acme/runner/redroid", "CREDIMI_DEVICE_3_TYPE": "redroid", "CREDIMI_DEVICE_3_MODE": "redroid", "CREDIMI_DEVICE_3_WIFI_IP": "redroid", "CREDIMI_DEVICE_3_WIFI_PORT": "5555", "CREDIMI_DEVICE_3_ENABLED": "false",
 	}
 	parsed, err := ParseRuntimeConfig(values)
 	if err != nil {
@@ -197,7 +263,7 @@ func TestRedroidReadinessSurvivesTypedTOMLRoundTrip(t *testing.T) {
 	values := Values{
 		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme",
 		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "key", "TEMPORAL_ADDRESS": "temporal.example:7233", "RUNNER_HOST": "127.0.0.1", "RUNNER_PORT": "8050", "DASHBOARD_HOST": "127.0.0.1", "DASHBOARD_PORT": "8051", "CREDIMI_TEMP_DIR": t.TempDir(), "CREDIMI_DEVICE_COUNT": "1",
-		"CREDIMI_DEVICE_1_ID": "acme/runner/redroid", "CREDIMI_DEVICE_1_NAME": "Redroid", "CREDIMI_DEVICE_1_TYPE": "redroid", "CREDIMI_DEVICE_1_MODE": "redroid", "CREDIMI_DEVICE_1_SERIAL": "redroid:5555",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/redroid", "CREDIMI_DEVICE_1_NAME": "Redroid", "CREDIMI_DEVICE_1_TYPE": "redroid", "CREDIMI_DEVICE_1_MODE": "redroid", "CREDIMI_DEVICE_1_WIFI_IP": "redroid", "CREDIMI_DEVICE_1_WIFI_PORT": "5555",
 	}
 	store, err := LoadStore(dir)
 	if err != nil {
@@ -236,7 +302,7 @@ func TestParseRuntimeConfigRejectsMalformedInventory(t *testing.T) {
 		{"duplicate ID", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_2_ID": "acme/runner/one"}},
 		{"duplicate name", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_NAME": "same"}},
 		{"duplicate AVD", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_emulator", "CREDIMI_DEVICE_1_AVD_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "android_emulator", "CREDIMI_DEVICE_2_AVD_NAME": "same"}},
-		{"duplicate serial", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_SERIAL": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "redroid", "CREDIMI_DEVICE_2_SERIAL": "same"}},
+		{"duplicate serial", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "same:5555", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_TYPE": "redroid", "CREDIMI_DEVICE_2_WIFI_IP": "same", "CREDIMI_DEVICE_2_WIFI_PORT": "5555"}},
 		{"duplicate port", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_PORT": "5555", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_PORT": "5555"}},
 		{"duplicate container", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_CONTAINER_NAME": "same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_CONTAINER_NAME": "same"}},
 		{"duplicate work path", Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "2", "CREDIMI_DEVICE_1_ID": "acme/runner/one", "CREDIMI_DEVICE_1_WORK_DIR": "/same", "CREDIMI_DEVICE_2_ID": "acme/runner/two", "CREDIMI_DEVICE_2_WORK_DIR": "/same"}},

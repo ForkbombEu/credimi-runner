@@ -366,7 +366,14 @@ func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
 		switch device.Type {
 		case runnerconfig.DeviceAndroidPhysical:
 			values[prefix+"MODE"] = device.AndroidPhysical.Transport
-			values[prefix+"SERIAL"] = device.AndroidPhysical.Serial
+			switch device.AndroidPhysical.Transport {
+			case "usb":
+				values[prefix+"SERIAL"] = device.AndroidPhysical.Serial
+			case "wifi":
+				values[prefix+"WIFI_IP"] = device.AndroidPhysical.WiFiIP
+				values[prefix+"WIFI_PORT"] = device.AndroidPhysical.WiFiPort
+				values[prefix+"SERIAL"] = dashboardruntime.AndroidWiFiSerial(device.AndroidPhysical.WiFiIP, device.AndroidPhysical.WiFiPort)
+			}
 		case runnerconfig.DeviceAndroidEmulator:
 			values[prefix+"MODE"] = "emulator"
 			values[prefix+"AVD_NAME"] = device.AndroidEmulator.AVDName
@@ -374,7 +381,9 @@ func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
 			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
 		case runnerconfig.DeviceRedroid:
 			values[prefix+"MODE"] = "redroid"
-			values[prefix+"SERIAL"] = device.Redroid.Serial
+			values[prefix+"WIFI_IP"] = device.Redroid.Host
+			values[prefix+"WIFI_PORT"] = strconv.Itoa(device.Redroid.ADBPort)
+			values[prefix+"SERIAL"] = dashboardruntime.AndroidWiFiSerial(device.Redroid.Host, strconv.Itoa(device.Redroid.ADBPort))
 			values[prefix+"REDROID_DATA_DIR"] = device.Redroid.DataDir
 			values[prefix+"REDROID_DATA_TAR"] = device.Redroid.DataArchive
 		case runnerconfig.DeviceIOSSimulator:
@@ -437,14 +446,37 @@ func configFromValues(values map[string]string) (runnerconfig.Config, error) {
 		switch device.Type {
 		case "android_phone":
 			entry.Type = runnerconfig.DeviceAndroidPhysical
-			entry.AndroidPhysical = &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode, Serial: device.Serial}
+			physical := &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode}
+			if device.Mode == "usb" {
+				physical.Serial = device.Serial
+			} else if device.Mode == "wifi" {
+				physical.WiFiIP, physical.WiFiPort = device.WiFiIP, device.WiFiPort
+				if physical.WiFiIP == "" {
+					physical.WiFiIP = device.Values["WIFI_IP"]
+				}
+				if physical.WiFiPort == "" {
+					physical.WiFiPort = device.Values["WIFI_PORT"]
+				}
+				if physical.WiFiPort == "" {
+					physical.WiFiPort = dashboardruntime.DefaultWiFiPort
+				}
+			}
+			entry.AndroidPhysical = physical
 		case "android_emulator":
 			entry.Type = runnerconfig.DeviceAndroidEmulator
 			abi := dashboardruntime.DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
 			entry.AndroidEmulator = &runnerconfig.AndroidEmulatorConfig{AVDName: device.Values["AVD_NAME"], BaseName: device.Values["BASE_NAME"], GoldenSource: device.Values["GOLDEN_PATH"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, APILevel: 35, MemoryMB: 2048, Cores: 2}
 		case "redroid":
 			entry.Type = runnerconfig.DeviceRedroid
-			entry.Redroid = &runnerconfig.RedroidConfig{Serial: device.Serial, DataDir: device.Values["REDROID_DATA_DIR"], DataArchive: device.Values["REDROID_DATA_TAR"], Image: "redroid:latest", ADBPort: 5555}
+			port := device.WiFiPort
+			if port == "" {
+				port = device.Values["WIFI_PORT"]
+			}
+			adbPort, _ := strconv.Atoi(port)
+			if adbPort == 0 {
+				adbPort = 5555
+			}
+			entry.Redroid = &runnerconfig.RedroidConfig{Host: device.WiFiIP, DataDir: device.Values["REDROID_DATA_DIR"], DataArchive: device.Values["REDROID_DATA_TAR"], Image: "redroid:latest", ADBPort: adbPort}
 		case "ios_simulator":
 			entry.Type = runnerconfig.DeviceIOSSimulator
 			entry.IOSSimulator = &runnerconfig.IOSSimulatorConfig{UDID: device.Values["IOS_UDID"]}

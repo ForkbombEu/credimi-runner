@@ -44,4 +44,5 @@ enabled = true
 
 [devices.android_physical]
 transport = "wifi"
-serial = "192.168.1.42:5555"
+wifi_ip = "192.168.1.42"
+wifi_port = "5555"

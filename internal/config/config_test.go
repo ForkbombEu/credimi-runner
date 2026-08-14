@@ -22,12 +22,18 @@ func validConfig() Config {
 }
 
 func physical(id, name, transport, serial string) DeviceConfig {
-	return DeviceConfig{ID: id, Name: name, Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: transport, Serial: serial}}
+	physical := &AndroidPhysicalConfig{Transport: transport}
+	if transport == "wifi" {
+		physical.WiFiIP, physical.WiFiPort = strings.TrimSuffix(serial, ":5555"), "5555"
+	} else {
+		physical.Serial = serial
+	}
+	return DeviceConfig{ID: id, Name: name, Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: physical}
 }
 
 func TestValidateForPlatformAcceptsSupportedInventory(t *testing.T) {
 	linux := validConfig()
-	linux.Devices = []DeviceConfig{physical("acme/runner/pixel", "Pixel", "wifi", "wifi:5555"), {ID: "acme/runner/emulator", Name: "Emulator", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 4096, Cores: 4}}, {ID: "acme/runner/redroid", Name: "Redroid", Type: DeviceRedroid, Redroid: &RedroidConfig{Image: "redroid:latest", Serial: "redroid:5555", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
+	linux.Devices = []DeviceConfig{physical("acme/runner/pixel", "Pixel", "wifi", "wifi:5555"), {ID: "acme/runner/emulator", Name: "Emulator", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 4096, Cores: 4}}, {ID: "acme/runner/redroid", Name: "Redroid", Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
 	if err := ValidateForPlatform(linux, "linux"); err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +44,70 @@ func TestValidateForPlatformAcceptsSupportedInventory(t *testing.T) {
 	}
 	if err := ValidateForPlatform(validConfig(), "linux"); err != nil {
 		t.Fatalf("zero devices: %v", err)
+	}
+}
+
+func TestValidatePhysicalAddressModes(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*Config)
+		valid bool
+	}{
+		{name: "usb", setup: func(c *Config) {
+			c.Devices = []DeviceConfig{physical("acme/runner/usb", "USB", "usb", "SERIAL_ONE")}
+		}, valid: true},
+		{name: "wifi", setup: func(c *Config) {
+			c.Devices = []DeviceConfig{{ID: "acme/runner/wifi", Name: "Wi-Fi", Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.168.1.20", WiFiPort: "5555"}}}
+		}, valid: true},
+		{name: "no device", setup: func(c *Config) {
+			c.Devices = []DeviceConfig{{ID: "acme/runner/idle", Name: "Idle", Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: "no_device"}}}
+		}, valid: true},
+		{name: "wifi serial is contradictory", setup: func(c *Config) {
+			c.Devices = []DeviceConfig{{ID: "acme/runner/wifi", Name: "Wi-Fi", Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: "wifi", Serial: "192.168.1.20:5555", WiFiIP: "192.168.1.20", WiFiPort: "5555"}}}
+		}},
+		{name: "no device address is contradictory", setup: func(c *Config) {
+			c.Devices = []DeviceConfig{{ID: "acme/runner/idle", Name: "Idle", Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: "no_device", WiFiIP: "192.168.1.20"}}}
+		}},
+		{name: "redroid", setup: func(c *Config) {
+			c.Devices = []DeviceConfig{{ID: "acme/runner/redroid", Name: "Redroid", Type: DeviceRedroid, Enabled: true, Redroid: &RedroidConfig{Host: "192.168.1.30", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
+		}, valid: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.setup(&cfg)
+			err := ValidateForPlatform(cfg, "linux")
+			if tc.valid && err != nil {
+				t.Fatal(err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatal("contradictory address accepted")
+			}
+		})
+	}
+}
+
+func TestWiFiConfigRoundTripDoesNotPersistDerivedSerial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := validConfig()
+	cfg.Devices = []DeviceConfig{{ID: "acme/runner/wifi", Name: "Wi-Fi", Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "2001:db8::20", WiFiPort: "5555"}}}
+	if err := WriteFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	physical := loaded.Devices[0].AndroidPhysical
+	if physical.Serial != "" || physical.WiFiIP != "2001:db8::20" || physical.WiFiPort != "5555" {
+		t.Fatalf("loaded Wi-Fi config = %#v", physical)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "serial =") {
+		t.Fatalf("derived serial was persisted:\n%s", data)
 	}
 }
 
@@ -87,15 +157,15 @@ func TestValidateForPlatformRejectsInvalidCombinations(t *testing.T) {
 		{"linux ios", "linux", "require macOS", func(c *Config) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/i", Name: "I", Type: DeviceIOSSimulator, IOSSimulator: &IOSSimulatorConfig{UDID: "id"}}}
 		}},
-		{"duplicate serial", "linux", "duplicate devices[1].redroid.serial", func(c *Config) {
-			c.Devices = []DeviceConfig{physical("acme/runner/p", "P", "wifi", "same"), {ID: "acme/runner/r", Name: "R", Type: DeviceRedroid, Redroid: &RedroidConfig{Image: "r", Serial: "same", DataDir: "/d", DataArchive: "/a", ADBPort: 5555}}}
+		{"duplicate serial", "linux", "duplicate devices[1].redroid", func(c *Config) {
+			c.Devices = []DeviceConfig{physical("acme/runner/p", "P", "wifi", "same"), {ID: "acme/runner/r", Name: "R", Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "same", Image: "r", DataDir: "/d", DataArchive: "/a", ADBPort: 5555}}}
 		}},
 		{"wrong subtype", "linux", "exactly one type-specific", func(c *Config) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/p", Name: "P", Type: DeviceAndroidPhysical}}
 		}},
 		{"bad transport", "linux", "transport", func(c *Config) { c.Devices = []DeviceConfig{physical("acme/runner/p", "P", "bluetooth", "x")} }},
 		{"bad redroid port", "linux", "adb_port", func(c *Config) {
-			c.Devices = []DeviceConfig{{ID: "acme/runner/r", Name: "R", Type: DeviceRedroid, Redroid: &RedroidConfig{Image: "r", Serial: "r", DataDir: "/d", DataArchive: "/a"}}}
+			c.Devices = []DeviceConfig{{ID: "acme/runner/r", Name: "R", Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "r", Image: "r", DataDir: "/d", DataArchive: "/a"}}}
 		}},
 		{"unsupported emulator platform", "windows", "require Linux or macOS", func(c *Config) {
 			c.Devices = []DeviceConfig{{ID: "acme/runner/emulator", Name: "E", Type: DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "avd", APILevel: 35, ABI: "x86_64", SystemImage: "google", BaseName: "credimi", GoldenSource: "/golden", MemoryMB: 2048, Cores: 2}}}
@@ -412,7 +482,7 @@ func TestValidationHelpersCoverSupportedModesAndDeviceErrors(t *testing.T) {
 		{"missing physical subtype", "requires", DeviceConfig{Type: DeviceAndroidPhysical, AndroidEmulator: &AndroidEmulatorConfig{}}, "linux"},
 		{"missing emulator field", "is required", DeviceConfig{Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "a", APILevel: 1, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "", MemoryMB: 1, Cores: 1}}, "linux"},
 		{"bad emulator resources", "must be positive", DeviceConfig{Type: DeviceAndroidEmulator, AndroidEmulator: &AndroidEmulatorConfig{AVDName: "a", APILevel: 0, ABI: "x", SystemImage: "x", BaseName: "x", GoldenSource: "/x", MemoryMB: 1, Cores: 1}}, "linux"},
-		{"missing redroid field", "is required", DeviceConfig{Type: DeviceRedroid, Redroid: &RedroidConfig{Image: "", Serial: "r", DataDir: "/d", DataArchive: "/a", ADBPort: 5555}}, "linux"},
+		{"missing redroid field", "is required", DeviceConfig{Type: DeviceRedroid, Redroid: &RedroidConfig{Host: "r", Image: "", DataDir: "/d", DataArchive: "/a", ADBPort: 5555}}, "linux"},
 		{"ios missing udid", "udid is required", DeviceConfig{Type: DeviceIOSSimulator, IOSSimulator: &IOSSimulatorConfig{}}, "darwin"},
 		{"unknown type", "unsupported", DeviceConfig{Type: "other", AndroidPhysical: &AndroidPhysicalConfig{}}, "linux"},
 	}
