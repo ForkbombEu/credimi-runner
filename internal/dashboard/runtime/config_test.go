@@ -199,6 +199,99 @@ func TestPhysicalAddressCompatibilityRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTypedCompatibilityConverterRoundTripsCanonicalCases(t *testing.T) {
+	base := testTOMLConfig(t.TempDir())
+	cases := []struct {
+		name       string
+		cfg        func(config.Config) config.Config
+		check      func(*testing.T, config.Config)
+		compatWant map[string]string
+	}{
+		{name: "manual exposure", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = nil
+			cfg.Exposure = config.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example", PublicPort: "8050"}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			if cfg.Exposure.PublicURL != "https://runner.example" || cfg.Exposure.PublicPort != "8050" {
+				t.Fatalf("manual exposure = %#v", cfg.Exposure)
+			}
+		}, compatWant: map[string]string{"CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_PORT": "8050"}},
+		{name: "named exposure", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = nil
+			cfg.Exposure = config.ExposureConfig{Mode: "named_tunnel", Domain: "runner.example.com", CaddySite: ":80", CloudflareToken: "secret"}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			if cfg.Exposure.Domain != "runner.example.com" || cfg.Exposure.CaddySite != ":80" || cfg.Exposure.CloudflareToken != "secret" {
+				t.Fatalf("named exposure = %#v", cfg.Exposure)
+			}
+		}, compatWant: map[string]string{"CREDIMI_SERVICE_MODE": "cloudflare-managed", "RUNNER_DOMAIN": "runner.example.com"}},
+		{name: "usb", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/usb", Name: "USB", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "SERIAL_ONE"}}}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			if cfg.Devices[0].AndroidPhysical.Serial != "SERIAL_ONE" {
+				t.Fatalf("USB = %#v", cfg.Devices[0].AndroidPhysical)
+			}
+		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_SERIAL": "SERIAL_ONE"}},
+		{name: "wifi", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/wifi", Name: "Wi-Fi", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.20", WiFiPort: "5555"}}}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			physical := cfg.Devices[0].AndroidPhysical
+			if physical.Serial != "" || physical.WiFiIP != "192.0.2.20" || physical.WiFiPort != "5555" {
+				t.Fatalf("Wi-Fi = %#v", physical)
+			}
+		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_SERIAL": "192.0.2.20:5555"}},
+		{name: "no device", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/idle", Name: "Idle", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "no_device"}}}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			if physical := cfg.Devices[0].AndroidPhysical; physical.Serial != "" || physical.WiFiIP != "" || physical.WiFiPort != "" {
+				t.Fatalf("no-device = %#v", physical)
+			}
+		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_MODE": "no_device"}},
+		{name: "emulator", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi-base", GoldenSource: "/golden/credimi-base", ABI: "x86_64", SystemImage: "system-images;android-35;google_apis;x86_64", APILevel: 35, MemoryMB: 2048, Cores: 2}}}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			if cfg.Devices[0].AndroidEmulator.BaseName != "credimi-base" {
+				t.Fatalf("emulator = %#v", cfg.Devices[0].AndroidEmulator)
+			}
+		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_BASE_NAME": "credimi-base", "CREDIMI_DEVICE_1_AVD_NAME": "credimi-base"}},
+		{name: "redroid", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "192.0.2.30", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			if redroid := cfg.Devices[0].Redroid; redroid.Host != "192.0.2.30" || redroid.ADBPort != 5555 {
+				t.Fatalf("redroid = %#v", redroid)
+			}
+		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_SERIAL": "192.0.2.30:5555"}},
+		{name: "ios simulator", cfg: func(cfg config.Config) config.Config {
+			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/ios", Name: "iOS", Type: config.DeviceIOSSimulator, Enabled: true, IOSSimulator: &config.IOSSimulatorConfig{UDID: "ios-1"}}}
+			return cfg
+		}, check: func(t *testing.T, cfg config.Config) {
+			if cfg.Devices[0].IOSSimulator.UDID != "ios-1" {
+				t.Fatalf("iOS = %#v", cfg.Devices[0].IOSSimulator)
+			}
+		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_IOS_UDID": "ios-1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			values := ValuesFromTypedConfig(tc.cfg(base))
+			got, err := TypedConfigFromValues(values)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.check(t, got)
+			for key, want := range tc.compatWant {
+				if got := ValuesFromTypedConfig(got)[key]; got != want {
+					t.Fatalf("compatibility %s = %q, want %q", key, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadStorePreservesEmulatorActivityEnvironment(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testTOMLConfig(dir)

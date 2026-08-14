@@ -318,7 +318,7 @@ func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 			lines = append(lines, line)
 		}
 	}
-	typed, err := configFromLegacyValues(values)
+	typed, err := TypedConfigFromValues(values)
 	if err != nil {
 		return err
 	}

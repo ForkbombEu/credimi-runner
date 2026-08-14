@@ -2,12 +2,10 @@ package dashboard
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	stdruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -123,11 +121,7 @@ func LoadConfig(dir string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	values, err := valuesFromTOML(cfg)
-	if err != nil {
-		return nil, err
-	}
-	c.values = values
+	c.values = map[string]string(dashboardruntime.ValuesFromTypedConfig(cfg))
 	return c, nil
 }
 
@@ -251,7 +245,7 @@ func normalizedConfigValues(current, incoming map[string]string, goos string) (d
 func (c *Config) write() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	cfg, err := configFromValues(c.values)
+	cfg, err := dashboardruntime.TypedConfigFromValues(dashboardruntime.Values(c.values))
 	if err != nil {
 		return err
 	}
@@ -297,206 +291,6 @@ func (c *Config) RawEnv(mask bool) string {
 		fmt.Fprintf(&b, "%s=%s\n", f.Key, v)
 	}
 	return b.String()
-}
-
-// valuesFromTOML exposes the historical field names to the unchanged
-// dashboard templates and handlers. It is deliberately one-way at the UI
-// boundary: the file on disk remains typed TOML.
-func valuesFromTOML(cfg runnerconfig.Config) (map[string]string, error) {
-	values := map[string]string{}
-	for k, v := range Defaults {
-		values[k] = v
-	}
-	defaultValue := func(value, fallback string) string {
-		if strings.TrimSpace(value) == "" {
-			return fallback
-		}
-		return value
-	}
-	values["CREDIMI_URL"] = cfg.Credimi.URL
-	values["CREDIMI_RUNNER_ID"] = cfg.Runner.ID
-	values["CREDIMI_RUNNER_NAME"] = cfg.Runner.Name
-	values["CREDIMI_RUNNER_ORGANIZATION"] = cfg.Runner.Organization
-	values["CREDIMI_RUNNER_DESCRIPTION"] = cfg.Runner.Description
-	values["CREDIMI_RUNNER_PUBLISHED"] = strconv.FormatBool(cfg.Runner.Published)
-	values["CREDIMI_USER_API_KEY"] = cfg.Credimi.UserAPIKey
-	values["CREDIMI_INTERNAL_ADMIN_KEY"] = cfg.Credimi.InternalAdminKey
-	values["TEMPORAL_ADDRESS"] = cfg.Temporal.Address
-	values["DASHBOARD_TOKEN"] = cfg.Server.DashboardToken
-	values["OTEL_ENABLED"] = strconv.FormatBool(cfg.Observability.Enabled)
-	values["OTEL_EXPORTER_OTLP_ENDPOINT"] = defaultValue(cfg.Observability.OTLPEndpoint, values["OTEL_EXPORTER_OTLP_ENDPOINT"])
-	values["OTEL_SERVICE_NAME"] = defaultValue(cfg.Observability.ServiceName, values["OTEL_SERVICE_NAME"])
-	values["CREDIMI_TEMP_DIR"] = defaultValue(cfg.Storage.TempDir, values["CREDIMI_TEMP_DIR"])
-	values["ANDROID_RUNNER_IMAGE"] = defaultValue(cfg.Android.RunnerImage, values["ANDROID_RUNNER_IMAGE"])
-	values["ANDROID_PULL_POLICY"] = defaultValue(cfg.Android.PullPolicy, values["ANDROID_PULL_POLICY"])
-	values["ANDROID_NETWORK"] = defaultValue(cfg.Android.Network, values["ANDROID_NETWORK"])
-	values["ANDROID_STATE_VOLUME"] = defaultValue(cfg.Android.StateVolume, values["ANDROID_STATE_VOLUME"])
-	values["ANDROID_TOOL_CACHE_VOLUME"] = defaultValue(cfg.Android.ToolCacheVolume, values["ANDROID_TOOL_CACHE_VOLUME"])
-	values["ANDROID_SDK_VOLUME"] = defaultValue(cfg.Android.SDKVolume, values["ANDROID_SDK_VOLUME"])
-	values["ANDROID_ADB_KEYS_PATH"] = cfg.Android.ADBKeysPath
-	if host, port, err := net.SplitHostPort(cfg.Server.APIListen); err == nil {
-		values["RUNNER_HOST"], values["RUNNER_PORT"] = host, port
-	}
-	if host, port, err := net.SplitHostPort(cfg.Server.DashboardListen); err == nil {
-		values["DASHBOARD_HOST"], values["DASHBOARD_PORT"] = host, port
-	}
-	switch cfg.Exposure.Mode {
-	case "quick_tunnel":
-		values["CREDIMI_SERVICE_MODE"] = "auto"
-	case "named_tunnel":
-		values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
-	default:
-		values["CREDIMI_SERVICE_MODE"] = "manual"
-	}
-	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
-	values["RUNNER_PUBLIC_PORT"] = cfg.Exposure.PublicPort
-	values["RUNNER_DOMAIN"] = cfg.Exposure.Domain
-	values["RUNNER_CADDY_SITE"] = defaultValue(cfg.Exposure.CaddySite, dashboardruntime.DefaultRunnerCaddySite)
-	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
-	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
-	for i, device := range cfg.Devices {
-		prefix := fmt.Sprintf("CREDIMI_DEVICE_%d_", i+1)
-		values[prefix+"ID"] = device.ID
-		values[prefix+"NAME"] = device.Name
-		values[prefix+"DESCRIPTION"] = device.Description
-		values[prefix+"ENABLED"] = strconv.FormatBool(device.Enabled)
-		legacyType := string(device.Type)
-		if device.Type == runnerconfig.DeviceAndroidPhysical {
-			legacyType = "android_phone"
-		}
-		values[prefix+"TYPE"] = legacyType
-		switch device.Type {
-		case runnerconfig.DeviceAndroidPhysical:
-			values[prefix+"MODE"] = device.AndroidPhysical.Transport
-			switch device.AndroidPhysical.Transport {
-			case "usb":
-				values[prefix+"SERIAL"] = device.AndroidPhysical.Serial
-			case "wifi":
-				values[prefix+"WIFI_IP"] = device.AndroidPhysical.WiFiIP
-				values[prefix+"WIFI_PORT"] = device.AndroidPhysical.WiFiPort
-				values[prefix+"SERIAL"] = dashboardruntime.AndroidWiFiSerial(device.AndroidPhysical.WiFiIP, device.AndroidPhysical.WiFiPort)
-			}
-		case runnerconfig.DeviceAndroidEmulator:
-			values[prefix+"MODE"] = "emulator"
-			values[prefix+"AVD_NAME"] = device.AndroidEmulator.BaseName
-			values[prefix+"BASE_NAME"] = device.AndroidEmulator.BaseName
-			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
-		case runnerconfig.DeviceRedroid:
-			values[prefix+"MODE"] = "redroid"
-			values[prefix+"WIFI_IP"] = device.Redroid.Host
-			values[prefix+"WIFI_PORT"] = strconv.Itoa(device.Redroid.ADBPort)
-			values[prefix+"SERIAL"] = dashboardruntime.AndroidWiFiSerial(device.Redroid.Host, strconv.Itoa(device.Redroid.ADBPort))
-			values[prefix+"REDROID_DATA_DIR"] = device.Redroid.DataDir
-			values[prefix+"REDROID_DATA_TAR"] = device.Redroid.DataArchive
-		case runnerconfig.DeviceIOSSimulator:
-			values[prefix+"MODE"] = "no_device"
-			values[prefix+"IOS_UDID"] = device.IOSSimulator.UDID
-		}
-	}
-	return values, nil
-}
-
-func configFromValues(values map[string]string) (runnerconfig.Config, error) {
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(values), currentGOOS())
-	if err != nil {
-		return runnerconfig.Config{}, err
-	}
-	cfg := runnerconfig.Bootstrap()
-	cfg.Runner.ID = normalized["CREDIMI_RUNNER_ID"]
-	cfg.Runner.Name = normalized["CREDIMI_RUNNER_NAME"]
-	cfg.Runner.Organization = normalized["CREDIMI_RUNNER_ORGANIZATION"]
-	cfg.Runner.Description = normalized["CREDIMI_RUNNER_DESCRIPTION"]
-	cfg.Runner.Published = isTruthyFormValue(normalized["CREDIMI_RUNNER_PUBLISHED"])
-	cfg.Credimi.URL = normalized["CREDIMI_URL"]
-	cfg.Credimi.UserAPIKey = normalized["CREDIMI_USER_API_KEY"]
-	cfg.Credimi.InternalAdminKey = normalized["CREDIMI_INTERNAL_ADMIN_KEY"]
-	if cfg.Credimi.InternalAdminKey != "" {
-		cfg.Credimi.AuthMode = "internal_admin"
-	}
-	cfg.Temporal.Address = normalized["TEMPORAL_ADDRESS"]
-	cfg.Server.APIListen = net.JoinHostPort(normalized["RUNNER_HOST"], normalized["RUNNER_PORT"])
-	cfg.Server.DashboardListen = net.JoinHostPort(normalized["DASHBOARD_HOST"], normalized["DASHBOARD_PORT"])
-	cfg.Server.DashboardToken = normalized["DASHBOARD_TOKEN"]
-	cfg.Observability.Enabled = isTruthyFormValue(normalized["OTEL_ENABLED"])
-	cfg.Observability.OTLPEndpoint = normalized["OTEL_EXPORTER_OTLP_ENDPOINT"]
-	cfg.Observability.ServiceName = normalized["OTEL_SERVICE_NAME"]
-	cfg.Storage.TempDir = normalized["CREDIMI_TEMP_DIR"]
-	cfg.Android.RunnerImage = normalized["ANDROID_RUNNER_IMAGE"]
-	cfg.Android.PullPolicy = normalized["ANDROID_PULL_POLICY"]
-	cfg.Android.Network = normalized["ANDROID_NETWORK"]
-	cfg.Android.StateVolume = normalized["ANDROID_STATE_VOLUME"]
-	cfg.Android.ToolCacheVolume = normalized["ANDROID_TOOL_CACHE_VOLUME"]
-	cfg.Android.SDKVolume = normalized["ANDROID_SDK_VOLUME"]
-	cfg.Android.ADBKeysPath = normalized["ANDROID_ADB_KEYS_PATH"]
-	switch normalized["CREDIMI_SERVICE_MODE"] {
-	case "cloudflare-managed":
-		cfg.Exposure.Mode = "named_tunnel"
-	case "manual":
-		cfg.Exposure.Mode = "manual"
-	default:
-		cfg.Exposure.Mode = "quick_tunnel"
-	}
-	cfg.Exposure.PublicURL = normalized["RUNNER_PUBLIC_URL"]
-	cfg.Exposure.PublicPort = normalized["RUNNER_PUBLIC_PORT"]
-	cfg.Exposure.Domain = normalized["RUNNER_DOMAIN"]
-	cfg.Exposure.CaddySite = strings.TrimSpace(normalized["RUNNER_CADDY_SITE"])
-	if cfg.Exposure.CaddySite == "" {
-		cfg.Exposure.CaddySite = dashboardruntime.DefaultRunnerCaddySite
-	}
-	cfg.Exposure.CloudflareToken = normalized["CLOUDFLARE_TUNNEL_TOKEN"]
-	parsed, err := dashboardruntime.ParseRuntimeConfig(normalized)
-	if err != nil && strings.TrimSpace(normalized["CREDIMI_DEVICE_COUNT"]) != "" {
-		return runnerconfig.Config{}, err
-	}
-	for _, device := range parsed.Devices {
-		entry := runnerconfig.DeviceConfig{ID: device.ID, Name: device.Name, Description: device.Description, Enabled: device.Enabled}
-		switch device.Type {
-		case "android_phone":
-			entry.Type = runnerconfig.DeviceAndroidPhysical
-			physical := &runnerconfig.AndroidPhysicalConfig{Transport: device.Mode}
-			if device.Mode == "usb" {
-				physical.Serial = device.Serial
-			} else if device.Mode == "wifi" {
-				physical.WiFiIP, physical.WiFiPort = device.WiFiIP, device.WiFiPort
-				if physical.WiFiIP == "" {
-					physical.WiFiIP = device.Values["WIFI_IP"]
-				}
-				if physical.WiFiPort == "" {
-					physical.WiFiPort = device.Values["WIFI_PORT"]
-				}
-				if physical.WiFiPort == "" {
-					physical.WiFiPort = dashboardruntime.DefaultWiFiPort
-				}
-			}
-			entry.AndroidPhysical = physical
-		case "android_emulator":
-			entry.Type = runnerconfig.DeviceAndroidEmulator
-			abi := dashboardruntime.DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
-			baseName := device.Values["BASE_NAME"]
-			if strings.TrimSpace(baseName) == "" {
-				baseName = dashboardruntime.DefaultBaseName
-			}
-			entry.AndroidEmulator = &runnerconfig.AndroidEmulatorConfig{BaseName: baseName, GoldenSource: device.Values["GOLDEN_PATH"], ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, APILevel: 35, MemoryMB: 2048, Cores: 2}
-		case "redroid":
-			entry.Type = runnerconfig.DeviceRedroid
-			port := device.WiFiPort
-			if port == "" {
-				port = device.Values["WIFI_PORT"]
-			}
-			adbPort, _ := strconv.Atoi(port)
-			if adbPort == 0 {
-				adbPort = 5555
-			}
-			entry.Redroid = &runnerconfig.RedroidConfig{Host: device.WiFiIP, DataDir: device.Values["REDROID_DATA_DIR"], DataArchive: device.Values["REDROID_DATA_TAR"], Image: "redroid:latest", ADBPort: adbPort}
-		case "ios_simulator":
-			entry.Type = runnerconfig.DeviceIOSSimulator
-			entry.IOSSimulator = &runnerconfig.IOSSimulatorConfig{UDID: device.Values["IOS_UDID"]}
-		default:
-			return runnerconfig.Config{}, fmt.Errorf("unsupported device type %q", device.Type)
-		}
-		cfg.Devices = append(cfg.Devices, entry)
-	}
-	return cfg, nil
 }
 
 // GroupedFields returns the registry grouped, preserving order.

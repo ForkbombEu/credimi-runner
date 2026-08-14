@@ -98,7 +98,7 @@ func TestConfigCompatibilityRoundTripsManualPublicPort(t *testing.T) {
 	}
 	values := runner.Snapshot()
 	values["RUNNER_PUBLIC_PORT"] = "8050"
-	typed, err := configFromValues(values)
+	typed, err := dashboardruntime.TypedConfigFromValues(dashboardruntime.Values(values))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,10 +109,7 @@ func TestConfigCompatibilityRoundTripsManualPublicPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	compatibility, err := valuesFromTOML(loaded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	compatibility := dashboardruntime.ValuesFromTypedConfig(loaded)
 	if compatibility["RUNNER_PUBLIC_PORT"] != "8050" {
 		t.Fatalf("compatibility public port = %q", compatibility["RUNNER_PUBLIC_PORT"])
 	}

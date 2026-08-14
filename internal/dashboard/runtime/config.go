@@ -53,14 +53,14 @@ func LoadStore(configDir string) (*Store, error) {
 		return nil, err
 	}
 	store.exists = true
-	store.Values = legacyValuesFromConfig(cfg)
+	store.Values = ValuesFromTypedConfig(cfg)
 
 	return store, nil
 }
 
 func (s *Store) Save(values Values) error {
 	snapshot := cloneValues(values)
-	cfg, err := configFromLegacyValues(snapshot)
+	cfg, err := TypedConfigFromValues(snapshot)
 	if err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func (s *Store) writeTOML(cfg runnerconfig.Config, values Values) error {
 	return nil
 }
 
-func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
+func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 	values := DefaultValues()
 	values["CREDIMI_URL"] = cfg.Credimi.URL
 	values["CREDIMI_RUNNER_ID"] = cfg.Runner.ID
@@ -99,6 +99,9 @@ func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
 		values["DASHBOARD_HOST"], values["DASHBOARD_PORT"] = host, port
 	}
 	values["CREDIMI_TEMP_DIR"] = cfg.Storage.TempDir
+	values["OTEL_ENABLED"] = strconv.FormatBool(cfg.Observability.Enabled)
+	values["OTEL_EXPORTER_OTLP_ENDPOINT"] = defaultIfEmpty(cfg.Observability.OTLPEndpoint, values["OTEL_EXPORTER_OTLP_ENDPOINT"])
+	values["OTEL_SERVICE_NAME"] = defaultIfEmpty(cfg.Observability.ServiceName, values["OTEL_SERVICE_NAME"])
 	values["ANDROID_RUNNER_IMAGE"] = defaultIfEmpty(cfg.Android.RunnerImage, values["ANDROID_RUNNER_IMAGE"])
 	values["ANDROID_PULL_POLICY"] = defaultIfEmpty(cfg.Android.PullPolicy, values["ANDROID_PULL_POLICY"])
 	values["ANDROID_NETWORK"] = defaultIfEmpty(cfg.Android.Network, values["ANDROID_NETWORK"])
@@ -155,7 +158,7 @@ func legacyValuesFromConfig(cfg runnerconfig.Config) Values {
 	return values
 }
 
-func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
+func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 	cfg := runnerconfig.Bootstrap()
 	cfg.Runner.ID, cfg.Runner.Name, cfg.Runner.Organization = values["CREDIMI_RUNNER_ID"], values["CREDIMI_RUNNER_NAME"], values["CREDIMI_RUNNER_ORGANIZATION"]
 	cfg.Runner.Description, cfg.Runner.Published = values["CREDIMI_RUNNER_DESCRIPTION"], strings.EqualFold(values["CREDIMI_RUNNER_PUBLISHED"], "true")
@@ -166,6 +169,9 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 	cfg.Temporal.Address = values["TEMPORAL_ADDRESS"]
 	cfg.Server.APIListen, cfg.Server.DashboardListen = net.JoinHostPort(values["RUNNER_HOST"], values["RUNNER_PORT"]), net.JoinHostPort(values["DASHBOARD_HOST"], values["DASHBOARD_PORT"])
 	cfg.Server.DashboardToken, cfg.Storage.TempDir = values["DASHBOARD_TOKEN"], values["CREDIMI_TEMP_DIR"]
+	cfg.Observability.Enabled = strings.EqualFold(values["OTEL_ENABLED"], "true")
+	cfg.Observability.OTLPEndpoint = values["OTEL_EXPORTER_OTLP_ENDPOINT"]
+	cfg.Observability.ServiceName = values["OTEL_SERVICE_NAME"]
 	cfg.Android.RunnerImage = values["ANDROID_RUNNER_IMAGE"]
 	cfg.Android.PullPolicy = values["ANDROID_PULL_POLICY"]
 	cfg.Android.Network = values["ANDROID_NETWORK"]
@@ -186,9 +192,13 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 	cfg.Exposure.Domain = values["RUNNER_DOMAIN"]
 	cfg.Exposure.CaddySite = defaultIfEmpty(values["RUNNER_CADDY_SITE"], DefaultRunnerCaddySite)
 	cfg.Exposure.CloudflareToken = values["CLOUDFLARE_TUNNEL_TOKEN"]
-	runtimeCfg, err := parseRunnerRuntimeConfig(values)
-	if err != nil && strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
-		return cfg, err
+	runtimeCfg := RunnerRuntimeConfig{}
+	if count := strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]); count != "" && count != "0" {
+		var err error
+		runtimeCfg, err = parseRunnerRuntimeConfig(values)
+		if err != nil {
+			return cfg, err
+		}
 	}
 	for _, device := range runtimeCfg.Devices {
 		entry := runnerconfig.DeviceConfig{ID: device.ID, Name: device.Name, Description: device.Description, Enabled: device.Enabled}
@@ -215,7 +225,8 @@ func configFromLegacyValues(values Values) (runnerconfig.Config, error) {
 		case "android_emulator":
 			abi := DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
 			baseName := defaultIfEmpty(device.Values["BASE_NAME"], DefaultBaseName)
-			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, BaseName: baseName, GoldenSource: "/avd-golden/" + baseName + "-golden", APILevel: 35, MemoryMB: 2048, Cores: 2}
+			goldenSource := defaultIfEmpty(device.Values["GOLDEN_PATH"], "/avd-golden/"+baseName+"-golden")
+			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, BaseName: baseName, GoldenSource: goldenSource, APILevel: 35, MemoryMB: 2048, Cores: 2}
 		case "redroid":
 			host, port := device.WiFiIP, device.WiFiPort
 			if host == "" {
