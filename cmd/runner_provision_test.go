@@ -229,6 +229,82 @@ func TestExecutionRuntimeRunningReadsOnlyOperationalStates(t *testing.T) {
 	}
 }
 
+func TestRunContainerLauncherPreservesExplicitStopAcrossRestart(t *testing.T) {
+	oldOpen, oldSignal, oldFactory := dashboardOpen, dashboardSignalSource, newContainerLauncherManager
+	t.Cleanup(func() {
+		dashboardOpen, dashboardSignalSource, newContainerLauncherManager = oldOpen, oldSignal, oldFactory
+	})
+	dashboardOpen = false
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Server.APIListen = "127.0.0.1:19050"
+	cfg.Exposure.Mode = "quick_tunnel"
+	cfg.Android = runnerconfig.AndroidConfig{RunnerImage: "published:stable", PullPolicy: "never", Network: "network", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
+	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/idle", Name: "Idle", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"}}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runtime-state"), []byte("stopped\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := dashboard.LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &fakeContainerLauncherManager{}
+	newContainerLauncherManager = func(_ string, _ string, _ dashboardruntime.Values) containerLauncherManager { return manager }
+	signals := make(chan os.Signal, 1)
+	dashboardSignalSource = func() (<-chan os.Signal, func()) { return signals, func() {} }
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runContainerLauncher(command, dir, loaded.Snapshot()) }()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(dir, "control.sock")); err == nil {
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("container launcher exited before control socket: %v", err)
+		default:
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "control.sock")); err != nil {
+		t.Fatalf("control socket was not created: %v", err)
+	}
+	if manager.recreatedCount() != 1 {
+		t.Fatalf("runner recreations = %d, want 1", manager.recreatedCount())
+	}
+	started, _, _, _ := manager.snapshot()
+	if started != 1 {
+		t.Fatalf("runner starts = %d, want 1", started)
+	}
+	if manager.verifiedCount() != 0 {
+		t.Fatal("stopped restart resolved a quick tunnel")
+	}
+	if quickURL, err := launcher.ReadQuickTunnelURL(dir); err == nil || quickURL != "" {
+		t.Fatalf("quick tunnel URL = %q, %v, want absent", quickURL, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "runtime-state"))
+	if err != nil || strings.TrimSpace(string(raw)) != "stopped" {
+		t.Fatalf("runtime state = %q, %v", raw, err)
+	}
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("container launcher did not stop")
+	}
+}
+
 func TestRuntimePlanHasQuickTunnelRequiresAutoTunnelService(t *testing.T) {
 	for _, test := range []struct {
 		name string

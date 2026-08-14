@@ -404,11 +404,17 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 		if err := launcher.ClearQuickTunnelURL(configDir); err != nil {
 			return err
 		}
-		if err := manager.Start(cmd.Context()); err != nil {
-			return err
-		}
-		if err := refreshQuickTunnelURL(cmd.Context(), snapshotValues()); err != nil {
-			return err
+		if runtimeExecutionStopped(configDir) {
+			if err := manager.RecreateRunner(cmd.Context(), true); err != nil {
+				return fmt.Errorf("start stopped runner service: %w", err)
+			}
+		} else {
+			if err := manager.Start(cmd.Context()); err != nil {
+				return err
+			}
+			if err := refreshQuickTunnelURL(cmd.Context(), snapshotValues()); err != nil {
+				return err
+			}
 		}
 	}
 	defer manager.Stop(context.Background())
@@ -455,6 +461,11 @@ func executionRuntimeRunning(configDir string) bool {
 	default:
 		return false
 	}
+}
+
+func runtimeExecutionStopped(configDir string) bool {
+	raw, err := os.ReadFile(filepath.Join(configDir, "runtime-state"))
+	return err == nil && strings.TrimSpace(string(raw)) == "stopped"
 }
 
 func fileExists(path string) bool {
