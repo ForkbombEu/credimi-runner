@@ -2932,6 +2932,94 @@ func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	}
 }
 
+func TestServerSaveDevicesConfigUsesCanonicalAliasesAndClearsFields(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}
+	devices := []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/usb", Name: "USB", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-old", Values: dashboardruntime.Values{"SERIAL": "usb-old"}},
+		{ID: "acme/runner/wifi", Name: "Wi-Fi", Type: "android_phone", Mode: "wifi", Enabled: true, WiFiIP: "10.0.0.2", WiFiPort: "5555", Serial: "10.0.0.2:5555", Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.2", "WIFI_PORT": "5555"}},
+		{ID: "acme/runner/redroid", Name: "Redroid", Type: "redroid", Mode: "redroid", Enabled: true, WiFiIP: "10.0.0.3", WiFiPort: "5555", Serial: "10.0.0.3:5555", Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.3", "WIFI_PORT": "5555"}},
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+
+	post := func(form url.Values) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		s.saveDevicesConfig(recorder, request)
+		if recorder.Code != http.StatusSeeOther {
+			t.Fatalf("save device response = %d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/usb"},
+		"CREDIMI_DEVICE_NAME":        {"USB renamed"},
+		"CREDIMI_DEVICE_DESCRIPTION": {"updated description"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"wifi"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.10"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5555"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/usb"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"usb"},
+		"CREDIMI_RUNNER_SERIAL":      {"usb-new"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/wifi"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"wifi"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.20"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5566"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/redroid"},
+		"CREDIMI_RUNNER_TYPE":        {"redroid"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"redroid"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.30"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5566"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/redroid"},
+		"CREDIMI_DEVICE_DESCRIPTION": {""},
+		"CREDIMI_RUNNER_TYPE":        {"redroid"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"redroid"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.30"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5566"},
+	})
+
+	updated, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := updated.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.Devices[0]; got.Name != "USB renamed" || got.Description != "updated description" || got.Mode != "usb" || got.Serial != "usb-new" || got.WiFiIP != "" || got.WiFiPort != "" {
+		t.Fatalf("USB device after transitions = %#v", got)
+	}
+	if got := config.Devices[1]; got.WiFiIP != "10.0.0.20" || got.WiFiPort != "5566" || got.Serial != "10.0.0.20:5566" {
+		t.Fatalf("Wi-Fi device after update = %#v", got)
+	}
+	if got := config.Devices[2]; got.Description != "" || got.WiFiIP != "10.0.0.30" || got.WiFiPort != "5566" || got.Serial != "10.0.0.30:5566" {
+		t.Fatalf("Redroid device after update = %#v", got)
+	}
+}
+
 func TestServerSaveDevicesConfigUpdatesRunningRunnerWithoutRestart(t *testing.T) {
 	transport := http.DefaultTransport
 	var registrations []string

@@ -934,43 +934,65 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		config = dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(values)}
 	}
-	formValue := func(keys ...string) string {
+	postedValue := func(keys ...string) (string, bool) {
 		for _, key := range keys {
-			if value := strings.TrimSpace(r.FormValue(key)); value != "" {
-				return value
+			if values, ok := r.PostForm[key]; ok {
+				if len(values) == 0 {
+					return "", true
+				}
+				return strings.TrimSpace(values[0]), true
 			}
 		}
-		return ""
+		return "", false
 	}
-	name := formValue("name", "CREDIMI_DEVICE_NAME")
-	deviceID := strings.TrimPrefix(formValue("device_id", "CREDIMI_DEVICE_ID"), "/")
-	conflictAction := formValue("device_conflict_action", "CREDIMI_DEVICE_CONFLICT_ACTION")
-	device := dashboardruntime.DeviceRuntimeConfig{
-		ID:          deviceID,
-		Name:        name,
-		Description: strings.TrimSpace(r.FormValue("description")),
-		Type:        formValue("type", "CREDIMI_RUNNER_TYPE"),
-		Mode:        formValue("mode", "CREDIMI_RUNNER_DEVICE_MODE"),
-		Enabled:     r.FormValue("enabled") != "false",
-		Serial:      formValue("serial", "CREDIMI_RUNNER_SERIAL"),
-		Values:      dashboardruntime.Values{},
+	valueAliases := []struct {
+		key   string
+		forms []string
+	}{
+		{"SERIAL", []string{"serial", "CREDIMI_RUNNER_SERIAL"}},
+		{"WIFI_IP", []string{"wifi_ip", "CREDIMI_RUNNER_WIFI_IP"}},
+		{"WIFI_PORT", []string{"wifi_port", "CREDIMI_RUNNER_WIFI_PORT"}},
+		{"BASE_NAME", []string{"base_name", "BASE_NAME"}},
+		{"ANDROID_KEYS_DIR", []string{"android_keys_dir", "ANDROID_KEYS_DIR"}},
+		{"GOLDEN_PATH", []string{"golden_path", "GOLDEN_PATH"}},
+		{"HOST_AVD_HOME_PATH", []string{"host_avd_home_path", "HOST_AVD_HOME_PATH"}},
+		{"HOST_AVD_GOLDEN_PATH", []string{"host_avd_golden_path", "HOST_AVD_GOLDEN_PATH"}},
+		{"REDROID_DATA_DIR", []string{"redroid_data_dir", "REDROID_DATA_DIR"}},
+		{"REDROID_DATA_TAR", []string{"redroid_data_tar", "REDROID_DATA_TAR"}},
+		{"AVDCTL_SSH_TARGET", []string{"avdctl_ssh_target", "AVDCTL_SSH_TARGET"}},
+		{"AVDCTL_SSH_PASSWORD", []string{"avdctl_ssh_password", "AVDCTL_SSH_PASSWORD"}},
+		{"AVDCTL_SSH_KNOWN_HOSTS_PATH", []string{"avdctl_ssh_known_hosts_path", "AVDCTL_SSH_KNOWN_HOSTS_PATH"}},
+		{"AVDCTL_SUDO", []string{"avdctl_sudo", "AVDCTL_SUDO"}},
+		{"AVDCTL_SUDO_PASSWORD", []string{"avdctl_sudo_password", "AVDCTL_SUDO_PASSWORD"}},
+		{"IOS_UDID", []string{"ios_udid", "IOS_UDID"}},
 	}
-	for formKey, valueKey := range map[string]string{
-		"serial": "SERIAL", "wifi_ip": "WIFI_IP", "wifi_port": "WIFI_PORT", "ios_udid": "IOS_UDID",
-		"base_name":        "BASE_NAME",
-		"android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH",
-		"redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH",
-	} {
-		value := strings.TrimSpace(r.FormValue(formKey))
-		if value == "" {
-			value = strings.TrimSpace(r.FormValue(map[string]string{"serial": "CREDIMI_RUNNER_SERIAL", "wifi_ip": "CREDIMI_RUNNER_WIFI_IP", "wifi_port": "CREDIMI_RUNNER_WIFI_PORT", "base_name": "BASE_NAME", "android_keys_dir": "ANDROID_KEYS_DIR", "golden_path": "GOLDEN_PATH", "host_avd_home_path": "HOST_AVD_HOME_PATH", "host_avd_golden_path": "HOST_AVD_GOLDEN_PATH", "redroid_data_dir": "REDROID_DATA_DIR", "redroid_data_tar": "REDROID_DATA_TAR", "avdctl_ssh_target": "AVDCTL_SSH_TARGET", "avdctl_ssh_known_hosts_path": "AVDCTL_SSH_KNOWN_HOSTS_PATH"}[formKey]))
+	name, namePosted := postedValue("name", "CREDIMI_DEVICE_NAME")
+	description, descriptionPosted := postedValue("description", "CREDIMI_DEVICE_DESCRIPTION")
+	typeValue, typePosted := postedValue("type", "CREDIMI_RUNNER_TYPE")
+	modeValue, modePosted := postedValue("mode", "CREDIMI_RUNNER_DEVICE_MODE")
+	deviceIDValue, _ := postedValue("device_id", "CREDIMI_DEVICE_ID")
+	deviceID := strings.TrimPrefix(deviceIDValue, "/")
+	conflictAction, _ := postedValue("device_conflict_action", "CREDIMI_DEVICE_CONFLICT_ACTION")
+	device := dashboardruntime.DeviceRuntimeConfig{ID: deviceID, Enabled: true, Values: dashboardruntime.Values{}}
+	if namePosted {
+		device.Name = name
+	}
+	if descriptionPosted {
+		device.Description = description
+	}
+	if typePosted {
+		device.Type = typeValue
+	}
+	if modePosted {
+		device.Mode = modeValue
+	}
+	if enabled, ok := postedValue("enabled", "CREDIMI_DEVICE_ENABLED"); ok {
+		device.Enabled = enabled != "false"
+	}
+	for _, field := range valueAliases {
+		if value, ok := postedValue(field.forms...); ok {
+			device.Values[field.key] = value
 		}
-		if value != "" {
-			device.Values[valueKey] = value
-		}
-	}
-	if device.Serial != "" {
-		device.Values["SERIAL"] = device.Serial
 	}
 	normalizeDeviceAddress := func() {
 		device.WiFiIP = strings.TrimSpace(device.Values["WIFI_IP"])
@@ -1013,10 +1035,33 @@ func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
 			if config.Devices[index].ID != deviceID {
 				continue
 			}
-			submittedValues := device.Values
-			device.Values = dashboardruntime.Values(cloneStringMap(config.Devices[index].Values))
-			for key, value := range submittedValues {
-				device.Values[key] = value
+			existing := config.Devices[index]
+			device = existing
+			device.ID = deviceID
+			if namePosted {
+				device.Name = name
+			}
+			if descriptionPosted {
+				device.Description = description
+			}
+			if typePosted {
+				device.Type = typeValue
+			}
+			if modePosted {
+				device.Mode = modeValue
+			}
+			if enabled, ok := postedValue("enabled", "CREDIMI_DEVICE_ENABLED"); ok {
+				device.Enabled = enabled != "false"
+			}
+			device.Values = dashboardruntime.Values(cloneStringMap(existing.Values))
+			for _, field := range valueAliases {
+				if value, ok := postedValue(field.forms...); ok {
+					if value == "" {
+						delete(device.Values, field.key)
+					} else {
+						device.Values[field.key] = value
+					}
+				}
 			}
 			normalizeDeviceAddress()
 			config.Devices[index] = device
