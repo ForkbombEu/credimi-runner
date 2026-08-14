@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -1368,11 +1369,12 @@ func TestServerSaveDevicesConfigAddsIndexedDevice(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/devices", strings.NewReader(url.Values{
 		"name": {"Pixel"}, "type": {"android_phone"}, "mode": {"usb"}, "serial": {"usb-1"},
 	}.Encode()))
+	requestContext, cancelRequest := context.WithCancel(req.Context())
+	req = req.WithContext(requestContext)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveDevicesConfig(rec, req)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/devices" {
-		t.Fatalf("save device = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
+	cancelRequest()
+	waitForQueuedOperation(t, s, rec)
 	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)
@@ -1906,12 +1908,7 @@ func TestServerSaveOverviewPublishedConfig(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/overview/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveOverviewConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveOverviewConfig = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "Runner publication") || strings.Contains(rec.Body.String(), "API &amp; Config") {
-		t.Fatalf("saveOverviewConfig should render overview, got %s", rec.Body.String())
-	}
+	waitForQueuedOperation(t, s, rec)
 	if payload.Published == nil || !*payload.Published {
 		t.Fatalf("published payload = %#v", payload.Published)
 	}
@@ -2456,7 +2453,7 @@ func TestApplySavedConfigClearsCachedQuickTunnelURL(t *testing.T) {
 	defer api.Close()
 	values["CREDIMI_URL"] = api.URL
 
-	outcome, err := s.applySavedConfig(dashboardruntime.ConfigDiff{
+	outcome, err := s.applySavedConfig(context.Background(), dashboardruntime.ConfigDiff{
 		ChangedKeys: []string{"RUNNER_PORT"},
 		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
 	}, values)
@@ -2583,18 +2580,7 @@ func TestServerSaveConfigDescriptionUpdateUsesCompactToast(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveConfig description update = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "must be updated") {
-		t.Fatalf("saveConfig flash should describe the completed update, got %s", rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "Configuration updated.") {
-		t.Fatalf("saveConfig should not render inline success messages: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Configuration updated.") {
-		t.Fatalf("saveConfig toast missing compact result: %s", rec.Header().Get("HX-Trigger"))
-	}
+	waitForQueuedOperation(t, s, rec)
 }
 
 func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
@@ -2626,17 +2612,9 @@ func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveConfig restart update = %d body=%s", rec.Code, rec.Body.String())
-	}
+	waitForQueuedOperation(t, s, rec)
 	if fm.stopCalls != 1 || fm.startCalls != 1 {
 		t.Fatalf("saveConfig lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
-	}
-	if strings.Contains(rec.Body.String(), "Runner restarted with the new configuration.") {
-		t.Fatalf("saveConfig should not render inline restart success: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Runner restarted with the new configuration.") {
-		t.Fatalf("saveConfig restart toast missing compact result: %s", rec.Header().Get("HX-Trigger"))
 	}
 }
 
@@ -2689,9 +2667,7 @@ func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveConfig name change = %d body=%s", rec.Code, rec.Body.String())
-	}
+	waitForQueuedOperation(t, s, rec)
 	if got := s.cfg.Get("CREDIMI_RUNNER_ID"); got != "acme/renamed-runner" {
 		t.Fatalf("stored runner ID = %q", got)
 	}
@@ -2700,9 +2676,6 @@ func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T
 	}
 	if fm.stopCalls != 1 || fm.startCalls != 1 {
 		t.Fatalf("saveConfig name change lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
-	}
-	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Runner restarted with the new configuration.") {
-		t.Fatalf("saveConfig name change toast missing restart result: %s", rec.Header().Get("HX-Trigger"))
 	}
 }
 
@@ -2716,6 +2689,164 @@ func waitForCondition(t *testing.T, fn func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition not satisfied before timeout")
+}
+
+func waitForQueuedOperation(t *testing.T, s *Server, response *httptest.ResponseRecorder) controller.Snapshot {
+	t.Helper()
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("queued operation response = %d body=%s", response.Code, response.Body.String())
+	}
+	snapshot := s.operations.Current()
+	if snapshot.ID == "" {
+		t.Fatal("queued operation has no ID")
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("queued operation failed: %#v", completed)
+	}
+	return completed
+}
+
+func TestConfigApplyOperationOwnsProvisioningContext(t *testing.T) {
+	original := ensureCandidateEmulatorReady
+	defer func() { ensureCandidateEmulatorReady = original }()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ensureCandidateEmulatorReady = func(ctx context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s := newTestServer(t)
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader("x=y"))
+	req = req.WithContext(requestContext)
+	response := httptest.NewRecorder()
+	s.queueConfigMutation(response, req, "config", func(w http.ResponseWriter, r *http.Request, progress func(string)) {
+		if err := provisionCandidateCapabilities(r.Context(), dashboardruntime.Values{}, progress); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("config operation response = %d", response.Code)
+	}
+	<-started
+	cancelRequest()
+	close(release)
+	completed := waitForQueuedOperation(t, s, response)
+	if completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("request cancellation cancelled accepted operation: %#v", completed)
+	}
+}
+
+func TestConfigApplyOperationCancelsWithCoordinator(t *testing.T) {
+	original := ensureCandidateEmulatorReady
+	defer func() { ensureCandidateEmulatorReady = original }()
+	started := make(chan struct{})
+	ensureCandidateEmulatorReady = func(ctx context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	s := newTestServer(t)
+	s.ctx = parent
+	s.operations = controller.NewCoordinator(parent)
+	response := httptest.NewRecorder()
+	s.queueConfigMutation(response, httptest.NewRequest(http.MethodPost, "/config", nil), "config", func(w http.ResponseWriter, r *http.Request, progress func(string)) {
+		if err := provisionCandidateCapabilities(r.Context(), dashboardruntime.Values{}, progress); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("config operation response = %d", response.Code)
+	}
+	<-started
+	cancel()
+	completed, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
+	if err != nil || completed.Phase != controller.PhaseCancelled {
+		t.Fatalf("coordinator cancellation = %#v err=%v", completed, err)
+	}
+}
+
+func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
+	original := ensureCandidateEmulatorReady
+	defer func() { ensureCandidateEmulatorReady = original }()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ensureCandidateEmulatorReady = func(ctx context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader("CREDIMI_RUNNER_DESCRIPTION=candidate"))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveConfig(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("config operation response = %d", response.Code)
+	}
+	<-started
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_RUNNER_DESCRIPTION"] = "newer"
+	s.cfg.mu.Unlock()
+	close(release)
+	completed, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
+	if err != nil || completed.Phase != controller.PhaseFailed || !strings.Contains(completed.Error, "configuration changed") {
+		t.Fatalf("stale candidate result = %#v err=%v", completed, err)
+	}
+}
+
+func TestConfigApplyOperationConflictsWithoutBlockingStatusReads(t *testing.T) {
+	original := ensureCandidateEmulatorReady
+	defer func() { ensureCandidateEmulatorReady = original }()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ensureCandidateEmulatorReady = func(_ context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
+		close(started)
+		<-release
+		return nil
+	}
+	s := newTestServer(t)
+	action := func(w http.ResponseWriter, r *http.Request, progress func(string)) {
+		if err := provisionCandidateCapabilities(r.Context(), dashboardruntime.Values{}, progress); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	}
+	first := httptest.NewRecorder()
+	s.queueConfigMutation(first, httptest.NewRequest(http.MethodPost, "/config", nil), "config", action)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first config operation response = %d", first.Code)
+	}
+	<-started
+	second := httptest.NewRecorder()
+	s.queueConfigMutation(second, httptest.NewRequest(http.MethodPost, "/config", nil), "config", action)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second config operation response = %d", second.Code)
+	}
+	status := httptest.NewRecorder()
+	s.systemMetrics(status, httptest.NewRequest(http.MethodGet, "/api/system-metrics", nil))
+	if status.Code != http.StatusOK {
+		t.Fatalf("status read during provisioning = %d", status.Code)
+	}
+	close(release)
+	waitForQueuedOperation(t, s, first)
 }
 
 func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
@@ -2820,9 +2951,7 @@ func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveDevicesConfig(recorder, request)
 
-	if recorder.Code != http.StatusSeeOther || recorder.Header().Get("Location") != "/devices" {
-		t.Fatalf("save device response = %d location=%q body=%s", recorder.Code, recorder.Header().Get("Location"), recorder.Body.String())
-	}
+	waitForQueuedOperation(t, s, recorder)
 	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)
@@ -2857,9 +2986,7 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveDevicesConfig(recorder, request)
-	if recorder.Code != http.StatusSeeOther {
-		t.Fatalf("update = %d %s", recorder.Code, recorder.Body.String())
-	}
+	waitForQueuedOperation(t, s, recorder)
 	updated, err := dashboardruntime.LoadStore(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -2877,8 +3004,12 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveDevicesConfig(recorder, request)
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("missing update = %d", recorder.Code)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("missing update response = %d", recorder.Code)
+	}
+	failed, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
+	if err != nil || failed.Phase != controller.PhaseFailed || !strings.Contains(failed.Error, "device not found") {
+		t.Fatalf("missing update operation = %#v err=%v", failed, err)
 	}
 }
 
@@ -2916,9 +3047,7 @@ func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveDevicesConfig(recorder, request)
-	if recorder.Code != http.StatusSeeOther {
-		t.Fatalf("previewed device creation = %d %s", recorder.Code, recorder.Body.String())
-	}
+	waitForQueuedOperation(t, s, recorder)
 	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)
@@ -2958,9 +3087,7 @@ func TestServerSaveDevicesConfigUsesCanonicalAliasesAndClearsFields(t *testing.T
 		request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
 		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		s.saveDevicesConfig(recorder, request)
-		if recorder.Code != http.StatusSeeOther {
-			t.Fatalf("save device response = %d body=%s", recorder.Code, recorder.Body.String())
-		}
+		waitForQueuedOperation(t, s, recorder)
 	}
 
 	post(url.Values{
@@ -3071,10 +3198,7 @@ func TestServerSaveDevicesConfigUpdatesRunningRunnerWithoutRestart(t *testing.T)
 	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveDevicesConfig(recorder, request)
-
-	if recorder.Code != http.StatusSeeOther {
-		t.Fatalf("save device response = %d body=%s", recorder.Code, recorder.Body.String())
-	}
+	waitForQueuedOperation(t, s, recorder)
 	if fm.stopCalls != 0 || fm.startCalls != 0 {
 		t.Fatalf("device add unexpectedly restarted runner stop=%d start=%d", fm.stopCalls, fm.startCalls)
 	}
@@ -3153,9 +3277,7 @@ func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/devices/disable", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.deviceDisable(enable, req)
-	if enable.Code != http.StatusSeeOther {
-		t.Fatalf("disable = %d %s", enable.Code, enable.Body.String())
-	}
+	waitForQueuedOperation(t, s, enable)
 	stored, err := dashboardruntime.LoadStore(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -3169,9 +3291,7 @@ func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/devices/remove", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}, "confirm": {"true"}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.deviceRemove(remove, req)
-	if remove.Code != http.StatusSeeOther {
-		t.Fatalf("remove = %d %s", remove.Code, remove.Body.String())
-	}
+	waitForQueuedOperation(t, s, remove)
 	stored, err = dashboardruntime.LoadStore(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -3220,6 +3340,7 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("setup response = %d redirect=%q body=%s", recorder.Code, recorder.Header().Get("HX-Redirect"), recorder.Body.String())
 	}
+	waitForQueuedOperation(t, s, recorder)
 	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
 		t.Fatalf("setup was not persisted: exists=%t values=%#v", s.cfg.Exists(), s.cfg.Snapshot())
 	}
@@ -3231,7 +3352,6 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	if err != nil || len(runtimeConfig.Devices) != 1 || runtimeConfig.Devices[0].ID != "acme/runner/pixel" {
 		t.Fatalf("setup persisted incomplete inventory: %#v err=%v", runtimeConfig, err)
 	}
-	waitForStartup(t, s)
 	if startup := s.startupSnapshot(); startup.Phase != StartupReady {
 		t.Fatalf("setup startup phase = %q: %s", startup.Phase, startup.Message)
 	}
@@ -3512,11 +3632,15 @@ func TestServerManagedDeviceActions(t *testing.T) {
 		handler(rec, req)
 		return rec
 	}
-	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusSeeOther {
+	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusAccepted {
 		t.Fatalf("disable = %d %s", rec.Code, rec.Body.String())
+	} else {
+		waitForQueuedOperation(t, s, rec)
 	}
-	if rec := post(s.deviceRemove, url.Values{"device_id": {"acme/runner/pixel"}, "confirm": {"true"}}); rec.Code != http.StatusSeeOther {
+	if rec := post(s.deviceRemove, url.Values{"device_id": {"acme/runner/pixel"}, "confirm": {"true"}}); rec.Code != http.StatusAccepted {
 		t.Fatalf("remove = %d %s", rec.Code, rec.Body.String())
+	} else {
+		waitForQueuedOperation(t, s, rec)
 	}
 }
 

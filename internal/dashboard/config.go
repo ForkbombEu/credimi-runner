@@ -180,7 +180,11 @@ func Validate(vals map[string]string) map[string]string {
 			if !regexp.MustCompile(`^[\w.-]+/[\w.-]+$`).MatchString(v) {
 				errs[f.Key] = "Must be org-slug/runner-name."
 			}
-		case "CREDIMI_URL", "RUNNER_DOMAIN", "OTEL_EXPORTER_OTLP_ENDPOINT":
+		case "CREDIMI_URL", "OTEL_EXPORTER_OTLP_ENDPOINT":
+			if u, err := url.Parse(v); err != nil || u.Host == "" || u.Scheme == "" {
+				errs[f.Key] = "Not a valid URL."
+			}
+		case "RUNNER_DOMAIN":
 			if strings.Contains(v, "://") {
 				if u, err := url.Parse(v); err != nil || u.Host == "" {
 					errs[f.Key] = "Not a valid URL."
