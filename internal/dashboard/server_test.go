@@ -142,6 +142,11 @@ func (f *fakeManager) QuickTunnelURL(context.Context) (string, error) {
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
+	if os.Getenv("ANDROID_SDK_ROOT") == "" {
+		originalCandidateProvisioner := ensureCandidateEmulatorReady
+		ensureCandidateEmulatorReady = func(context.Context, runnerconfig.Config, string, androidtools.EmulatorProgress) error { return nil }
+		t.Cleanup(func() { ensureCandidateEmulatorReady = originalCandidateProvisioner })
+	}
 	cfg := &Config{path: filepath.Join(t.TempDir(), "config.toml"), values: map[string]string{}}
 	for k, v := range Defaults {
 		cfg.values[k] = v
@@ -2710,9 +2715,27 @@ func waitForQueuedOperation(t *testing.T, s *Server, response *httptest.Response
 	return completed
 }
 
+func candidateProvisionValues() dashboardruntime.Values {
+	return dashboardruntime.Values{
+		"CREDIMI_URL":                 "https://credimi.example",
+		"CREDIMI_USER_API_KEY":        "user-key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"TEMPORAL_ADDRESS":            "temporal.example:7233",
+		"CREDIMI_DEVICE_COUNT":        "1",
+		"CREDIMI_DEVICE_1_ID":         "acme/runner/device",
+		"CREDIMI_DEVICE_1_NAME":       "Device",
+		"CREDIMI_DEVICE_1_TYPE":       "android_phone",
+		"CREDIMI_DEVICE_1_MODE":       "no_device",
+		"CREDIMI_DEVICE_1_ENABLED":    "true",
+	}
+}
+
 func TestConfigApplyOperationOwnsProvisioningContext(t *testing.T) {
 	original := ensureCandidateEmulatorReady
 	defer func() { ensureCandidateEmulatorReady = original }()
+	s := newTestServer(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	ensureCandidateEmulatorReady = func(ctx context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
@@ -2724,20 +2747,24 @@ func TestConfigApplyOperationOwnsProvisioningContext(t *testing.T) {
 			return ctx.Err()
 		}
 	}
-	s := newTestServer(t)
 	requestContext, cancelRequest := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader("x=y"))
 	req = req.WithContext(requestContext)
 	response := httptest.NewRecorder()
 	s.queueConfigMutation(response, req, "config", func(w http.ResponseWriter, r *http.Request, progress func(string)) {
-		if err := provisionCandidateCapabilities(r.Context(), dashboardruntime.Values{}, progress); err != nil {
+		if err := provisionCandidateCapabilities(r.Context(), candidateProvisionValues(), progress); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 		}
 	})
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("config operation response = %d", response.Code)
 	}
-	<-started
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		failed, _ := s.operations.Wait(context.Background(), s.operations.Current().ID)
+		t.Fatalf("candidate provisioning did not start: %#v", failed)
+	}
 	cancelRequest()
 	close(release)
 	completed := waitForQueuedOperation(t, s, response)
@@ -2749,6 +2776,7 @@ func TestConfigApplyOperationOwnsProvisioningContext(t *testing.T) {
 func TestConfigApplyOperationCancelsWithCoordinator(t *testing.T) {
 	original := ensureCandidateEmulatorReady
 	defer func() { ensureCandidateEmulatorReady = original }()
+	s := newTestServer(t)
 	started := make(chan struct{})
 	ensureCandidateEmulatorReady = func(ctx context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
 		close(started)
@@ -2756,12 +2784,11 @@ func TestConfigApplyOperationCancelsWithCoordinator(t *testing.T) {
 		return ctx.Err()
 	}
 	parent, cancel := context.WithCancel(context.Background())
-	s := newTestServer(t)
 	s.ctx = parent
 	s.operations = controller.NewCoordinator(parent)
 	response := httptest.NewRecorder()
 	s.queueConfigMutation(response, httptest.NewRequest(http.MethodPost, "/config", nil), "config", func(w http.ResponseWriter, r *http.Request, progress func(string)) {
-		if err := provisionCandidateCapabilities(r.Context(), dashboardruntime.Values{}, progress); err != nil {
+		if err := provisionCandidateCapabilities(r.Context(), candidateProvisionValues(), progress); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 		}
 	})
@@ -2779,6 +2806,7 @@ func TestConfigApplyOperationCancelsWithCoordinator(t *testing.T) {
 func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
 	original := ensureCandidateEmulatorReady
 	defer func() { ensureCandidateEmulatorReady = original }()
+	s := newTestServer(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	ensureCandidateEmulatorReady = func(ctx context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
@@ -2790,11 +2818,16 @@ func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
 			return ctx.Err()
 		}
 	}
-	s := newTestServer(t)
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
 	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
+	s.cfg.values["CREDIMI_DEVICE_COUNT"] = "1"
+	s.cfg.values["CREDIMI_DEVICE_1_ID"] = "acme/runner/device"
+	s.cfg.values["CREDIMI_DEVICE_1_NAME"] = "Device"
+	s.cfg.values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	s.cfg.values["CREDIMI_DEVICE_1_MODE"] = "no_device"
+	s.cfg.values["CREDIMI_DEVICE_1_ENABLED"] = "true"
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader("CREDIMI_RUNNER_DESCRIPTION=candidate"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2816,6 +2849,7 @@ func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
 func TestConfigApplyOperationConflictsWithoutBlockingStatusReads(t *testing.T) {
 	original := ensureCandidateEmulatorReady
 	defer func() { ensureCandidateEmulatorReady = original }()
+	s := newTestServer(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	ensureCandidateEmulatorReady = func(_ context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
@@ -2823,9 +2857,8 @@ func TestConfigApplyOperationConflictsWithoutBlockingStatusReads(t *testing.T) {
 		<-release
 		return nil
 	}
-	s := newTestServer(t)
 	action := func(w http.ResponseWriter, r *http.Request, progress func(string)) {
-		if err := provisionCandidateCapabilities(r.Context(), dashboardruntime.Values{}, progress); err != nil {
+		if err := provisionCandidateCapabilities(r.Context(), candidateProvisionValues(), progress); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 		}
 	}
