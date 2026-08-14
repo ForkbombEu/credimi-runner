@@ -475,7 +475,8 @@
     form.querySelectorAll('[data-review-net]').forEach(el => {
       el.style.display = el.dataset.reviewNet === netMode ? '' : 'none';
     });
-    const devType = get('CREDIMI_RUNNER_TYPE');
+    const firstDevice = form.querySelector('[data-setup-devices] [data-device-provision]');
+    const devType = firstDevice ? fieldValue(firstDevice, 'CREDIMI_RUNNER_TYPE') : '';
     form.querySelectorAll('[data-review-dev]').forEach(el => {
       const types = (el.dataset.reviewDev || '').split(/\s+/);
       el.style.display = types.includes(devType) ? '' : 'none';
@@ -487,10 +488,23 @@
   };
 
   // ── First-run setup wizard ───────────────────────────────────────────────
+  const reindexSetupDeviceCards = (form) => {
+    if (!form || !form.matches('[data-setup-form]')) return;
+    const cards = form.querySelectorAll('[data-setup-devices] [data-device-provision]');
+    const count = form.querySelector('[data-setup-device-count]');
+    if (count) count.value = String(cards.length);
+    cards.forEach((card, position) => {
+      const index = position + 1;
+      card.querySelectorAll('[data-setup-device-field]').forEach((field) => {
+        field.name = `SETUP_DEVICE_${index}_${field.dataset.setupDeviceField}`;
+      });
+    });
+  };
   function initSetupWizard(root = document) {
     $$('[data-setup-form]', root).forEach((form) => {
       if (form.dataset.setupReady) return;
       form.dataset.setupReady = '1';
+	  reindexSetupDeviceCards(form);
 	  $$('[data-legacy-setup-devices] input, [data-legacy-setup-devices] select, [data-legacy-setup-devices] textarea', form).forEach((field) => { field.disabled = true; });
       let current = 0;
       let connectedAndroidTimer = null;
@@ -510,16 +524,15 @@
       const valueMissing = (name) => !String(value(name) || '').trim();
       const deviceValidationError = () => {
         for (const card of $$('[data-device-provision]', form)) {
-          const get = (name) => {
-            const radio = $(`input[type="radio"][name="${name}"]:checked`, card);
-            return (radio || $(`[name="${name}"]`, card) || {}).value || '';
+          const get = (fieldName) => {
+            return (card.querySelector(`[data-setup-device-field="${fieldName}"]`) || {}).value || '';
           };
-          if (!String(get('CREDIMI_DEVICE_NAME')).trim()) return 'Each device needs a name.';
-          const type = get('CREDIMI_RUNNER_TYPE');
-          const mode = get('CREDIMI_RUNNER_DEVICE_MODE');
-          if (type === 'android_phone' && mode === 'usb' && !String(get('CREDIMI_RUNNER_SERIAL')).trim()) return 'Select a connected Android device for every USB target.';
+          if (!String(get('NAME')).trim()) return 'Each device needs a name.';
+          const type = get('TYPE');
+          const mode = get('MODE');
+          if (type === 'android_phone' && mode === 'usb' && !String(get('SERIAL')).trim()) return 'Select a connected Android device for every USB target.';
           if ((type === 'android_phone' && mode === 'wifi') || type === 'redroid') {
-            if (!String(get('CREDIMI_RUNNER_WIFI_IP')).trim()) return 'Every Wi-Fi or Redroid target requires an IP address.';
+            if (!String(get('WIFI_IP')).trim()) return 'Every Wi-Fi or Redroid target requires an IP address.';
           }
           if (type === 'android_emulator') {
             const assets = $('[data-android-emulator-assets-panel]', card);
@@ -854,7 +867,7 @@
           const organization = value('CREDIMI_RUNNER_ORGANIZATION');
           const runnerID = value('CREDIMI_RUNNER_ID');
           for (const card of $$('[data-device-provision]', form)) {
-            const name = (($('[name="CREDIMI_DEVICE_NAME"]', card) || {}).value || '').trim();
+            const name = (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim();
             if (!instanceURL || !apiKey || !organization || !runnerID || !name) continue;
             const preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
             if (!preview || !preview.conflict) continue;
@@ -913,13 +926,18 @@
         const newCard = list.lastElementChild;
         newCard.querySelector('[data-setup-device-remove]').hidden = false;
         initializeDeviceProvisionCard(newCard);
+        reindexSetupDeviceCards(form);
       }
       return;
     }
     const remove = e.target.closest('[data-setup-device-remove]');
     if (remove) {
       const card = remove.closest('[data-setup-device-card]');
-      if (card) card.remove();
+      if (card) {
+        const form = remove.closest('[data-setup-form]');
+        card.remove();
+        reindexSetupDeviceCards(form);
+      }
     }
   });
 
@@ -998,10 +1016,33 @@
   const setPanelVisible = (el, visible) => {
     el.style.display = visible ? '' : 'none';
   };
+  const setupDeviceFieldKey = {
+    CREDIMI_DEVICE_NAME: 'NAME',
+    CREDIMI_DEVICE_DESCRIPTION: 'DESCRIPTION',
+    CREDIMI_DEVICE_CONFLICT_ACTION: 'CONFLICT_ACTION',
+    CREDIMI_DEVICE_ID: 'ID',
+    CREDIMI_RUNNER_TYPE: 'TYPE',
+    CREDIMI_RUNNER_DEVICE_MODE: 'MODE',
+    CREDIMI_RUNNER_SERIAL: 'SERIAL',
+    CREDIMI_RUNNER_WIFI_IP: 'WIFI_IP',
+    CREDIMI_RUNNER_WIFI_PORT: 'WIFI_PORT',
+    BASE_NAME: 'BASE_NAME',
+    ANDROID_KEYS_DIR: 'ANDROID_KEYS_DIR',
+    GOLDEN_PATH: 'GOLDEN_PATH',
+    HOST_AVD_HOME_PATH: 'HOST_AVD_HOME_PATH',
+    HOST_AVD_GOLDEN_PATH: 'HOST_AVD_GOLDEN_PATH',
+    REDROID_DATA_DIR: 'REDROID_DATA_DIR',
+    REDROID_DATA_TAR: 'REDROID_DATA_TAR',
+    IOS_UDID: 'IOS_UDID',
+  };
+  const setupDeviceField = (root, name) => {
+    const key = setupDeviceFieldKey[name];
+    return (key && root.querySelector(`[data-setup-device-field="${key}"]`)) || root.querySelector(`[name="${name}"]`);
+  };
   const fieldValue = (root, name) => {
     const radio = root.querySelector(`[name="${name}"]:checked`);
     if (radio) return radio.value || '';
-    const input = root.querySelector(`[name="${name}"]`);
+    const input = setupDeviceField(root, name);
     return input ? (input.value || '') : '';
   };
   const setFieldValue = (root, name, value) => {
@@ -1021,7 +1062,7 @@
       checked.dispatchEvent(new Event('change', { bubbles: true }));
       return;
     }
-    const input = root.querySelector(`[name="${name}"]`);
+    const input = setupDeviceField(root, name);
     if (!input || input.value === value) return;
     input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));

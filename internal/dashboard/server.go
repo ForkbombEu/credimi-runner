@@ -1432,38 +1432,26 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dashboardruntime.DeviceRuntimeConfig, error) {
-	names := r.PostForm["CREDIMI_DEVICE_NAME"]
-	if len(names) == 0 {
-		names = r.PostForm["setup_device_name"]
-	}
-	if len(names) == 0 {
+	count, err := strconv.Atoi(strings.TrimSpace(r.PostForm.Get("SETUP_DEVICE_COUNT")))
+	if err != nil || count < 1 {
 		return nil, errors.New("add at least one device")
-	}
-	valueAt := func(key string, index int) string {
-		items := r.PostForm[key]
-		if index < len(items) {
-			return strings.TrimSpace(items[index])
-		}
-		return ""
 	}
 	apiKey := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
 	}
 	client := &dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: apiKey, HTTPClient: http.DefaultClient}
-	devices := make([]dashboardruntime.DeviceRuntimeConfig, 0, len(names))
-	for index, name := range names {
-		name = strings.TrimSpace(name)
+	devices := make([]dashboardruntime.DeviceRuntimeConfig, 0, count)
+	for index := 1; index <= count; index++ {
+		prefix := fmt.Sprintf("SETUP_DEVICE_%d_", index)
+		value := func(field string) string {
+			return strings.TrimSpace(r.PostForm.Get(prefix + field))
+		}
+		name := value("NAME")
 		if name == "" {
-			return nil, fmt.Errorf("device %d name is required", index+1)
+			return nil, fmt.Errorf("device %d name is required", index)
 		}
-		field := func(modern, legacy string) string {
-			if value := valueAt(modern, index); value != "" {
-				return value
-			}
-			return valueAt(legacy, index)
-		}
-		device := dashboardruntime.DeviceRuntimeConfig{Name: name, Description: field("CREDIMI_DEVICE_DESCRIPTION", "setup_device_description"), Type: field("CREDIMI_RUNNER_TYPE", "setup_device_type"), Mode: field("CREDIMI_RUNNER_DEVICE_MODE", "setup_device_mode"), Enabled: true, Serial: field("CREDIMI_RUNNER_SERIAL", "setup_device_serial"), Values: dashboardruntime.Values{}}
+		device := dashboardruntime.DeviceRuntimeConfig{Name: name, Description: value("DESCRIPTION"), Type: value("TYPE"), Mode: value("MODE"), Enabled: true, Serial: value("SERIAL"), Values: dashboardruntime.Values{}}
 		if device.Type == "" {
 			device.Type = "android_phone"
 		}
@@ -1471,23 +1459,23 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 			device.Mode = "usb"
 		}
 		device.Values["SERIAL"] = device.Serial
-		if value := field("CREDIMI_RUNNER_WIFI_IP", "setup_device_wifi_ip"); value != "" {
+		if value := value("WIFI_IP"); value != "" {
 			device.Values["WIFI_IP"] = value
 		}
-		if value := field("CREDIMI_RUNNER_WIFI_PORT", "setup_device_wifi_port"); value != "" {
+		if value := value("WIFI_PORT"); value != "" {
 			device.Values["WIFI_PORT"] = value
 		}
-		for formKey, valueKey := range map[string]string{"BASE_NAME": "BASE_NAME", "ANDROID_KEYS_DIR": "ANDROID_KEYS_DIR", "GOLDEN_PATH": "GOLDEN_PATH", "HOST_AVD_HOME_PATH": "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH": "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR": "REDROID_DATA_DIR", "REDROID_DATA_TAR": "REDROID_DATA_TAR", "IOS_UDID": "IOS_UDID"} {
-			if value := valueAt(formKey, index); value != "" {
-				device.Values[valueKey] = value
+		for _, field := range []string{"BASE_NAME", "ANDROID_KEYS_DIR", "GOLDEN_PATH", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR", "REDROID_DATA_TAR", "IOS_UDID"} {
+			if fieldValue := value(field); fieldValue != "" {
+				device.Values[field] = fieldValue
 			}
 		}
 		if device.Type == "android_phone" && device.Mode == "usb" && device.Serial == "" {
-			return nil, fmt.Errorf("device %d requires a selected USB Android device", index+1)
+			return nil, fmt.Errorf("device %d requires a selected USB Android device", index)
 		}
 		if (device.Type == "android_phone" && device.Mode == "wifi") || device.Type == "redroid" {
 			if device.Values["WIFI_IP"] == "" {
-				return nil, fmt.Errorf("device %d requires a Wi-Fi or Redroid IP address", index+1)
+				return nil, fmt.Errorf("device %d requires a Wi-Fi or Redroid IP address", index)
 			}
 		}
 		applyDeviceDefaults(&device)
@@ -1498,7 +1486,7 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 		if err != nil {
 			return nil, fmt.Errorf("resolve device %q ID: %w", device.Name, err)
 		}
-		action := valueAt("CREDIMI_DEVICE_CONFLICT_ACTION", index)
+		action := value("CONFLICT_ACTION")
 		if preview.Conflict && action == "update" {
 			device.ID = strings.TrimPrefix(preview.ExistingDeviceID, "/")
 		} else {

@@ -1415,10 +1415,11 @@ func TestSetupDevicesPersistsEmulatorAVDName(t *testing.T) {
 	values["CREDIMI_RUNNER_NAME"] = "runner"
 	values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 	form := url.Values{
-		"CREDIMI_DEVICE_NAME":        {"Emulator"},
-		"CREDIMI_RUNNER_TYPE":        {"android_emulator"},
-		"CREDIMI_RUNNER_DEVICE_MODE": {"emulator"},
-		"BASE_NAME":                  {"credimi"},
+		"SETUP_DEVICE_COUNT":       {"1"},
+		"SETUP_DEVICE_1_NAME":      {"Emulator"},
+		"SETUP_DEVICE_1_TYPE":      {"android_emulator"},
+		"SETUP_DEVICE_1_MODE":      {"emulator"},
+		"SETUP_DEVICE_1_BASE_NAME": {"credimi"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1681,10 +1682,15 @@ func TestSetupDevicesParsesTwoUSBDevicesInCardOrder(t *testing.T) {
 
 	s := newTestServer(t)
 	form := url.Values{
-		"CREDIMI_DEVICE_NAME":        {"Pixel One", "Pixel Two"},
-		"CREDIMI_RUNNER_TYPE":        {"android_phone", "android_phone"},
-		"CREDIMI_RUNNER_DEVICE_MODE": {"usb", "usb"},
-		"CREDIMI_RUNNER_SERIAL":      {"SERIAL_ONE", "SERIAL_TWO"},
+		"SETUP_DEVICE_COUNT":    {"2"},
+		"SETUP_DEVICE_1_NAME":   {"Pixel One"},
+		"SETUP_DEVICE_1_TYPE":   {"android_phone"},
+		"SETUP_DEVICE_1_MODE":   {"usb"},
+		"SETUP_DEVICE_1_SERIAL": {"SERIAL_ONE"},
+		"SETUP_DEVICE_2_NAME":   {"Pixel Two"},
+		"SETUP_DEVICE_2_TYPE":   {"android_phone"},
+		"SETUP_DEVICE_2_MODE":   {"usb"},
+		"SETUP_DEVICE_2_SERIAL": {"SERIAL_TWO"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1718,10 +1724,14 @@ func TestSetupDevicesKeepsMixedTypesAndModesInCardOrder(t *testing.T) {
 
 	s := newTestServer(t)
 	form := url.Values{
-		"CREDIMI_DEVICE_NAME":        {"USB phone", "Emulator"},
-		"CREDIMI_RUNNER_TYPE":        {"android_phone", "android_emulator"},
-		"CREDIMI_RUNNER_DEVICE_MODE": {"usb", "emulator"},
-		"CREDIMI_RUNNER_SERIAL":      {"SERIAL_ONE", ""},
+		"SETUP_DEVICE_COUNT":    {"2"},
+		"SETUP_DEVICE_1_NAME":   {"USB phone"},
+		"SETUP_DEVICE_1_TYPE":   {"android_phone"},
+		"SETUP_DEVICE_1_MODE":   {"usb"},
+		"SETUP_DEVICE_1_SERIAL": {"SERIAL_ONE"},
+		"SETUP_DEVICE_2_NAME":   {"Emulator"},
+		"SETUP_DEVICE_2_TYPE":   {"android_emulator"},
+		"SETUP_DEVICE_2_MODE":   {"emulator"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1739,6 +1749,120 @@ func TestSetupDevicesKeepsMixedTypesAndModesInCardOrder(t *testing.T) {
 	}
 	if devices[0].Type != "android_phone" || devices[0].Mode != "usb" || devices[0].Serial != "SERIAL_ONE" || devices[1].Type != "android_emulator" || devices[1].Mode != "emulator" {
 		t.Fatalf("mixed devices = %#v", devices)
+	}
+}
+
+func TestSetupDevicesKeepsIndexedOptionalFieldsWithTheirCards(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"device_id": "acme/runner/device" + r.URL.Path})
+	}))
+	defer api.Close()
+
+	cases := []struct {
+		name  string
+		form  url.Values
+		check func(*testing.T, []dashboardruntime.DeviceRuntimeConfig)
+	}{
+		{
+			name: "wifi then usb",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"Wi-Fi phone"},
+				"SETUP_DEVICE_1_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_1_MODE":      {"wifi"},
+				"SETUP_DEVICE_1_WIFI_IP":   {"192.168.1.10"},
+				"SETUP_DEVICE_1_WIFI_PORT": {"5555"},
+				"SETUP_DEVICE_2_NAME":      {"USB phone"},
+				"SETUP_DEVICE_2_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_2_MODE":      {"usb"},
+				"SETUP_DEVICE_2_SERIAL":    {"SERIAL_TWO"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Values["WIFI_IP"] != "192.168.1.10" || devices[0].Serial != "" || devices[1].Serial != "SERIAL_TWO" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+		{
+			name: "usb then wifi",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"USB phone"},
+				"SETUP_DEVICE_1_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_1_MODE":      {"usb"},
+				"SETUP_DEVICE_1_SERIAL":    {"SERIAL_ONE"},
+				"SETUP_DEVICE_2_NAME":      {"Wi-Fi phone"},
+				"SETUP_DEVICE_2_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_2_MODE":      {"wifi"},
+				"SETUP_DEVICE_2_WIFI_IP":   {"192.168.1.20"},
+				"SETUP_DEVICE_2_WIFI_PORT": {"5555"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Serial != "SERIAL_ONE" || devices[1].Values["WIFI_IP"] != "192.168.1.20" || devices[1].Serial != "" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+		{
+			name: "emulator then usb",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"Emulator"},
+				"SETUP_DEVICE_1_TYPE":      {"android_emulator"},
+				"SETUP_DEVICE_1_MODE":      {"emulator"},
+				"SETUP_DEVICE_1_BASE_NAME": {"credimi-one"},
+				"SETUP_DEVICE_2_NAME":      {"USB phone"},
+				"SETUP_DEVICE_2_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_2_MODE":      {"usb"},
+				"SETUP_DEVICE_2_SERIAL":    {"SERIAL_TWO"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Values["BASE_NAME"] != "credimi-one" || devices[1].Serial != "SERIAL_TWO" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+		{
+			name: "usb then redroid",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"USB phone"},
+				"SETUP_DEVICE_1_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_1_MODE":      {"usb"},
+				"SETUP_DEVICE_1_SERIAL":    {"SERIAL_ONE"},
+				"SETUP_DEVICE_2_NAME":      {"Redroid"},
+				"SETUP_DEVICE_2_TYPE":      {"redroid"},
+				"SETUP_DEVICE_2_MODE":      {"no_device"},
+				"SETUP_DEVICE_2_WIFI_IP":   {"192.168.1.30"},
+				"SETUP_DEVICE_2_WIFI_PORT": {"5555"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Serial != "SERIAL_ONE" || devices[1].Values["WIFI_IP"] != "192.168.1.30" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t)
+			req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(tc.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if err := req.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			devices, err := s.setupDevices(req, map[string]string{
+				"CREDIMI_URL": api.URL, "CREDIMI_USER_API_KEY": "key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_ORGANIZATION": "acme",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(devices) != 2 {
+				t.Fatalf("devices = %#v", devices)
+			}
+			tc.check(t, devices)
+		})
 	}
 }
 
@@ -2989,11 +3113,12 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
 		"CREDIMI_SERVICE_MODE":        {"manual"},
 		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"setup_device_name":           {"Pixel"},
-		"setup_device_type":           {"redroid"},
-		"setup_device_mode":           {"no_device"},
-		"setup_device_wifi_ip":        {"192.0.2.10"},
-		"setup_device_serial":         {"redroid:5555"},
+		"SETUP_DEVICE_COUNT":          {"1"},
+		"SETUP_DEVICE_1_NAME":         {"Pixel"},
+		"SETUP_DEVICE_1_TYPE":         {"redroid"},
+		"SETUP_DEVICE_1_MODE":         {"no_device"},
+		"SETUP_DEVICE_1_WIFI_IP":      {"192.0.2.10"},
+		"SETUP_DEVICE_1_SERIAL":       {"redroid:5555"},
 	}
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))

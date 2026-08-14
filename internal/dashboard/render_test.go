@@ -299,14 +299,20 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	if strings.Contains(html, `type="radio" name="CREDIMI_RUNNER_TYPE"`) || strings.Contains(html, `type="radio" name="CREDIMI_RUNNER_DEVICE_MODE"`) {
 		t.Fatalf("device radios must use UI-only names: %s", html)
 	}
-	for _, want := range []string{"data-device-type-value", "data-device-mode-value", "data-device-type-ui", "data-device-mode-ui"} {
+	for _, want := range []string{"data-device-type-value", "data-device-mode-value", "data-device-type-ui", "data-device-mode-ui", "data-setup-device-field"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("setup device card missing %q", want)
 		}
 	}
+	if !strings.Contains(html, `data-setup-device-count`) {
+		t.Fatalf("setup form missing indexed device count: %s", html)
+	}
 	script, err := staticFS.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "reindexSetupDeviceCards") || !strings.Contains(string(script), "SETUP_DEVICE_${index}_") {
+		t.Fatalf("setup script missing indexed device field contract")
 	}
 	for _, want := range []string{"initializeDeviceProvisionCard", "device_type_ui_${id}", "device_mode_ui_${id}"} {
 		if !strings.Contains(string(script), want) {
