@@ -43,6 +43,38 @@ var (
 	sleepWithContextFn = sleepWithContext
 )
 
+type registeredActivity struct {
+	Activity workflowengine.ExecutableActivity
+	Mobile   bool
+}
+
+func registeredActivities() []registeredActivity {
+	return []registeredActivity{
+		{Activity: activities.NewHTTPActivity()},
+		{Activity: activities.NewRunMobileFlowActivity(), Mobile: true},
+		{Activity: activities.NewSetupMobileDeviceActivity(), Mobile: true},
+		{Activity: activities.NewApkInstallActivity(), Mobile: true},
+		{Activity: activities.NewApkPostInstallChecksActivity(), Mobile: true},
+		{Activity: activities.NewStartIOSSimulatorActivity(), Mobile: true},
+		{Activity: activities.NewInstallIOSAppActivity(), Mobile: true},
+		{Activity: activities.NewIOSPostInstallChecksActivity(), Mobile: true},
+		{Activity: activities.NewStartRecordingActivity(), Mobile: true},
+		{Activity: activities.NewStartIOSRecordingActivity(), Mobile: true},
+		{Activity: activities.NewStopRecordingActivity(), Mobile: true},
+		{Activity: activities.NewStopIOSRecordingActivity(), Mobile: true},
+		{Activity: activities.NewListInstalledAppsActivity(), Mobile: true},
+		{Activity: activities.NewDisableAndroidPlayStoreActivity(), Mobile: true},
+		{Activity: activities.NewCleanupDeviceActivity(), Mobile: true},
+	}
+}
+
+func registeredActivityExecutor(item registeredActivity, provider RuntimeConfigProvider) func(context.Context, workflowengine.ActivityInput) (workflowengine.ActivityResult, error) {
+	if item.Mobile {
+		return mobileActivityExecutor(item.Activity, provider)
+	}
+	return item.Activity.Execute
+}
+
 func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("namespace", namespace),
@@ -127,28 +159,8 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 			})
 
 			// Register activities
-			for _, act := range []workflowengine.ExecutableActivity{
-				activities.NewHTTPActivity(),
-				activities.NewRunMobileFlowActivity(),
-				activities.NewSetupMobileDeviceActivity(),
-				activities.NewApkInstallActivity(),
-				activities.NewApkPostInstallChecksActivity(),
-				activities.NewStartIOSSimulatorActivity(),
-				activities.NewInstallIOSAppActivity(),
-				activities.NewIOSPostInstallChecksActivity(),
-				activities.NewStartRecordingActivity(),
-				activities.NewStartIOSRecordingActivity(),
-				activities.NewStopRecordingActivity(),
-				activities.NewStopIOSRecordingActivity(),
-				activities.NewListInstalledAppsActivity(),
-				activities.NewDisableAndroidPlayStoreActivity(),
-				activities.NewCleanupDeviceActivity(),
-			} {
-				executor := act.Execute
-				if isMobileActivity(act.Name()) {
-					executor = mobileActivityExecutor(act, provider)
-				}
-				w.RegisterActivityWithOptions(executor, activity.RegisterOptions{Name: act.Name()})
+			for _, item := range registeredActivities() {
+				w.RegisterActivityWithOptions(registeredActivityExecutor(item, provider), activity.RegisterOptions{Name: item.Activity.Name()})
 			}
 
 			// Shutdown channel

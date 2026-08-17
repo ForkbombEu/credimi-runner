@@ -136,3 +136,16 @@ func TestMobileActivityExecutorUsesLatestInventoryAndRejectsRemovedDevice(t *tes
 		t.Fatal("removed device was accepted")
 	}
 }
+
+func TestRegisteredActivityExecutorUsesRegistrationMetadata(t *testing.T) {
+	mobile := registeredActivity{Activity: fakeMobileActivity{name: "mobile"}, Mobile: true}
+	plain := registeredActivity{Activity: fakeMobileActivity{name: "http", read: func(context.Context) {}}}
+	provider := func() (RunnerRuntimeConfig, error) { return RunnerRuntimeConfig{}, nil }
+	if _, err := registeredActivityExecutor(mobile, provider)(context.Background(), workflowengine.ActivityInput{}); err == nil {
+		t.Fatal("mobile activity was not wrapped with device-scoped validation")
+	}
+	result, err := registeredActivityExecutor(plain, nil)(context.Background(), workflowengine.ActivityInput{})
+	if err != nil || result.Output != "ok" {
+		t.Fatalf("plain activity executor = %#v, %v", result, err)
+	}
+}
