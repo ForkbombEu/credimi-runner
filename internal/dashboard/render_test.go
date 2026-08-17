@@ -13,7 +13,7 @@ func TestIcons_Present(t *testing.T) {
 	required := []string{
 		"grid", "phone", "workers", "network", "key", "server", "shield",
 		"cloud", "activity", "globe", "check", "x", "plus", "refresh",
-		"trash", "wifi", "usb", "info", "warn", "chev", "eye", "copy",
+		"trash", "wifi", "usb", "info", "warn", "eye", "copy",
 		"gear", "android", "apple",
 	}
 
@@ -387,11 +387,25 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	values := cloneStringMap(Defaults)
+	values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	values["CREDIMI_DEVICE_COUNT"] = "2"
+	values["CREDIMI_DEVICE_1_ID"] = "acme/runner/pixel"
+	values["CREDIMI_DEVICE_1_NAME"] = "Pixel"
+	values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	values["CREDIMI_DEVICE_1_MODE"] = "usb"
+	values["CREDIMI_DEVICE_1_SERIAL"] = "pixel-1"
+	values["CREDIMI_DEVICE_1_ENABLED"] = "true"
+	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
+	values["CREDIMI_DEVICE_2_NAME"] = "Emulator"
+	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
+	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	values["CREDIMI_DEVICE_2_ENABLED"] = "false"
 	d := PageData{
 		Active:   "devices",
 		Title:    "Devices",
-		Runner:   &Config{values: Defaults},
-		Snapshot: Snapshot{},
+		Runner:   &Config{values: values},
+		Snapshot: Snapshot{Devices: []Device{{Serial: "detected-1", Status: Online}}},
 		Workers:  []Worker{},
 		Pill:     PillData{OK: true, Label: "Ready"},
 	}
@@ -411,6 +425,21 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)
 		}
+	}
+	if !strings.Contains(html, `<a class="sb-env" href="/devices"`) {
+		t.Fatal("runner sidebar identity should link to the Devices page")
+	}
+	if strings.Contains(html, `class="chev"`) {
+		t.Fatal("runner sidebar identity should not render a dropdown chevron")
+	}
+	if !strings.Contains(html, `Devices<span class="count">2</span>`) {
+		t.Fatalf("sidebar device count should use configured inventory: %s", html)
+	}
+	if configured, detected := strings.Index(html, "Configured inventory"), strings.Index(html, "Detected devices"); configured < 0 || detected < 0 || configured > detected {
+		t.Fatal("detected devices should appear after configured inventory")
+	}
+	if detected, add := strings.Index(html, "Detected devices"), strings.Index(html, "Add device"); detected < 0 || add < 0 || detected > add {
+		t.Fatal("detected devices should appear before the add-device form")
 	}
 }
 

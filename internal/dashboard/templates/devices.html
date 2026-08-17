@@ -18,12 +18,13 @@
     </div>
   </section>
 
+  <section class="card" style="margin-bottom:16px"><header class="card-h">{{icon "shield"}}<div><h3>Detected devices</h3><div class="sub">Live device snapshot</div></div></header><div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div></section>
+
   <form method="post" action="/devices/config" autocomplete="off" data-config-form data-target-config-form data-device-add-form data-busy-title="Adding device" data-busy-message="Preparing the device. This can take several minutes for an Android emulator." data-busy-controller-progress="true">
     <div class="callout danger" data-device-form-error hidden style="margin-bottom:12px"></div>
     {{template "setup_device_provision" .}}
     <div class="savebar"><span class="msg">The canonical device ID is resolved automatically and registration happens on save.</span><div class="sp"></div><button class="btn btn-pri">{{icon "plus"}} Add device</button></div>
   </form>
 
-  <section class="card" style="margin-top:16px"><header class="card-h">{{icon "shield"}}<div><h3>Detected devices</h3><div class="sub">Live device snapshot</div></div></header><div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div></section>
 </main>
 {{end}}

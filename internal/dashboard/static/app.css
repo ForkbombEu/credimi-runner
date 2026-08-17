@@ -232,7 +232,6 @@ button { font-family: inherit; }
 .sb-env .meta { line-height: 1.25; min-width: 0; }
 .sb-env .meta b { font: 600 12.5px var(--font-sans); display: block; }
 .sb-env .meta span { font: 500 10.5px var(--font-mono); color: var(--fg-muted); display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.sb-env .chev { margin-left: auto; color: var(--fg-muted); flex: none; }
 
 .sb-nav { padding: 8px 12px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .sb-sec { font: 600 10px/1 var(--font-sans); letter-spacing: 0.13em; text-transform: uppercase; color: var(--fg-muted); padding: 14px 10px 6px; }
