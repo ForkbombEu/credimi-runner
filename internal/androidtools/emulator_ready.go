@@ -51,7 +51,7 @@ func EnsureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, s
 		}
 	}
 	if !AVDAssetsExist(avdHome, baseName) {
-		if err := EnsureAVD(ctx, effectiveSDKRoot(cfg, goos), avdHome, baseName, emulator.AndroidEmulator.SystemImage, nil); err != nil {
+		if err := EnsureAVD(ctx, sdkRoot, avdHome, baseName, emulator.AndroidEmulator.SystemImage, nil); err != nil {
 			return fmt.Errorf("prepare Android AVD %q: %w", baseName, err)
 		}
 	}
