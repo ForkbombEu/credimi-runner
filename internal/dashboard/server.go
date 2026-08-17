@@ -95,6 +95,7 @@ type Server struct {
 	launcherSocket          string
 	runtimeControlFile      string
 	publicURL               string
+	mutationMu              sync.Mutex
 	mu                      sync.RWMutex
 }
 
@@ -441,16 +442,13 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 	if !found {
 		return errors.New("unknown device")
 	}
-	if !equalStringMaps(map[string]string(oldValues), s.cfg.Snapshot()) {
-		return errors.New("configuration changed while preparing the device; retry")
-	}
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(oldValues), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
 		return fmt.Errorf("device state was not activated because Android capabilities are unavailable: %w", err)
 	}
-	if err := store.SaveRuntimeConfig(config); err != nil {
+	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
 		return err
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
@@ -498,16 +496,13 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 		return errors.New("unknown device")
 	}
 	config.Devices = devices
-	if !equalStringMaps(map[string]string(oldValues), s.cfg.Snapshot()) {
-		return errors.New("configuration changed while preparing the device; retry")
-	}
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(oldValues), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
 		return fmt.Errorf("device removal was not activated because Android capabilities are unavailable: %w", err)
 	}
-	if err := store.SaveRuntimeConfig(config); err != nil {
+	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
 		return err
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
@@ -1100,16 +1095,13 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	if err := dashboardruntime.ValidateDeviceConstraints(config.Devices); err != nil {
 		return err
 	}
-	if !equalStringMaps(map[string]string(oldValues), s.cfg.Snapshot()) {
-		return errors.New("configuration changed while preparing the device; retry")
-	}
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(values), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
 		return fmt.Errorf("device configuration was not activated because Android capabilities are unavailable: %w", err)
 	}
-	if err := store.SaveRuntimeConfig(config); err != nil {
+	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
 		return err
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
@@ -1233,12 +1225,36 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	if err := provisionCandidateCapabilities(provisionCtx, candidateSnapshot, progress); err != nil {
 		return fmt.Errorf("configuration was not activated because Android capabilities are unavailable: %w", err)
 	}
-	if !equalStringMaps(oldSnapshot, s.cfg.Snapshot()) {
+	s.mutationMu.Lock()
+	currentStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		s.mutationMu.Unlock()
+		return err
+	}
+	baseCanonical, err := canonicalCompatibilityValues(oldSnapshot)
+	if err != nil {
+		s.mutationMu.Unlock()
+		return err
+	}
+	persistedCanonical, err := canonicalCompatibilityValues(map[string]string(currentStore.Snapshot()))
+	if err != nil {
+		s.mutationMu.Unlock()
+		return err
+	}
+	memoryCanonical, err := canonicalCompatibilityValues(s.cfg.Snapshot())
+	if err != nil {
+		s.mutationMu.Unlock()
+		return err
+	}
+	if (currentStore.Exists() && !equalStringMaps(baseCanonical, persistedCanonical)) || !equalStringMaps(baseCanonical, memoryCanonical) {
+		s.mutationMu.Unlock()
 		return errors.New("configuration changed while preparing the update; retry")
 	}
 	if errs, err := s.cfg.Apply(incoming); err != nil {
+		s.mutationMu.Unlock()
 		return fmt.Errorf("configuration validation failed: %v", errs)
 	}
+	s.mutationMu.Unlock()
 	newSnapshot := s.cfg.Snapshot()
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
 	if s.manager != nil {
@@ -2690,6 +2706,41 @@ func equalStringMaps(left, right map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func canonicalCompatibilityValues(values map[string]string) (map[string]string, error) {
+	cfg, err := dashboardruntime.TypedConfigFromValues(dashboardruntime.Values(values))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string(dashboardruntime.ValuesFromTypedConfig(cfg)), nil
+}
+
+// saveRuntimeCandidate makes the persisted configuration check and replacement
+// one short critical section. Provisioning happens before this lock is taken.
+func (s *Server) saveRuntimeCandidate(base dashboardruntime.Values, store *dashboardruntime.Store, candidate dashboardruntime.RunnerRuntimeConfig) error {
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	current, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		return err
+	}
+	baseCanonical, err := canonicalCompatibilityValues(map[string]string(base))
+	if err != nil {
+		return err
+	}
+	persistedCanonical, err := canonicalCompatibilityValues(map[string]string(current.Snapshot()))
+	if err != nil {
+		return err
+	}
+	memoryCanonical, err := canonicalCompatibilityValues(s.cfg.Snapshot())
+	if err != nil {
+		return err
+	}
+	if (current.Exists() && !equalStringMaps(baseCanonical, persistedCanonical)) || !equalStringMaps(baseCanonical, memoryCanonical) {
+		return errors.New("configuration changed while preparing the device; retry")
+	}
+	return store.SaveRuntimeConfig(candidate)
 }
 
 func (s *Server) queueConfigMutation(w http.ResponseWriter, r *http.Request, page string, action configMutation) {

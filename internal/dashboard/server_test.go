@@ -2930,6 +2930,13 @@ func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
 	s.cfg.values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
 	s.cfg.values["CREDIMI_DEVICE_1_MODE"] = "no_device"
 	s.cfg.values["CREDIMI_DEVICE_1_ENABLED"] = "true"
+	typed, err := dashboardruntime.TypedConfigFromValues(dashboardruntime.Values(s.cfg.Snapshot()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runnerconfig.WriteFile(s.cfg.Path(), typed); err != nil {
+		t.Fatal(err)
+	}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader("CREDIMI_RUNNER_DESCRIPTION=candidate"))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2938,9 +2945,14 @@ func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
 		t.Fatalf("config operation response = %d", response.Code)
 	}
 	<-started
-	s.cfg.mu.Lock()
-	s.cfg.values["CREDIMI_RUNNER_DESCRIPTION"] = "newer"
-	s.cfg.mu.Unlock()
+	persisted, err := runnerconfig.LoadFile(s.cfg.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted.Runner.Description = "newer"
+	if err := runnerconfig.WriteFile(s.cfg.Path(), persisted); err != nil {
+		t.Fatal(err)
+	}
 	close(release)
 	completed, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
 	if err != nil || completed.Phase != controller.PhaseFailed || !strings.Contains(completed.Error, "configuration changed") {
