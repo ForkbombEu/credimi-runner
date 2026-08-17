@@ -227,10 +227,13 @@ func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
 	if errs := Validate(next); len(errs) > 0 {
 		return errs, fmt.Errorf("validation failed")
 	}
+	if err := c.writeValues(next); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
 	c.values = next
 	c.mu.Unlock()
-	return nil, c.write()
+	return nil, nil
 }
 
 func normalizedConfigValues(current, incoming map[string]string, goos string) (dashboardruntime.Values, error) {
@@ -249,11 +252,9 @@ func normalizedConfigValues(current, incoming map[string]string, goos string) (d
 	return dashboardruntime.NormalizeValues(dashboardruntime.Values(next), goos)
 }
 
-// write converts the compatibility form values to typed TOML atomically.
-func (c *Config) write() error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	cfg, err := dashboardruntime.TypedConfigFromValues(dashboardruntime.Values(c.values))
+// writeValues converts the candidate compatibility values to typed TOML atomically.
+func (c *Config) writeValues(values map[string]string) error {
+	cfg, err := dashboardruntime.TypedConfigFromValues(dashboardruntime.Values(values))
 	if err != nil {
 		return err
 	}

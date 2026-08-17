@@ -1370,8 +1370,7 @@ func TestServerPageAndPageData(t *testing.T) {
 		t.Fatalf("fragment code/body = %d %s", rec.Code, rec.Body.String())
 	}
 
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	if err := s.cfg.write(); err != nil {
+	if _, err := s.cfg.Apply(map[string]string{"CREDIMI_RUNNER_ID": "acme/runner"}); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()

@@ -87,6 +87,44 @@ func TestConfigApplyWritesTypedTOML(t *testing.T) {
 	}
 }
 
+func TestConfigApplyLeavesMemoryUnchangedWhenWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), dashboardTestConfig(dir)); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := runner.Snapshot()
+	runner.path = dir
+	if _, err := runner.Apply(map[string]string{"CREDIMI_RUNNER_DESCRIPTION": "must not apply"}); err == nil {
+		t.Fatal("Apply unexpectedly succeeded when config path was a directory")
+	}
+	if got := runner.Snapshot(); !mapsEqual(got, before) {
+		t.Fatalf("in-memory values changed after failed Apply: got %v, want %v", got, before)
+	}
+	persisted, err := config.LoadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Runner.Description != before["CREDIMI_RUNNER_DESCRIPTION"] {
+		t.Fatalf("persisted description changed to %q", persisted.Runner.Description)
+	}
+}
+
+func mapsEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
 func TestConfigCompatibilityRoundTripsManualPublicPort(t *testing.T) {
 	dir := t.TempDir()
 	if err := config.WriteFile(filepath.Join(dir, "config.toml"), dashboardTestConfig(dir)); err != nil {
