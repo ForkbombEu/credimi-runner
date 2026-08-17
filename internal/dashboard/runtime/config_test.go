@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
 )
@@ -337,6 +338,58 @@ func TestRedroidAVDCTLSudoRejectsMalformedBoolean(t *testing.T) {
 	}
 	if _, err := TypedConfigFromValues(values); err == nil {
 		t.Fatal("malformed AVDCTL_SUDO accepted")
+	}
+}
+
+func TestTypedCompatibilityConverterPreservesAllCanonicalSettings(t *testing.T) {
+	cfg := testTOMLConfig(t.TempDir())
+	cfg.SchemaVersion = config.SchemaVersion
+	cfg.Credimi.AuthMode = "internal_admin"
+	cfg.Credimi.UserAPIKey = ""
+	cfg.Credimi.InternalAdminKey = "internal-secret"
+	cfg.Server.OpenBrowser = false
+	cfg.Server.ReadHeaderTimeout = config.Duration(11 * time.Second)
+	cfg.Server.ShutdownTimeout = config.Duration(17 * time.Second)
+	cfg.Storage.StateDir = "/srv/credimi/state"
+	cfg.Storage.TempDir = "/srv/credimi/tmp"
+	cfg.Storage.ArtifactRetention = config.Duration(29 * time.Hour)
+	cfg.Android = config.AndroidConfig{RunnerImage: "runner:custom", PullPolicy: "never", Network: "custom-net", StateVolume: "state-vol", ToolCacheVolume: "tools-vol", SDKVolume: "sdk-vol", ADBKeysPath: "/srv/adb-keys"}
+	cfg.Devices = []config.DeviceConfig{
+		{ID: "acme/runner/phone", Name: "Phone", Description: "physical", Type: config.DeviceAndroidPhysical, Enabled: false, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.60", WiFiPort: "5560"}},
+		{ID: "acme/runner/emulator", Name: "Emulator", Description: "custom emulator", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{APILevel: 34, ABI: "custom-abi", SystemImage: "custom-image", BaseName: "custom-base", GoldenSource: "/custom-golden", Headless: true, MemoryMB: 4096, Cores: 4}},
+		{ID: "acme/runner/redroid", Name: "Redroid", Description: "custom redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "192.0.2.61", Image: "redroid:custom", DataDir: "/srv/redroid", DataArchive: "/srv/redroid.tar", ADBPort: 5561, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHPassword: "ssh-secret", AVDCTLSSHKnownHostsPath: "/known_hosts", AVDCTLSudo: true, AVDCTLSudoPassword: "sudo-secret"}},
+	}
+	if err := config.ApplyDefaults(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	values := ValuesFromTypedConfig(cfg)
+	values["CREDIMI_RUNNER_DESCRIPTION"] = "unrelated edit"
+	got, err := TypedConfigFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := cfg
+	want.Runner.Description = "unrelated edit"
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lossy typed round-trip:\n got: %#v\nwant: %#v", got, want)
+	}
+	store, err := LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(values); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := LoadStore(filepath.Dir(store.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloadedConfig, err := TypedConfigFromValues(reloaded.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reloadedConfig, want) {
+		t.Fatalf("lossy TOML reload:\n got: %#v\nwant: %#v", reloadedConfig, want)
 	}
 }
 

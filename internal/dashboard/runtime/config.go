@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
@@ -82,7 +83,9 @@ func (s *Store) writeTOML(cfg runnerconfig.Config, values Values) error {
 
 func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 	values := DefaultValues()
+	values["CONFIG_SCHEMA_VERSION"] = strconv.Itoa(cfg.SchemaVersion)
 	values["CREDIMI_URL"] = cfg.Credimi.URL
+	values["CREDIMI_AUTH_MODE"] = cfg.Credimi.AuthMode
 	values["CREDIMI_RUNNER_ID"] = cfg.Runner.ID
 	values["CREDIMI_RUNNER_NAME"] = cfg.Runner.Name
 	values["CREDIMI_RUNNER_ORGANIZATION"] = cfg.Runner.Organization
@@ -92,6 +95,9 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 	values["CREDIMI_INTERNAL_ADMIN_KEY"] = cfg.Credimi.InternalAdminKey
 	values["TEMPORAL_ADDRESS"] = cfg.Temporal.Address
 	values["DASHBOARD_TOKEN"] = cfg.Server.DashboardToken
+	values["SERVER_OPEN_BROWSER"] = strconv.FormatBool(cfg.Server.OpenBrowser)
+	values["SERVER_READ_HEADER_TIMEOUT"] = cfg.Server.ReadHeaderTimeout.Duration().String()
+	values["SERVER_SHUTDOWN_TIMEOUT"] = cfg.Server.ShutdownTimeout.Duration().String()
 	if host, port, err := net.SplitHostPort(cfg.Server.APIListen); err == nil {
 		values["RUNNER_HOST"], values["RUNNER_PORT"] = host, port
 	}
@@ -99,15 +105,17 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 		values["DASHBOARD_HOST"], values["DASHBOARD_PORT"] = host, port
 	}
 	values["CREDIMI_TEMP_DIR"] = cfg.Storage.TempDir
+	values["STORAGE_STATE_DIR"] = cfg.Storage.StateDir
+	values["STORAGE_ARTIFACT_RETENTION"] = cfg.Storage.ArtifactRetention.Duration().String()
 	values["OTEL_ENABLED"] = strconv.FormatBool(cfg.Observability.Enabled)
-	values["OTEL_EXPORTER_OTLP_ENDPOINT"] = defaultIfEmpty(cfg.Observability.OTLPEndpoint, values["OTEL_EXPORTER_OTLP_ENDPOINT"])
-	values["OTEL_SERVICE_NAME"] = defaultIfEmpty(cfg.Observability.ServiceName, values["OTEL_SERVICE_NAME"])
-	values["ANDROID_RUNNER_IMAGE"] = defaultIfEmpty(cfg.Android.RunnerImage, values["ANDROID_RUNNER_IMAGE"])
-	values["ANDROID_PULL_POLICY"] = defaultIfEmpty(cfg.Android.PullPolicy, values["ANDROID_PULL_POLICY"])
-	values["ANDROID_NETWORK"] = defaultIfEmpty(cfg.Android.Network, values["ANDROID_NETWORK"])
-	values["ANDROID_STATE_VOLUME"] = defaultIfEmpty(cfg.Android.StateVolume, values["ANDROID_STATE_VOLUME"])
-	values["ANDROID_TOOL_CACHE_VOLUME"] = defaultIfEmpty(cfg.Android.ToolCacheVolume, values["ANDROID_TOOL_CACHE_VOLUME"])
-	values["ANDROID_SDK_VOLUME"] = defaultIfEmpty(cfg.Android.SDKVolume, values["ANDROID_SDK_VOLUME"])
+	values["OTEL_EXPORTER_OTLP_ENDPOINT"] = cfg.Observability.OTLPEndpoint
+	values["OTEL_SERVICE_NAME"] = cfg.Observability.ServiceName
+	values["ANDROID_RUNNER_IMAGE"] = cfg.Android.RunnerImage
+	values["ANDROID_PULL_POLICY"] = cfg.Android.PullPolicy
+	values["ANDROID_NETWORK"] = cfg.Android.Network
+	values["ANDROID_STATE_VOLUME"] = cfg.Android.StateVolume
+	values["ANDROID_TOOL_CACHE_VOLUME"] = cfg.Android.ToolCacheVolume
+	values["ANDROID_SDK_VOLUME"] = cfg.Android.SDKVolume
 	values["ANDROID_ADB_KEYS_PATH"] = cfg.Android.ADBKeysPath
 	switch cfg.Exposure.Mode {
 	case "named_tunnel":
@@ -120,7 +128,7 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
 	values["RUNNER_PUBLIC_PORT"] = cfg.Exposure.PublicPort
 	values["RUNNER_DOMAIN"] = cfg.Exposure.Domain
-	values["RUNNER_CADDY_SITE"] = defaultIfEmpty(cfg.Exposure.CaddySite, DefaultRunnerCaddySite)
+	values["RUNNER_CADDY_SITE"] = cfg.Exposure.CaddySite
 	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
 	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
 	for i, device := range cfg.Devices {
@@ -146,6 +154,12 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 			values[prefix+"MODE"], values[prefix+"AVD_NAME"] = "emulator", device.AndroidEmulator.BaseName
 			values[prefix+"BASE_NAME"] = device.AndroidEmulator.BaseName
 			values[prefix+"GOLDEN_PATH"] = device.AndroidEmulator.GoldenSource
+			values[prefix+"API_LEVEL"] = strconv.Itoa(device.AndroidEmulator.APILevel)
+			values[prefix+"ABI"] = device.AndroidEmulator.ABI
+			values[prefix+"SYSTEM_IMAGE"] = device.AndroidEmulator.SystemImage
+			values[prefix+"HEADLESS"] = strconv.FormatBool(device.AndroidEmulator.Headless)
+			values[prefix+"MEMORY_MB"] = strconv.Itoa(device.AndroidEmulator.MemoryMB)
+			values[prefix+"CORES"] = strconv.Itoa(device.AndroidEmulator.Cores)
 		case runnerconfig.DeviceRedroid:
 			values[prefix+"MODE"] = "redroid"
 			values[prefix+"WIFI_IP"] = device.Redroid.Host
@@ -168,16 +182,48 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 
 func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 	cfg := runnerconfig.Bootstrap()
+	if raw := strings.TrimSpace(values["CONFIG_SCHEMA_VERSION"]); raw != "" {
+		version, err := strconv.Atoi(raw)
+		if err != nil {
+			return cfg, fmt.Errorf("CONFIG_SCHEMA_VERSION must be an integer")
+		}
+		cfg.SchemaVersion = version
+	}
 	cfg.Runner.ID, cfg.Runner.Name, cfg.Runner.Organization = values["CREDIMI_RUNNER_ID"], values["CREDIMI_RUNNER_NAME"], values["CREDIMI_RUNNER_ORGANIZATION"]
-	cfg.Runner.Description, cfg.Runner.Published = values["CREDIMI_RUNNER_DESCRIPTION"], strings.EqualFold(values["CREDIMI_RUNNER_PUBLISHED"], "true")
+	published, err := parseBoolean(values["CREDIMI_RUNNER_PUBLISHED"], false, "CREDIMI_RUNNER_PUBLISHED")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Runner.Description, cfg.Runner.Published = values["CREDIMI_RUNNER_DESCRIPTION"], published
 	cfg.Credimi.URL, cfg.Credimi.UserAPIKey, cfg.Credimi.InternalAdminKey = values["CREDIMI_URL"], values["CREDIMI_USER_API_KEY"], values["CREDIMI_INTERNAL_ADMIN_KEY"]
-	if cfg.Credimi.InternalAdminKey != "" {
+	cfg.Credimi.AuthMode = defaultIfEmpty(values["CREDIMI_AUTH_MODE"], cfg.Credimi.AuthMode)
+	if values["CREDIMI_AUTH_MODE"] == "" && cfg.Credimi.InternalAdminKey != "" {
 		cfg.Credimi.AuthMode = "internal_admin"
 	}
 	cfg.Temporal.Address = values["TEMPORAL_ADDRESS"]
 	cfg.Server.APIListen, cfg.Server.DashboardListen = net.JoinHostPort(values["RUNNER_HOST"], values["RUNNER_PORT"]), net.JoinHostPort(values["DASHBOARD_HOST"], values["DASHBOARD_PORT"])
 	cfg.Server.DashboardToken, cfg.Storage.TempDir = values["DASHBOARD_TOKEN"], values["CREDIMI_TEMP_DIR"]
-	cfg.Observability.Enabled = strings.EqualFold(values["OTEL_ENABLED"], "true")
+	cfg.Server.OpenBrowser, err = parseBoolean(values["SERVER_OPEN_BROWSER"], cfg.Server.OpenBrowser, "SERVER_OPEN_BROWSER")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Server.ReadHeaderTimeout, err = parseDuration(values["SERVER_READ_HEADER_TIMEOUT"], cfg.Server.ReadHeaderTimeout, "SERVER_READ_HEADER_TIMEOUT")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Server.ShutdownTimeout, err = parseDuration(values["SERVER_SHUTDOWN_TIMEOUT"], cfg.Server.ShutdownTimeout, "SERVER_SHUTDOWN_TIMEOUT")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Storage.StateDir = values["STORAGE_STATE_DIR"]
+	cfg.Storage.ArtifactRetention, err = parseDuration(values["STORAGE_ARTIFACT_RETENTION"], cfg.Storage.ArtifactRetention, "STORAGE_ARTIFACT_RETENTION")
+	if err != nil {
+		return cfg, err
+	}
+	cfg.Observability.Enabled, err = parseBoolean(values["OTEL_ENABLED"], false, "OTEL_ENABLED")
+	if err != nil {
+		return cfg, err
+	}
 	cfg.Observability.OTLPEndpoint = values["OTEL_EXPORTER_OTLP_ENDPOINT"]
 	cfg.Observability.ServiceName = values["OTEL_SERVICE_NAME"]
 	cfg.Android.RunnerImage = values["ANDROID_RUNNER_IMAGE"]
@@ -198,7 +244,7 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 	cfg.Exposure.PublicURL = values["RUNNER_PUBLIC_URL"]
 	cfg.Exposure.PublicPort = values["RUNNER_PUBLIC_PORT"]
 	cfg.Exposure.Domain = values["RUNNER_DOMAIN"]
-	cfg.Exposure.CaddySite = defaultIfEmpty(values["RUNNER_CADDY_SITE"], DefaultRunnerCaddySite)
+	cfg.Exposure.CaddySite = values["RUNNER_CADDY_SITE"]
 	cfg.Exposure.CloudflareToken = values["CLOUDFLARE_TUNNEL_TOKEN"]
 	runtimeCfg := RunnerRuntimeConfig{}
 	if count := strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]); count != "" && count != "0" {
@@ -231,10 +277,16 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 			}
 			entry.Type, entry.AndroidPhysical = runnerconfig.DeviceAndroidPhysical, physical
 		case "android_emulator":
-			abi := DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH)
+			apiLevel := atoiDefault(device.Values["API_LEVEL"], 35)
+			abi := defaultIfEmpty(device.Values["ABI"], DefaultEmulatorABI(stdruntime.GOOS, stdruntime.GOARCH))
+			systemImage := defaultIfEmpty(device.Values["SYSTEM_IMAGE"], "system-images;android-35;google_apis;"+abi)
 			baseName := defaultIfEmpty(device.Values["BASE_NAME"], DefaultBaseName)
 			goldenSource := defaultIfEmpty(device.Values["GOLDEN_PATH"], "/avd-golden/"+baseName+"-golden")
-			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{ABI: abi, SystemImage: "system-images;android-35;google_apis;" + abi, BaseName: baseName, GoldenSource: goldenSource, APILevel: 35, MemoryMB: 2048, Cores: 2}
+			headless, err := parseBoolean(device.Values["HEADLESS"], false, fmt.Sprintf("CREDIMI_DEVICE_%d_HEADLESS", device.Index))
+			if err != nil {
+				return cfg, err
+			}
+			entry.Type, entry.AndroidEmulator = runnerconfig.DeviceAndroidEmulator, &runnerconfig.AndroidEmulatorConfig{ABI: abi, SystemImage: systemImage, BaseName: baseName, GoldenSource: goldenSource, APILevel: apiLevel, Headless: headless, MemoryMB: atoiDefault(device.Values["MEMORY_MB"], 2048), Cores: atoiDefault(device.Values["CORES"], 2)}
 		case "redroid":
 			host, port := device.WiFiIP, device.WiFiPort
 			if host == "" {
@@ -270,7 +322,29 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 		}
 		cfg.Devices = append(cfg.Devices, entry)
 	}
+	if err := runnerconfig.ApplyDefaults(&cfg); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+func parseDuration(raw string, fallback runnerconfig.Duration, key string) (runnerconfig.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration", key)
+	}
+	return runnerconfig.Duration(duration), nil
+}
+
+func atoiDefault(raw string, fallback int) int {
+	if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && value > 0 {
+		return value
+	}
+	return fallback
 }
 
 func parseBoolean(raw string, fallback bool, key string) (bool, error) {

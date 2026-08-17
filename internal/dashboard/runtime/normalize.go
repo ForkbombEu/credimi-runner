@@ -38,6 +38,7 @@ var KnownKeys = RunnerKeys
 func DefaultValues() Values {
 	values := Values{
 		"CREDIMI_RUNNER_PUBLISHED":    "false",
+		"CREDIMI_AUTH_MODE":           "user",
 		"ANDROID_RUNNER_IMAGE":        DefaultAndroidRunnerImage,
 		"ANDROID_PULL_POLICY":         DefaultAndroidPullPolicy,
 		"ANDROID_NETWORK":             "credimi-runner",
@@ -55,6 +56,7 @@ func DefaultValues() Values {
 		"RUNNER_CADDY_SITE":           DefaultRunnerCaddySite,
 		"RUNNER_HOST":                 DefaultRunnerHost,
 		"RUNNER_PORT":                 DefaultRunnerPort,
+		"SERVER_OPEN_BROWSER":         "true",
 		"TEMPORAL_ADDRESS":            DefaultTemporalAddress,
 	}
 	return values
