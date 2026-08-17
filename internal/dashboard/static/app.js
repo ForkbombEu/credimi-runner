@@ -415,8 +415,30 @@
     };
     const save = async () => {
       const response = await fetch(form.action, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(new FormData(form)), redirect: 'follow' });
-      if (!response.ok) throw new Error((await response.text()).trim() || 'Unable to save device configuration');
-      window.location.assign('/devices');
+      if (!response.ok) {
+        const body = (await response.text()).trim();
+        let message = body;
+        if (body.startsWith('<')) {
+          const documentBody = new DOMParser().parseFromString(body, 'text/html').body;
+          message = documentBody.querySelector('.callout.danger')?.textContent?.replace(/\s+/g, ' ').trim() || '';
+        }
+        throw new Error(message || `Unable to save device configuration (HTTP ${response.status})`);
+      }
+      const trigger = response.headers.get('HX-Trigger');
+      if (trigger) {
+        try {
+          const event = JSON.parse(trigger).runtimeOperation;
+          if (event && event.id) {
+            showBusy(form.dataset.busyMessage, {
+              title: form.dataset.busyTitle,
+              controllerProgress: form.dataset.busyControllerProgress === 'true',
+            });
+            document.body.dispatchEvent(new CustomEvent('runtimeOperation', { detail: event }));
+            return;
+          }
+        } catch (_) {}
+      }
+      window.location.assign(dashboardURL('/devices'));
     };
     if (form.dataset.deviceConflictResolved === '1') {
       e.preventDefault();
@@ -1981,7 +2003,7 @@
   document.addEventListener('change', (e) => { if (e.target.closest('[data-config-form]')) markDirty(); });
   document.addEventListener('submit', async (e) => {
     const form = e.target.closest('[data-config-form]');
-    if (!form || form.matches('[data-setup-form]')) return;
+    if (!form || form.matches('[data-setup-form], [data-device-add-form]')) return;
     if (form.dataset.confirmedSubmit === '1') {
       delete form.dataset.confirmedSubmit;
       return;
