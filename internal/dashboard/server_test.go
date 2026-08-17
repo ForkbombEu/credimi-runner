@@ -2613,6 +2613,21 @@ func TestShouldRegisterAfterApply(t *testing.T) {
 	}
 }
 
+func TestApplySavedConfigDefersWhenRuntimeStopped(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: false, ComposeRunning: false}}
+	outcome, err := s.applySavedConfig(context.Background(), dashboardruntime.ConfigDiff{
+		ChangedKeys: []string{"RUNNER_PORT"},
+		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
+	}, map[string]string{"CREDIMI_RUNNER_ID": "acme/runner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Applied || !outcome.Deferred {
+		t.Fatalf("stopped runtime outcome = %#v", outcome)
+	}
+}
+
 func TestRuntimeLogsReturnsRecentLines(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = &fakeManager{logLines: []dashboardruntime.LogLine{

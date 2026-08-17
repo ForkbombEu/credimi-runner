@@ -460,8 +460,12 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
-	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
+	outcome, err := s.applyDeviceChange(r.Context(), oldValues, newValues)
+	if err != nil {
 		return fmt.Errorf("device state was saved, but runtime reconciliation failed: %w", err)
+	}
+	if !outcome.Applied {
+		return nil
 	}
 	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
 		return err
@@ -520,8 +524,12 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
-	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
+	outcome, err := s.applyDeviceChange(r.Context(), oldValues, newValues)
+	if err != nil {
 		return fmt.Errorf("device removal was saved, but runtime reconciliation failed: %w", err)
+	}
+	if !outcome.Applied {
+		return nil
 	}
 	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
 		return err
@@ -1162,41 +1170,55 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 			return fmt.Errorf("device configuration was saved, but compose generation failed: %w", err)
 		}
 	}
+	applied := false
 	if s.runtimeOwned {
-		if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newValues); err != nil {
+		if !runtimeRunning && s.launcherSocket == "" {
+			// The outer launcher will consume the current TOML on the next Start.
+		} else if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newValues); err != nil {
 			return fmt.Errorf("device configuration was saved, but applying it to the running runner failed: %w", err)
+		} else {
+			applied = true
 		}
 	} else if runtimeRunning {
 		// The live activity provider reads the saved inventory on each target
 		// activity; registration is the only immediate runtime action needed.
-		if _, err := s.applySavedConfig(r.Context(), diff, map[string]string(newValues)); err != nil {
+		outcome, err := s.applySavedConfig(r.Context(), diff, map[string]string(newValues))
+		if err != nil {
 			return fmt.Errorf("device configuration was saved, but applying it to the running runner failed: %w", err)
 		}
+		applied = outcome.Applied
 	}
-	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
-		return err
+	if applied {
+		if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+			return err
+		}
+	}
+	if !applied {
+		return nil
 	}
 	return nil
 }
 
-func (s *Server) applyDeviceChange(ctx context.Context, oldValues, newValues dashboardruntime.Values) error {
+func (s *Server) applyDeviceChange(ctx context.Context, oldValues, newValues dashboardruntime.Values) (applyOutcome, error) {
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
 	if s.runtimeOwned {
-		if !runtimeOperational(filepath.Dir(s.cfg.Path())) && !hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
-			return nil
+		if !runtimeOperational(filepath.Dir(s.cfg.Path())) && s.launcherSocket == "" {
+			return applyOutcome{Deferred: true}, nil
 		}
-		return s.applyRuntimeOwnedConfigInOperation(ctx, diff, map[string]string(newValues))
+		if err := s.applyRuntimeOwnedConfigInOperation(ctx, diff, map[string]string(newValues)); err != nil {
+			return applyOutcome{}, err
+		}
+		return applyOutcome{Applied: true}, nil
 	}
 	if s.manager == nil {
-		return nil
+		return applyOutcome{Applied: true}, nil
 	}
 	s.manager.Configure(newValues)
 	status := s.manager.Status(ctx)
 	if !status.RunnerRunning && !status.ComposeRunning {
-		return nil
+		return applyOutcome{Deferred: true}, nil
 	}
-	_, err := s.applySavedConfig(ctx, diff, map[string]string(newValues))
-	return err
+	return s.applySavedConfig(ctx, diff, map[string]string(newValues))
 }
 
 // applyDeviceDefaults keeps the dashboard form concise while making every
@@ -1314,15 +1336,21 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 		}
 	}
 	appliedCleanly := true
+	deferred := false
 	var reconcileErr error
 	if s.manager != nil {
 		if outcome, err := s.applySavedConfig(r.Context(), diff, newSnapshot); err != nil {
 			appliedCleanly = false
 			reconcileErr = err
-		} else if outcome.Restarted {
+		} else if !outcome.Applied {
+			appliedCleanly = false
+			deferred = outcome.Deferred
 		}
 	} else if s.runtimeOwned && len(diff.ChangedKeys) > 0 {
-		if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newSnapshot); err != nil {
+		if !runtimeOperational(filepath.Dir(s.cfg.Path())) && s.launcherSocket == "" {
+			appliedCleanly = false
+			deferred = true
+		} else if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newSnapshot); err != nil {
 			appliedCleanly = false
 			reconcileErr = err
 		}
@@ -1337,6 +1365,9 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	s.lastRegistrationStatus = ""
 	s.mu.Unlock()
 	if !appliedCleanly {
+		if deferred {
+			return nil
+		}
 		return fmt.Errorf("configuration was saved but reconciliation failed: %w", reconcileErr)
 	}
 	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
@@ -1387,18 +1418,26 @@ func (s *Server) normalizeConfigPreview(w http.ResponseWriter, r *http.Request) 
 type applyOutcome struct {
 	Restarted      bool
 	CredimiUpdated bool
+	Applied        bool
+	Deferred       bool
 }
 
 func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) (applyOutcome, error) {
 	var outcome applyOutcome
 	if len(diff.ChangedKeys) == 0 || hasApplyClass(diff, dashboardruntime.ApplySavedOnly) {
+		outcome.Applied = true
 		return outcome, nil
 	}
 	status := s.manager.Status(ctx)
 	runtimeRunning := status.RunnerRunning || status.ComposeRunning
+	if !runtimeRunning {
+		outcome.Deferred = true
+		return outcome, nil
+	}
 	restartRequired := runtimeRunning && (hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) || hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate))
 	registerRequired := shouldRegisterAfterApply(diff, values, restartRequired)
 	if !restartRequired && !registerRequired {
+		outcome.Applied = true
 		return outcome, nil
 	}
 	if restartRequired {
@@ -1408,12 +1447,14 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 		outcome.Restarted = true
 		// Restart performs registration itself. Do not register a second time.
 		outcome.CredimiUpdated = true
+		outcome.Applied = true
 		return outcome, nil
 	}
 	if err := s.registerCurrent(ctx, values); err != nil {
 		return outcome, err
 	}
 	outcome.CredimiUpdated = true
+	outcome.Applied = true
 	return outcome, nil
 }
 
