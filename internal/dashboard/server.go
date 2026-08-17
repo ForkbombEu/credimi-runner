@@ -1204,8 +1204,8 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 		set("WIFI_PORT", "5555")
 	}
 	if device.Type == "redroid" {
-		set("REDROID_DATA_DIR", "/home/credimi/redroid-data")
-		set("REDROID_DATA_TAR", "/home/credimi/redroid-data.tar")
+		set("REDROID_DATA_DIR", dashboardruntime.DefaultRedroidDataDir)
+		set("REDROID_DATA_TAR", dashboardruntime.DefaultRedroidDataTar)
 	}
 }
 

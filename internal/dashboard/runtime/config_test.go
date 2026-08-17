@@ -341,6 +341,22 @@ func TestRedroidAVDCTLSudoRejectsMalformedBoolean(t *testing.T) {
 	}
 }
 
+func TestRedroidDefaultsUseCanonicalDataPaths(t *testing.T) {
+	values := Values{
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/redroid", "CREDIMI_DEVICE_1_TYPE": "redroid", "CREDIMI_DEVICE_1_MODE": "redroid",
+		"CREDIMI_DEVICE_1_WIFI_IP": "192.0.2.51", "CREDIMI_DEVICE_1_WIFI_PORT": "5555",
+	}
+	cfg, err := TypedConfigFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redroid := cfg.Devices[0].Redroid
+	if redroid.DataDir != DefaultRedroidDataDir || redroid.DataArchive != DefaultRedroidDataTar {
+		t.Fatalf("Redroid defaults = %#v", redroid)
+	}
+}
+
 func TestTypedCompatibilityConverterPreservesAllCanonicalSettings(t *testing.T) {
 	cfg := testTOMLConfig(t.TempDir())
 	cfg.SchemaVersion = config.SchemaVersion

@@ -306,8 +306,8 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{
 				Host:                    host,
 				Image:                   defaultIfEmpty(device.Values["REDROID_IMAGE"], "redroid:latest"),
-				DataDir:                 defaultIfEmpty(device.Values["REDROID_DATA_DIR"], "/var/lib/credimi-runner/redroid"),
-				DataArchive:             defaultIfEmpty(device.Values["REDROID_DATA_TAR"], "/var/lib/credimi-runner/redroid.tar"),
+				DataDir:                 defaultIfEmpty(device.Values["REDROID_DATA_DIR"], DefaultRedroidDataDir),
+				DataArchive:             defaultIfEmpty(device.Values["REDROID_DATA_TAR"], DefaultRedroidDataTar),
 				ADBPort:                 adbPort,
 				AVDCTLSSHTarget:         device.Values["AVDCTL_SSH_TARGET"],
 				AVDCTLSSHPassword:       device.Values["AVDCTL_SSH_PASSWORD"],
