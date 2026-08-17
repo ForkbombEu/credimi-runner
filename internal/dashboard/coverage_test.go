@@ -13,38 +13,6 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
-func TestWriteIndexedDeviceBlocks(t *testing.T) {
-	values := map[string]string{
-		"CREDIMI_RUNNER_ID":        "acme/runner",
-		"CREDIMI_DEVICE_COUNT":     "1",
-		"CREDIMI_DEVICE_1_ID":      "acme/runner/pixel",
-		"CREDIMI_DEVICE_1_NAME":    "Pixel USB",
-		"CREDIMI_DEVICE_1_TYPE":    "android_phone",
-		"CREDIMI_DEVICE_1_MODE":    "usb",
-		"CREDIMI_DEVICE_1_ENABLED": "true",
-		"CREDIMI_DEVICE_1_SERIAL":  "usb-1",
-	}
-
-	var output strings.Builder
-	writeIndexedDeviceBlocks(&output, values)
-	for _, want := range []string{
-		"CREDIMI_DEVICE_COUNT=1",
-		"# --- Device 1: Pixel USB ---",
-		"CREDIMI_DEVICE_1_ID=acme/runner/pixel",
-		"CREDIMI_DEVICE_1_SERIAL=usb-1",
-	} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("indexed device output missing %q:\n%s", want, output.String())
-		}
-	}
-
-	output.Reset()
-	writeIndexedDeviceBlocks(&output, map[string]string{"CREDIMI_DEVICE_COUNT": "not-a-count"})
-	if output.Len() != 0 {
-		t.Fatalf("invalid inventory output = %q, want empty", output.String())
-	}
-}
-
 func TestWriteComposeFileWritesGeneratedComposeConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	values := map[string]string{

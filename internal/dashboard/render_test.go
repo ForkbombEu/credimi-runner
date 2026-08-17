@@ -290,7 +290,7 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 			t.Fatalf("setup wizard missing %q", want)
 		}
 	}
-	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-emulator-assets-panel`, `data-device-provision-template`} {
+	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-emulator-assets-panel`, `data-device-provision-template`, `AVDCTL_SSH_TARGET`, `AVDCTL_SSH_KNOWN_HOSTS_PATH`, `AVDCTL_SUDO`, `type="password" name="AVDCTL_SSH_PASSWORD"`, `type="password" name="AVDCTL_SUDO_PASSWORD"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("setup device provisioning missing %q", want)
 		}

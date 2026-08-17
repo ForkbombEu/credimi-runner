@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,11 +15,9 @@ import (
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Config: compatibility view over the typed TOML runner configuration.
-//
-// The field registry drives both the rendered form and the TOML compatibility
-// mapping, so
-// there is exactly one place to add or change a setting.
+// Config is the dashboard's compatibility view over the typed TOML runner
+// configuration. The registry contains runner-global editable fields; the
+// indexed device inventory is converted by the runtime package.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type FieldType string
@@ -90,10 +87,9 @@ var Defaults = map[string]string(dashboardruntime.DefaultValues())
 
 // Config is a concurrency-safe compatibility view backed by config.toml.
 type Config struct {
-	mu      sync.RWMutex
-	path    string
-	values  map[string]string
-	rawTail []string // comments / unknown keys preserved verbatim
+	mu     sync.RWMutex
+	path   string
+	values map[string]string
 }
 
 // ConfigDir resolves the runner config directory, honoring an override.
@@ -261,25 +257,6 @@ func (c *Config) writeValues(values map[string]string) error {
 	return runnerconfig.WriteFile(c.path, cfg)
 }
 
-func writeIndexedDeviceBlocks(b *strings.Builder, values map[string]string) {
-	config, err := dashboardruntime.ParseRuntimeConfig(dashboardruntime.Values(values))
-	if err != nil || len(config.Devices) == 0 {
-		return
-	}
-	fmt.Fprintf(b, "\n# --- Device inventory (managed by Credimi Runner; do not edit generated keys) ---\nCREDIMI_DEVICE_COUNT=%d\n", len(config.Devices))
-	for _, device := range config.Devices {
-		fmt.Fprintf(b, "\n# --- Device %d: %s ---\n", device.Index, device.Name)
-		keys := make([]string, 0, len(device.Values))
-		for key := range device.Values {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			fmt.Fprintf(b, "CREDIMI_DEVICE_%d_%s=%s\n", device.Index, key, quote(device.Values[key]))
-		}
-	}
-}
-
 // RawEnv renders the compatibility view. When mask is true, secrets are
 // partially hidden; the persisted source of truth remains TOML.
 func (c *Config) RawEnv(mask bool) string {
@@ -335,16 +312,6 @@ func maskSecret(v string) string {
 	return v[:4] + strings.Repeat("•", minInt(len(v)-4, 28))
 }
 
-func quote(v string) string {
-	if v == "" {
-		return ""
-	}
-	if strings.ContainsAny(v, " \t#\"'") {
-		return `"` + strings.ReplaceAll(v, `"`, `\"`) + `"`
-	}
-	return v
-}
-
 func boolStr(b bool) string {
 	if b {
 		return "true"
@@ -359,15 +326,6 @@ func isTruthyFormValue(value string) bool {
 	default:
 		return false
 	}
-}
-
-func sortedKeys(m map[string]string) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
-	return ks
 }
 
 func minInt(a, b int) int {

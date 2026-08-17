@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
@@ -17,6 +18,8 @@ var adbConnect = func(ctx context.Context, endpoint string) (string, error) {
 	return string(output), err
 }
 
+const adbConnectTimeout = 5 * time.Second
+
 // ConnectConfiguredWiFiDevices makes configured physical Wi-Fi devices visible
 // to the existing ADB server before runtime readiness checks begin.
 func ConnectConfiguredWiFiDevices(ctx context.Context, cfg runnerconfig.Config) error {
@@ -25,7 +28,9 @@ func ConnectConfiguredWiFiDevices(ctx context.Context, cfg runnerconfig.Config) 
 			continue
 		}
 		endpoint := runnerconfig.AndroidWiFiSerial(device.AndroidPhysical.WiFiIP, device.AndroidPhysical.WiFiPort)
-		output, err := adbConnect(ctx, endpoint)
+		connectCtx, cancel := context.WithTimeout(ctx, adbConnectTimeout)
+		output, err := adbConnect(connectCtx, endpoint)
+		cancel()
 		if err != nil {
 			message := strings.TrimSpace(output)
 			if message == "" {

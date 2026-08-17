@@ -242,22 +242,6 @@ func TestConfigBoolAndConfigDirUseCompatibilityDefaults(t *testing.T) {
 	}
 }
 
-func TestConfigCompatibilityFormattingHelpers(t *testing.T) {
-	for _, tc := range []struct {
-		input, want string
-	}{
-		{"", ""}, {"plain", "plain"}, {"with space", `"with space"`}, {`with "quote"`, "\"with \\\"quote\\\"\""},
-	} {
-		if got := quote(tc.input); got != tc.want {
-			t.Fatalf("quote(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-	keys := sortedKeys(map[string]string{"z": "1", "a": "2", "m": "3"})
-	if strings.Join(keys, ",") != "a,m,z" {
-		t.Fatalf("sorted keys = %v", keys)
-	}
-}
-
 func TestTruthyCompatibilityValues(t *testing.T) {
 	for _, value := range []string{"1", "true", "TRUE", "yes", "on", " On "} {
 		if !isTruthyFormValue(value) {

@@ -1078,6 +1078,9 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 				}
 			}
 			if namePosted && strings.TrimSpace(name) != strings.TrimSpace(existing.Name) {
+				if activeMobileActivities(filepath.Dir(s.cfg.Path())) {
+					return errors.New("device identity cannot be renamed while mobile activity is running; retry when execution is idle")
+				}
 				key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
 				if key == "" {
 					key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
@@ -1160,7 +1163,7 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	if s.runtimeOwned {
 		runtimeRunning = runtimeOperational(filepath.Dir(s.cfg.Path()))
 	}
-	if s.manager != nil {
+	if s.manager != nil && !s.runtimeOwned {
 		status := s.manager.Status(r.Context())
 		runtimeRunning = status.RunnerRunning || status.ComposeRunning
 		s.manager.Configure(newValues)
@@ -1172,12 +1175,19 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	}
 	applied := false
 	if s.runtimeOwned {
-		if !runtimeRunning && s.launcherSocket == "" {
-			// The outer launcher will consume the current TOML on the next Start.
-		} else if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newValues); err != nil {
-			return fmt.Errorf("device configuration was saved, but applying it to the running runner failed: %w", err)
-		} else {
+		if runtimeRunning {
+			if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newValues); err != nil {
+				return fmt.Errorf("device configuration was saved, but applying it to the running runner failed: %w", err)
+			}
 			applied = true
+		} else if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired) {
+			// Launcher topology can be reconciled while execution remains stopped,
+			// but runtime registration is deferred until an explicit Start.
+			if s.launcherSocket != "" {
+				if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newValues); err != nil {
+					return fmt.Errorf("device configuration was saved, but launcher reconciliation failed: %w", err)
+				}
+			}
 		}
 	} else if runtimeRunning {
 		// The live activity provider reads the saved inventory on each target
@@ -1199,10 +1209,24 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	return nil
 }
 
+func activeMobileActivities(configDir string) bool {
+	raw, err := os.ReadFile(filepath.Join(configDir, "active-mobile-activities"))
+	if err != nil {
+		return false
+	}
+	count, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+	return err == nil && count > 0
+}
+
 func (s *Server) applyDeviceChange(ctx context.Context, oldValues, newValues dashboardruntime.Values) (applyOutcome, error) {
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
 	if s.runtimeOwned {
-		if !runtimeOperational(filepath.Dir(s.cfg.Path())) && s.launcherSocket == "" {
+		if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
+			if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+				if err := s.applyRuntimeOwnedConfigInOperation(ctx, diff, map[string]string(newValues)); err != nil {
+					return applyOutcome{}, err
+				}
+			}
 			return applyOutcome{Deferred: true}, nil
 		}
 		if err := s.applyRuntimeOwnedConfigInOperation(ctx, diff, map[string]string(newValues)); err != nil {
@@ -1248,6 +1272,9 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 	if device.Type == "redroid" {
 		set("REDROID_DATA_DIR", dashboardruntime.DefaultRedroidDataDir)
 		set("REDROID_DATA_TAR", dashboardruntime.DefaultRedroidDataTar)
+		if strings.TrimSpace(device.Values["AVDCTL_SSH_TARGET"]) != "" {
+			set("AVDCTL_SSH_KNOWN_HOSTS_PATH", defaultSSHKnownHostsPath())
+		}
 	}
 }
 
@@ -1338,21 +1365,27 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	appliedCleanly := true
 	deferred := false
 	var reconcileErr error
-	if s.manager != nil {
+	if s.runtimeOwned {
+		if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
+			appliedCleanly = false
+			deferred = true
+			if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+				if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newSnapshot); err != nil {
+					reconcileErr = err
+					deferred = false
+				}
+			}
+		} else if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newSnapshot); err != nil {
+			appliedCleanly = false
+			reconcileErr = err
+		}
+	} else if s.manager != nil {
 		if outcome, err := s.applySavedConfig(r.Context(), diff, newSnapshot); err != nil {
 			appliedCleanly = false
 			reconcileErr = err
 		} else if !outcome.Applied {
 			appliedCleanly = false
 			deferred = outcome.Deferred
-		}
-	} else if s.runtimeOwned && len(diff.ChangedKeys) > 0 {
-		if !runtimeOperational(filepath.Dir(s.cfg.Path())) && s.launcherSocket == "" {
-			appliedCleanly = false
-			deferred = true
-		} else if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newSnapshot); err != nil {
-			appliedCleanly = false
-			reconcileErr = err
 		}
 	} else {
 	}
@@ -1621,7 +1654,13 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 	for index := 1; index <= count; index++ {
 		prefix := fmt.Sprintf("SETUP_DEVICE_%d_", index)
 		value := func(field string) string {
-			return strings.TrimSpace(r.PostForm.Get(prefix + field))
+			candidates := r.PostForm[prefix+field]
+			for i := len(candidates) - 1; i >= 0; i-- {
+				if value := strings.TrimSpace(candidates[i]); value != "" {
+					return value
+				}
+			}
+			return ""
 		}
 		name := value("NAME")
 		if name == "" {
@@ -1661,7 +1700,7 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 		if device.WiFiPort != "" {
 			device.Values["WIFI_PORT"] = device.WiFiPort
 		}
-		for _, field := range []string{"BASE_NAME", "ANDROID_KEYS_DIR", "GOLDEN_PATH", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR", "REDROID_DATA_TAR", "IOS_UDID"} {
+		for _, field := range []string{"BASE_NAME", "ANDROID_KEYS_DIR", "GOLDEN_PATH", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "REDROID_DATA_DIR", "REDROID_DATA_TAR", "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD", "IOS_UDID"} {
 			if fieldValue := value(field); fieldValue != "" {
 				device.Values[field] = fieldValue
 			}
@@ -2019,6 +2058,17 @@ func (s *Server) finishConfigReconcileRecovery(ctx context.Context, values map[s
 		message := "Configuration reconciliation failed: " + err.Error()
 		s.setStartupState(StartupNeedsAttention, message)
 		return errors.New(message)
+	}
+	if !runtimeOperational(configDir) {
+		// A completed launcher operation does not mean the execution runtime is
+		// running. Keep reconciliation pending until an explicit Start registers
+		// and starts the current persisted configuration.
+		if err := clearConfigOperation(configDir); err != nil {
+			s.setStartupState(StartupNeedsAttention, "Configuration topology applied, but operation state could not be cleared: "+err.Error())
+			return err
+		}
+		s.setStartupState(StartupReady, "Configuration saved. Runner is stopped; start Runner to complete reconciliation.")
+		return nil
 	}
 	if runtimeOperational(configDir) {
 		if err := s.runtimeLifecycle(cloneStringMap(values)).RegisterRunning(ctx); err != nil {

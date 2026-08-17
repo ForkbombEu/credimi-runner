@@ -556,3 +556,27 @@ func TestLoadAndWriteRejectUnsafePaths(t *testing.T) {
 		t.Fatalf("empty error=%v", err)
 	}
 }
+
+func TestParseADBPort(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  int
+		valid bool
+	}{
+		{"", 5555, true}, {"5555", 5555, true}, {"1", 1, true}, {"65535", 65535, true},
+		{"0", 0, false}, {"65536", 0, false}, {"-1", 0, false}, {"abc", 0, false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			got, err := ParseADBPort(tc.value)
+			if tc.valid {
+				if err != nil || got != tc.want {
+					t.Fatalf("ParseADBPort(%q) = %d, %v", tc.value, got, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ParseADBPort(%q) accepted %d", tc.value, got)
+			}
+		})
+	}
+}

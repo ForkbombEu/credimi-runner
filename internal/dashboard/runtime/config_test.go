@@ -303,6 +303,26 @@ func TestTypedCompatibilityConverterRoundTripsCanonicalCases(t *testing.T) {
 	}
 }
 
+func TestTypedConfigFromValuesRejectsMalformedRedroidPort(t *testing.T) {
+	values := Values{
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_URL":                 "https://credimi.example",
+		"CREDIMI_USER_API_KEY":        "key",
+		"CREDIMI_DEVICE_COUNT":        "1",
+		"CREDIMI_DEVICE_1_ID":         "acme/runner/redroid",
+		"CREDIMI_DEVICE_1_NAME":       "redroid",
+		"CREDIMI_DEVICE_1_TYPE":       "redroid",
+		"CREDIMI_DEVICE_1_MODE":       "redroid",
+		"CREDIMI_DEVICE_1_WIFI_IP":    "192.0.2.40",
+		"CREDIMI_DEVICE_1_WIFI_PORT":  "not-a-port",
+	}
+	if _, err := TypedConfigFromValues(values); err == nil {
+		t.Fatal("malformed Redroid port was accepted")
+	}
+}
+
 func TestRedroidAVDCTLSettingsSurviveTOMLReload(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testTOMLConfig(dir)

@@ -8,9 +8,6 @@
   const TYPE_DEFAULTS = {
     baseName: 'credimi',
     goldenPath: '/avd-golden/credimi-golden',
-    wifiPort: '5555',
-    redroidDataDir: '/home/credimi/redroid-data',
-    redroidDataTar: '/home/credimi/redroid-data.tar',
   };
   const TYPE_PREVIEW_KEYS = [
     'ANDROID_KEYS_DIR',
@@ -1078,6 +1075,11 @@
     HOST_AVD_GOLDEN_PATH: 'HOST_AVD_GOLDEN_PATH',
     REDROID_DATA_DIR: 'REDROID_DATA_DIR',
     REDROID_DATA_TAR: 'REDROID_DATA_TAR',
+    AVDCTL_SSH_TARGET: 'AVDCTL_SSH_TARGET',
+    AVDCTL_SSH_PASSWORD: 'AVDCTL_SSH_PASSWORD',
+    AVDCTL_SSH_KNOWN_HOSTS_PATH: 'AVDCTL_SSH_KNOWN_HOSTS_PATH',
+    AVDCTL_SUDO: 'AVDCTL_SUDO',
+    AVDCTL_SUDO_PASSWORD: 'AVDCTL_SUDO_PASSWORD',
     IOS_UDID: 'IOS_UDID',
   };
   const setupDeviceField = (root, name) => {
@@ -1388,6 +1390,9 @@
   };
   const applyRunnerTypeDefaults = (root, type) => {
     const derived = deriveHomeDefaults(root);
+    const wifiPort = root.dataset.defaultWifiPort || '';
+    const redroidDataDir = root.dataset.defaultRedroidDataDir || '';
+    const redroidDataTar = root.dataset.defaultRedroidDataTar || '';
     switch (type) {
       case 'android_emulator':
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'emulator');
@@ -1401,11 +1406,6 @@
         setFieldValue(root, 'GOLDEN_PATH', TYPE_DEFAULTS.goldenPath);
         setFieldValue(root, 'REDROID_DATA_DIR', '');
         setFieldValue(root, 'REDROID_DATA_TAR', '');
-        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
-        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
-        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-        setFieldValue(root, 'AVDCTL_SUDO', '');
-        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
       case 'ios_simulator':
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'simulator');
@@ -1418,40 +1418,30 @@
         setFieldValue(root, 'GOLDEN_PATH', '');
         setFieldValue(root, 'REDROID_DATA_DIR', '');
         setFieldValue(root, 'REDROID_DATA_TAR', '');
-        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
-        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
-        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-        setFieldValue(root, 'AVDCTL_SUDO', '');
-        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
       case 'redroid':
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'no_device');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
-        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', TYPE_DEFAULTS.wifiPort);
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
         setFieldValue(root, 'BASE_NAME', '');
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
         setFieldValue(root, 'GOLDEN_PATH', '');
-        setFieldValue(root, 'REDROID_DATA_DIR', TYPE_DEFAULTS.redroidDataDir);
-        setFieldValue(root, 'REDROID_DATA_TAR', TYPE_DEFAULTS.redroidDataTar);
+        setFieldValue(root, 'REDROID_DATA_DIR', redroidDataDir);
+        setFieldValue(root, 'REDROID_DATA_TAR', redroidDataTar);
         break;
       default:
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'usb');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
-        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', TYPE_DEFAULTS.wifiPort);
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
         setFieldValue(root, 'BASE_NAME', '');
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
         setFieldValue(root, 'GOLDEN_PATH', '');
         setFieldValue(root, 'REDROID_DATA_DIR', '');
         setFieldValue(root, 'REDROID_DATA_TAR', '');
-        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
-        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
-        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-        setFieldValue(root, 'AVDCTL_SUDO', '');
-        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
     }
   };
@@ -1701,7 +1691,7 @@
   initDeviceFields();
 
   const setToggleValue = (root, name, on) => {
-    const checkbox = root.querySelector(`input[type="checkbox"][name="${name}"]`);
+    const checkbox = root.querySelector(`input[type="checkbox"][name="${name}"], input[type="checkbox"][data-setup-device-field="${name}"]`);
     if (checkbox) checkbox.checked = on;
     const button = root.querySelector(`[data-toggle="${name}"]`);
     if (button) {
@@ -1712,11 +1702,14 @@
   const syncAVDCTLSSH = (root = document, clearDisabled = false) => {
     root.querySelectorAll('[data-avdctl-ssh-control]').forEach((control) => {
       const enabled = control.querySelector('[data-avdctl-ssh-enabled]');
-      const form = control.closest('form') || root;
-      const fields = control.nextElementSibling;
+      const form = control.closest('[data-device-provision]') || control.closest('form') || root;
+      const fields = control.parentElement && control.parentElement.querySelector('[data-avdctl-ssh-fields]');
       const on = fieldValue(form, 'CREDIMI_RUNNER_TYPE') === 'redroid' && !!(enabled && enabled.checked);
-      if (fields && fields.matches('[data-avdctl-ssh-fields]')) fields.hidden = !on;
-      const target = form.querySelector('[name="AVDCTL_SSH_TARGET"]');
+      if (fields && fields.matches('[data-avdctl-ssh-fields]')) {
+        fields.hidden = !on;
+        fields.querySelectorAll('input, select, textarea').forEach((input) => { input.disabled = !on; });
+      }
+      const target = form.querySelector('[name="AVDCTL_SSH_TARGET"], [data-setup-device-field="AVDCTL_SSH_TARGET"]');
       if (target) target.required = on;
       if (on) {
         if (!fieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH')) {
@@ -1729,6 +1722,13 @@
       setFieldValue(form, 'AVDCTL_SSH_PASSWORD', '');
       setFieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
       setToggleValue(form, 'AVDCTL_SUDO', false);
+      const sudoEnabled = form.querySelector('[data-avdctl-sudo-enabled]');
+      if (sudoEnabled) sudoEnabled.checked = false;
+      const sudoToggle = form.querySelector('[data-avdctl-sudo-toggle]');
+      if (sudoToggle) {
+        sudoToggle.classList.remove('on');
+        sudoToggle.setAttribute('aria-checked', 'false');
+      }
       setFieldValue(form, 'AVDCTL_SUDO_PASSWORD', '');
     });
   };
@@ -1742,6 +1742,18 @@
     toggle.classList.toggle('on', enabled.checked);
     toggle.setAttribute('aria-checked', enabled.checked ? 'true' : 'false');
     syncAVDCTLSSH(control.parentElement || document, !enabled.checked);
+    markDirty();
+  });
+  document.addEventListener('click', (e) => {
+    const toggle = e.target.closest('[data-avdctl-sudo-toggle]');
+    if (!toggle) return;
+    const root = toggle.closest('[data-device-provision]') || toggle.closest('form') || document;
+    const enabled = root.querySelector('[data-avdctl-sudo-enabled]');
+    if (!enabled) return;
+    enabled.checked = !enabled.checked;
+    setFieldValue(root, 'AVDCTL_SUDO', enabled.checked ? 'true' : 'false');
+    toggle.classList.toggle('on', enabled.checked);
+    toggle.setAttribute('aria-checked', enabled.checked ? 'true' : 'false');
     markDirty();
   });
   syncAVDCTLSSH();

@@ -400,12 +400,22 @@ func (d PageData) FieldWithLabel(key, label string) FieldVM {
 }
 
 func (d PageData) DefaultSSHKnownHostsPath() string {
+	return defaultSSHKnownHostsPath()
+}
+
+func defaultSSHKnownHostsPath() string {
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".ssh", "known_hosts")
 }
+
+func (d PageData) DefaultWiFiPort() string { return dashboardruntime.DefaultWiFiPort }
+
+func (d PageData) DefaultRedroidDataDir() string { return dashboardruntime.DefaultRedroidDataDir }
+
+func (d PageData) DefaultRedroidDataTar() string { return dashboardruntime.DefaultRedroidDataTar }
 
 func (d PageData) SetupSteps() []SetupStep {
 	return []SetupStep{

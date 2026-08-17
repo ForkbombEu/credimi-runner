@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
@@ -31,6 +32,40 @@ func TestConnectConfiguredWiFiDevices(t *testing.T) {
 	want := []string{"192.0.2.10:5555", "[2001:db8::10]:5560"}
 	if strings.Join(endpoints, ",") != strings.Join(want, ",") {
 		t.Fatalf("adb connect endpoints = %v, want %v", endpoints, want)
+	}
+}
+
+func TestConnectConfiguredWiFiDevicesBoundsConnection(t *testing.T) {
+	original := adbConnect
+	t.Cleanup(func() { adbConnect = original })
+	adbConnect = func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	cfg := runnerconfig.Config{Devices: []runnerconfig.DeviceConfig{{ID: "runner/wifi", Enabled: true, Type: runnerconfig.DeviceAndroidPhysical, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.30", WiFiPort: "5555"}}}}
+	start := time.Now()
+	err := ConnectConfiguredWiFiDevices(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("timeout error = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > adbConnectTimeout+time.Second {
+		t.Fatalf("connect took %s, want bounded by %s", elapsed, adbConnectTimeout)
+	}
+}
+
+func TestConnectConfiguredWiFiDevicesHonorsParentCancellation(t *testing.T) {
+	original := adbConnect
+	t.Cleanup(func() { adbConnect = original })
+	adbConnect = func(ctx context.Context, _ string) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cfg := runnerconfig.Config{Devices: []runnerconfig.DeviceConfig{{ID: "runner/wifi", Enabled: true, Type: runnerconfig.DeviceAndroidPhysical, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.31", WiFiPort: "5555"}}}}
+	err := ConnectConfiguredWiFiDevices(ctx, cfg)
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("cancellation error = %v", err)
 	}
 }
 

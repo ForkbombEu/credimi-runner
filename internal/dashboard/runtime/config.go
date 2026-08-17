@@ -286,9 +286,9 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 			if port == "" {
 				port = device.Values["WIFI_PORT"]
 			}
-			adbPort, _ := strconv.Atoi(port)
-			if adbPort == 0 {
-				adbPort = 5555
+			adbPort, err := runnerconfig.ParseADBPort(port)
+			if err != nil {
+				return cfg, fmt.Errorf("device %d: %w", device.Index, err)
 			}
 			sudo, err := parseBoolean(device.Values["AVDCTL_SUDO"], false, "AVDCTL_SUDO")
 			if err != nil {

@@ -603,6 +603,9 @@ func TestRuntimeOwnedConfigRecoveryCompletesWithoutStartingStoppedRuntime(t *tes
 	}
 	defer control.Close()
 	s.launcherSocket = socket
+	if err := markReconcilePending(configDir); err != nil {
+		t.Fatal(err)
+	}
 	handle, err := launcher.RequestReconcileAsync(context.Background(), socket)
 	if err != nil {
 		t.Fatal(err)
@@ -612,6 +615,9 @@ func TestRuntimeOwnedConfigRecoveryCompletesWithoutStartingStoppedRuntime(t *tes
 	}
 	if fileExists(configOperationPath(configDir)) {
 		t.Fatal("config operation handoff was not cleared")
+	}
+	if !fileExists(reconcilePendingPath(configDir)) {
+		t.Fatal("stopped recovery cleared pending reconciliation")
 	}
 	if got := readExecutionState(configDir); got != executionStateStopped {
 		t.Fatalf("runtime state changed during stopped recovery: %q", got)

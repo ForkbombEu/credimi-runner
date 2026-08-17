@@ -268,6 +268,21 @@ func validPort(value string) bool {
 	return err == nil && port >= 1 && port <= 65535
 }
 
+// ParseADBPort parses a device ADB port. An omitted port uses the canonical
+// ADB default; malformed or out-of-range values are configuration errors.
+func ParseADBPort(value string) (int, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		port, _ := strconv.Atoi(DefaultWiFiPort)
+		return port, nil
+	}
+	port, err := strconv.Atoi(value)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, errorsf("redroid adb_port must be a number between 1 and 65535")
+	}
+	return port, nil
+}
+
 func validateAndroid(cfg AndroidConfig) error {
 	if err := required("android.runner_image", cfg.RunnerImage); err != nil {
 		return err
