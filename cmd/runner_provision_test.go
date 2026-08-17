@@ -1127,6 +1127,11 @@ func TestRunInternalRuntimePreparesTypedConfigBeforeStartingServer(t *testing.T)
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
 		t.Fatal(err)
 	}
+	adbBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adbBin, "adb"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", adbBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("ANDROID_SDK_ROOT", filepath.Join(dir, "sdk"))
 	dashboardConfigDir, configPath = dir, ""
 	prepared := false
