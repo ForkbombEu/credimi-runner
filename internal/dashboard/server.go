@@ -1070,6 +1070,38 @@ func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, p
 					}
 				}
 			}
+			if namePosted && strings.TrimSpace(name) != strings.TrimSpace(existing.Name) {
+				key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
+				if key == "" {
+					key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+				}
+				if key == "" {
+					http.Error(w, "a Credimi API key is required to rename a device", http.StatusBadGateway)
+					return
+				}
+				preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
+				if err != nil {
+					http.Error(w, "device rename ID resolution failed: "+err.Error(), http.StatusBadGateway)
+					return
+				}
+				newID := strings.TrimPrefix(strings.TrimSpace(preview.DeviceID), "/")
+				if preview.Conflict {
+					switch conflictAction {
+					case "create":
+						// Keep the newly previewed identity and reconcile the old one after registration.
+					case "update":
+						newID = strings.TrimPrefix(strings.TrimSpace(preview.ExistingDeviceID), "/")
+					default:
+						http.Error(w, "device rename conflicts with an existing Credimi device; choose create or update explicitly", http.StatusConflict)
+						return
+					}
+				}
+				if newID == "" {
+					http.Error(w, "device rename did not return a canonical device ID", http.StatusBadGateway)
+					return
+				}
+				device.ID = newID
+			}
 			normalizeDeviceAddress()
 			config.Devices[index] = device
 			created = false

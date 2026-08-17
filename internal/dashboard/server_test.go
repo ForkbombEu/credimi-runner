@@ -3106,6 +3106,14 @@ func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
 }
 
 func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected Credimi path: %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/renamed-one"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
 	s := newTestServer(t)
 	dir := filepath.Dir(s.cfg.Path())
 	store, err := dashboardruntime.LoadStore(dir)
@@ -3135,7 +3143,7 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Devices[0].Name != "Renamed One" || config.Devices[0].Mode != "wifi" || config.Devices[0].Serial != "10.0.0.1:5555" || config.Devices[1].Name != "Two" || config.Devices[1].Serial != "10.0.0.2:5555" {
+	if config.Devices[0].ID != "acme/runner/renamed-one" || config.Devices[0].Name != "Renamed One" || config.Devices[0].Mode != "wifi" || config.Devices[0].Serial != "10.0.0.1:5555" || config.Devices[1].Name != "Two" || config.Devices[1].Serial != "10.0.0.2:5555" {
 		t.Fatalf("devices = %#v", config.Devices)
 	}
 
@@ -3150,6 +3158,49 @@ func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
 	failed, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
 	if err != nil || failed.Phase != controller.PhaseFailed || !strings.Contains(failed.Error, "device not found") {
 		t.Fatalf("missing update operation = %#v err=%v", failed, err)
+	}
+}
+
+func TestServerSaveDevicesConfigRenameConflictRequiresExplicitChoice(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/old", Name: "Old", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected Credimi path: %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/new","existing_device_id":"acme/runner/other","conflict":true}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	form := url.Values{"device_id": {"acme/runner/old"}, "name": {"New"}, "type": {"android_phone"}, "mode": {"usb"}, "serial": {"usb-1"}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfigSync(recorder, request, nil)
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "choose create or update explicitly") {
+		t.Fatalf("rename conflict = %d %s", recorder.Code, recorder.Body.String())
+	}
+	updated, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := updated.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Devices[0].ID != "acme/runner/old" || current.Devices[0].Name != "Old" {
+		t.Fatalf("conflicting rename changed local identity = %#v", current.Devices[0])
 	}
 }
 
@@ -3202,6 +3253,14 @@ func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 }
 
 func TestServerSaveDevicesConfigUsesCanonicalAliasesAndClearsFields(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected Credimi path: %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/usb-renamed"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
 	s := newTestServer(t)
 	dir := filepath.Dir(s.cfg.Path())
 	store, err := dashboardruntime.LoadStore(dir)
@@ -3240,7 +3299,7 @@ func TestServerSaveDevicesConfigUsesCanonicalAliasesAndClearsFields(t *testing.T
 		"CREDIMI_RUNNER_WIFI_PORT":   {"5555"},
 	})
 	post(url.Values{
-		"CREDIMI_DEVICE_ID":          {"acme/runner/usb"},
+		"CREDIMI_DEVICE_ID":          {"acme/runner/usb-renamed"},
 		"CREDIMI_RUNNER_TYPE":        {"android_phone"},
 		"CREDIMI_RUNNER_DEVICE_MODE": {"usb"},
 		"CREDIMI_RUNNER_SERIAL":      {"usb-new"},
