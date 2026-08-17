@@ -115,6 +115,7 @@ const startupLogRetain = 2000
 
 const setupOperationFile = "setup-operation"
 const configOperationFile = "config-operation"
+const reconcilePendingFile = "reconcile-pending"
 const capabilityProvisionTimeout = 10 * time.Minute
 
 // setup-operation is a replacement handoff owned by the setup recovery flow.
@@ -248,6 +249,9 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 			Phase: StartupIdle,
 		},
 		startupProgress: progress,
+	}
+	if fileExists(reconcilePendingPath(filepath.Dir(cfg.Path()))) {
+		srv.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
 	}
 	if srv.operations == nil {
 		srv.operations = controller.NewCoordinator(parent)
@@ -451,10 +455,16 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
 		return err
 	}
+	if err := markReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		return err
+	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
 		return fmt.Errorf("device state was saved, but runtime reconciliation failed: %w", err)
+	}
+	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		return err
 	}
 	return nil
 }
@@ -505,10 +515,16 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
 		return err
 	}
+	if err := markReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		return err
+	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
 		return fmt.Errorf("device removal was saved, but runtime reconciliation failed: %w", err)
+	}
+	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		return err
 	}
 	return nil
 }
@@ -755,6 +771,28 @@ func clearConfigOperation(configDir string) error {
 	}
 	if err != nil {
 		return fmt.Errorf("remove config operation state: %w", err)
+	}
+	return nil
+}
+
+func reconcilePendingPath(configDir string) string {
+	return filepath.Join(configDir, reconcilePendingFile)
+}
+
+func markReconcilePending(configDir string) error {
+	if err := os.WriteFile(reconcilePendingPath(configDir), []byte("pending\n"), 0o600); err != nil {
+		return fmt.Errorf("write reconciliation pending state: %w", err)
+	}
+	return nil
+}
+
+func clearReconcilePending(configDir string) error {
+	err := os.Remove(reconcilePendingPath(configDir))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("remove reconciliation pending state: %w", err)
 	}
 	return nil
 }
@@ -1104,6 +1142,9 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
 		return err
 	}
+	if err := markReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		return err
+	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
@@ -1131,6 +1172,9 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 		if _, err := s.applySavedConfig(r.Context(), diff, map[string]string(newValues)); err != nil {
 			return fmt.Errorf("device configuration was saved, but applying it to the running runner failed: %w", err)
 		}
+	}
+	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1254,6 +1298,10 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 		s.mutationMu.Unlock()
 		return fmt.Errorf("configuration validation failed: %v", errs)
 	}
+	if err := markReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		s.mutationMu.Unlock()
+		return err
+	}
 	s.mutationMu.Unlock()
 	newSnapshot := s.cfg.Snapshot()
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
@@ -1290,6 +1338,9 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	s.mu.Unlock()
 	if !appliedCleanly {
 		return fmt.Errorf("configuration was saved but reconciliation failed: %w", reconcileErr)
+	}
+	if err := clearReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1885,6 +1936,10 @@ func (s *Server) startExistingRuntimeJob(values map[string]string) {
 			s.setStartupState(StartupNeedsAttention, "Runner registered, but execution runtime could not start: "+err.Error())
 			return err
 		}
+		if err := clearReconcilePending(configDir); err != nil {
+			s.setStartupState(StartupNeedsAttention, "Runner started, but reconciliation state could not be cleared: "+err.Error())
+			return err
+		}
 		s.mu.Lock()
 		s.pendingDiff = dashboardruntime.ConfigDiff{}
 		s.mu.Unlock()
@@ -1944,6 +1999,10 @@ func (s *Server) finishConfigReconcileRecovery(ctx context.Context, values map[s
 	}
 	if err := clearConfigOperation(configDir); err != nil {
 		s.setStartupState(StartupNeedsAttention, "Configuration applied, but operation state could not be cleared: "+err.Error())
+		return err
+	}
+	if err := clearReconcilePending(configDir); err != nil {
+		s.setStartupState(StartupNeedsAttention, "Configuration applied, but reconciliation state could not be cleared: "+err.Error())
 		return err
 	}
 	s.mu.Lock()
@@ -2346,7 +2405,10 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 					if err := s.runtimeLifecycle(values).RegisterRunning(ctx); err != nil {
 						return err
 					}
-					return s.startRegisteredRuntime(ctx, "registration-ready")
+					if err := s.startRegisteredRuntime(ctx, "registration-ready"); err != nil {
+						return err
+					}
+					return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 				}
 				return nil
 			}
@@ -2359,14 +2421,20 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 			if err := lifecycle.Start(ctx, progressFn); err != nil {
 				return err
 			}
-			return s.startRegisteredRuntime(ctx, "registration-ready")
+			if err := s.startRegisteredRuntime(ctx, "registration-ready"); err != nil {
+				return err
+			}
+			return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 		case controller.OperationRuntimeStop:
 			return lifecycle.Stop(ctx)
 		case controller.OperationRuntimeRestart:
 			if err := lifecycle.Restart(ctx, progressFn); err != nil {
 				return err
 			}
-			return s.startRegisteredRuntime(ctx, "registration-ready")
+			if err := s.startRegisteredRuntime(ctx, "registration-ready"); err != nil {
+				return err
+			}
+			return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 		default:
 			return fmt.Errorf("unsupported runtime operation %q", kind)
 		}

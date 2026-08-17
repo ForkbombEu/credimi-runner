@@ -1788,6 +1788,22 @@ func TestSetupConfigMutationSurfacesWriteFailure(t *testing.T) {
 	}
 }
 
+func TestReconcilePendingMarkerSurvivesUntilCleared(t *testing.T) {
+	dir := t.TempDir()
+	if err := markReconcilePending(dir); err != nil {
+		t.Fatal(err)
+	}
+	if !fileExists(reconcilePendingPath(dir)) {
+		t.Fatal("reconciliation pending marker was not persisted")
+	}
+	if err := clearReconcilePending(dir); err != nil {
+		t.Fatal(err)
+	}
+	if fileExists(reconcilePendingPath(dir)) {
+		t.Fatal("reconciliation pending marker was not cleared")
+	}
+}
+
 func TestSetupDevicesParsesTwoUSBDevicesInCardOrder(t *testing.T) {
 	var previewCount int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
