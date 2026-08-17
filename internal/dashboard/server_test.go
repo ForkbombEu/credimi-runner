@@ -2018,6 +2018,7 @@ func TestServerSaveOverviewPublishedConfig(t *testing.T) {
 	defer func() { http.DefaultTransport = transport }()
 
 	s := newTestServer(t)
+	s.manager.(*fakeManager).status.RunnerRunning = true
 	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"

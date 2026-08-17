@@ -19,9 +19,9 @@ const (
 )
 
 type DownloadProgress struct {
-	Phase string
-	Bytes int64
-	Total int64
+	Phase string `json:"phase"`
+	Bytes int64  `json:"bytes"`
+	Total int64  `json:"total"`
 	Error string `json:"error,omitempty"`
 }
 
