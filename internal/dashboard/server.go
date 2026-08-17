@@ -2954,6 +2954,11 @@ func (s *Server) resolveConfigIdentity(ctx context.Context, current, incoming ma
 	if currentID == "" {
 		return nil
 	}
+	for _, key := range []string{"CREDIMI_RUNNER_ID", "CREDIMI_RUNNER_NAME", "CREDIMI_RUNNER_ORGANIZATION"} {
+		if value, ok := incoming[key]; ok && strings.TrimSpace(value) != strings.TrimSpace(current[key]) {
+			return fmt.Errorf("%s cannot be changed after runner setup", key)
+		}
+	}
 	incoming["CREDIMI_RUNNER_ID"] = currentID
 
 	currentName := strings.TrimSpace(current["CREDIMI_RUNNER_NAME"])

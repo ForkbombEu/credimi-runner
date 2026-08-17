@@ -1619,7 +1619,7 @@ func TestServerConfigDiffManualPublicURLOnlyUpdatesCredimi(t *testing.T) {
 	}
 }
 
-func TestServerConfigDiffIgnoresDirectRunnerIDChange(t *testing.T) {
+func TestServerConfigDiffRejectsDirectRunnerIDChange(t *testing.T) {
 	s := newTestServer(t)
 	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
@@ -1640,29 +1640,15 @@ func TestServerConfigDiffIgnoresDirectRunnerIDChange(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("configDiff direct ID change = %d %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "saved_only") || !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
-		t.Fatalf("direct runner ID edits should be ignored: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "CREDIMI_RUNNER_ID cannot be changed after runner setup") {
+		t.Fatalf("direct runner ID edit should be rejected clearly: %s", rec.Body.String())
 	}
 }
 
-func TestServerConfigDiffNameChangeDerivesRunnerID(t *testing.T) {
-	transport := http.DefaultTransport
-	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/mobile-runner/preview-id" {
-			return nil, errors.New("unexpected path: " + req.URL.Path)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"organization":"acme","runner_id":"acme/renamed-runner"}`)),
-		}, nil
-	})
-	defer func() { http.DefaultTransport = transport }()
-
+func TestServerConfigDiffRejectsNameChange(t *testing.T) {
 	s := newTestServer(t)
 	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
@@ -1683,11 +1669,11 @@ func TestServerConfigDiffNameChangeDerivesRunnerID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("configDiff name change = %d %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "restart_required") || !strings.Contains(rec.Body.String(), "credimi_update_required") || !strings.Contains(rec.Body.String(), `"confirm_required":true`) {
-		t.Fatalf("name change should require restart and Credimi update: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "CREDIMI_RUNNER_NAME cannot be changed after runner setup") {
+		t.Fatalf("name change should be rejected clearly: %s", rec.Body.String())
 	}
 }
 
@@ -1716,7 +1702,7 @@ func TestServerConfigDiffRejectsUserScopedOrganizationChange(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("configDiff user org change = %d %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "organization cannot be changed for user-scoped runners") {
+	if !strings.Contains(rec.Body.String(), "CREDIMI_RUNNER_ORGANIZATION cannot be changed after runner setup") {
 		t.Fatalf("configDiff user org change should explain rejection: %s", rec.Body.String())
 	}
 }
@@ -2761,30 +2747,7 @@ func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
 	}
 }
 
-func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T) {
-	transport := http.DefaultTransport
-	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Path {
-		case "/api/mobile-runner/preview-id":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"organization":"acme","runner_id":"acme/renamed-runner"}`)),
-			}, nil
-		case "/api/mobile-runner":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{}`)),
-			}, nil
-		default:
-			return nil, errors.New("unexpected path: " + req.URL.Path)
-		}
-	})
-	defer func() { http.DefaultTransport = transport }()
-
+func TestServerSaveConfigRejectsEstablishedIdentityChange(t *testing.T) {
 	s := newTestServer(t)
 	fm := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true}}
 	s.manager = fm
@@ -2810,15 +2773,17 @@ func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveConfig(rec, req)
-	waitForQueuedOperation(t, s, rec)
-	if got := s.cfg.Get("CREDIMI_RUNNER_ID"); got != "acme/renamed-runner" {
-		t.Fatalf("stored runner ID = %q", got)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("saveConfig identity change = %d %s", rec.Code, rec.Body.String())
 	}
-	if got := s.cfg.Get("CREDIMI_RUNNER_NAME"); got != "Renamed Runner" {
-		t.Fatalf("stored runner name = %q", got)
+	if !strings.Contains(rec.Body.String(), "CREDIMI_RUNNER_ID cannot be changed after runner setup") {
+		t.Fatalf("saveConfig identity change should be rejected clearly: %s", rec.Body.String())
 	}
-	if fm.stopCalls != 1 || fm.startCalls != 1 {
-		t.Fatalf("saveConfig name change lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
+	if s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" || s.cfg.Get("CREDIMI_RUNNER_NAME") != "runner" {
+		t.Fatal("rejected identity change modified the stored configuration")
+	}
+	if fm.stopCalls != 0 || fm.startCalls != 0 {
+		t.Fatalf("rejected identity change triggered lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
 	}
 }
 
