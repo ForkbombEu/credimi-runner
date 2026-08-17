@@ -40,7 +40,7 @@ var deviceEnvKey = regexp.MustCompile(`^CREDIMI_DEVICE_([1-9][0-9]*)_([A-Z][A-Z0
 var DeviceKeys = map[string]struct{}{
 	"ID": {}, "NAME": {}, "DESCRIPTION": {}, "TYPE": {}, "MODE": {}, "ENABLED": {}, "SERIAL": {}, "WIFI_IP": {}, "WIFI_PORT": {},
 	"BASE_NAME": {}, "GOLDEN_PATH": {}, "HOST_AVD_HOME_PATH": {}, "HOST_AVD_GOLDEN_PATH": {},
-	"ANDROID_KEYS_DIR": {}, "REDROID_DATA_DIR": {}, "REDROID_DATA_TAR": {},
+	"ANDROID_KEYS_DIR": {}, "REDROID_IMAGE": {}, "REDROID_DATA_DIR": {}, "REDROID_DATA_TAR": {},
 	"AVD_NAME": {}, "AVDCTL_SSH_TARGET": {}, "AVDCTL_SSH_PASSWORD": {}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {}, "AVDCTL_SUDO": {}, "AVDCTL_SUDO_PASSWORD": {},
 	"WORK_DIR": {}, "PORT": {}, "CONTAINER_NAME": {}, "IOS_UDID": {},
 }

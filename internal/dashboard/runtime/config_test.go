@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
@@ -259,13 +260,22 @@ func TestTypedCompatibilityConverterRoundTripsCanonicalCases(t *testing.T) {
 			}
 		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_BASE_NAME": "credimi-base", "CREDIMI_DEVICE_1_AVD_NAME": "credimi-base"}},
 		{name: "redroid", cfg: func(cfg config.Config) config.Config {
-			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "192.0.2.30", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
+			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "192.0.2.30", Image: "redroid:custom", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5556, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHPassword: "ssh-secret", AVDCTLSSHKnownHostsPath: "/known_hosts", AVDCTLSudo: true, AVDCTLSudoPassword: "sudo-secret"}}}
 			return cfg
 		}, check: func(t *testing.T, cfg config.Config) {
-			if redroid := cfg.Devices[0].Redroid; redroid.Host != "192.0.2.30" || redroid.ADBPort != 5555 {
+			want := &config.RedroidConfig{Host: "192.0.2.30", Image: "redroid:custom", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5556, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHPassword: "ssh-secret", AVDCTLSSHKnownHostsPath: "/known_hosts", AVDCTLSudo: true, AVDCTLSudoPassword: "sudo-secret"}
+			if redroid := cfg.Devices[0].Redroid; !reflect.DeepEqual(redroid, want) {
 				t.Fatalf("redroid = %#v", redroid)
 			}
-		}, compatWant: map[string]string{"CREDIMI_DEVICE_1_SERIAL": "192.0.2.30:5555"}},
+		}, compatWant: map[string]string{
+			"CREDIMI_DEVICE_1_SERIAL":                      "192.0.2.30:5556",
+			"CREDIMI_DEVICE_1_REDROID_IMAGE":               "redroid:custom",
+			"CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET":           "root@redroid",
+			"CREDIMI_DEVICE_1_AVDCTL_SSH_PASSWORD":         "ssh-secret",
+			"CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH": "/known_hosts",
+			"CREDIMI_DEVICE_1_AVDCTL_SUDO":                 "true",
+			"CREDIMI_DEVICE_1_AVDCTL_SUDO_PASSWORD":        "sudo-secret",
+		}},
 		{name: "ios simulator", cfg: func(cfg config.Config) config.Config {
 			cfg.Devices = []config.DeviceConfig{{ID: "acme/runner/ios", Name: "iOS", Type: config.DeviceIOSSimulator, Enabled: true, IOSSimulator: &config.IOSSimulatorConfig{UDID: "ios-1"}}}
 			return cfg
@@ -289,6 +299,44 @@ func TestTypedCompatibilityConverterRoundTripsCanonicalCases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRedroidAVDCTLSettingsSurviveTOMLReload(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testTOMLConfig(dir)
+	cfg.Devices = []config.DeviceConfig{{
+		ID: "acme/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true,
+		Redroid: &config.RedroidConfig{
+			Host: "192.0.2.40", Image: "redroid:custom", DataDir: "/srv/redroid", DataArchive: "/srv/redroid.tar", ADBPort: 5566,
+			AVDCTLSSHTarget: "root@redroid", AVDCTLSSHPassword: "ssh-secret", AVDCTLSSHKnownHostsPath: "/known_hosts", AVDCTLSudo: true, AVDCTLSudoPassword: "sudo-secret",
+		},
+	}}
+	path := filepath.Join(dir, "config.toml")
+	if err := config.WriteFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := TypedConfigFromValues(store.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.Devices[0].Redroid, cfg.Devices[0].Redroid) {
+		t.Fatalf("reloaded Redroid config = %#v, want %#v", got.Devices[0].Redroid, cfg.Devices[0].Redroid)
+	}
+}
+
+func TestRedroidAVDCTLSudoRejectsMalformedBoolean(t *testing.T) {
+	values := Values{
+		"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1",
+		"CREDIMI_DEVICE_1_ID": "acme/runner/redroid", "CREDIMI_DEVICE_1_TYPE": "redroid", "CREDIMI_DEVICE_1_MODE": "redroid",
+		"CREDIMI_DEVICE_1_WIFI_IP": "192.0.2.50", "CREDIMI_DEVICE_1_WIFI_PORT": "5555", "CREDIMI_DEVICE_1_AVDCTL_SUDO": "sometimes",
+	}
+	if _, err := TypedConfigFromValues(values); err == nil {
+		t.Fatal("malformed AVDCTL_SUDO accepted")
 	}
 }
 

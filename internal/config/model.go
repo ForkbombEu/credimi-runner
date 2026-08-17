@@ -139,11 +139,16 @@ type AndroidEmulatorConfig struct {
 }
 
 type RedroidConfig struct {
-	Host        string `toml:"host"`
-	Image       string `toml:"image"`
-	DataDir     string `toml:"data_dir"`
-	DataArchive string `toml:"data_archive"`
-	ADBPort     int    `toml:"adb_port"`
+	Host                    string `toml:"host"`
+	Image                   string `toml:"image"`
+	DataDir                 string `toml:"data_dir"`
+	DataArchive             string `toml:"data_archive"`
+	ADBPort                 int    `toml:"adb_port"`
+	AVDCTLSSHTarget         string `toml:"avdctl_ssh_target,omitempty"`
+	AVDCTLSSHPassword       string `toml:"avdctl_ssh_password,omitempty"`
+	AVDCTLSSHKnownHostsPath string `toml:"avdctl_ssh_known_hosts_path,omitempty"`
+	AVDCTLSudo              bool   `toml:"avdctl_sudo,omitempty"`
+	AVDCTLSudoPassword      string `toml:"avdctl_sudo_password,omitempty"`
 }
 
 type IOSSimulatorConfig struct {

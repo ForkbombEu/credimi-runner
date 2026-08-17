@@ -151,6 +151,14 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 			values[prefix+"WIFI_IP"] = device.Redroid.Host
 			values[prefix+"WIFI_PORT"] = strconv.Itoa(device.Redroid.ADBPort)
 			values[prefix+"SERIAL"] = AndroidWiFiSerial(device.Redroid.Host, strconv.Itoa(device.Redroid.ADBPort))
+			values[prefix+"REDROID_IMAGE"] = device.Redroid.Image
+			values[prefix+"REDROID_DATA_DIR"] = device.Redroid.DataDir
+			values[prefix+"REDROID_DATA_TAR"] = device.Redroid.DataArchive
+			values[prefix+"AVDCTL_SSH_TARGET"] = device.Redroid.AVDCTLSSHTarget
+			values[prefix+"AVDCTL_SSH_PASSWORD"] = device.Redroid.AVDCTLSSHPassword
+			values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"] = device.Redroid.AVDCTLSSHKnownHostsPath
+			values[prefix+"AVDCTL_SUDO"] = strconv.FormatBool(device.Redroid.AVDCTLSudo)
+			values[prefix+"AVDCTL_SUDO_PASSWORD"] = device.Redroid.AVDCTLSudoPassword
 		case runnerconfig.DeviceIOSSimulator:
 			values[prefix+"MODE"], values[prefix+"IOS_UDID"] = "no_device", device.IOSSimulator.UDID
 		}
@@ -239,7 +247,22 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 			if adbPort == 0 {
 				adbPort = 5555
 			}
-			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{Host: host, Image: "redroid:latest", DataDir: defaultIfEmpty(device.Values["REDROID_DATA_DIR"], "/var/lib/credimi-runner/redroid"), DataArchive: defaultIfEmpty(device.Values["REDROID_DATA_TAR"], "/var/lib/credimi-runner/redroid.tar"), ADBPort: adbPort}
+			sudo, err := parseBoolean(device.Values["AVDCTL_SUDO"], false, "AVDCTL_SUDO")
+			if err != nil {
+				return cfg, err
+			}
+			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{
+				Host:                    host,
+				Image:                   defaultIfEmpty(device.Values["REDROID_IMAGE"], "redroid:latest"),
+				DataDir:                 defaultIfEmpty(device.Values["REDROID_DATA_DIR"], "/var/lib/credimi-runner/redroid"),
+				DataArchive:             defaultIfEmpty(device.Values["REDROID_DATA_TAR"], "/var/lib/credimi-runner/redroid.tar"),
+				ADBPort:                 adbPort,
+				AVDCTLSSHTarget:         device.Values["AVDCTL_SSH_TARGET"],
+				AVDCTLSSHPassword:       device.Values["AVDCTL_SSH_PASSWORD"],
+				AVDCTLSSHKnownHostsPath: device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"],
+				AVDCTLSudo:              sudo,
+				AVDCTLSudoPassword:      device.Values["AVDCTL_SUDO_PASSWORD"],
+			}
 		case "ios_simulator":
 			entry.Type, entry.IOSSimulator = runnerconfig.DeviceIOSSimulator, &runnerconfig.IOSSimulatorConfig{UDID: device.Values["IOS_UDID"]}
 		default:
@@ -248,6 +271,18 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 		cfg.Devices = append(cfg.Devices, entry)
 	}
 	return cfg, nil
+}
+
+func parseBoolean(raw string, fallback bool, key string) (bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be boolean", key)
+	}
+	return parsed, nil
 }
 
 func AndroidWiFiSerial(ip, port string) string {
