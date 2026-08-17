@@ -47,16 +47,33 @@ type fakeManager struct {
 	restartErr       error
 	updateImageErr   error
 	logTail          int
+	startBlock       chan struct{}
+	startStarted     chan struct{}
 	upgradeBlock     chan struct{}
 }
 
-func (f *fakeManager) Start(context.Context) error {
+func (f *fakeManager) Start(ctx context.Context) error {
+	f.mu.Lock()
+	f.startCalls++
+	err := f.startErr
+	block := f.startBlock
+	started := f.startStarted
+	f.mu.Unlock()
+	if started != nil {
+		close(started)
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.startCalls++
-	if f.startErr != nil {
-		return f.startErr
-	}
 	f.status.RunnerRunning = true
 	return nil
 }
@@ -1059,7 +1076,8 @@ func TestDashboardHandlerConstructorsAndConfigPreview(t *testing.T) {
 func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 	dir := t.TempDir()
 	writeDashboardTestConfig(t, dir, "")
-	manager := &fakeManager{}
+	manager := &fakeManager{startBlock: make(chan struct{}), startStarted: make(chan struct{})}
+	defer close(manager.startBlock)
 	handler, cancel, err := NewHandlerWithManagerContext(context.Background(), dir, manager)
 	if err != nil {
 		t.Fatal(err)
@@ -1074,6 +1092,11 @@ func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
 	var queued map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil || queued["id"] == nil {
 		t.Fatalf("queued operation = %s", response.Body.String())
+	}
+	select {
+	case <-manager.startStarted:
+	case <-time.After(time.Second):
+		t.Fatal("runtime start operation did not begin")
 	}
 	conflict := httptest.NewRecorder()
 	handler.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/api/controller/runtime/start", nil))
