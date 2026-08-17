@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -411,27 +410,24 @@ func (s *Server) devicePreviewID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setDeviceEnabled(w http.ResponseWriter, r *http.Request, enabled bool) {
-	s.queueConfigMutation(w, r, "devices", func(innerW http.ResponseWriter, innerR *http.Request, progress func(string)) {
-		s.setDeviceEnabledSync(innerW, innerR, enabled, progress)
+	s.queueConfigMutation(w, r, "devices", func(_ context.Context, innerR *http.Request, progress func(string)) error {
+		return s.setDeviceEnabledSync(innerR, enabled, progress)
 	})
 }
 
-func (s *Server) setDeviceEnabledSync(w http.ResponseWriter, r *http.Request, enabled bool, progress func(string)) {
+func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress func(string)) error {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
 	oldValues := dashboardruntime.Values(s.cfg.Snapshot())
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return err
 	}
 	config, err := store.RuntimeConfig()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+		return err
 	}
 	found := false
 	for index := range config.Devices {
@@ -443,66 +439,50 @@ func (s *Server) setDeviceEnabledSync(w http.ResponseWriter, r *http.Request, en
 		found = true
 	}
 	if !found {
-		http.Error(w, "unknown device", http.StatusNotFound)
-		return
+		return errors.New("unknown device")
 	}
 	if !equalStringMaps(map[string]string(oldValues), s.cfg.Snapshot()) {
-		http.Error(w, "configuration changed while preparing the device; retry", http.StatusConflict)
-		return
+		return errors.New("configuration changed while preparing the device; retry")
 	}
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(oldValues), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
-		http.Error(w, "device state was not activated because Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
-		return
+		return fmt.Errorf("device state was not activated because Android capabilities are unavailable: %w", err)
 	}
 	if err := store.SaveRuntimeConfig(config); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return err
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
-		http.Error(w, "device state was saved, but runtime reconciliation failed: "+err.Error(), http.StatusBadGateway)
-		return
+		return fmt.Errorf("device state was saved, but runtime reconciliation failed: %w", err)
 	}
-	// These controls are ordinary dashboard forms as well as API endpoints.
-	// Returning JSON to a browser form produced a blank page, which made the
-	// enable/disable action look broken even though the file had changed.
-	if r.Header.Get("Accept") == "application/json" {
-		writeJSON(w, map[string]any{"device_id": deviceID, "enabled": enabled})
-		return
-	}
-	http.Redirect(w, r, "/devices", http.StatusSeeOther)
+	return nil
 }
 
 func (s *Server) deviceRemove(w http.ResponseWriter, r *http.Request) {
-	s.queueConfigMutation(w, r, "devices", func(innerW http.ResponseWriter, innerR *http.Request, progress func(string)) {
-		s.deviceRemoveSync(innerW, innerR, progress)
+	s.queueConfigMutation(w, r, "devices", func(_ context.Context, innerR *http.Request, progress func(string)) error {
+		return s.deviceRemoveSync(innerR, progress)
 	})
 }
 
-func (s *Server) deviceRemoveSync(w http.ResponseWriter, r *http.Request, progress func(string)) {
+func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	if r.FormValue("confirm") != "true" {
-		http.Error(w, "confirmation required", http.StatusBadRequest)
-		return
+		return errors.New("confirmation required")
 	}
 	oldValues := dashboardruntime.Values(s.cfg.Snapshot())
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+		return err
 	}
 	config, err := store.RuntimeConfig()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+		return err
 	}
 	devices := config.Devices[:0]
 	found := false
@@ -515,39 +495,27 @@ func (s *Server) deviceRemoveSync(w http.ResponseWriter, r *http.Request, progre
 		devices = append(devices, device)
 	}
 	if !found {
-		http.Error(w, "unknown device", http.StatusNotFound)
-		return
+		return errors.New("unknown device")
 	}
 	config.Devices = devices
 	if !equalStringMaps(map[string]string(oldValues), s.cfg.Snapshot()) {
-		http.Error(w, "configuration changed while preparing the device; retry", http.StatusConflict)
-		return
+		return errors.New("configuration changed while preparing the device; retry")
 	}
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(oldValues), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
-		http.Error(w, "device removal was not activated because Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
-		return
+		return fmt.Errorf("device removal was not activated because Android capabilities are unavailable: %w", err)
 	}
 	if err := store.SaveRuntimeConfig(config); err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+		return err
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	if err := s.applyDeviceChange(r.Context(), oldValues, newValues); err != nil {
-		http.Error(w, "device removal was saved, but runtime reconciliation failed: "+err.Error(), http.StatusBadGateway)
-		return
+		return fmt.Errorf("device removal was saved, but runtime reconciliation failed: %w", err)
 	}
-	// Device actions are submitted from the dashboard, not a raw API client.
-	// Redirecting keeps the user inside the dashboard instead of rendering a
-	// transport JSON response after removal.
-	if r.Header.Get("Accept") == "application/json" {
-		writeJSON(w, map[string]any{"device_id": deviceID, "removed": true})
-		return
-	}
-	http.Redirect(w, r, "/devices", http.StatusSeeOther)
+	return nil
 }
 
 func loadConfigSnapshot(store *dashboardruntime.Store, current *Config) *Config {
@@ -920,22 +888,20 @@ func (s *Server) saveOverviewConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) saveDevicesConfig(w http.ResponseWriter, r *http.Request) {
-	s.queueConfigMutation(w, r, "devices", func(innerW http.ResponseWriter, innerR *http.Request, progress func(string)) {
-		s.saveDevicesConfigSync(innerW, innerR, progress)
+	s.queueConfigMutation(w, r, "devices", func(_ context.Context, innerR *http.Request, progress func(string)) error {
+		return s.saveDevicesConfigSync(innerR, progress)
 	})
 }
 
-func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, progress func(string)) {
+func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) error {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
 	values := s.cfg.Snapshot()
 	oldValues := dashboardruntime.Values(cloneStringMap(values))
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return err
 	}
 	config, err := store.RuntimeConfig()
 	if err != nil {
@@ -1076,13 +1042,11 @@ func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, p
 					key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
 				}
 				if key == "" {
-					http.Error(w, "a Credimi API key is required to rename a device", http.StatusBadGateway)
-					return
+					return errors.New("a Credimi API key is required to rename a device")
 				}
 				preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
 				if err != nil {
-					http.Error(w, "device rename ID resolution failed: "+err.Error(), http.StatusBadGateway)
-					return
+					return fmt.Errorf("device rename ID resolution failed: %w", err)
 				}
 				newID := strings.TrimPrefix(strings.TrimSpace(preview.DeviceID), "/")
 				if preview.Conflict {
@@ -1092,13 +1056,11 @@ func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, p
 					case "update":
 						newID = strings.TrimPrefix(strings.TrimSpace(preview.ExistingDeviceID), "/")
 					default:
-						http.Error(w, "device rename conflicts with an existing Credimi device; choose create or update explicitly", http.StatusConflict)
-						return
+						return errors.New("device rename conflicts with an existing Credimi device; choose create or update explicitly")
 					}
 				}
 				if newID == "" {
-					http.Error(w, "device rename did not return a canonical device ID", http.StatusBadGateway)
-					return
+					return errors.New("device rename did not return a canonical device ID")
 				}
 				device.ID = newID
 			}
@@ -1115,12 +1077,10 @@ func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, p
 		// Previewing an available canonical ID is part of normal creation. It
 		// is only an edit when the form explicitly selected an existing record.
 		if deviceID != "" && conflictAction != "create" {
-			http.Error(w, "device not found", http.StatusNotFound)
-			return
+			return errors.New("device not found")
 		}
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			return
+			return err
 		}
 		key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
 		if key == "" {
@@ -1129,8 +1089,7 @@ func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, p
 		if deviceID == "" {
 			preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
-				return
+				return err
 			}
 			deviceID = preview.DeviceID
 		}
@@ -1139,23 +1098,19 @@ func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, p
 		config.Devices = append(config.Devices, device)
 	}
 	if err := dashboardruntime.ValidateDeviceConstraints(config.Devices); err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+		return err
 	}
 	if !equalStringMaps(map[string]string(oldValues), s.cfg.Snapshot()) {
-		http.Error(w, "configuration changed while preparing the device; retry", http.StatusConflict)
-		return
+		return errors.New("configuration changed while preparing the device; retry")
 	}
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(values), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
-		http.Error(w, "device configuration was not activated because Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
-		return
+		return fmt.Errorf("device configuration was not activated because Android capabilities are unavailable: %w", err)
 	}
 	if err := store.SaveRuntimeConfig(config); err != nil {
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
+		return err
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
@@ -1171,24 +1126,21 @@ func (s *Server) saveDevicesConfigSync(w http.ResponseWriter, r *http.Request, p
 	}
 	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := dashboardruntime.WriteComposeFile(s.composeDir, newValues); err != nil {
-			http.Error(w, "device configuration was saved, but compose generation failed: "+err.Error(), http.StatusInternalServerError)
-			return
+			return fmt.Errorf("device configuration was saved, but compose generation failed: %w", err)
 		}
 	}
 	if s.runtimeOwned {
 		if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newValues); err != nil {
-			http.Error(w, "device configuration was saved, but applying it to the running runner failed: "+err.Error(), http.StatusBadGateway)
-			return
+			return fmt.Errorf("device configuration was saved, but applying it to the running runner failed: %w", err)
 		}
 	} else if runtimeRunning {
 		// The live activity provider reads the saved inventory on each target
 		// activity; registration is the only immediate runtime action needed.
 		if _, err := s.applySavedConfig(r.Context(), diff, map[string]string(newValues)); err != nil {
-			http.Error(w, "device configuration was saved, but applying it to the running runner failed: "+err.Error(), http.StatusBadGateway)
-			return
+			return fmt.Errorf("device configuration was saved, but applying it to the running runner failed: %w", err)
 		}
 	}
-	http.Redirect(w, r, "/devices", http.StatusSeeOther)
+	return nil
 }
 
 func (s *Server) applyDeviceChange(ctx context.Context, oldValues, newValues dashboardruntime.Values) error {
@@ -1263,43 +1215,29 @@ func emulatorAssetPaths() (androidKeysDir, avdHome, goldenRoot string) {
 	return androidKeysDir, avdHome, goldenRoot
 }
 
-func (s *Server) saveConfigPageSync(w http.ResponseWriter, r *http.Request, page string, progress func(string)) {
+func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(string)) error {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
+		return err
 	}
 	incoming := formValuesMap(r.PostForm)
 	oldSnapshot := s.cfg.Snapshot()
 	if err := s.resolveConfigIdentity(r.Context(), oldSnapshot, incoming); err != nil {
-		d := s.pageData(page, map[string]any{"Errors": map[string]string{"CREDIMI_RUNNER_NAME": err.Error()}})
-		html, _ := s.render.FragmentPage(page, d)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write([]byte(html))
-		return
+		return err
 	}
 	candidateSnapshot, err := normalizedConfigValues(oldSnapshot, incoming, runtimeGOOS())
 	if err != nil {
-		http.Error(w, "configuration validation failed: "+err.Error(), http.StatusUnprocessableEntity)
-		return
+		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, candidateSnapshot, progress); err != nil {
-		http.Error(w, "configuration was not activated because Android capabilities are unavailable: "+err.Error(), http.StatusBadGateway)
-		return
+		return fmt.Errorf("configuration was not activated because Android capabilities are unavailable: %w", err)
 	}
 	if !equalStringMaps(oldSnapshot, s.cfg.Snapshot()) {
-		http.Error(w, "configuration changed while preparing the update; retry", http.StatusConflict)
-		return
+		return errors.New("configuration changed while preparing the update; retry")
 	}
 	if errs, err := s.cfg.Apply(incoming); err != nil {
-		d := s.pageData(page, map[string]any{"Errors": errs})
-		html, _ := s.render.FragmentPage(page, d)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write([]byte(html))
-		return
+		return fmt.Errorf("configuration validation failed: %v", errs)
 	}
 	newSnapshot := s.cfg.Snapshot()
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
@@ -1308,26 +1246,23 @@ func (s *Server) saveConfigPageSync(w http.ResponseWriter, r *http.Request, page
 	}
 	if hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) && !s.runtimeOwned {
 		if err := WriteComposeFile(s.composeDir, newSnapshot); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
+			return err
 		}
 	}
-	message := "Configuration updated."
 	appliedCleanly := true
+	var reconcileErr error
 	if s.manager != nil {
 		if outcome, err := s.applySavedConfig(r.Context(), diff, newSnapshot); err != nil {
-			message = "Configuration update failed: " + err.Error()
 			appliedCleanly = false
+			reconcileErr = err
 		} else if outcome.Restarted {
-			message = "Runner restarted with the new configuration."
 		}
 	} else if s.runtimeOwned && len(diff.ChangedKeys) > 0 {
 		if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newSnapshot); err != nil {
-			message = "Configuration saved, but applying it to the outer launcher failed: " + err.Error()
 			appliedCleanly = false
+			reconcileErr = err
 		}
 	} else {
-		message = saveSuccessMessage(applyOutcome{})
 	}
 	s.mu.Lock()
 	if appliedCleanly {
@@ -1337,12 +1272,10 @@ func (s *Server) saveConfigPageSync(w http.ResponseWriter, r *http.Request, page
 	}
 	s.lastRegistrationStatus = ""
 	s.mu.Unlock()
-
-	d := s.pageData(page, map[string]any{"Saved": true})
-	html, _ := s.render.FragmentPage(page, d)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, message))
-	w.Write([]byte(html))
+	if !appliedCleanly {
+		return fmt.Errorf("configuration was saved but reconciliation failed: %w", reconcileErr)
+	}
+	return nil
 }
 
 func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
@@ -1476,15 +1409,14 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(html))
 		return
 	}
-	s.queueConfigMutation(w, r, "setup", func(innerW http.ResponseWriter, innerR *http.Request, progress func(string)) {
-		s.finishSetupSync(innerW, innerR, progress, true)
+	s.queueConfigMutation(w, r, "setup", func(_ context.Context, innerR *http.Request, progress func(string)) error {
+		return s.finishSetupSync(innerR, progress, true)
 	})
 }
 
-func (s *Server) finishSetupSync(w http.ResponseWriter, r *http.Request, progress func(string), deferStart bool) {
+func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferStart bool) error {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
+		return err
 	}
 	incoming := formValuesMap(r.PostForm)
 	// Setup resolves the runner and every device through Credimi before it can
@@ -1493,58 +1425,40 @@ func (s *Server) finishSetupSync(w http.ResponseWriter, r *http.Request, progres
 	setupCtx, cancelSetup := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancelSetup()
 	if errs := validateSetupInput(incoming); len(errs) > 0 {
-		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Some fields need attention."})
-		html, _ := s.render.FragmentPage("setup", d)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write([]byte(html))
-		return
+		return fmt.Errorf("setup validation failed: %v", errs)
 	}
 	if err := s.resolveSetupIdentity(setupCtx, incoming); err != nil {
-		s.renderSetupError(w, incoming, "identity resolution failed: "+err.Error())
-		return
+		return fmt.Errorf("identity resolution failed: %w", err)
 	}
 	candidate, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
 	if err != nil {
-		s.renderSetupError(w, incoming, "configuration validation failed: "+err.Error())
-		return
+		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 	if errs := Validate(map[string]string(candidate)); len(errs) > 0 {
-		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Configuration validation failed."})
-		html, _ := s.render.FragmentPage("setup", d)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusUnprocessableEntity)
-		w.Write([]byte(html))
-		return
+		return fmt.Errorf("configuration validation failed: %v", errs)
 	}
 	devices, err := s.setupDevices(r.WithContext(setupCtx), map[string]string(candidate))
 	if err != nil {
-		s.renderSetupError(w, incoming, "device setup failed: "+err.Error())
-		return
+		return fmt.Errorf("device setup failed: %w", err)
 	}
 	values := dashboardruntime.ValuesWithRuntimeDevices(candidate, devices)
 	if err := s.validateRuntimeRequirements(map[string]string(values)); err != nil {
-		s.renderSetupError(w, map[string]string(values), "runtime requirement check failed: "+err.Error())
-		return
+		return fmt.Errorf("runtime requirement check failed: %w", err)
 	}
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilities(provisionCtx, values, progress); err != nil {
-		s.renderSetupError(w, map[string]string(values), "Android capabilities are unavailable: "+err.Error())
-		return
+		return fmt.Errorf("Android capabilities are unavailable: %w", err)
 	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
-		s.renderSetupError(w, incoming, "configuration store failed: "+err.Error())
-		return
+		return fmt.Errorf("configuration store failed: %w", err)
 	}
 	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: candidate, Devices: devices}); err != nil {
-		s.renderSetupError(w, incoming, "device inventory failed: "+err.Error())
-		return
+		return fmt.Errorf("device inventory failed: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "setup-pending"), []byte("pending\n"), 0o600); err != nil {
-		s.renderSetupError(w, map[string]string(values), "setup state could not be recorded: "+err.Error())
-		return
+		return fmt.Errorf("setup state could not be recorded: %w", err)
 	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	values = dashboardruntime.Values(s.cfg.Snapshot())
@@ -1553,8 +1467,7 @@ func (s *Server) finishSetupSync(w http.ResponseWriter, r *http.Request, progres
 	}
 	if !s.runtimeOwned {
 		if err := dashboardruntime.WriteComposeFile(s.composeDir, values); err != nil {
-			s.renderSetupError(w, map[string]string(values), "compose generation failed: "+err.Error())
-			return
+			return fmt.Errorf("compose generation failed: %w", err)
 		}
 	}
 	if deferStart {
@@ -1563,31 +1476,27 @@ func (s *Server) finishSetupSync(w http.ResponseWriter, r *http.Request, progres
 			if s.launcherSocket != "" {
 				handle, err := launcher.RequestSetupReconcileAsync(r.Context(), s.launcherSocket)
 				if err != nil {
-					s.renderSetupError(w, map[string]string(values), "launcher reconciliation failed: "+err.Error())
-					return
+					return fmt.Errorf("launcher reconciliation failed: %w", err)
 				}
 				operationID = handle.ID
 			}
 			if err := s.finishSetupRegistration(r.Context(), map[string]string(values), operationID, false); err != nil {
-				s.renderSetupError(w, map[string]string(values), err.Error())
-				return
+				return err
 			}
 		} else {
 			if err := s.runtimeLifecycle(cloneStringMap(values)).Start(r.Context(), progress); err != nil {
-				s.renderSetupError(w, map[string]string(values), "runtime start failed: "+err.Error())
-				return
+				return fmt.Errorf("runtime start failed: %w", err)
 			}
 		}
 		s.setStartupState(StartupReady, "Setup complete. Runner started and registered with Credimi.")
-		s.renderSetupComplete(w, r)
-		return
+		return nil
 	}
 	if s.runtimeOwned {
 		s.startRuntimeOwnedRegistration(map[string]string(values))
 	} else {
 		s.startStartupJob(map[string]string(values))
 	}
-	s.renderSetupComplete(w, r)
+	return nil
 }
 
 func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dashboardruntime.DeviceRuntimeConfig, error) {
@@ -2761,7 +2670,7 @@ func (s *Server) writeQueuedRuntimeAction(w http.ResponseWriter, snapshot contro
 	w.WriteHeader(http.StatusAccepted)
 }
 
-type configMutation func(http.ResponseWriter, *http.Request, func(string))
+type configMutation func(context.Context, *http.Request, func(string)) error
 
 func clonePostForm(values url.Values) url.Values {
 	cloned := make(url.Values, len(values))
@@ -2796,20 +2705,18 @@ func (s *Server) queueConfigMutation(w http.ResponseWriter, r *http.Request, pag
 		request := r.Clone(ctx)
 		request.PostForm = clonePostForm(form)
 		request.Form = clonePostForm(form)
-		recorder := httptest.NewRecorder()
-		action(recorder, request, func(message string) {
+		err := action(ctx, request, func(message string) {
 			progress(controller.Progress{Message: message})
 		})
-		if recorder.Code >= http.StatusBadRequest {
-			err := errors.New(strings.TrimSpace(recorder.Body.String()))
-			if page == "setup" {
-				s.setStartupState(StartupNeedsAttention, "Setup could not complete: "+err.Error())
-			}
-			return err
+		if err != nil && page == "setup" {
+			s.setStartupState(StartupNeedsAttention, "Setup could not complete: "+err.Error())
 		}
-		return nil
+		return err
 	})
 	if err != nil {
+		if page == "setup" {
+			s.setStartupState(StartupNeedsAttention, "Setup could not complete: "+err.Error())
+		}
 		s.renderRuntimeActionError(w, page, err)
 		return
 	}
@@ -2833,8 +2740,8 @@ func (s *Server) queueConfigPageSave(w http.ResponseWriter, r *http.Request, pag
 		http.Error(w, "configuration validation failed", http.StatusUnprocessableEntity)
 		return
 	}
-	s.queueConfigMutation(w, r, page, func(innerW http.ResponseWriter, innerR *http.Request, progress func(string)) {
-		s.saveConfigPageSync(innerW, innerR, page, progress)
+	s.queueConfigMutation(w, r, page, func(_ context.Context, innerR *http.Request, progress func(string)) error {
+		return s.saveConfigPageSync(innerR, page, progress)
 	})
 }
 

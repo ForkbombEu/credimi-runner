@@ -1772,8 +1772,8 @@ func TestSetupConfigMutationSurfacesWriteFailure(t *testing.T) {
 	s := newTestServer(t)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/setup", nil)
-	s.queueConfigMutation(recorder, request, "setup", func(w http.ResponseWriter, _ *http.Request, _ func(string)) {
-		http.Error(w, "write config failed", http.StatusInternalServerError)
+	s.queueConfigMutation(recorder, request, "setup", func(context.Context, *http.Request, func(string)) error {
+		return errors.New("write config failed")
 	})
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("setup mutation response = %d", recorder.Code)
@@ -2857,10 +2857,8 @@ func TestConfigApplyOperationOwnsProvisioningContext(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader("x=y"))
 	req = req.WithContext(requestContext)
 	response := httptest.NewRecorder()
-	s.queueConfigMutation(response, req, "config", func(w http.ResponseWriter, r *http.Request, progress func(string)) {
-		if err := provisionCandidateCapabilities(r.Context(), candidateProvisionValues(), progress); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-		}
+	s.queueConfigMutation(response, req, "config", func(ctx context.Context, _ *http.Request, progress func(string)) error {
+		return provisionCandidateCapabilities(ctx, candidateProvisionValues(), progress)
 	})
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("config operation response = %d", response.Code)
@@ -2893,10 +2891,8 @@ func TestConfigApplyOperationCancelsWithCoordinator(t *testing.T) {
 	s.ctx = parent
 	s.operations = controller.NewCoordinator(parent)
 	response := httptest.NewRecorder()
-	s.queueConfigMutation(response, httptest.NewRequest(http.MethodPost, "/config", nil), "config", func(w http.ResponseWriter, r *http.Request, progress func(string)) {
-		if err := provisionCandidateCapabilities(r.Context(), candidateProvisionValues(), progress); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-		}
+	s.queueConfigMutation(response, httptest.NewRequest(http.MethodPost, "/config", nil), "config", func(ctx context.Context, _ *http.Request, progress func(string)) error {
+		return provisionCandidateCapabilities(ctx, candidateProvisionValues(), progress)
 	})
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("config operation response = %d", response.Code)
@@ -2963,10 +2959,8 @@ func TestConfigApplyOperationConflictsWithoutBlockingStatusReads(t *testing.T) {
 		<-release
 		return nil
 	}
-	action := func(w http.ResponseWriter, r *http.Request, progress func(string)) {
-		if err := provisionCandidateCapabilities(r.Context(), candidateProvisionValues(), progress); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-		}
+	action := func(ctx context.Context, _ *http.Request, progress func(string)) error {
+		return provisionCandidateCapabilities(ctx, candidateProvisionValues(), progress)
 	}
 	first := httptest.NewRecorder()
 	s.queueConfigMutation(first, httptest.NewRequest(http.MethodPost, "/config", nil), "config", action)
@@ -3183,12 +3177,11 @@ func TestServerSaveDevicesConfigRenameConflictRequiresExplicitChoice(t *testing.
 	})
 	t.Cleanup(func() { http.DefaultTransport = transport })
 	form := url.Values{"device_id": {"acme/runner/old"}, "name": {"New"}, "type": {"android_phone"}, "mode": {"usb"}, "serial": {"usb-1"}}
-	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveDevicesConfigSync(recorder, request, nil)
-	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "choose create or update explicitly") {
-		t.Fatalf("rename conflict = %d %s", recorder.Code, recorder.Body.String())
+	err = s.saveDevicesConfigSync(request, nil)
+	if err == nil || !strings.Contains(err.Error(), "choose create or update explicitly") {
+		t.Fatalf("rename conflict = %v", err)
 	}
 	updated, err := dashboardruntime.LoadStore(dir)
 	if err != nil {
