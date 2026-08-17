@@ -160,3 +160,20 @@ func TestCheckerRejectsMalformedMetadata(t *testing.T) {
 		t.Fatal("expected empty local metadata error")
 	}
 }
+
+func TestFindStringSearchesNestedImageMetadata(t *testing.T) {
+	nested := map[string]any{
+		"metadata": []any{
+			map[string]any{"digest": "sha256:nested"},
+		},
+	}
+	if got := findString(nested, "Digest", "digest"); got != "sha256:nested" {
+		t.Fatalf("nested digest = %q", got)
+	}
+	if got := findString(map[string]any{"digest": 42}, "digest"); got != "" {
+		t.Fatalf("non-string digest = %q", got)
+	}
+	if got := findString([]any{map[string]any{"other": "value"}}, "digest"); got != "" {
+		t.Fatalf("missing digest = %q", got)
+	}
+}

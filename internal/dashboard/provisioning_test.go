@@ -27,6 +27,43 @@ func TestParseSimctlEntries(t *testing.T) {
 	}
 }
 
+func TestProvisioningHelpersRejectMalformedIdentifiersAndPaths(t *testing.T) {
+	for _, line := range []string{
+		"iPhone 16 Pro",
+		"iPhone 16 Pro (com.apple.NotADeviceType)",
+		"(com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro)",
+	} {
+		if _, _, ok := parseSimctlDeviceTypeLine(line); ok {
+			t.Fatalf("malformed device type accepted: %q", line)
+		}
+	}
+	for _, line := range []string{"iOS 18.0", "iOS 18.0 - com.apple.NotARuntime"} {
+		if _, _, ok := parseSimctlRuntimeLine(line); ok {
+			t.Fatalf("malformed runtime accepted: %q", line)
+		}
+	}
+
+	if avdAssetsExistForName("", "credimi") || avdAssetsExistForName(t.TempDir(), "") {
+		t.Fatal("empty AVD asset paths were accepted")
+	}
+	if goldenAssetsPresent("") || goldenAssetsPresentForLeaf("", "credimi-golden") {
+		t.Fatal("empty golden asset paths were accepted")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "credimi-golden"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !goldenAssetsPresent(filepath.Join(root, "credimi-golden")) {
+		t.Fatal("golden leaf root was not recognized")
+	}
+	if got := goldenLeafFromPath("/", "pixel"); got != "pixel-golden" {
+		t.Fatalf("root golden path leaf = %q", got)
+	}
+	if got := goldenLeafFromPath("", ""); got != "credimi-golden" {
+		t.Fatalf("default golden path leaf = %q", got)
+	}
+}
+
 func TestListIOSSimulatorRuntimesFiltersUnavailable(t *testing.T) {
 	original := provisioningCommand
 	t.Cleanup(func() { provisioningCommand = original })

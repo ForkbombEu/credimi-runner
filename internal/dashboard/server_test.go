@@ -335,6 +335,47 @@ func TestRuntimeOwnedConfigDelegatesTopologyChangesToLauncher(t *testing.T) {
 	}
 }
 
+func TestRuntimeOwnedConfigOperationWaitsForLauncherAndClearsHandoff(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeOwned = true
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "runtime-state"), []byte("stopped\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket := filepath.Join(configDir, "control.sock")
+	reconciled := make(chan struct{}, 1)
+	control, err := launcher.ServeWithOperations(socket, func(context.Context) error { return nil }, nil, launcher.Operations{
+		ReconcileConfig: func(context.Context) error {
+			reconciled <- struct{}{}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	s.launcherSocket = socket
+
+	err = s.applyRuntimeOwnedConfigInOperation(context.Background(), dashboardruntime.ConfigDiff{
+		ChangedKeys: []string{"RUNNER_PORT"},
+		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate},
+	}, s.cfg.Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reconciled:
+	case <-time.After(time.Second):
+		t.Fatal("launcher did not receive reconcile-config")
+	}
+	if fileExists(configOperationPath(configDir)) {
+		t.Fatal("completed config handoff was not cleared")
+	}
+	if got := s.startupSnapshot().Phase; got != StartupReady {
+		t.Fatalf("startup state = %q, want %q", got, StartupReady)
+	}
+}
+
 func TestRuntimeOwnedSetupRecoversLauncherOperationAfterReplacement(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
