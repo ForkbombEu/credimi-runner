@@ -531,6 +531,18 @@
           return false;
         }
       };
+      const syncManualPublicURLError = () => {
+        const input = field('RUNNER_PUBLIC_URL');
+        const error = $('[data-manual-public-url-error]', form);
+        const wrapper = input && input.closest('[data-manual-public-url-field]');
+        const invalid = value('CREDIMI_SERVICE_MODE') === 'manual' && !valueMissing('RUNNER_PUBLIC_URL') && !validManualPublicURL();
+        if (error) {
+          error.hidden = !invalid;
+          error.textContent = invalid ? 'Enter a complete URL starting with http:// or https://.' : '';
+        }
+        if (input) input.setAttribute('aria-invalid', invalid ? 'true' : 'false');
+        if (wrapper) wrapper.classList.toggle('invalid', invalid);
+      };
       const deviceValidationError = () => {
         for (const card of $$('[data-device-provision]', form)) {
           const get = (fieldName) => {
@@ -567,7 +579,7 @@
             return true;
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
-            if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL') && validManualPublicURL();
+            if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');
             if (mode === 'cloudflare-managed') return !valueMissing('RUNNER_DOMAIN') && !valueMissing('CLOUDFLARE_TUNNEL_TOKEN');
             return true;
           }
@@ -603,6 +615,7 @@
         }
       };
       const syncStepActions = () => {
+        syncManualPublicURLError();
         if (next && !next.hidden) next.disabled = !currentStepValid();
       };
       const show = (idx) => {

@@ -282,6 +282,8 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 		`data-runner-id-value`,
 		`data-auth-seg`,
 		`data-net-mode="manual"`,
+		`data-manual-public-url-field`,
+		`data-manual-public-url-error`,
 		`data-runner-conflict-modal-summary`,
 	} {
 		if !strings.Contains(html, want) {
@@ -317,6 +319,16 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	for _, want := range []string{"initializeDeviceProvisionCard", "device_type_ui_${id}", "device_mode_ui_${id}"} {
 		if !strings.Contains(string(script), want) {
 			t.Fatalf("device card initialization missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"syncManualPublicURLError",
+		"data-manual-public-url-error",
+		"Enter a complete URL starting with http:// or https://.",
+		"if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("setup manual URL validation missing %q", want)
 		}
 	}
 }
