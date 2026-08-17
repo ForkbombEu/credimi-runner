@@ -184,6 +184,10 @@ func Validate(vals map[string]string) map[string]string {
 			if u, err := url.Parse(v); err != nil || u.Host == "" || u.Scheme == "" {
 				errs[f.Key] = "Not a valid URL."
 			}
+		case "RUNNER_PUBLIC_URL":
+			if u, err := url.Parse(v); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				errs[f.Key] = "Must be an absolute http:// or https:// URL."
+			}
 		case "RUNNER_DOMAIN":
 			if strings.Contains(v, "://") {
 				if u, err := url.Parse(v); err != nil || u.Host == "" {

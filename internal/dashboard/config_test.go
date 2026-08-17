@@ -151,6 +151,19 @@ func TestValidatePortRange(t *testing.T) {
 	}
 }
 
+func TestValidateManualPublicURL(t *testing.T) {
+	for _, value := range []string{"runner.example", "ftp://runner.example", "https:///missing-host"} {
+		if errs := Validate(map[string]string{"RUNNER_PUBLIC_URL": value}); errs["RUNNER_PUBLIC_URL"] == "" {
+			t.Fatalf("invalid manual public URL %q accepted", value)
+		}
+	}
+	for _, value := range []string{"http://runner.example", "https://runner.example/path"} {
+		if errs := Validate(map[string]string{"RUNNER_PUBLIC_URL": value}); errs["RUNNER_PUBLIC_URL"] != "" {
+			t.Fatalf("valid manual public URL %q rejected: %v", value, errs)
+		}
+	}
+}
+
 func TestConfigHelpersAndFieldGroups(t *testing.T) {
 	if maskSecret("short") != "short" {
 		t.Fatal("short secret changed")

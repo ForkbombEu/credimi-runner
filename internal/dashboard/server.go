@@ -816,7 +816,14 @@ func (s *Server) page(name string) http.HandlerFunc {
 		if pageName == "overview" {
 			s.ensureMaintenanceChecked(r.Context(), false)
 		}
-		d := s.pageData(pageName, nil)
+		payload := any(nil)
+		if pageName == "setup" {
+			startup := s.startupSnapshot()
+			if startup.Phase == StartupNeedsAttention && strings.TrimSpace(startup.Message) != "" {
+				payload = map[string]any{"SetupError": startup.Message}
+			}
+		}
+		d := s.pageData(pageName, payload)
 		var (
 			html string
 			err  error
@@ -2103,8 +2110,12 @@ func validateSetupInput(values map[string]string) map[string]string {
 	if strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]) == "" && strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
 		errs["CREDIMI_RUNNER_NAME"] = "Required."
 	}
-	if strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) == "manual" && strings.TrimSpace(values["RUNNER_PUBLIC_URL"]) == "" {
-		errs["RUNNER_PUBLIC_URL"] = "Required."
+	if strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) == "manual" {
+		if strings.TrimSpace(values["RUNNER_PUBLIC_URL"]) == "" {
+			errs["RUNNER_PUBLIC_URL"] = "Required."
+		} else if message := Validate(map[string]string{"RUNNER_PUBLIC_URL": values["RUNNER_PUBLIC_URL"]})["RUNNER_PUBLIC_URL"]; message != "" {
+			errs["RUNNER_PUBLIC_URL"] = message
+		}
 	}
 	return errs
 }
@@ -2758,7 +2769,11 @@ func (s *Server) queueConfigMutation(w http.ResponseWriter, r *http.Request, pag
 			progress(controller.Progress{Message: message})
 		})
 		if recorder.Code >= http.StatusBadRequest {
-			return errors.New(strings.TrimSpace(recorder.Body.String()))
+			err := errors.New(strings.TrimSpace(recorder.Body.String()))
+			if page == "setup" {
+				s.setStartupState(StartupNeedsAttention, "Setup could not complete: "+err.Error())
+			}
+			return err
 		}
 		return nil
 	})

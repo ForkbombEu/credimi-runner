@@ -174,7 +174,8 @@
         clearInterval(busyStartupTimer);
         busyStartupTimer = null;
         const delay = phase === 'needs_attention' ? 2500 : 1000;
-        setTimeout(() => { window.location.assign('/'); }, delay);
+        const destination = phase === 'needs_attention' ? '/setup' : '/';
+        setTimeout(() => { window.location.assign(destination); }, delay);
       }
     } catch (_) {}
   }
@@ -522,6 +523,14 @@
         box.textContent = msg || '';
       };
       const valueMissing = (name) => !String(value(name) || '').trim();
+      const validManualPublicURL = () => {
+        try {
+          const parsed = new URL(String(value('RUNNER_PUBLIC_URL') || '').trim());
+          return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.hostname;
+        } catch (_) {
+          return false;
+        }
+      };
       const deviceValidationError = () => {
         for (const card of $$('[data-device-provision]', form)) {
           const get = (fieldName) => {
@@ -558,7 +567,7 @@
             return true;
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
-            if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');
+            if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL') && validManualPublicURL();
             if (mode === 'cloudflare-managed') return !valueMissing('RUNNER_DOMAIN') && !valueMissing('CLOUDFLARE_TUNNEL_TOKEN');
             return true;
           }
@@ -583,6 +592,7 @@
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
             if (mode === 'manual' && valueMissing('RUNNER_PUBLIC_URL')) return 'Manual mode requires a public URL.';
+            if (mode === 'manual' && !validManualPublicURL()) return 'Manual public URL must start with http:// or https://.';
             if (mode === 'cloudflare-managed' && valueMissing('RUNNER_DOMAIN')) return 'Managed mode requires a runner domain.';
             if (mode === 'cloudflare-managed' && valueMissing('CLOUDFLARE_TUNNEL_TOKEN')) return 'Managed mode requires a tunnel token.';
             return '';

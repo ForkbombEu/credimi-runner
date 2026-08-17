@@ -1723,6 +1723,49 @@ func TestServerSetupRenderHelpers(t *testing.T) {
 	}
 }
 
+func TestValidateSetupInputRejectsManualURLWithoutScheme(t *testing.T) {
+	errs := validateSetupInput(map[string]string{
+		"CREDIMI_URL":          "https://credimi.example",
+		"CREDIMI_USER_API_KEY": "user-key",
+		"CREDIMI_RUNNER_NAME":  "runner",
+		"CREDIMI_SERVICE_MODE": "manual",
+		"RUNNER_PUBLIC_URL":    "runner.example",
+	})
+	if got := errs["RUNNER_PUBLIC_URL"]; !strings.Contains(got, "http:// or https://") {
+		t.Fatalf("manual public URL validation = %q", got)
+	}
+}
+
+func TestSetupPageDisplaysStartupFailure(t *testing.T) {
+	s := newTestServer(t)
+	s.setStartupState(StartupNeedsAttention, "runtime start failed: public URL is unreachable")
+	recorder := httptest.NewRecorder()
+	s.page("setup")(recorder, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "public URL is unreachable") {
+		t.Fatalf("setup failure page = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestSetupConfigMutationSurfacesWriteFailure(t *testing.T) {
+	s := newTestServer(t)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/setup", nil)
+	s.queueConfigMutation(recorder, request, "setup", func(w http.ResponseWriter, _ *http.Request, _ func(string)) {
+		http.Error(w, "write config failed", http.StatusInternalServerError)
+	})
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("setup mutation response = %d", recorder.Code)
+	}
+	operation, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
+	if err != nil || operation.Phase != controller.PhaseFailed {
+		t.Fatalf("setup mutation operation = %#v, %v", operation, err)
+	}
+	startup := s.startupSnapshot()
+	if startup.Phase != StartupNeedsAttention || !strings.Contains(startup.Message, "write config failed") {
+		t.Fatalf("startup failure = %#v", startup)
+	}
+}
+
 func TestSetupDevicesParsesTwoUSBDevicesInCardOrder(t *testing.T) {
 	var previewCount int
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
