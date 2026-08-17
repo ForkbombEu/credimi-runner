@@ -699,7 +699,14 @@ func prepareInternalRuntime(ctx context.Context, configDir string) error {
 	if err := hydrateTypedRuntimeEnvironment(configDir); err != nil {
 		return err
 	}
-	return provisionInternalRuntime(ctx, configDir)
+	if err := provisionInternalRuntime(ctx, configDir); err != nil {
+		return err
+	}
+	cfg, err := runnerconfig.LoadFile(filepath.Join(configDir, "config.toml"))
+	if err != nil {
+		return err
+	}
+	return androidtools.ConnectConfiguredWiFiDevices(ctx, cfg)
 }
 
 // hydrateTypedRuntimeEnvironment is the compatibility boundary for existing

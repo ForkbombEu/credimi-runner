@@ -360,15 +360,7 @@ func parseBoolean(raw string, fallback bool, key string) (bool, error) {
 }
 
 func AndroidWiFiSerial(ip, port string) string {
-	ip = strings.TrimSpace(ip)
-	if ip == "" {
-		return ""
-	}
-	port = strings.TrimSpace(port)
-	if port == "" {
-		port = DefaultWiFiPort
-	}
-	return net.JoinHostPort(ip, port)
+	return runnerconfig.AndroidWiFiSerial(strings.TrimSpace(ip), strings.TrimSpace(port))
 }
 
 func DefaultEmulatorABI(goos, goarch string) string {

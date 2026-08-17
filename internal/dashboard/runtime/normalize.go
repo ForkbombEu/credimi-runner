@@ -24,7 +24,7 @@ const (
 	DefaultRunnerCaddySite    = ":80"
 	DefaultBaseName           = "credimi"
 	DefaultGoldenPath         = "/avd-golden/credimi-golden"
-	DefaultWiFiPort           = "5555"
+	DefaultWiFiPort           = runnerconfig.DefaultWiFiPort
 	DefaultRedroidDataDir     = "/home/credimi/redroid-data"
 	DefaultRedroidDataTar     = "/home/credimi/redroid-data.tar"
 	DefaultHostAVDHome        = ".android/avd"
