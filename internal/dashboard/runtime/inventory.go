@@ -3,9 +3,10 @@ package runtime
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
+
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
 
 // DeviceRuntimeConfig is the immutable local configuration for one execution
@@ -285,45 +286,21 @@ func RuntimeConfigFromEnvironment() (RunnerRuntimeConfig, error) {
 	return store.RuntimeConfig()
 }
 
-// SaveRuntimeConfig atomically writes host keys followed by deterministic device
-// blocks. Unknown runner-level lines are retained; generated device lines are
-// always replaced.
+// SaveRuntimeConfig validates the complete inventory and writes canonical TOML.
 func (s *Store) SaveRuntimeConfig(config RunnerRuntimeConfig) error {
 	values := ValuesWithRuntimeDevices(config.Host, config.Devices)
-	config, err := parseRunnerRuntimeConfig(values)
-	if err != nil {
+	if _, err := parseRunnerRuntimeConfig(values); err != nil {
 		return err
-	}
-	var lines []string
-	lines = append(lines, "# --- Runner host (managed by Credimi Runner) ---")
-	for _, key := range SortedRunnerKeys() {
-		if key == "CREDIMI_DEVICE_COUNT" {
-			continue
-		}
-		lines = append(lines, key+"="+quote(config.Host[key]))
-	}
-	lines = append(lines, "", "# --- Device inventory (managed by Credimi Runner; do not edit generated keys) ---", "CREDIMI_DEVICE_COUNT="+strconv.Itoa(len(config.Devices)))
-	for _, device := range config.Devices {
-		lines = append(lines, "", fmt.Sprintf("# --- Device %d: %s ---", device.Index, device.Name))
-		keys := make([]string, 0, len(device.Values))
-		for key := range device.Values {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			lines = append(lines, devicePrefix(device.Index)+key+"="+quote(device.Values[key]))
-		}
-	}
-	for _, line := range s.UnknownLines {
-		if strings.TrimSpace(line) != "" {
-			lines = append(lines, line)
-		}
 	}
 	typed, err := TypedConfigFromValues(values)
 	if err != nil {
 		return err
 	}
-	return s.writeTOML(typed, values)
+	if err := runnerconfig.WriteFile(s.Path, typed); err != nil {
+		return err
+	}
+	s.Values, s.exists = cloneValues(values), true
+	return nil
 }
 
 // ValuesWithRuntimeDevices returns the compatibility values that represent a
@@ -388,15 +365,6 @@ func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values
 		}
 	}
 	return values
-}
-
-func SortedRunnerKeys() []string {
-	keys := make([]string, 0, len(RunnerKeys))
-	for key := range RunnerKeys {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func (s *Store) RuntimeConfigDevice(index int) DeviceRuntimeConfig {

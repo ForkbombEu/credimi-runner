@@ -18,10 +18,9 @@ import (
 type Values map[string]string
 
 type Store struct {
-	Path         string
-	Values       Values
-	UnknownLines []string
-	exists       bool
+	Path   string
+	Values Values
+	exists bool
 }
 
 func DefaultConfigDir() string {
@@ -70,14 +69,6 @@ func (s *Store) Save(values Values) error {
 	}
 	s.Values = snapshot
 	s.exists = true
-	return nil
-}
-
-func (s *Store) writeTOML(cfg runnerconfig.Config, values Values) error {
-	if err := runnerconfig.WriteFile(s.Path, cfg); err != nil {
-		return err
-	}
-	s.Values, s.exists = cloneValues(values), true
 	return nil
 }
 
@@ -393,14 +384,4 @@ func SortedKnownKeys() []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func quote(value string) string {
-	if value == "" {
-		return ""
-	}
-	if strings.ContainsAny(value, " \t#\"'") {
-		return `"` + strings.ReplaceAll(value, `"`, `\"`) + `"`
-	}
-	return value
 }

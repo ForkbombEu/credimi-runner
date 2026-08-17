@@ -559,9 +559,3 @@ func TestParseRuntimeConfigRejectsMalformedInventory(t *testing.T) {
 		})
 	}
 }
-
-func TestLegacyValueFormattingIsDeterministic(t *testing.T) {
-	if quote("") != "" || quote("plain") != "plain" || quote("needs space") != `"needs space"` {
-		t.Fatalf("quote formatting failed")
-	}
-}
