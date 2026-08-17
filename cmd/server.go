@@ -229,12 +229,10 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 						continue
 					}
 					if err := lifecycle.Resume(controlCtx, "setup"); err != nil {
-						_ = writeRuntimeState(configDir, "failed: "+err.Error())
-						continue
+						cluelog.Printf(controlCtx, "Warning: failed to resume runner lifecycle during startup: %v", err)
 					}
 					if err := lifecycle.Heartbeat(controlCtx); err != nil {
-						_ = writeRuntimeState(configDir, "failed: "+err.Error())
-						continue
+						cluelog.Printf(controlCtx, "Warning: failed to send runner heartbeat during startup: %v", err)
 					}
 					_ = writeRuntimeState(configDir, "running")
 					if onRuntimeReady != nil {
@@ -247,12 +245,10 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 				case "start":
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
 						if err := lifecycle.Resume(controlCtx, "dashboard_start"); err != nil {
-							_ = writeRuntimeState(configDir, "failed: "+err.Error())
-							continue
+							cluelog.Printf(controlCtx, "Warning: failed to resume runner lifecycle during start: %v", err)
 						}
 						if err := lifecycle.Heartbeat(controlCtx); err != nil {
-							_ = writeRuntimeState(configDir, "failed: "+err.Error())
-							continue
+							cluelog.Printf(controlCtx, "Warning: failed to send runner heartbeat during start: %v", err)
 						}
 						_ = writeRuntimeState(configDir, "running")
 						if onRuntimeReady != nil {
@@ -267,12 +263,10 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 					_ = lifecycle.Pause(controlCtx, "dashboard_restart")
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
 						if err := lifecycle.Resume(controlCtx, "dashboard_restart"); err != nil {
-							_ = writeRuntimeState(configDir, "failed: "+err.Error())
-							continue
+							cluelog.Printf(controlCtx, "Warning: failed to resume runner lifecycle during restart: %v", err)
 						}
 						if err := lifecycle.Heartbeat(controlCtx); err != nil {
-							_ = writeRuntimeState(configDir, "failed: "+err.Error())
-							continue
+							cluelog.Printf(controlCtx, "Warning: failed to send runner heartbeat during restart: %v", err)
 						}
 						_ = writeRuntimeState(configDir, "running")
 						if onRuntimeReady != nil {

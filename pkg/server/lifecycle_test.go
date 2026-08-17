@@ -76,6 +76,7 @@ func TestLoadRunnerLifecycleConfigDefaults(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_ID", "/owner/runner")
 	t.Setenv(lifecycleEnabledEnvName, "")
 	t.Setenv(lifecycleHeartbeatIntervalEnvName, "")
+	t.Setenv(lifecycleRequestTimeoutEnvName, "")
 
 	cfg := LoadRunnerLifecycleConfig(utils.Instance{
 		URL:              "https://credimi.example",
@@ -103,11 +104,12 @@ func TestLoadRunnerLifecycleConfigDisabled(t *testing.T) {
 func TestLoadRunnerLifecycleConfigParsesDurations(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_ID", "/owner/runner")
 	t.Setenv(lifecycleHeartbeatIntervalEnvName, "45s")
+	t.Setenv(lifecycleRequestTimeoutEnvName, "20s")
 
 	cfg := LoadRunnerLifecycleConfig(utils.Instance{URL: "https://credimi.example"})
 
 	require.Equal(t, 45*time.Second, cfg.HeartbeatInterval)
-	require.Equal(t, defaultLifecycleRequestTimeout, cfg.RequestTimeout)
+	require.Equal(t, 20*time.Second, cfg.RequestTimeout)
 }
 
 func TestLoadRunnerLifecycleConfigPrefersUserAPIKey(t *testing.T) {
@@ -145,7 +147,36 @@ func TestRunnerLifecycleResumePostsExpectedPayload(t *testing.T) {
 	require.Equal(t, "/api/mobile-runner/lifecycle/resume", req.Path)
 	require.Equal(t, "runner-key", req.Header.Get(internalAdminKeyHeader))
 	require.Equal(t, "/owner/runner", req.Body.RunnerID)
+	require.NotEmpty(t, req.Body.RequestID)
 	require.Equal(t, "runner_startup", req.Body.Reason)
+}
+
+func TestRunnerLifecycleRetryReusesRequestID(t *testing.T) {
+	var requestIDs []string
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:        true,
+		RunnerID:       "/owner/runner",
+		CredimiURL:     "https://credimi.example",
+		APIKey:         "runner-key",
+		RequestTimeout: time.Second,
+	}, nil, NewProcessStore())
+	client.inventory = nil
+	client.warnf = func(string, ...any) {}
+	client.retryDelay = func(int) time.Duration { return 0 }
+	client.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload lifecyclePayload
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&payload))
+		requestIDs = append(requestIDs, payload.RequestID)
+		if len(requestIDs) == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
+	})
+
+	require.NoError(t, client.Resume(context.Background(), "runner_startup"))
+	require.Len(t, requestIDs, 2)
+	require.NotEmpty(t, requestIDs[0])
+	require.Equal(t, requestIDs[0], requestIDs[1])
 }
 
 func TestRunnerLifecycleHeartbeatPostsExpectedPayload(t *testing.T) {

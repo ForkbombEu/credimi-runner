@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -20,9 +23,11 @@ import (
 const (
 	defaultLifecycleEnabled           = true
 	defaultHeartbeatInterval          = 30 * time.Second
-	defaultLifecycleRequestTimeout    = 5 * time.Second
+	defaultLifecycleRequestTimeout    = 15 * time.Second
+	defaultLifecycleRequestAttempts   = 3
 	lifecycleEnabledEnvName           = "CREDIMI_RUNNER_LIFECYCLE_ENABLED"
 	lifecycleHeartbeatIntervalEnvName = "CREDIMI_RUNNER_HEARTBEAT_INTERVAL"
+	lifecycleRequestTimeoutEnvName    = "CREDIMI_RUNNER_LIFECYCLE_REQUEST_TIMEOUT"
 )
 
 type RunnerLifecycleConfig struct {
@@ -36,10 +41,13 @@ type RunnerLifecycleConfig struct {
 }
 
 type lifecyclePayload struct {
-	RunnerID string            `json:"runner_id"`
-	Devices  []LifecycleDevice `json:"devices,omitempty"`
-	Reason   string            `json:"reason,omitempty"`
+	RunnerID  string            `json:"runner_id"`
+	RequestID string            `json:"request_id,omitempty"`
+	Devices   []LifecycleDevice `json:"devices,omitempty"`
+	Reason    string            `json:"reason,omitempty"`
 }
+
+var lifecycleRequestSequence atomic.Uint64
 
 type LifecycleDevice struct {
 	DeviceID string `json:"device_id"`
@@ -73,6 +81,7 @@ type RunnerLifecycleClient struct {
 	devices    []LifecycleDevice
 	inventory  func() ([]LifecycleDevice, bool)
 	readiness  func() Readiness
+	retryDelay func(int) time.Duration
 }
 
 func LoadRunnerLifecycleConfig(instance utils.Instance) RunnerLifecycleConfig {
@@ -81,7 +90,7 @@ func LoadRunnerLifecycleConfig(instance utils.Instance) RunnerLifecycleConfig {
 		RunnerID:          strings.TrimSpace(utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")),
 		CredimiURL:        strings.TrimSpace(instance.URL),
 		HeartbeatInterval: loadLifecycleDuration(lifecycleHeartbeatIntervalEnvName, defaultHeartbeatInterval),
-		RequestTimeout:    defaultLifecycleRequestTimeout,
+		RequestTimeout:    loadLifecycleDuration(lifecycleRequestTimeoutEnvName, defaultLifecycleRequestTimeout),
 	}
 
 	if strings.TrimSpace(instance.UserAPIKey) != "" {
@@ -115,6 +124,9 @@ func NewRunnerLifecycleClient(cfg RunnerLifecycleConfig, httpClient HTTPClient, 
 		inventory: currentLifecycleInventory,
 		readiness: func() Readiness {
 			return NewReadinessService().Check()
+		},
+		retryDelay: func(attempt int) time.Duration {
+			return time.Duration(attempt) * 250 * time.Millisecond
 		},
 	}
 }
@@ -255,37 +267,68 @@ func (c *RunnerLifecycleClient) post(ctx context.Context, path []string, payload
 		return nil
 	}
 
+	if payload.RequestID == "" {
+		payload.RequestID = newLifecycleRequestID()
+	}
+	var lastErr error
+	for attempt := 1; attempt <= defaultLifecycleRequestAttempts; attempt++ {
+		lastErr = c.postOnce(ctx, path, payload)
+		if lastErr == nil || !isLifecycleRetryable(lastErr) || attempt == defaultLifecycleRequestAttempts {
+			return lastErr
+		}
+		delay := time.Duration(0)
+		if c.retryDelay != nil {
+			delay = c.retryDelay(attempt)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+func (c *RunnerLifecycleClient) postOnce(ctx context.Context, path []string, payload lifecyclePayload) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal lifecycle payload: %w", err)
 	}
-
 	reqCtx, cancel := context.WithTimeout(ctx, c.cfg.RequestTimeout)
 	defer cancel()
-
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, utils.JoinURL(c.cfg.CredimiURL, path...), bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create lifecycle request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	setAPIKeyHeader(req, c.cfg.APIKey)
-
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("send lifecycle request: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 		return nil
 	}
-
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if readErr != nil {
 		return fmt.Errorf("lifecycle request failed with status %s and unreadable body: %w", resp.Status, readErr)
 	}
-
 	return fmt.Errorf("lifecycle request failed with status %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+}
+
+func isLifecycleRetryable(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkErr net.Error
+	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary())
+}
+
+func newLifecycleRequestID() string {
+	return fmt.Sprintf("%s-%d-%d", strings.TrimSpace(utils.GetEnvironmentVariable("CREDIMI_RUNNER_BOOT_ID")), time.Now().UnixNano(), lifecycleRequestSequence.Add(1))
 }
 
 func loadLifecycleEnabled() bool {

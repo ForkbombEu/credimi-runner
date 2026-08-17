@@ -185,7 +185,7 @@ func TestRuntimeControlLoopStartsRegisteredRuntimeInOrder(t *testing.T) {
 	}
 }
 
-func TestRuntimeControlLoopReportsSetupResumeFailure(t *testing.T) {
+func TestRuntimeControlLoopKeepsSetupRuntimeRunningAfterResumeFailure(t *testing.T) {
 	dir := t.TempDir()
 	server := &runtimeControlServerFake{}
 	lifecycle := &setupResumeFailureLifecycleFake{}
@@ -199,17 +199,10 @@ func TestRuntimeControlLoopReportsSetupResumeFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "runtime-control"), []byte("setup-ready\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if raw, err := os.ReadFile(filepath.Join(dir, "runtime-state")); err == nil && strings.TrimSpace(string(raw)) == "failed: resume failed" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("setup resume failure was not persisted")
+	waitForRuntimeState(t, dir, "running")
 }
 
-func TestRuntimeControlLoopReportsSetupHeartbeatFailure(t *testing.T) {
+func TestRuntimeControlLoopKeepsSetupRuntimeRunningAfterHeartbeatFailure(t *testing.T) {
 	dir := t.TempDir()
 	server := &runtimeControlServerFake{}
 	lifecycle := &setupHeartbeatFailureLifecycleFake{}
@@ -223,14 +216,7 @@ func TestRuntimeControlLoopReportsSetupHeartbeatFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "runtime-control"), []byte("setup-ready\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if raw, err := os.ReadFile(filepath.Join(dir, "runtime-state")); err == nil && strings.TrimSpace(string(raw)) == "failed: heartbeat failed" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("setup heartbeat failure was not persisted")
+	waitForRuntimeState(t, dir, "running")
 }
 
 func TestRuntimeControlLoopReportsStartAndRestartWorkerFailures(t *testing.T) {
@@ -254,7 +240,7 @@ func TestRuntimeControlLoopReportsStartAndRestartWorkerFailures(t *testing.T) {
 	}
 }
 
-func TestRuntimeControlLoopReportsStartResumeFailure(t *testing.T) {
+func TestRuntimeControlLoopKeepsStartedRuntimeRunningAfterResumeFailure(t *testing.T) {
 	dir := t.TempDir()
 	server := &runtimeControlServerFake{}
 	lifecycle := &runtimeControlResumeFailureLifecycleFake{}
@@ -268,7 +254,7 @@ func TestRuntimeControlLoopReportsStartResumeFailure(t *testing.T) {
 	if err := writeRuntimeCommand(dir, "start"); err != nil {
 		t.Fatal(err)
 	}
-	waitForRuntimeState(t, dir, "failed: resume failed")
+	waitForRuntimeState(t, dir, "running")
 }
 
 type orderedRuntimeControlServerFake struct{ events chan<- string }
@@ -301,7 +287,7 @@ func (setupResumeFailureLifecycleFake) Resume(context.Context, string) error {
 }
 
 func (setupResumeFailureLifecycleFake) Heartbeat(context.Context) error {
-	return errors.New("heartbeat should not run")
+	return nil
 }
 
 type setupHeartbeatFailureLifecycleFake struct{}
