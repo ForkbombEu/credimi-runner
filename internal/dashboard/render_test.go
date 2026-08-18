@@ -455,6 +455,20 @@ func TestStaticCSS_HiddenBeatsModalDisplay(t *testing.T) {
 	}
 }
 
+func TestStaticRedroidSSHToggleClearsCanonicalSudo(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	if !strings.Contains(content, "setFieldValue(form, 'AVDCTL_SUDO', 'false')") {
+		t.Fatal("disabling Redroid SSH must clear the submitted canonical sudo value")
+	}
+	if strings.Contains(content, "setToggleValue(form, 'AVDCTL_SUDO', false)") {
+		t.Fatal("Redroid SSH toggle must not update only the visual toggle helper")
+	}
+}
+
 func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
 	script, err := os.ReadFile("static/app.js")
 	if err != nil {

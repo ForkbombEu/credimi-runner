@@ -1695,15 +1695,6 @@
   };
   initDeviceFields();
 
-  const setToggleValue = (root, name, on) => {
-    const checkbox = root.querySelector(`input[type="checkbox"][name="${name}"], input[type="checkbox"][data-setup-device-field="${name}"]`);
-    if (checkbox) checkbox.checked = on;
-    const button = root.querySelector(`[data-toggle="${name}"]`);
-    if (button) {
-      button.classList.toggle('on', on);
-      button.setAttribute('aria-checked', on ? 'true' : 'false');
-    }
-  };
   const syncAVDCTLSSH = (root = document) => {
     root.querySelectorAll('[data-avdctl-ssh-control]').forEach((control) => {
       const enabled = control.querySelector('[data-avdctl-ssh-enabled]');
@@ -1727,7 +1718,10 @@
       setFieldValue(form, 'AVDCTL_SSH_TARGET', '');
       setFieldValue(form, 'AVDCTL_SSH_PASSWORD', '');
       setFieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-      setToggleValue(form, 'AVDCTL_SUDO', false);
+      // AVDCTL_SUDO is a hidden canonical value, not the visual checkbox.
+      // Always write it when SSH is disabled so a prior true value cannot be
+      // submitted after the toggle is turned off.
+      setFieldValue(form, 'AVDCTL_SUDO', 'false');
       const sudoEnabled = form.querySelector('[data-avdctl-sudo-enabled]');
       if (sudoEnabled) sudoEnabled.checked = false;
       const sudoToggle = form.querySelector('[data-avdctl-sudo-toggle]');
