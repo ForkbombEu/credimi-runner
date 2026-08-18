@@ -274,6 +274,9 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(html, `name="ADB_SCREEN_RECORD_SIZE"`) {
+		t.Fatalf("setup page should render the screen recording size setting: %s", html)
+	}
 	for _, want := range []string{
 		`data-setup-form`,
 		`data-step-target="identity"`,

@@ -69,7 +69,7 @@
         <template data-device-provision-template>{{template "setup_device_provision" $}}</template>
         <button type="button" class="btn btn-out" data-setup-device-add>{{icon "plus"}} Add another device</button>
         {{else if eq $s.ID "advanced"}}
-        <div class="wizard-fields">{{template "field" $.Field "OTEL_ENABLED"}}<details class="gear-panel" style="grid-column:1/-1"><summary>{{icon "gear"}} Runtime and telemetry defaults</summary><div class="field-row">{{template "field" $.Field "ANDROID_RUNNER_IMAGE"}}{{template "field" $.Field "ANDROID_PULL_POLICY"}}</div><div class="field-row">{{template "field" $.Field "OTEL_EXPORTER_OTLP_ENDPOINT"}}{{template "field" $.Field "OTEL_SERVICE_NAME"}}</div></details></div>
+        <div class="wizard-fields">{{template "field" $.Field "OTEL_ENABLED"}}<details class="gear-panel" style="grid-column:1/-1"><summary>{{icon "gear"}} Runtime and telemetry defaults</summary><div class="field-row">{{template "field" $.Field "ANDROID_RUNNER_IMAGE"}}{{template "field" $.Field "ANDROID_PULL_POLICY"}}</div>{{template "field" $.Field "ADB_SCREEN_RECORD_SIZE"}}<div class="field-row">{{template "field" $.Field "OTEL_EXPORTER_OTLP_ENDPOINT"}}{{template "field" $.Field "OTEL_SERVICE_NAME"}}</div></details></div>
         {{else if eq $s.ID "review"}}
         <div class="grid-2" data-review-section>
           <div class="card"><div class="card-h">{{icon "key"}}<h3>Identity</h3></div><div class="card-b"><dl class="kv"><dt>Organization</dt><dd data-review="CREDIMI_RUNNER_ORGANIZATION">—</dd><dt>Runner name</dt><dd data-review="CREDIMI_RUNNER_NAME">—</dd><dt>Runner ID</dt><dd class="mono" data-review="CREDIMI_RUNNER_ID">—</dd><dt>Published</dt><dd data-review="CREDIMI_RUNNER_PUBLISHED">—</dd></dl></div></div>
