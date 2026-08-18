@@ -76,7 +76,7 @@ func (c RunnerRuntimeConfig) Environment(deviceID string) (func(string, ...any) 
 	host := cloneStringMap(c.Host)
 	values := cloneStringMap(device.Values)
 	return func(name string, fallback ...any) string {
-		if value := strings.TrimSpace(values[name]); value != "" {
+		if value, exists := values[name]; exists {
 			return value
 		}
 		if value := strings.TrimSpace(host[name]); value != "" {

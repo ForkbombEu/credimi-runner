@@ -61,3 +61,32 @@ func TestRunnerRuntimeConfigEnvironmentUsesFallbacksAndRejectsInvalidDevices(t *
 		t.Fatal("disabled device environment lookup succeeded")
 	}
 }
+
+func TestRunnerRuntimeConfigEnvironmentPreservesEmptyDeviceOverrides(t *testing.T) {
+	t.Setenv("AVDCTL_SSH_TARGET", "stale-host")
+	t.Setenv("AVDCTL_SUDO", "true")
+	config := RunnerRuntimeConfig{
+		RunnerID: "acme/runner",
+		Devices: []DeviceRuntimeConfig{
+			{ID: "acme/runner/a", Enabled: true, Values: map[string]string{"AVDCTL_SSH_TARGET": "", "AVDCTL_SUDO": "false"}},
+			{ID: "acme/runner/b", Enabled: true, Values: map[string]string{"AVDCTL_SSH_TARGET": "bob@host-b"}},
+		},
+	}
+	getA, err := config.Environment("acme/runner/a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	getB, err := config.Environment("acme/runner/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := getA("AVDCTL_SSH_TARGET"); got != "" {
+		t.Fatalf("empty device SSH target fell through to %q", got)
+	}
+	if got := getA("AVDCTL_SUDO"); got != "false" {
+		t.Fatalf("explicit device sudo value = %q, want false", got)
+	}
+	if got := getB("AVDCTL_SSH_TARGET"); got != "bob@host-b" {
+		t.Fatalf("second device SSH target = %q", got)
+	}
+}
