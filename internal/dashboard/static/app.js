@@ -437,6 +437,11 @@
       }
       window.location.assign(dashboardURL('/devices'));
     };
+    if (form.dataset.deviceEditing === '1') {
+      e.preventDefault();
+      try { await save(); } catch (err) { showError(err && err.message ? err.message : 'Unable to save device configuration'); }
+      return;
+    }
     if (form.dataset.deviceConflictResolved === '1') {
       e.preventDefault();
       try { await save(); } catch (err) { showError(err && err.message ? err.message : 'Unable to save device configuration'); }
@@ -1699,7 +1704,7 @@
       button.setAttribute('aria-checked', on ? 'true' : 'false');
     }
   };
-  const syncAVDCTLSSH = (root = document, clearDisabled = false) => {
+  const syncAVDCTLSSH = (root = document) => {
     root.querySelectorAll('[data-avdctl-ssh-control]').forEach((control) => {
       const enabled = control.querySelector('[data-avdctl-ssh-enabled]');
       const form = control.closest('[data-device-provision]') || control.closest('form') || root;
@@ -1707,7 +1712,9 @@
       const on = fieldValue(form, 'CREDIMI_RUNNER_TYPE') === 'redroid' && !!(enabled && enabled.checked);
       if (fields && fields.matches('[data-avdctl-ssh-fields]')) {
         fields.hidden = !on;
-        fields.querySelectorAll('input, select, textarea').forEach((input) => { input.disabled = !on; });
+        // Keep the canonical fields submitted even while the section is
+        // hidden, so disabling SSH can explicitly clear an edited device.
+        fields.querySelectorAll('input, select, textarea').forEach((input) => { input.disabled = false; });
       }
       const target = form.querySelector('[name="AVDCTL_SSH_TARGET"], [data-setup-device-field="AVDCTL_SSH_TARGET"]');
       if (target) target.required = on;
@@ -1717,7 +1724,6 @@
         }
         return;
       }
-      if (!clearDisabled) return;
       setFieldValue(form, 'AVDCTL_SSH_TARGET', '');
       setFieldValue(form, 'AVDCTL_SSH_PASSWORD', '');
       setFieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
@@ -1741,7 +1747,7 @@
     enabled.checked = !enabled.checked;
     toggle.classList.toggle('on', enabled.checked);
     toggle.setAttribute('aria-checked', enabled.checked ? 'true' : 'false');
-    syncAVDCTLSSH(control.parentElement || document, !enabled.checked);
+    syncAVDCTLSSH(control.parentElement || document);
     markDirty();
   });
   document.addEventListener('click', (e) => {
@@ -1757,6 +1763,113 @@
     markDirty();
   });
   syncAVDCTLSSH();
+
+  const deviceEditFields = {
+    CREDIMI_DEVICE_NAME: 'deviceName',
+    CREDIMI_DEVICE_DESCRIPTION: 'deviceDescription',
+    CREDIMI_RUNNER_SERIAL: 'deviceSerial',
+    CREDIMI_RUNNER_WIFI_IP: 'deviceWifiIp',
+    CREDIMI_RUNNER_WIFI_PORT: 'deviceWifiPort',
+    BASE_NAME: 'deviceBaseName',
+    GOLDEN_PATH: 'deviceGoldenPath',
+    HOST_AVD_HOME_PATH: 'deviceHostAvdHome',
+    HOST_AVD_GOLDEN_PATH: 'deviceHostAvdGolden',
+    REDROID_DATA_DIR: 'deviceRedroidDataDir',
+    REDROID_DATA_TAR: 'deviceRedroidDataTar',
+    AVDCTL_SSH_TARGET: 'deviceSshTarget',
+    AVDCTL_SSH_KNOWN_HOSTS_PATH: 'deviceKnownHosts',
+    IOS_UDID: 'deviceIosUdid',
+  };
+  const setDeviceEditMode = (form, editing) => {
+    form.dataset.deviceEditing = editing ? '1' : '';
+    const title = form.querySelector('[data-device-form-title]');
+    const label = form.querySelector('[data-device-form-submit-label]');
+    const cancel = form.querySelector('[data-device-form-cancel]');
+    if (title) title.textContent = editing ? 'Edit device' : 'Device';
+    if (label) label.textContent = editing ? 'Save device' : 'Add device';
+    if (cancel) cancel.hidden = !editing;
+  };
+  const selectDeviceType = (card, type) => {
+    const radio = card.querySelector(`[data-device-type-ui][value="${CSS.escape(type)}"]`);
+    if (!radio) return;
+    radio.checked = true;
+    card.querySelectorAll('[data-dev-pick]').forEach((pick) => pick.classList.toggle('on', pick.dataset.devPick === type));
+    applyRunnerTypeDefaults(card, type);
+    initializeDeviceProvisionCard(card);
+  };
+  const selectDeviceMode = (card, mode) => {
+    const radio = card.querySelector(`[data-device-mode-ui][value="${CSS.escape(mode)}"]`);
+    if (radio) radio.checked = true;
+    setFieldValue(card, 'CREDIMI_RUNNER_DEVICE_MODE', mode);
+    initializeDeviceProvisionCard(card);
+  };
+  const populateDeviceEdit = (button) => {
+    const form = button.closest('[data-device-add-form]');
+    const card = form && form.querySelector('[data-device-provision]');
+    if (!form || !card) return;
+    selectDeviceType(card, button.dataset.deviceType || 'android_phone');
+    if ((button.dataset.deviceType || '') === 'android_phone') selectDeviceMode(card, button.dataset.deviceMode || 'usb');
+    setFieldValue(card, 'CREDIMI_DEVICE_ID', button.dataset.deviceId || '');
+    setFieldValue(card, 'CREDIMI_DEVICE_CONFLICT_ACTION', 'update');
+    Object.entries(deviceEditFields).forEach(([name, dataKey]) => setFieldValue(card, name, button.dataset[dataKey] || ''));
+    const serial = button.dataset.deviceSerial || '';
+    const serialSelect = card.querySelector('[data-android-phone-device-select]');
+    if (serialSelect && serial) {
+      if (![...serialSelect.options].some((option) => option.value === serial)) serialSelect.add(new Option(`Configured device — ${serial}`, serial));
+      serialSelect.value = serial;
+    }
+    const sshEnabled = card.querySelector('[data-avdctl-ssh-enabled]');
+    const sshOn = (button.dataset.deviceSshTarget || '').trim() !== '';
+    if (sshEnabled) sshEnabled.checked = sshOn;
+    const sshToggle = card.querySelector('[data-avdctl-ssh-toggle]');
+    if (sshToggle) {
+      sshToggle.classList.toggle('on', sshOn);
+      sshToggle.setAttribute('aria-checked', sshOn ? 'true' : 'false');
+    }
+    const sudoOn = button.dataset.deviceSudo === 'true';
+    setFieldValue(card, 'AVDCTL_SUDO', sudoOn ? 'true' : 'false');
+    const sudoEnabled = card.querySelector('[data-avdctl-sudo-enabled]');
+    if (sudoEnabled) sudoEnabled.checked = sudoOn;
+    const sudoToggle = card.querySelector('[data-avdctl-sudo-toggle]');
+    if (sudoToggle) {
+      sudoToggle.classList.toggle('on', sudoOn);
+      sudoToggle.setAttribute('aria-checked', sudoOn ? 'true' : 'false');
+    }
+    syncAVDCTLSSH(card);
+    setDeviceEditMode(form, true);
+    form.dataset.deviceConflictResolved = '1';
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  const resetDeviceEdit = (form) => {
+    const card = form.querySelector('[data-device-provision]');
+    if (!card) return;
+    form.reset();
+    setDeviceEditMode(form, false);
+    form.dataset.deviceConflictResolved = '';
+    selectDeviceType(card, 'android_phone');
+    selectDeviceMode(card, 'usb');
+    setFieldValue(card, 'CREDIMI_DEVICE_ID', '');
+    setFieldValue(card, 'CREDIMI_DEVICE_CONFLICT_ACTION', 'create');
+    setFieldValue(card, 'AVDCTL_SUDO', 'false');
+    const sshEnabled = card.querySelector('[data-avdctl-ssh-enabled]');
+    if (sshEnabled) sshEnabled.checked = false;
+    syncAVDCTLSSH(card);
+    updateDeviceFields(card);
+  };
+  document.addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-device-edit]');
+    if (edit) {
+      e.preventDefault();
+      populateDeviceEdit(edit);
+      return;
+    }
+    const cancel = e.target.closest('[data-device-form-cancel]');
+    if (cancel) {
+      e.preventDefault();
+      const form = cancel.closest('[data-device-add-form]');
+      if (form) resetDeviceEdit(form);
+    }
+  });
 
   // ── API keys link button (reads from CREDIMI_URL field) ─────────────────
   document.addEventListener('click', (e) => {

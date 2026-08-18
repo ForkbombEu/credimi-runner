@@ -1068,10 +1068,20 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 				device.Enabled = enabled != "false"
 			}
 			device.Values = dashboardruntime.Values(cloneStringMap(existing.Values))
+			if typePosted && typeValue != existing.Type {
+				for _, key := range []string{"AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SSH_ARGS", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD", "REDROID_IMAGE", "REDROID_DATA_DIR", "REDROID_DATA_TAR"} {
+					delete(device.Values, key)
+				}
+			}
 			for _, field := range valueAliases {
 				if value, ok := postedValue(field.forms...); ok {
 					if value == "" {
-						delete(device.Values, field.key)
+						// Edit forms intentionally leave secret fields blank. Preserve
+						// those values unless the user explicitly disables SSH (the
+						// client then clears all SSH fields before submitting).
+						if field.key != "AVDCTL_SSH_PASSWORD" && field.key != "AVDCTL_SUDO_PASSWORD" {
+							delete(device.Values, field.key)
+						}
 					} else {
 						device.Values[field.key] = value
 					}

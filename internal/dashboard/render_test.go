@@ -417,6 +417,8 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 	for _, want := range []string{
 		`Configured inventory`,
 		`Add device`,
+		`data-device-edit`,
+		`data-device-form-cancel`,
 		`data-busy-title="Adding device"`,
 		`data-busy-controller-progress="true"`,
 		`IDs are created from the device name and cannot be edited`,

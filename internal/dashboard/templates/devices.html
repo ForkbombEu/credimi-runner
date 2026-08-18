@@ -10,6 +10,15 @@
           <span class="ic {{if .Enabled}}okbg{{else}}downbg{{end}}">{{icon "phone"}}</span>
           <div class="nm"><div class="t">{{.Name}} <span class="tag kind">{{.Type}}</span><span class="tag">{{.Mode}}</span></div><div class="s mono">{{.ID}}{{if .Serial}} · {{.Serial}}{{end}}</div></div>
           <div class="rt"><span class="{{if .Enabled}}chip ok{{else}}chip down{{end}}"><span class="d"></span>{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+            <button type="button" class="btn btn-out btn-sm" data-device-edit
+              data-device-id="{{.ID}}" data-device-name="{{.Name}}" data-device-description="{{.Description}}"
+              data-device-type="{{.Type}}" data-device-mode="{{.Mode}}" data-device-serial="{{.Serial}}"
+              data-device-wifi-ip="{{index .Values "WIFI_IP"}}" data-device-wifi-port="{{index .Values "WIFI_PORT"}}"
+              data-device-base-name="{{index .Values "BASE_NAME"}}" data-device-golden-path="{{index .Values "GOLDEN_PATH"}}"
+              data-device-host-avd-home="{{index .Values "HOST_AVD_HOME_PATH"}}" data-device-host-avd-golden="{{index .Values "HOST_AVD_GOLDEN_PATH"}}"
+              data-device-redroid-data-dir="{{index .Values "REDROID_DATA_DIR"}}" data-device-redroid-data-tar="{{index .Values "REDROID_DATA_TAR"}}"
+              data-device-ssh-target="{{index .Values "AVDCTL_SSH_TARGET"}}" data-device-known-hosts="{{index .Values "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}"
+              data-device-sudo="{{index .Values "AVDCTL_SUDO"}}" data-device-ios-udid="{{index .Values "IOS_UDID"}}">Edit</button>
             <form method="post" action="{{if .Enabled}}/devices/disable{{else}}/devices/enable{{end}}"><input type="hidden" name="device_id" value="{{.ID}}"><button class="btn btn-out btn-sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form>
             <form method="post" action="/devices/remove" hx-post="/devices/remove" hx-swap="none" onsubmit="return confirm('Remove this device from this runner and Credimi?')"><input type="hidden" name="device_id" value="{{.ID}}"><input type="hidden" name="confirm" value="true"><button class="btn btn-danger btn-sm">{{icon "trash"}} Remove</button></form>
           </div>
@@ -23,7 +32,7 @@
   <form method="post" action="/devices/config" autocomplete="off" data-config-form data-target-config-form data-device-add-form data-busy-title="Adding device" data-busy-message="Preparing the device. This can take several minutes for an Android emulator." data-busy-controller-progress="true">
     <div class="callout danger" data-device-form-error hidden style="margin-bottom:12px"></div>
     {{template "setup_device_provision" .}}
-    <div class="savebar"><span class="msg">The canonical device ID is resolved automatically and registration happens on save.</span><div class="sp"></div><button class="btn btn-pri">{{icon "plus"}} Add device</button></div>
+    <div class="savebar"><span class="msg">The canonical device ID is resolved automatically and registration happens on save.</span><div class="sp"></div><button type="button" class="btn btn-out btn-sm" data-device-form-cancel hidden>Cancel</button><button class="btn btn-pri" data-device-form-submit>{{icon "plus"}} <span data-device-form-submit-label>Add device</span></button></div>
   </form>
 
 </main>

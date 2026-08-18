@@ -79,6 +79,49 @@ func TestDashboardAddRedroidPersistsAVDCTLInTypedTOML(t *testing.T) {
 	}
 }
 
+func TestDashboardEditRedroidPreservesBlankSecrets(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{
+		Host: dashboardruntime.Values(s.cfg.Snapshot()),
+		Devices: []dashboardruntime.DeviceRuntimeConfig{{
+			ID: "acme/runner/redroid", Name: "Remote", Type: "redroid", Mode: "redroid", Enabled: true,
+			WiFiIP: "192.0.2.50", WiFiPort: "5555", Serial: "192.0.2.50:5555",
+			Values: dashboardruntime.Values{
+				"WIFI_IP": "192.0.2.50", "WIFI_PORT": "5555", "AVDCTL_SSH_TARGET": "admin@redroid",
+				"AVDCTL_SSH_PASSWORD": "ssh-secret", "AVDCTL_SSH_KNOWN_HOSTS_PATH": "/home/admin/.ssh/known_hosts",
+				"AVDCTL_SUDO": "true", "AVDCTL_SUDO_PASSWORD": "sudo-secret",
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	form := url.Values{
+		"CREDIMI_DEVICE_ID": {"acme/runner/redroid"}, "CREDIMI_DEVICE_NAME": {"Remote"},
+		"CREDIMI_RUNNER_TYPE": {"redroid"}, "CREDIMI_RUNNER_DEVICE_MODE": {"redroid"},
+		"CREDIMI_RUNNER_WIFI_IP": {"192.0.2.51"}, "CREDIMI_RUNNER_WIFI_PORT": {"5560"},
+		"AVDCTL_SSH_TARGET": {"admin@redroid"}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {"/home/admin/.ssh/known_hosts"}, "AVDCTL_SUDO": {"true"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := s.saveDevicesConfigSync(req, nil); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := runnerconfig.LoadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	redroid := reloaded.Devices[0].Redroid
+	if redroid.AVDCTLSSHPassword != "ssh-secret" || redroid.AVDCTLSudoPassword != "sudo-secret" || redroid.Host != "192.0.2.51" || redroid.ADBPort != 5560 {
+		t.Fatalf("edited Redroid = %#v", redroid)
+	}
+}
+
 func TestDeviceRenameRejectsActiveMobileActivity(t *testing.T) {
 	s := newTestServer(t)
 	cfg := runnerconfig.Bootstrap()
