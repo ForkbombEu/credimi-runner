@@ -72,6 +72,7 @@ var Registry = []Field{
 	{Key: "CREDIMI_TEMP_DIR", Label: "Temp directory", Group: "Advanced", Type: TypeText},
 	{Key: "ANDROID_RUNNER_IMAGE", Label: "Android runner image", Group: "Advanced", Type: TypeText, Hint: "One image serves every Android device. Use credimi-runner:local for local development."},
 	{Key: "ANDROID_PULL_POLICY", Label: "Android image pull policy", Group: "Advanced", Type: TypeSelect, Options: []string{"if-not-present", "always", "never"}, Hint: "Use never with a locally built image."},
+	{Key: "ADB_SCREEN_RECORD_SIZE", Label: "ADB screen recording size", Group: "Advanced", Type: TypeText, Hint: "Optional, for example 1280x720. Leave empty to use the device default."},
 }
 
 var fieldByKey = func() map[string]Field {

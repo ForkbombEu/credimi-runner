@@ -108,6 +108,7 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 	values["ANDROID_TOOL_CACHE_VOLUME"] = cfg.Android.ToolCacheVolume
 	values["ANDROID_SDK_VOLUME"] = cfg.Android.SDKVolume
 	values["ANDROID_ADB_KEYS_PATH"] = cfg.Android.ADBKeysPath
+	values["ADB_SCREEN_RECORD_SIZE"] = cfg.Android.ScreenRecordSize
 	switch cfg.Exposure.Mode {
 	case "named_tunnel":
 		values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
@@ -226,6 +227,7 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 	cfg.Android.ToolCacheVolume = values["ANDROID_TOOL_CACHE_VOLUME"]
 	cfg.Android.SDKVolume = values["ANDROID_SDK_VOLUME"]
 	cfg.Android.ADBKeysPath = values["ANDROID_ADB_KEYS_PATH"]
+	cfg.Android.ScreenRecordSize = values["ADB_SCREEN_RECORD_SIZE"]
 	switch values["CREDIMI_SERVICE_MODE"] {
 	case "cloudflare-managed":
 		cfg.Exposure.Mode = "named_tunnel"

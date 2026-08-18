@@ -99,13 +99,14 @@ type StorageConfig struct {
 }
 
 type AndroidConfig struct {
-	RunnerImage     string `toml:"runner_image"`
-	PullPolicy      string `toml:"pull_policy"`
-	Network         string `toml:"network"`
-	StateVolume     string `toml:"state_volume"`
-	ToolCacheVolume string `toml:"tool_cache_volume"`
-	SDKVolume       string `toml:"sdk_volume"`
-	ADBKeysPath     string `toml:"adb_keys_path"`
+	RunnerImage      string `toml:"runner_image"`
+	PullPolicy       string `toml:"pull_policy"`
+	Network          string `toml:"network"`
+	StateVolume      string `toml:"state_volume"`
+	ToolCacheVolume  string `toml:"tool_cache_volume"`
+	SDKVolume        string `toml:"sdk_volume"`
+	ADBKeysPath      string `toml:"adb_keys_path"`
+	ScreenRecordSize string `toml:"screen_record_size,omitempty"`
 }
 
 type DeviceConfig struct {

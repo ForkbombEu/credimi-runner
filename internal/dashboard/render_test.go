@@ -234,6 +234,9 @@ func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
 	if strings.Contains(html, "Additional environments") {
 		t.Fatalf("config page should not render multi-environment section: %s", html)
 	}
+	if !strings.Contains(html, `name="ADB_SCREEN_RECORD_SIZE"`) {
+		t.Fatalf("config page should render the screen recording size setting: %s", html)
+	}
 }
 
 func TestRenderer_HidesIOSSimulatorOnLinux(t *testing.T) {

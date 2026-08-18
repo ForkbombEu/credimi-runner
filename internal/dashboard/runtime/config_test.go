@@ -66,6 +66,24 @@ func TestManagedExposureValuesRoundTripThroughTypedStore(t *testing.T) {
 	}
 }
 
+func TestAndroidScreenRecordSizeRoundTrip(t *testing.T) {
+	cfg := testTOMLConfig(t.TempDir())
+	cfg.Android.ScreenRecordSize = "1280x720"
+
+	values := ValuesFromTypedConfig(cfg)
+	if values["ADB_SCREEN_RECORD_SIZE"] != "1280x720" {
+		t.Fatalf("ADB_SCREEN_RECORD_SIZE = %q", values["ADB_SCREEN_RECORD_SIZE"])
+	}
+
+	roundTripped, err := TypedConfigFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roundTripped.Android.ScreenRecordSize != "1280x720" {
+		t.Fatalf("screen_record_size = %q", roundTripped.Android.ScreenRecordSize)
+	}
+}
+
 func TestDefaultEmulatorABIFollowsNativeHostArchitecture(t *testing.T) {
 	for _, test := range []struct {
 		goos, goarch, want string
