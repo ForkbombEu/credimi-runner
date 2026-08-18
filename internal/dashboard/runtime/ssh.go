@@ -22,6 +22,17 @@ func DefaultSSHKnownHostsPath() string {
 	return filepath.Join(home, ".ssh", "known_hosts")
 }
 
+// EffectiveSSHKnownHostsPath returns the canonical host path for one Redroid
+// SSH configuration. An omitted path inherits the host user's default only
+// when SSH delegation is enabled; local Redroid has no known-hosts file.
+func EffectiveSSHKnownHostsPath(target, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" && strings.TrimSpace(target) != "" {
+		return DefaultSSHKnownHostsPath()
+	}
+	return path
+}
+
 // AVDCTLSSHArgs derives the avdctl OpenSSH option from the canonical typed
 // known-hosts path. The returned string is consumed by avdctl's existing
 // space-separated AVDCTL_SSH_ARGS contract.

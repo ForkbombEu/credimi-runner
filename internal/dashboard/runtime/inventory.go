@@ -357,7 +357,9 @@ func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values
 			values[prefix+"WIFI_IP"] = strings.TrimSpace(device.WiFiIP)
 			values[prefix+"WIFI_PORT"] = adbPort
 			values[prefix+"SERIAL"] = AndroidWiFiSerial(device.WiFiIP, adbPort)
-			values[prefix+"AVDCTL_SSH_ARGS"] = AVDCTLSSHArgs(values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"])
+			knownHostsPath := EffectiveSSHKnownHostsPath(values[prefix+"AVDCTL_SSH_TARGET"], values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"])
+			values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"] = knownHostsPath
+			values[prefix+"AVDCTL_SSH_ARGS"] = AVDCTLSSHArgs(knownHostsPath)
 		case device.Type == "android_phone" && device.Mode == "usb":
 			if serial := strings.TrimSpace(device.Serial); serial != "" {
 				values[prefix+"SERIAL"] = serial

@@ -248,7 +248,7 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 		}
 		if deviceType == "redroid" {
 			target := strings.TrimSpace(device.Values["AVDCTL_SSH_TARGET"])
-			path := strings.TrimSpace(device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"])
+			path := EffectiveSSHKnownHostsPath(target, device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"])
 			if target != "" && path != "" {
 				if err := validateKnownHostsPath(device.ID, path); err != nil {
 					return sharedRunnerRuntime{}, err

@@ -161,8 +161,9 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 			values[prefix+"REDROID_DATA_TAR"] = device.Redroid.DataArchive
 			values[prefix+"AVDCTL_SSH_TARGET"] = device.Redroid.AVDCTLSSHTarget
 			values[prefix+"AVDCTL_SSH_PASSWORD"] = device.Redroid.AVDCTLSSHPassword
-			values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"] = device.Redroid.AVDCTLSSHKnownHostsPath
-			values[prefix+"AVDCTL_SSH_ARGS"] = AVDCTLSSHArgs(device.Redroid.AVDCTLSSHKnownHostsPath)
+			knownHostsPath := EffectiveSSHKnownHostsPath(device.Redroid.AVDCTLSSHTarget, device.Redroid.AVDCTLSSHKnownHostsPath)
+			values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"] = knownHostsPath
+			values[prefix+"AVDCTL_SSH_ARGS"] = AVDCTLSSHArgs(knownHostsPath)
 			values[prefix+"AVDCTL_SUDO"] = strconv.FormatBool(device.Redroid.AVDCTLSudo)
 			values[prefix+"AVDCTL_SUDO_PASSWORD"] = device.Redroid.AVDCTLSudoPassword
 		case runnerconfig.DeviceIOSSimulator:
@@ -295,6 +296,10 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 			if err != nil {
 				return cfg, err
 			}
+			knownHostsPath := EffectiveSSHKnownHostsPath(device.Values["AVDCTL_SSH_TARGET"], device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"])
+			if err := validateKnownHostsPathValue(device.ID, knownHostsPath); err != nil {
+				return cfg, err
+			}
 			entry.Type, entry.Redroid = runnerconfig.DeviceRedroid, &runnerconfig.RedroidConfig{
 				Host:                    host,
 				Image:                   defaultIfEmpty(device.Values["REDROID_IMAGE"], "redroid:latest"),
@@ -303,7 +308,7 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 				ADBPort:                 adbPort,
 				AVDCTLSSHTarget:         device.Values["AVDCTL_SSH_TARGET"],
 				AVDCTLSSHPassword:       device.Values["AVDCTL_SSH_PASSWORD"],
-				AVDCTLSSHKnownHostsPath: device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"],
+				AVDCTLSSHKnownHostsPath: knownHostsPath,
 				AVDCTLSudo:              sudo,
 				AVDCTLSudoPassword:      device.Values["AVDCTL_SUDO_PASSWORD"],
 			}

@@ -1283,7 +1283,7 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 		set("REDROID_DATA_DIR", dashboardruntime.DefaultRedroidDataDir)
 		set("REDROID_DATA_TAR", dashboardruntime.DefaultRedroidDataTar)
 		if strings.TrimSpace(device.Values["AVDCTL_SSH_TARGET"]) != "" {
-			set("AVDCTL_SSH_KNOWN_HOSTS_PATH", dashboardruntime.DefaultSSHKnownHostsPath())
+			set("AVDCTL_SSH_KNOWN_HOSTS_PATH", dashboardruntime.EffectiveSSHKnownHostsPath(device.Values["AVDCTL_SSH_TARGET"], device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"]))
 		}
 	}
 }
