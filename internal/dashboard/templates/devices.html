@@ -32,7 +32,7 @@
   <form method="post" action="/devices/config" autocomplete="off" data-config-form data-target-config-form data-device-add-form data-busy-title="Adding device" data-busy-message="Preparing the device. This can take several minutes for an Android emulator." data-busy-controller-progress="true">
     <div class="callout danger" data-device-form-error hidden style="margin-bottom:12px"></div>
     {{template "setup_device_provision" .}}
-    <div class="savebar"><span class="msg">The canonical device ID is resolved automatically and registration happens on save.</span><div class="sp"></div><button type="button" class="btn btn-out btn-sm" data-device-form-cancel hidden>Cancel</button><button class="btn btn-pri" data-device-form-submit>{{icon "plus"}} <span data-device-form-submit-label>Add device</span></button></div>
+    <div class="savebar"><span class="msg">The canonical device ID is resolved automatically and registration happens on save.</span><div class="sp"></div><button class="btn btn-pri" data-device-form-submit>{{icon "plus"}} <span data-device-form-submit-label>Add device</span></button></div>
   </form>
 
 </main>

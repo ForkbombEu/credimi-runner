@@ -430,6 +430,7 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 		`Add device`,
 		`data-device-edit`,
 		`data-device-form-cancel`,
+		`Cancel edit`,
 		`data-busy-title="Adding device"`,
 		`data-busy-controller-progress="true"`,
 		`IDs are created from the device name and cannot be edited`,
@@ -438,6 +439,9 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)
 		}
+	}
+	if strings.Count(html, `data-device-form-cancel`) != 1 {
+		t.Fatalf("devices page should render one edit cancellation action: %s", html)
 	}
 	if !strings.Contains(html, `<a class="sb-env" href="/devices"`) {
 		t.Fatal("runner sidebar identity should link to the Devices page")
