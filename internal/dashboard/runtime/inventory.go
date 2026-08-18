@@ -43,7 +43,7 @@ var DeviceKeys = map[string]struct{}{
 	"BASE_NAME": {}, "GOLDEN_PATH": {}, "HOST_AVD_HOME_PATH": {}, "HOST_AVD_GOLDEN_PATH": {},
 	"API_LEVEL": {}, "ABI": {}, "SYSTEM_IMAGE": {}, "HEADLESS": {}, "MEMORY_MB": {}, "CORES": {},
 	"ANDROID_KEYS_DIR": {}, "REDROID_IMAGE": {}, "REDROID_DATA_DIR": {}, "REDROID_DATA_TAR": {},
-	"AVD_NAME": {}, "AVDCTL_SSH_TARGET": {}, "AVDCTL_SSH_PASSWORD": {}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {}, "AVDCTL_SUDO": {}, "AVDCTL_SUDO_PASSWORD": {},
+	"AVD_NAME": {}, "AVDCTL_SSH_TARGET": {}, "AVDCTL_SSH_PASSWORD": {}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {}, "AVDCTL_SSH_ARGS": {}, "AVDCTL_SUDO": {}, "AVDCTL_SUDO_PASSWORD": {},
 	"WORK_DIR": {}, "PORT": {}, "CONTAINER_NAME": {}, "IOS_UDID": {},
 }
 
@@ -352,6 +352,7 @@ func ValuesWithRuntimeDevices(host Values, devices []DeviceRuntimeConfig) Values
 			values[prefix+"WIFI_IP"] = strings.TrimSpace(device.WiFiIP)
 			values[prefix+"WIFI_PORT"] = adbPort
 			values[prefix+"SERIAL"] = AndroidWiFiSerial(device.WiFiIP, adbPort)
+			values[prefix+"AVDCTL_SSH_ARGS"] = AVDCTLSSHArgs(values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"])
 		case device.Type == "android_phone" && device.Mode == "usb":
 			if serial := strings.TrimSpace(device.Serial); serial != "" {
 				values[prefix+"SERIAL"] = serial

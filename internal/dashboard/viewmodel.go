@@ -4,8 +4,6 @@ import (
 	"html/template"
 	"net"
 	"net/url"
-	"os"
-	"path/filepath"
 	goruntime "runtime"
 	"strings"
 	"time"
@@ -400,15 +398,7 @@ func (d PageData) FieldWithLabel(key, label string) FieldVM {
 }
 
 func (d PageData) DefaultSSHKnownHostsPath() string {
-	return defaultSSHKnownHostsPath()
-}
-
-func defaultSSHKnownHostsPath() string {
-	home, _ := os.UserHomeDir()
-	if home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".ssh", "known_hosts")
+	return dashboardruntime.DefaultSSHKnownHostsPath()
 }
 
 func (d PageData) DefaultWiFiPort() string { return dashboardruntime.DefaultWiFiPort }

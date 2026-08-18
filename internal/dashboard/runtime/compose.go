@@ -129,6 +129,12 @@ func writeRunnerService(builder *strings.Builder, goos, serviceMode string, spec
 	if spec.HostGoldenRoot != "" {
 		fmt.Fprintf(builder, "      - %s:/avd-golden\n", composePath(spec.HostGoldenRoot))
 	}
+	for _, path := range spec.KnownHostsPaths {
+		// Keep the canonical host path visible at the same absolute path in the
+		// Linux container. This is read-only and allows avdctl to use the path
+		// projected from typed TOML without a second path mapping.
+		fmt.Fprintf(builder, "      - %s\n", strconv.Quote(path+":"+path+":ro"))
+	}
 	builder.WriteString("      - runner_state:/var/lib/credimi-runner\n      - runner_tools:/opt/credimi-runner/tools\n      - android_sdk:/opt/android-sdk\n")
 	if spec.NetworkMode == "host" {
 		builder.WriteString("    network_mode: host\n")
@@ -183,6 +189,7 @@ type sharedRunnerRuntime struct {
 	HostAndroidDir   string
 	HostGoldenRoot   string
 	ContainerAVDHome string
+	KnownHostsPaths  []string
 }
 
 // SharedRunnerImage reports the actual image and pull policy of the one
@@ -216,6 +223,7 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 		inventory = RunnerRuntimeConfig{}
 	}
 	spec := sharedRunnerRuntime{Image: defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), PullPolicy: defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), NetworkMode: "bridge", StateVolume: defaultIfEmpty(values["ANDROID_STATE_VOLUME"], "credimi-runner-state"), ToolCacheVolume: defaultIfEmpty(values["ANDROID_TOOL_CACHE_VOLUME"], "credimi-runner-tools"), SDKVolume: defaultIfEmpty(values["ANDROID_SDK_VOLUME"], "credimi-runner-sdk"), ADBKeysPath: values["ANDROID_ADB_KEYS_PATH"], HostAndroidDir: values[HostAndroidDirEnv], HostGoldenRoot: values[HostGoldenRootEnv], ContainerAVDHome: values[ContainerAVDHomeEnv]}
+	knownHosts := map[string]struct{}{}
 	for _, device := range inventory.Devices {
 		if !device.Enabled {
 			continue
@@ -236,6 +244,21 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 		}
 		if deviceType != "android_phone" && deviceType != "android_emulator" && deviceType != "redroid" {
 			return sharedRunnerRuntime{}, fmt.Errorf("device %q has unsupported runner type %q", device.ID, deviceType)
+		}
+		if deviceType == "redroid" {
+			target := strings.TrimSpace(device.Values["AVDCTL_SSH_TARGET"])
+			path := strings.TrimSpace(device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"])
+			if target != "" && path != "" {
+				if err := validateKnownHostsPath(device.ID, path); err != nil {
+					return sharedRunnerRuntime{}, err
+				}
+				if goos == "linux" {
+					if _, exists := knownHosts[path]; !exists {
+						knownHosts[path] = struct{}{}
+						spec.KnownHostsPaths = append(spec.KnownHostsPaths, path)
+					}
+				}
+			}
 		}
 		if deviceMode != "no_device" && deviceType != "redroid" {
 			spec.HasADB = true
@@ -258,6 +281,22 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 	}
 	spec.HasKVM = goos == "linux" && kvmAvailable
 	return spec, nil
+}
+
+func validateKnownHostsPath(deviceID, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("device %q known-hosts file %q is not available: %w", deviceID, path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("device %q known-hosts path %q is not a regular file", deviceID, path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("device %q known-hosts file %q is not readable: %w", deviceID, path, err)
+	}
+	_ = file.Close()
+	return nil
 }
 
 func composePath(path string) string {

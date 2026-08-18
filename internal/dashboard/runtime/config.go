@@ -162,6 +162,7 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 			values[prefix+"AVDCTL_SSH_TARGET"] = device.Redroid.AVDCTLSSHTarget
 			values[prefix+"AVDCTL_SSH_PASSWORD"] = device.Redroid.AVDCTLSSHPassword
 			values[prefix+"AVDCTL_SSH_KNOWN_HOSTS_PATH"] = device.Redroid.AVDCTLSSHKnownHostsPath
+			values[prefix+"AVDCTL_SSH_ARGS"] = AVDCTLSSHArgs(device.Redroid.AVDCTLSSHKnownHostsPath)
 			values[prefix+"AVDCTL_SUDO"] = strconv.FormatBool(device.Redroid.AVDCTLSudo)
 			values[prefix+"AVDCTL_SUDO_PASSWORD"] = device.Redroid.AVDCTLSudoPassword
 		case runnerconfig.DeviceIOSSimulator:
