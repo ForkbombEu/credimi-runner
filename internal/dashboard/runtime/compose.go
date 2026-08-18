@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -279,6 +280,7 @@ func sharedRunnerSpecWithKVM(values Values, goos string, kvmAvailable bool) (sha
 	if goos == "linux" && strings.EqualFold(values[BootstrapHostNetworkEnv], "true") {
 		spec.NetworkMode = "host"
 	}
+	sort.Strings(spec.KnownHostsPaths)
 	spec.HasKVM = goos == "linux" && kvmAvailable
 	return spec, nil
 }

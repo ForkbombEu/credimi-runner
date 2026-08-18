@@ -357,6 +357,7 @@ type runnerTopology struct {
 	HostAndroidDir   string
 	HostGoldenRoot   string
 	ContainerAVDHome string
+	KnownHostsPaths  string
 }
 
 func topologyProjection(spec sharedRunnerRuntime) runnerTopology {
@@ -373,5 +374,6 @@ func topologyProjection(spec sharedRunnerRuntime) runnerTopology {
 		HostAndroidDir:   spec.HostAndroidDir,
 		HostGoldenRoot:   spec.HostGoldenRoot,
 		ContainerAVDHome: spec.ContainerAVDHome,
+		KnownHostsPaths:  strings.Join(spec.KnownHostsPaths, "\x00"),
 	}
 }

@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -91,6 +93,81 @@ func TestDiffValuesClassifiesOnlyTopologyChangingDeviceEditsAsRecreate(t *testin
 	usb["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
 	if got := DiffValuesForOS(base, usb, "linux"); !containsApplyClass(got.Classes, ApplyComposeRecreate) {
 		t.Fatalf("USB topology change did not request recreate: %#v", got)
+	}
+}
+
+func TestDiffValuesClassifiesKnownHostsMountChangesAsTopology(t *testing.T) {
+	dir := t.TempDir()
+	knownA := filepath.Join(dir, "known-a")
+	knownB := filepath.Join(dir, "known-b")
+	for _, path := range []string{knownA, knownB} {
+		if err := os.WriteFile(path, []byte("host ssh-ed25519 key\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := redroidTopologyValues(knownA)
+
+	tests := []struct {
+		name string
+		new  Values
+		want bool
+	}{
+		{name: "mount added", new: redroidTopologyValues(knownA), want: true},
+		{name: "mount replaced", new: redroidTopologyValues(knownB), want: true},
+	}
+	noMount := cloneValues(base)
+	delete(noMount, "CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET")
+	delete(noMount, "CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH")
+	tests[0].new = base
+	tests = append(tests, struct {
+		name string
+		new  Values
+		want bool
+	}{name: "mount removed", new: noMount, want: true})
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			old := base
+			if tc.name == "mount added" {
+				old = noMount
+			}
+			if got := containsApplyClass(DiffValuesForOS(old, tc.new, "linux").Classes, ApplyComposeRecreate); got != tc.want {
+				t.Fatalf("compose recreate = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	unrelated := cloneValues(base)
+	unrelated["CREDIMI_DEVICE_1_WIFI_IP"] = "192.0.2.99"
+	if got := DiffValuesForOS(base, unrelated, "linux"); containsApplyClass(got.Classes, ApplyComposeRecreate) {
+		t.Fatalf("unrelated Redroid edit requested recreate: %#v", got)
+	}
+
+	duplicate := cloneValues(base)
+	duplicate["CREDIMI_DEVICE_COUNT"] = "2"
+	duplicate["CREDIMI_DEVICE_2_ID"] = "acme/runner/redroid-two"
+	duplicate["CREDIMI_DEVICE_2_TYPE"] = "redroid"
+	duplicate["CREDIMI_DEVICE_2_MODE"] = "redroid"
+	duplicate["CREDIMI_DEVICE_2_WIFI_IP"] = "192.0.2.20"
+	duplicate["CREDIMI_DEVICE_2_WIFI_PORT"] = "5556"
+	duplicate["CREDIMI_DEVICE_2_AVDCTL_SSH_TARGET"] = "bob@two"
+	duplicate["CREDIMI_DEVICE_2_AVDCTL_SSH_KNOWN_HOSTS_PATH"] = knownA
+	if got := DiffValuesForOS(base, duplicate, "linux"); containsApplyClass(got.Classes, ApplyComposeRecreate) {
+		t.Fatalf("duplicate known-host mount requested recreate: %#v", got)
+	}
+}
+
+func redroidTopologyValues(knownHosts string) Values {
+	return Values{
+		"CREDIMI_RUNNER_ID":                            "acme/runner",
+		"CREDIMI_DEVICE_COUNT":                         "1",
+		"CREDIMI_DEVICE_1_ID":                          "acme/runner/redroid",
+		"CREDIMI_DEVICE_1_TYPE":                        "redroid",
+		"CREDIMI_DEVICE_1_MODE":                        "redroid",
+		"CREDIMI_DEVICE_1_WIFI_IP":                     "192.0.2.10",
+		"CREDIMI_DEVICE_1_WIFI_PORT":                   "5555",
+		"CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET":           "alice@one",
+		"CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH": knownHosts,
 	}
 }
 
