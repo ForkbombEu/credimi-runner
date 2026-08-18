@@ -81,6 +81,10 @@
         } else {
           toast(runtimeOperationFailure(snapshot));
         }
+			if ($('.app.setup-shell')) {
+				window.location.assign(dashboardURL(operation.refresh || '/'));
+				return;
+			}
 			refreshOverview(operation.refresh || '/');
       };
       setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
@@ -569,9 +573,7 @@
       };
       const deviceValidationError = () => {
         for (const card of $$('[data-device-provision]', form)) {
-          const get = (fieldName) => {
-            return (card.querySelector(`[data-setup-device-field="${fieldName}"]`) || {}).value || '';
-          };
+			const get = (fieldName) => setupDeviceFieldValue(card, fieldName);
           if (!String(get('NAME')).trim()) return 'Each device needs a name.';
           const type = get('TYPE');
           const mode = get('MODE');
@@ -1089,8 +1091,17 @@
   };
   const setupDeviceField = (root, name) => {
     const key = setupDeviceFieldKey[name];
-    return (key && root.querySelector(`[data-setup-device-field="${key}"]`)) || root.querySelector(`[name="${name}"]`);
+		if (key) {
+			const fields = [...root.querySelectorAll(`[data-setup-device-field="${key}"]`)];
+			return fields.find((field) => !field.disabled) || fields[0] || null;
+		}
+		return root.querySelector(`[name="${name}"]`);
   };
+	const setupDeviceFieldValue = (root, key) => {
+		const fields = [...root.querySelectorAll(`[data-setup-device-field="${key}"]`)];
+		const field = fields.find((candidate) => !candidate.disabled) || fields[0];
+		return field ? (field.value || '') : '';
+	};
   const fieldValue = (root, name) => {
     const radio = root.querySelector(`[name="${name}"]:checked`);
     if (radio) return radio.value || '';
@@ -1564,8 +1575,9 @@
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
-      applyRunnerTypeDefaults(root, radio.value);
       initializeDeviceProvisionCard(root);
+		applyRunnerTypeDefaults(root, radio.value);
+		initializeDeviceProvisionCard(root);
       markDirty();
       const finish = () => {
         initializeDeviceProvisionCard(root);
@@ -1575,6 +1587,7 @@
         markDirty();
       };
       applyNormalizedPreview(root).then(finish).catch(() => {
+		initializeDeviceProvisionCard(root);
         applyRunnerTypeDefaults(root, radio.value);
         finish();
       });
@@ -1788,8 +1801,9 @@
     if (!radio) return;
     radio.checked = true;
     card.querySelectorAll('[data-dev-pick]').forEach((pick) => pick.classList.toggle('on', pick.dataset.devPick === type));
-    applyRunnerTypeDefaults(card, type);
     initializeDeviceProvisionCard(card);
+		applyRunnerTypeDefaults(card, type);
+		initializeDeviceProvisionCard(card);
   };
   const selectDeviceMode = (card, mode) => {
     const radio = card.querySelector(`[data-device-mode-ui][value="${CSS.escape(mode)}"]`);
@@ -1798,7 +1812,7 @@
     initializeDeviceProvisionCard(card);
   };
   const populateDeviceEdit = (button) => {
-    const form = button.closest('[data-device-add-form]');
+		const form = document.querySelector('[data-device-add-form]');
     const card = form && form.querySelector('[data-device-provision]');
     if (!form || !card) return;
     selectDeviceType(card, button.dataset.deviceType || 'android_phone');

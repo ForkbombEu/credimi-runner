@@ -326,9 +326,20 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 		"data-manual-public-url-error",
 		"Enter a complete URL starting with http:// or https://.",
 		"if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');",
+		"setupDeviceFieldValue(card, fieldName)",
+		"fields.find((field) => !field.disabled)",
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Fatalf("setup manual URL validation missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"const form = document.querySelector('[data-device-add-form]');",
+		"if ($('.app.setup-shell'))",
+		"window.location.assign(dashboardURL(operation.refresh || '/'));",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("dashboard script missing %q", want)
 		}
 	}
 }
