@@ -178,6 +178,11 @@ func parseRunnerRuntimeConfig(values Values) (RunnerRuntimeConfig, error) {
 		}
 		serial := strings.TrimSpace(block["SERIAL"])
 		wifiIP, wifiPort := strings.TrimSpace(block["WIFI_IP"]), strings.TrimSpace(block["WIFI_PORT"])
+		if knownHostsPath := strings.TrimSpace(block["AVDCTL_SSH_KNOWN_HOSTS_PATH"]); knownHostsPath != "" {
+			if err := validateKnownHostsPathValue(id, knownHostsPath); err != nil {
+				return RunnerRuntimeConfig{Host: host}, err
+			}
+		}
 		if block["TYPE"] == "android_phone" && block["MODE"] == "wifi" {
 			if wifiPort == "" {
 				wifiPort = DefaultWiFiPort

@@ -1,9 +1,11 @@
 package runtime
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // DefaultSSHKnownHostsPath returns the host user's OpenSSH known-hosts path.
@@ -29,4 +31,11 @@ func AVDCTLSSHArgs(knownHostsPath string) string {
 		return ""
 	}
 	return "-o UserKnownHostsFile=" + knownHostsPath
+}
+
+func validateKnownHostsPathValue(deviceID, path string) error {
+	if strings.IndexFunc(path, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("device %q AVDCTL_SSH_KNOWN_HOSTS_PATH contains whitespace; paths with whitespace are not supported by avdctl SSH arguments", deviceID)
+	}
+	return nil
 }

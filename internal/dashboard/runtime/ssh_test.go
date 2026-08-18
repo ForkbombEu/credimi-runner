@@ -32,6 +32,35 @@ func TestAVDCTLSSHArgsUsesCanonicalKnownHostsPath(t *testing.T) {
 	}
 }
 
+func TestKnownHostsPathRejectsWhitespaceForAVDCTLArgs(t *testing.T) {
+	if err := validateKnownHostsPathValue("acme/runner/redroid", "/home/John Doe/.ssh/known_hosts"); err == nil || !strings.Contains(err.Error(), "whitespace") {
+		t.Fatalf("whitespace path error = %v", err)
+	}
+	if err := validateKnownHostsPathValue("acme/runner/redroid", "/home/John\tDoe/.ssh/known_hosts"); err == nil {
+		t.Fatal("tabbed known-hosts path was accepted")
+	}
+	if err := validateKnownHostsPathValue("acme/runner/redroid", "/home/john/.ssh/known_hosts"); err != nil {
+		t.Fatalf("valid path rejected: %v", err)
+	}
+}
+
+func TestParseRuntimeConfigRejectsWhitespaceKnownHostsPath(t *testing.T) {
+	_, err := ParseRuntimeConfig(Values{
+		"CREDIMI_RUNNER_ID":                            "acme/runner",
+		"CREDIMI_DEVICE_COUNT":                         "1",
+		"CREDIMI_DEVICE_1_ID":                          "acme/runner/redroid",
+		"CREDIMI_DEVICE_1_TYPE":                        "redroid",
+		"CREDIMI_DEVICE_1_MODE":                        "redroid",
+		"CREDIMI_DEVICE_1_WIFI_IP":                     "192.0.2.10",
+		"CREDIMI_DEVICE_1_WIFI_PORT":                   "5555",
+		"CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET":           "alice@redroid",
+		"CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH": "/home/John Doe/.ssh/known_hosts",
+	})
+	if err == nil || !strings.Contains(err.Error(), "AVDCTL_SSH_KNOWN_HOSTS_PATH") {
+		t.Fatalf("ParseRuntimeConfig whitespace error = %v", err)
+	}
+}
+
 func TestComposeMountsRedroidKnownHostsReadOnly(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "known_hosts_a")
