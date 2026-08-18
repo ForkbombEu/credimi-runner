@@ -59,9 +59,13 @@ func TestDashboardAddRedroidPersistsAVDCTLInTypedTOML(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/redroid"}`))}, nil
 	})
 	s := newTestServer(t)
+	knownHosts := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(knownHosts, []byte("host ssh-ed25519 key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	form := url.Values{
 		"name": {"Remote"}, "type": {"redroid"}, "mode": {"no_device"}, "CREDIMI_RUNNER_WIFI_IP": {"192.0.2.50"}, "CREDIMI_RUNNER_WIFI_PORT": {"5560"},
-		"AVDCTL_SSH_TARGET": {"admin@redroid"}, "AVDCTL_SSH_PASSWORD": {"ssh-secret"}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {"/known_hosts"}, "AVDCTL_SUDO": {"true"}, "AVDCTL_SUDO_PASSWORD": {"sudo-secret"},
+		"AVDCTL_SSH_TARGET": {"admin@redroid"}, "AVDCTL_SSH_PASSWORD": {"ssh-secret"}, "AVDCTL_SSH_KNOWN_HOSTS_PATH": {knownHosts}, "AVDCTL_SUDO": {"true"}, "AVDCTL_SUDO_PASSWORD": {"sudo-secret"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -73,7 +77,7 @@ func TestDashboardAddRedroidPersistsAVDCTLInTypedTOML(t *testing.T) {
 		t.Fatal(err)
 	}
 	redroid := loaded.Devices[0].Redroid
-	want := map[string]string{"target": "admin@redroid", "password": "ssh-secret", "known": "/known_hosts", "sudoPassword": "sudo-secret"}
+	want := map[string]string{"target": "admin@redroid", "password": "ssh-secret", "known": knownHosts, "sudoPassword": "sudo-secret"}
 	if redroid.AVDCTLSSHTarget != want["target"] || redroid.AVDCTLSSHPassword != want["password"] || redroid.AVDCTLSSHKnownHostsPath != want["known"] || !redroid.AVDCTLSudo || redroid.AVDCTLSudoPassword != want["sudoPassword"] {
 		t.Fatalf("typed Redroid AVDCTL = %#v", redroid)
 	}
