@@ -139,8 +139,11 @@ func TestCoordinatorPrunesCompletedOperationMemory(t *testing.T) {
 		}
 		ids = append(ids, op.ID)
 	}
-	if len(c.byID) > c.maxHistory {
-		t.Fatalf("byID retained %d operations, want at most %d", len(c.byID), c.maxHistory)
+	c.mu.Lock()
+	retained := len(c.byID)
+	c.mu.Unlock()
+	if retained > c.maxHistory {
+		t.Fatalf("byID retained %d operations, want at most %d", retained, c.maxHistory)
 	}
 	if _, ok := c.Get(ids[0]); ok {
 		t.Fatal("old operation remained queryable after pruning")

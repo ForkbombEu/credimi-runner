@@ -1379,7 +1379,7 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	}
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
-	if err := provisionCandidateCapabilitiesForChange(provisionCtx, oldSnapshot, candidateSnapshot, progress); err != nil {
+	if err := provisionCandidateCapabilities(provisionCtx, candidateSnapshot, progress); err != nil {
 		return fmt.Errorf("configuration was not activated because Android capabilities are unavailable: %w", err)
 	}
 	s.mutationMu.Lock()
