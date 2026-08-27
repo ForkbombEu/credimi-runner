@@ -43,6 +43,33 @@ func (d PageData) ConfiguredDevices() []dashboardruntime.DeviceRuntimeConfig {
 	return config.Devices
 }
 
+type ConfiguredDeviceView struct {
+	dashboardruntime.DeviceRuntimeConfig
+	ADBWarning bool
+}
+
+func (d PageData) ConfiguredDeviceViews() []ConfiguredDeviceView {
+	devices := d.ConfiguredDevices()
+	views := make([]ConfiguredDeviceView, 0, len(devices))
+	for _, configured := range devices {
+		view := ConfiguredDeviceView{DeviceRuntimeConfig: configured}
+		requiresADB := configured.Enabled && configured.Type == "android_phone" && (configured.Mode == "usb" || configured.Mode == "wifi")
+		if requiresADB {
+			found := false
+			for _, live := range d.Snapshot.Devices {
+				if live.Serial == configured.Serial {
+					found = true
+					view.ADBWarning = live.Status != Online
+					break
+				}
+			}
+			view.ADBWarning = view.ADBWarning || !found
+		}
+		views = append(views, view)
+	}
+	return views
+}
+
 func (d PageData) AndroidDevices() []Device {
 	var devices []Device
 	for _, device := range d.Snapshot.Devices {

@@ -203,8 +203,8 @@ func TestValidateManualPublicURL(t *testing.T) {
 }
 
 func TestConfigHelpersAndFieldGroups(t *testing.T) {
-	if maskSecret("short") != "short" {
-		t.Fatal("short secret changed")
+	if maskSecret("short") == "short" || strings.Contains(maskSecret("short"), "short") {
+		t.Fatal("short secret was not masked")
 	}
 	if !strings.Contains(maskSecret("123456789"), "•") {
 		t.Fatal("long secret was not masked")
@@ -217,6 +217,17 @@ func TestConfigHelpersAndFieldGroups(t *testing.T) {
 	}
 	if got := titleCase("internal admin"); got != "Internal admin" {
 		t.Fatalf("title=%q", got)
+	}
+}
+
+func TestRegistryFieldsHaveExplicitRuntimeImpact(t *testing.T) {
+	for _, field := range Registry {
+		if _, ok := dashboardruntime.FieldImpacts[field.Key]; !ok {
+			t.Errorf("registry field %s has no runtime impact classification", field.Key)
+		}
+	}
+	if impact := dashboardruntime.FieldImpacts["DASHBOARD_TOKEN"]; !impact.Restart && !impact.Recreate {
+		t.Fatal("dashboard token must replace the running dashboard")
 	}
 }
 

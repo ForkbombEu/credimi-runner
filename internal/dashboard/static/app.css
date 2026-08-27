@@ -507,6 +507,7 @@ button { font-family: inherit; }
 
 /* Toast */
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--fg); color: #fff; padding: 11px 18px; border-radius: 999px; font: 600 13px var(--font-sans); box-shadow: var(--shadow-lg); z-index: 100; display: flex; align-items: center; gap: 9px; animation: toastin 220ms ease-out; }
+.toast.danger { background: var(--destructive); }
 @keyframes toastin { from { transform: transl(-50%, 10px); opacity: 0; } to { transform: translateX(-50%); opacity: 1; } }
 .toast svg { color: #6ee7b0; }
 

@@ -22,6 +22,7 @@ type IOSSimulatorStatus struct {
 	Supported   bool                 `json:"supported"`
 	Exists      bool                 `json:"exists"`
 	Name        string               `json:"name"`
+	UDID        string               `json:"udid,omitempty"`
 	DeviceTypes []IOSSimulatorOption `json:"device_types,omitempty"`
 	Runtimes    []IOSSimulatorOption `json:"runtimes,omitempty"`
 }
@@ -86,30 +87,49 @@ func listIOSSimulatorRuntimes(ctx context.Context) ([]IOSSimulatorOption, error)
 	return options, nil
 }
 
-func iosSimulatorExists(ctx context.Context, name string) (bool, error) {
+func iosSimulatorUDID(output, name string) string {
+	target := strings.TrimSpace(name) + " ("
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, target) {
+			continue
+		}
+		rest := line[len(target):]
+		if end := strings.IndexByte(rest, ')'); end >= 0 {
+			first := strings.TrimSpace(rest[:end])
+			if first != "" && !strings.EqualFold(first, "unavailable") {
+				return first
+			}
+			rest = rest[end+1:]
+		}
+		if start, end := strings.IndexByte(rest, '('), strings.IndexByte(rest, ')'); start >= 0 && end > start {
+			return strings.TrimSpace(rest[start+1 : end])
+		}
+	}
+	return ""
+}
+
+func iosSimulatorExists(ctx context.Context, name string) (bool, string, error) {
 	out, err := runProvisioningCommand(ctx, "xcrun", "simctl", "list", "devices", "available")
 	if err != nil {
 		out, err = runProvisioningCommand(ctx, "xcrun", "simctl", "list", "devices")
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 	}
-	target := strings.TrimSpace(name) + " ("
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, target) {
-			return true, nil
-		}
-	}
-	return false, nil
+	udid := iosSimulatorUDID(out, name)
+	return udid != "", udid, nil
 }
 
-func createIOSSimulator(ctx context.Context, name, deviceType, runtime string) error {
+func createIOSSimulator(ctx context.Context, name, deviceType, runtime string) (string, error) {
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(deviceType) == "" || strings.TrimSpace(runtime) == "" {
-		return fmt.Errorf("name, device type, and runtime are required")
+		return "", fmt.Errorf("name, device type, and runtime are required")
 	}
-	_, err := runProvisioningCommand(ctx, "xcrun", "simctl", "create", name, deviceType, runtime)
-	return err
+	out, err := runProvisioningCommand(ctx, "xcrun", "simctl", "create", name, deviceType, runtime)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func parseSimctlDeviceTypeLine(line string) (string, string, bool) {

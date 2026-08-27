@@ -24,6 +24,15 @@ func TestParseSimctlEntries(t *testing.T) {
 	}
 }
 
+func TestIOSSimulatorUDID(t *testing.T) {
+	if got := iosSimulatorUDID("iPhone 16 Pro (AAAA-BBBB) (Shutdown)\n", "iPhone 16 Pro"); got != "AAAA-BBBB" {
+		t.Fatalf("UDID = %q", got)
+	}
+	if got := iosSimulatorUDID("credimi (CCCC-DDDD)\n", "credimi"); got != "CCCC-DDDD" {
+		t.Fatalf("short UDID = %q", got)
+	}
+}
+
 func TestProvisioningHelpersRejectMalformedIdentifiersAndPaths(t *testing.T) {
 	for _, line := range []string{
 		"iPhone 16 Pro",

@@ -3277,6 +3277,49 @@ func TestSaveRuntimeCandidateRejectsPersistedConcurrentChange(t *testing.T) {
 	}
 }
 
+func TestSaveConfigPageIgnoresStaleDashboardCache(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := dashboardruntime.Values(s.cfg.Snapshot())
+	values["CREDIMI_DEVICE_COUNT"] = "1"
+	values["CREDIMI_DEVICE_1_ID"] = "acme/runner/device"
+	values["CREDIMI_DEVICE_1_NAME"] = "Device"
+	values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	values["CREDIMI_DEVICE_1_MODE"] = "no_device"
+	values["CREDIMI_DEVICE_1_ENABLED"] = "true"
+	values["CREDIMI_RUNNER_DESCRIPTION"] = "persisted"
+	if err := store.Save(values); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_RUNNER_DESCRIPTION"] = "stale cache"
+	s.cfg.mu.Unlock()
+	form := url.Values{}
+	for key, value := range values {
+		form.Set(key, value)
+	}
+	form.Set("CREDIMI_RUNNER_DESCRIPTION", "updated")
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := s.saveConfigPageSync(req, "config", func(string) {}); err != nil {
+		t.Fatalf("stale cache blocked config save: %v", err)
+	}
+	reloaded, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Snapshot()["CREDIMI_RUNNER_DESCRIPTION"]; got != "updated" {
+		t.Fatalf("persisted description = %q", got)
+	}
+	if got := s.cfg.Snapshot()["CREDIMI_RUNNER_DESCRIPTION"]; got != "updated" {
+		t.Fatalf("dashboard cache description = %q", got)
+	}
+}
+
 func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {

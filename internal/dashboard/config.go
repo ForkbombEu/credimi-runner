@@ -307,8 +307,11 @@ func GroupedFields() []struct {
 // ── helpers ──
 
 func maskSecret(v string) string {
+	if v == "" {
+		return ""
+	}
 	if len(v) <= 8 {
-		return v
+		return strings.Repeat("•", len([]rune(v)))
 	}
 	return v[:4] + strings.Repeat("•", minInt(len(v)-4, 28))
 }

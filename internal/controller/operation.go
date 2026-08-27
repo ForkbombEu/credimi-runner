@@ -168,7 +168,12 @@ func (c *Coordinator) finish(op *operation, phase OperationPhase, message string
 	c.last = snapshot
 	c.history = append(c.history, snapshot)
 	if len(c.history) > c.maxHistory {
-		c.history = append([]Snapshot(nil), c.history[len(c.history)-c.maxHistory:]...)
+		cut := len(c.history) - c.maxHistory
+		pruned := c.history[:cut]
+		c.history = append([]Snapshot(nil), c.history[cut:]...)
+		for _, old := range pruned {
+			delete(c.byID, old.ID)
+		}
 	}
 	if c.active == op {
 		c.active = nil

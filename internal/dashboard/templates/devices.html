@@ -5,11 +5,11 @@
   <section class="card" style="margin-bottom:16px">
     <header class="card-h">{{icon "phone"}}<div><h3>Configured inventory</h3><div class="sub">IDs are created from the device name and cannot be edited; registration happens when a device is saved.</div></div></header>
     <div class="card-b flush">
-      {{if .ConfiguredDevices}}<div class="list">{{range .ConfiguredDevices}}
+      {{if .ConfiguredDevices}}<div class="list">{{range .ConfiguredDeviceViews}}
         <div class="row">
           <span class="ic {{if .Enabled}}okbg{{else}}downbg{{end}}">{{icon "phone"}}</span>
           <div class="nm"><div class="t">{{.Name}} <span class="tag kind">{{.Type}}</span><span class="tag">{{.Mode}}</span></div><div class="s mono">{{.ID}}{{if .Serial}} · {{.Serial}}{{end}}</div></div>
-          <div class="rt"><span class="{{if .Enabled}}chip ok{{else}}chip down{{end}}"><span class="d"></span>{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+          <div class="rt"><span class="{{if .Enabled}}chip ok{{else}}chip down{{end}}"><span class="d"></span>{{if .Enabled}}enabled{{else}}disabled{{end}}</span>{{if .ADBWarning}} <span class="chip down" title="This target is configured, but adb does not currently report the device."><span class="d"></span>ADB offline</span>{{end}}
             <button type="button" class="btn btn-out btn-sm" data-device-edit
               data-device-id="{{.ID}}" data-device-name="{{.Name}}" data-device-description="{{.Description}}"
               data-device-type="{{.Type}}" data-device-mode="{{.Mode}}" data-device-serial="{{.Serial}}"

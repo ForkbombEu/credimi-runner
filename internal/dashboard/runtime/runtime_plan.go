@@ -56,6 +56,7 @@ type FieldImpact struct {
 
 var FieldImpacts = map[string]FieldImpact{
 	"CLOUDFLARE_TUNNEL_TOKEN":     {Restart: true, Recreate: true, Secret: true},
+	"CREDIMI_URL":                 {Restart: true, CredimiUpdate: true},
 	"CREDIMI_INTERNAL_ADMIN_KEY":  {Restart: true, Secret: true},
 	"CREDIMI_RUNNER_DESCRIPTION":  {CredimiUpdate: true},
 	"CREDIMI_RUNNER_ID":           {Restart: true, CredimiUpdate: true},
@@ -64,6 +65,7 @@ var FieldImpacts = map[string]FieldImpact{
 	"CREDIMI_RUNNER_PUBLISHED":    {CredimiUpdate: true},
 	"CREDIMI_SERVICE_MODE":        {Recreate: true, CredimiUpdate: true},
 	"CREDIMI_USER_API_KEY":        {Restart: true, Secret: true},
+	"DASHBOARD_TOKEN":             {Restart: true, Recreate: true, Secret: true},
 	"ANDROID_RUNNER_IMAGE":        {Recreate: true},
 	"ANDROID_PULL_POLICY":         {Recreate: true},
 	"ANDROID_NETWORK":             {Recreate: true},
@@ -72,6 +74,7 @@ var FieldImpacts = map[string]FieldImpact{
 	"ANDROID_SDK_VOLUME":          {Recreate: true},
 	"ANDROID_ADB_KEYS_PATH":       {Recreate: true},
 	"OTEL_EXPORTER_OTLP_ENDPOINT": {Restart: true},
+	"OTEL_ENABLED":                {Restart: true},
 	"OTEL_SERVICE_NAME":           {Restart: true},
 	"RUNNER_CADDY_SITE":           {Recreate: true},
 	"RUNNER_DOMAIN":               {CredimiUpdate: true},
@@ -80,6 +83,8 @@ var FieldImpacts = map[string]FieldImpact{
 	"RUNNER_PUBLIC_PORT":          {CredimiUpdate: true},
 	"RUNNER_PUBLIC_URL":           {CredimiUpdate: true},
 	"TEMPORAL_ADDRESS":            {Restart: true},
+	"CREDIMI_TEMP_DIR":            {Restart: true},
+	"ADB_SCREEN_RECORD_SIZE":      {Restart: true},
 }
 
 func BuildRuntimePlan(configDir string, values Values) RuntimePlan {

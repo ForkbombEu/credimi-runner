@@ -26,22 +26,27 @@
     'GOLDEN_PATH',
     'HOST_AVD_GOLDEN_PATH',
     'HOST_AVD_HOME_PATH',
+    'IOS_UDID',
     'REDROID_DATA_DIR',
     'REDROID_DATA_TAR',
   ];
 
   // ── Toast (driven by HX-Trigger {"toast":"…"}) ───────────────────────────
-  function toast(msg) {
+  function toast(msg, tone = 'success') {
     const host = $('#toast-host');
     if (!host || !msg) return;
-    host.innerHTML = `<div class="toast">${check()} ${escapeHtml(msg)}</div>`;
+    host.innerHTML = `<div class="toast ${tone === 'error' ? 'danger' : ''}">${tone === 'error' ? '!' : check()} ${escapeHtml(msg)}</div>`;
     setTimeout(() => (host.innerHTML = ''), 2800);
   }
-  document.body.addEventListener('toast', (e) => toast(typeof e.detail === 'string' ? e.detail : e.detail && e.detail.value));
+  document.body.addEventListener('toast', (e) => {
+    const detail = e.detail;
+    toast(typeof detail === 'string' ? detail : detail && (detail.value || detail.message), detail && detail.tone || 'success');
+  });
   document.body.addEventListener('closeModal', () => closeModals());
 
   // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
   let runtimeOperationTimer = null;
+  let runtimeRecoveryTimer = null;
   let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
   function dashboardURL(path) {
@@ -58,9 +63,46 @@
     return `Runner operation failed: ${message}`;
   }
   async function pollRuntimeOperation(operation) {
+    operation._pollFailures = operation._pollFailures || 0;
     try {
       const response = await fetch(dashboardURL(`/api/controller/operations/${encodeURIComponent(operation.id)}`), { headers: { Accept: 'application/json' } });
-      if (!response.ok) return;
+      if (!response.ok) {
+        operation._pollFailures++;
+        if (operation._pollFailures < 3) return;
+        clearInterval(runtimeOperationTimer);
+        runtimeOperationTimer = null;
+        let attempts = 0;
+        clearInterval(runtimeRecoveryTimer);
+        runtimeRecoveryTimer = setInterval(async () => {
+          if (++attempts > 80) {
+            clearInterval(runtimeRecoveryTimer);
+            runtimeRecoveryTimer = null;
+            runtimeOperationActive = false;
+            hideBusy();
+            toast('Runner operation status was lost during restart.', 'error');
+            return;
+          }
+          try {
+            const recovery = await fetch(dashboardURL('/startup/status'), { headers: { Accept: 'application/json' } });
+            if (!recovery.ok) return;
+            const state = await recovery.json();
+            if (state.phase !== 'ready' && state.phase !== 'needs_attention') return;
+            clearInterval(runtimeRecoveryTimer);
+            runtimeRecoveryTimer = null;
+            runtimeOperationActive = false;
+            hideBusy();
+            if (state.phase === 'ready') {
+              toast(operation.success || 'Runner operation completed successfully.');
+              refreshOverview(operation.refresh || '/');
+            } else {
+              toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
+              refreshOverview(operation.refresh || '/');
+            }
+          } catch (_) {}
+        }, 1000);
+        return;
+      }
+      operation._pollFailures = 0;
       const snapshot = await response.json();
       const phase = String(snapshot.phase || snapshot.Phase || '');
       const message = String(snapshot.message || snapshot.Message || '').trim();
@@ -79,7 +121,7 @@
         if (phase === 'succeeded') {
           toast(operation.success || 'Runner operation completed successfully.');
         } else {
-          toast(runtimeOperationFailure(snapshot));
+          toast(runtimeOperationFailure(snapshot), 'error');
         }
 			if ($('.app.setup-shell')) {
 				window.location.assign(dashboardURL(operation.refresh || '/'));
@@ -450,10 +492,14 @@
       window.location.assign(dashboardURL('/devices'));
     };
     if (form.dataset.deviceEditing === '1') {
-      e.preventDefault();
-      setSubmitInFlight(true);
-      try { await save(); } catch (err) { setSubmitInFlight(false); showError(err && err.message ? err.message : 'Unable to save device configuration'); }
-      return;
+      const currentName = ((form.querySelector('[name="CREDIMI_DEVICE_NAME"]') || {}).value || '').trim();
+      if (currentName === (form.dataset.deviceOriginalName || '').trim()) {
+        e.preventDefault();
+        setSubmitInFlight(true);
+        try { await save(); } catch (err) { setSubmitInFlight(false); showError(err && err.message ? err.message : 'Unable to save device configuration'); }
+        return;
+      }
+      form.dataset.deviceConflictResolved = '';
     }
     if (form.dataset.deviceConflictResolved === '1') {
       e.preventDefault();
@@ -599,7 +645,7 @@
           }
           if (type === 'ios_simulator') {
             const simulator = $('[data-ios-simulator-panel]', card);
-            if (!String(get('BASE_NAME')).trim() || (simulator && simulator.dataset.exists !== '1')) return 'Create or select every iOS simulator before continuing.';
+            if (!String(get('BASE_NAME')).trim() || !String(get('IOS_UDID')).trim() || (simulator && simulator.dataset.exists !== '1')) return 'Create or select every iOS simulator before continuing.';
           }
         }
         return '';
@@ -1304,6 +1350,7 @@
     const selects = panel.querySelector('[data-ios-simulator-selects]');
     const create = panel.querySelector('[data-ios-simulator-create]');
     panel.dataset.exists = '0';
+	setFieldValue(root, 'IOS_UDID', '');
     if (selects) selects.hidden = true;
     if (create) create.hidden = true;
 
@@ -1322,6 +1369,7 @@
       }
       if (data.exists) {
         panel.dataset.exists = '1';
+		setFieldValue(root, 'IOS_UDID', data.udid || '');
         setCallout(message, 'info', `Simulator ${name} already exists and can be used.`);
         root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
         return;
@@ -1421,6 +1469,7 @@
     const wifiPort = root.dataset.defaultWifiPort || '';
     const redroidDataDir = root.dataset.defaultRedroidDataDir || '';
     const redroidDataTar = root.dataset.defaultRedroidDataTar || '';
+    if (type !== 'ios_simulator') setFieldValue(root, 'IOS_UDID', '');
     switch (type) {
       case 'android_emulator':
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'emulator');
@@ -1637,8 +1686,10 @@
           }),
         });
         if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
-        setCallout(message, 'info', 'Simulator created. Refreshing status.');
-        await refreshIOSSimulatorPanel(root);
+		const data = await res.json();
+		setFieldValue(root, 'IOS_UDID', data.udid || '');
+		setCallout(message, 'info', 'Simulator created.');
+		await refreshIOSSimulatorPanel(root);
       } catch (error) {
         setCallout(message, 'danger', error && error.message ? error.message : 'Failed to create simulator.');
       } finally {
@@ -1857,6 +1908,7 @@
     }
     syncAVDCTLSSH(card);
     setDeviceEditMode(form, true);
+    form.dataset.deviceOriginalName = button.dataset.deviceName || '';
     form.dataset.deviceConflictResolved = '1';
     card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
@@ -1866,6 +1918,7 @@
     form.reset();
     setDeviceEditMode(form, false);
     form.dataset.deviceConflictResolved = '';
+    form.dataset.deviceOriginalName = '';
     selectDeviceType(card, 'android_phone');
     selectDeviceMode(card, 'usb');
     setFieldValue(card, 'CREDIMI_DEVICE_ID', '');

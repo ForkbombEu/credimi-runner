@@ -125,3 +125,27 @@ func TestCoordinatorExposesHistoryAndOperationErrors(t *testing.T) {
 		t.Fatalf("conflict = %v", conflict)
 	}
 }
+
+func TestCoordinatorPrunesCompletedOperationMemory(t *testing.T) {
+	c := NewCoordinator(context.Background())
+	var ids []string
+	for i := 0; i < c.maxHistory+5; i++ {
+		op, err := c.Submit(OperationConfigApply, func(context.Context, func(Progress)) error { return nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Wait(context.Background(), op.ID); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, op.ID)
+	}
+	if len(c.byID) > c.maxHistory {
+		t.Fatalf("byID retained %d operations, want at most %d", len(c.byID), c.maxHistory)
+	}
+	if _, ok := c.Get(ids[0]); ok {
+		t.Fatal("old operation remained queryable after pruning")
+	}
+	if _, ok := c.Get(ids[len(ids)-1]); !ok {
+		t.Fatal("recent operation was pruned")
+	}
+}

@@ -425,6 +425,9 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 		return err
 	}
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	if !enabled && activeMobileActivities(filepath.Dir(s.cfg.Path())) {
+		return errors.New("device cannot be disabled while mobile activity execution is active; retry when execution is idle")
+	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		return err
@@ -452,7 +455,7 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(oldValues), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
-	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
+	if err := provisionCandidateCapabilitiesForChange(provisionCtx, oldValues, candidateValues, progress); err != nil {
 		return fmt.Errorf("device state was not activated because Android capabilities are unavailable: %w", err)
 	}
 	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
@@ -490,6 +493,9 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 		return errors.New("confirmation required")
 	}
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
+	if activeMobileActivities(filepath.Dir(s.cfg.Path())) {
+		return errors.New("device cannot be removed while mobile activity execution is active; retry when execution is idle")
+	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		return err
@@ -519,7 +525,7 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(oldValues), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
-	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
+	if err := provisionCandidateCapabilitiesForChange(provisionCtx, oldValues, candidateValues, progress); err != nil {
 		return fmt.Errorf("device removal was not activated because Android capabilities are unavailable: %w", err)
 	}
 	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
@@ -590,6 +596,30 @@ func provisionCandidateCapabilities(ctx context.Context, values dashboardruntime
 		return fmt.Errorf("load candidate typed configuration: %w", err)
 	}
 	return ensureCandidateEmulatorReady(ctx, cfg, runtime.GOOS, progress)
+}
+
+func provisionCandidateCapabilitiesForChange(ctx context.Context, oldValues, newValues dashboardruntime.Values, progress func(string)) error {
+	oldConfig, oldErr := dashboardruntime.ParseRuntimeConfig(oldValues)
+	newConfig, newErr := dashboardruntime.ParseRuntimeConfig(newValues)
+	if oldErr != nil || newErr != nil {
+		return provisionCandidateCapabilities(ctx, newValues, progress)
+	}
+	oldEmulators := make(map[string]dashboardruntime.DeviceRuntimeConfig)
+	for _, device := range oldConfig.Devices {
+		if device.Type == "android_emulator" && device.Enabled {
+			oldEmulators[device.ID] = device
+		}
+	}
+	for _, device := range newConfig.Devices {
+		if device.Type != "android_emulator" || !device.Enabled {
+			continue
+		}
+		old, exists := oldEmulators[device.ID]
+		if !exists || old.Mode != device.Mode || old.Serial != device.Serial || !equalStringMaps(old.Values, device.Values) {
+			return provisionCandidateCapabilities(ctx, newValues, progress)
+		}
+	}
+	return nil
 }
 
 // staticHTTPHandler returns a handler for the embedded static directory.
@@ -1096,6 +1126,14 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 					}
 				}
 			}
+			if strings.TrimSpace(device.Values["AVDCTL_SSH_TARGET"]) == "" {
+				for _, key := range []string{"AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SSH_ARGS", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD"} {
+					delete(device.Values, key)
+				}
+				device.Values["AVDCTL_SUDO"] = "false"
+			} else if strings.EqualFold(strings.TrimSpace(device.Values["AVDCTL_SUDO"]), "false") {
+				delete(device.Values, "AVDCTL_SUDO_PASSWORD")
+			}
 			if namePosted && strings.TrimSpace(name) != strings.TrimSpace(existing.Name) {
 				if activeMobileActivities(filepath.Dir(s.cfg.Path())) {
 					return errors.New("device identity cannot be renamed while mobile activity is running; retry when execution is idle")
@@ -1166,7 +1204,7 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	candidateValues := dashboardruntime.ValuesWithRuntimeDevices(dashboardruntime.Values(values), config.Devices)
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
-	if err := provisionCandidateCapabilities(provisionCtx, candidateValues, progress); err != nil {
+	if err := provisionCandidateCapabilitiesForChange(provisionCtx, oldValues, candidateValues, progress); err != nil {
 		return fmt.Errorf("device configuration was not activated because Android capabilities are unavailable: %w", err)
 	}
 	if err := s.saveRuntimeCandidate(oldValues, store, config); err != nil {
@@ -1324,7 +1362,14 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 		return err
 	}
 	incoming := formValuesMap(r.PostForm)
-	oldSnapshot := s.cfg.Snapshot()
+	baselineStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		return err
+	}
+	oldSnapshot := dashboardruntime.Values(cloneStringMap(baselineStore.Snapshot()))
+	if !baselineStore.Exists() {
+		oldSnapshot = dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
+	}
 	if err := s.resolveConfigIdentity(r.Context(), oldSnapshot, incoming); err != nil {
 		return err
 	}
@@ -1334,7 +1379,7 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	}
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
-	if err := provisionCandidateCapabilities(provisionCtx, candidateSnapshot, progress); err != nil {
+	if err := provisionCandidateCapabilitiesForChange(provisionCtx, oldSnapshot, candidateSnapshot, progress); err != nil {
 		return fmt.Errorf("configuration was not activated because Android capabilities are unavailable: %w", err)
 	}
 	s.mutationMu.Lock()
@@ -1343,29 +1388,29 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 		s.mutationMu.Unlock()
 		return err
 	}
-	baseCanonical, err := canonicalCompatibilityValues(oldSnapshot)
-	if err != nil {
-		s.mutationMu.Unlock()
-		return err
+	changed := baselineStore.Exists() != currentStore.Exists()
+	if !changed && baselineStore.Exists() {
+		baseCanonical, err := canonicalCompatibilityValues(map[string]string(baselineStore.Snapshot()))
+		if err != nil {
+			s.mutationMu.Unlock()
+			return err
+		}
+		persistedCanonical, err := canonicalCompatibilityValues(map[string]string(currentStore.Snapshot()))
+		if err != nil {
+			s.mutationMu.Unlock()
+			return err
+		}
+		changed = !equalStringMaps(baseCanonical, persistedCanonical)
 	}
-	persistedCanonical, err := canonicalCompatibilityValues(map[string]string(currentStore.Snapshot()))
-	if err != nil {
-		s.mutationMu.Unlock()
-		return err
-	}
-	memoryCanonical, err := canonicalCompatibilityValues(s.cfg.Snapshot())
-	if err != nil {
-		s.mutationMu.Unlock()
-		return err
-	}
-	if (currentStore.Exists() && !equalStringMaps(baseCanonical, persistedCanonical)) || !equalStringMaps(baseCanonical, memoryCanonical) {
+	if changed {
 		s.mutationMu.Unlock()
 		return errors.New("configuration changed while preparing the update; retry")
 	}
-	if errs, err := s.cfg.Apply(incoming); err != nil {
+	if err := currentStore.Save(candidateSnapshot); err != nil {
 		s.mutationMu.Unlock()
-		return fmt.Errorf("configuration validation failed: %v", errs)
+		return fmt.Errorf("configuration validation failed: %w", err)
 	}
+	s.cfg = loadConfigSnapshot(currentStore, s.cfg)
 	if err := markReconcilePending(filepath.Dir(s.cfg.Path())); err != nil {
 		s.mutationMu.Unlock()
 		return err
@@ -2911,7 +2956,7 @@ func (s *Server) saveRuntimeCandidate(base dashboardruntime.Values, store *dashb
 	if err != nil {
 		return err
 	}
-	if current.Exists() && !equalStringMaps(baseCanonical, persistedCanonical) {
+	if store.Exists() != current.Exists() || (store.Exists() && !equalStringMaps(baseCanonical, persistedCanonical)) {
 		return errors.New("configuration changed while preparing the device; retry")
 	}
 	return store.SaveRuntimeConfig(candidate)
@@ -3224,12 +3269,13 @@ func (s *Server) iosSimulatorStatus(w http.ResponseWriter, r *http.Request) {
 	status.Supported = true
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	exists, err := iosSimulatorExists(ctx, name)
+	exists, udid, err := iosSimulatorExists(ctx, name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	status.Exists = exists
+	status.UDID = udid
 	if !exists {
 		status.DeviceTypes, err = listIOSSimulatorDeviceTypes(ctx)
 		if err != nil {
@@ -3257,11 +3303,12 @@ func (s *Server) iosSimulatorCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := createIOSSimulator(ctx, strings.TrimSpace(req.Name), strings.TrimSpace(req.DeviceTypeIdentifier), strings.TrimSpace(req.RuntimeIdentifier)); err != nil {
+	udid, err := createIOSSimulator(ctx, strings.TrimSpace(req.Name), strings.TrimSpace(req.DeviceTypeIdentifier), strings.TrimSpace(req.RuntimeIdentifier))
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "created"})
+	writeJSON(w, map[string]string{"status": "created", "udid": udid})
 }
 
 func (s *Server) androidEmulatorAssetsStatus(w http.ResponseWriter, r *http.Request) {
@@ -3443,7 +3490,7 @@ func (s *Server) deviceDisconnect(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deviceError(w http.ResponseWriter, msg string) {
-	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":%q}`, msg))
+	w.Header().Set("HX-Trigger", fmt.Sprintf(`{"toast":{"value":%q,"tone":"error"}}`, msg))
 	w.WriteHeader(http.StatusUnprocessableEntity)
 	w.Write([]byte(`<div class="callout danger" style="margin:14px 0 0">` + htmlAttr(msg) + `</div>`))
 }
