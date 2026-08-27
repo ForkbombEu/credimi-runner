@@ -3,7 +3,7 @@ module github.com/forkbombeu/credimi-runner
 go 1.26.6
 
 require (
-	github.com/forkbombeu/credimi v1.269.2-0.20260818150336-c64cf11fb568
+	github.com/forkbombeu/credimi v1.269.2-0.20260827075051-9a0d9ddb47db
 	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
@@ -53,7 +53,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/forkbombeu/avdctl v0.10.6 // indirect
 	github.com/forkbombeu/credimi-conformance-assessment v1.3.1 // indirect
-	github.com/forkbombeu/credimi-extra v1.14.4-0.20260818150047-26030ef4bef0 // indirect
+	github.com/forkbombeu/credimi-extra v1.14.4-0.20260827074854-2b63092bd33c // indirect
 	github.com/forkbombeu/eudi-conformance-evidence v1.0.2 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/ganigeorgiev/fexpr v0.4.1 // indirect
