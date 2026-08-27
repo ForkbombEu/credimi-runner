@@ -439,6 +439,7 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 		`Cancel edit`,
 		`data-busy-title="Adding device"`,
 		`data-busy-controller-progress="true"`,
+		`hx-boost="false"`,
 		`IDs are created from the device name and cannot be edited`,
 		`Detected devices`,
 	} {
@@ -510,6 +511,7 @@ func TestStaticAppShowsDeviceProvisioningProgress(t *testing.T) {
 		`pollBusyControllerOperation`,
 		`trigger.matches('[data-device-add-form]')`,
 		`controllerProgress: trigger.dataset.busyControllerProgress === 'true'`,
+		`deviceSubmitInFlight`,
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Fatalf("device operation progress UI missing %q", want)

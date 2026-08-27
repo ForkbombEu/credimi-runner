@@ -407,6 +407,14 @@
   document.addEventListener('submit', async (e) => {
     const form = e.target.closest('[data-device-add-form]');
     if (!form) return;
+    if (form.dataset.deviceSubmitInFlight === '1') {
+      e.preventDefault();
+      return;
+    }
+    const setSubmitInFlight = (active) => {
+      form.dataset.deviceSubmitInFlight = active ? '1' : '0';
+      form.querySelectorAll('button[type="submit"], [data-device-form-submit]').forEach((button) => { button.disabled = active; });
+    };
     const showError = (message) => {
       const box = form.querySelector('[data-device-form-error]');
       if (!box) return;
@@ -443,17 +451,20 @@
     };
     if (form.dataset.deviceEditing === '1') {
       e.preventDefault();
-      try { await save(); } catch (err) { showError(err && err.message ? err.message : 'Unable to save device configuration'); }
+      setSubmitInFlight(true);
+      try { await save(); } catch (err) { setSubmitInFlight(false); showError(err && err.message ? err.message : 'Unable to save device configuration'); }
       return;
     }
     if (form.dataset.deviceConflictResolved === '1') {
       e.preventDefault();
-      try { await save(); } catch (err) { showError(err && err.message ? err.message : 'Unable to save device configuration'); }
+      setSubmitInFlight(true);
+      try { await save(); } catch (err) { setSubmitInFlight(false); showError(err && err.message ? err.message : 'Unable to save device configuration'); }
       return;
     }
     const name = ((form.querySelector('[name="CREDIMI_DEVICE_NAME"]') || {}).value || '').trim();
     if (!name) return;
     e.preventDefault();
+    setSubmitInFlight(true);
     try {
       const body = new URLSearchParams(new FormData(form));
       body.set('name', name);
@@ -472,6 +483,7 @@
       form.dataset.deviceConflictResolved = '1';
       await save();
     } catch (err) {
+      setSubmitInFlight(false);
       showError(err && err.message ? err.message : 'Unable to resolve device ID');
     }
   });

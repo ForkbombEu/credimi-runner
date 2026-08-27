@@ -3211,6 +3211,72 @@ func TestServerSaveDevicesConfigRenameConflictRequiresExplicitChoice(t *testing.
 	}
 }
 
+func TestSaveRuntimeCandidateIgnoresStaleDashboardCache(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values(s.cfg.Snapshot())
+	devices := []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-2", Values: dashboardruntime.Values{"SERIAL": "usb-2"}},
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	baseline := dashboardruntime.Values(store.Snapshot())
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_RUNNER_DESCRIPTION"] = "stale dashboard cache"
+	s.cfg.mu.Unlock()
+	candidate := dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices[:1]}
+	if err := s.saveRuntimeCandidate(baseline, store, candidate); err != nil {
+		t.Fatalf("stale Dashboard cache blocked candidate: %v", err)
+	}
+	reloaded, err := store.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Devices) != 1 || reloaded.Devices[0].ID != "acme/runner/one" {
+		t.Fatalf("saved devices = %#v", reloaded.Devices)
+	}
+}
+
+func TestSaveRuntimeCandidateRejectsPersistedConcurrentChange(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values(s.cfg.Snapshot())
+	devices := []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-2", Values: dashboardruntime.Values{"SERIAL": "usb-2"}},
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	baseline := dashboardruntime.Values(store.Snapshot())
+	changedHost := dashboardruntime.Values(host)
+	changedHost["CREDIMI_RUNNER_DESCRIPTION"] = "concurrent change"
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: changedHost, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	err = s.saveRuntimeCandidate(baseline, store, dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices[:1]})
+	if err == nil || !strings.Contains(err.Error(), "configuration changed while preparing") {
+		t.Fatalf("concurrent change error = %v", err)
+	}
+	current, err := store.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Devices) != 2 || current.Host["CREDIMI_RUNNER_DESCRIPTION"] != "concurrent change" {
+		t.Fatalf("concurrent configuration was overwritten: %#v", current)
+	}
+}
+
 func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {

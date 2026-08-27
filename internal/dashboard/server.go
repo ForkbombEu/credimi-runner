@@ -425,10 +425,13 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 		return err
 	}
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
-	oldValues := dashboardruntime.Values(s.cfg.Snapshot())
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		return err
+	}
+	oldValues := dashboardruntime.Values(cloneStringMap(store.Snapshot()))
+	if !store.Exists() {
+		oldValues = dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
 	}
 	config, err := store.RuntimeConfig()
 	if err != nil {
@@ -486,11 +489,14 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 	if r.FormValue("confirm") != "true" {
 		return errors.New("confirmation required")
 	}
-	oldValues := dashboardruntime.Values(s.cfg.Snapshot())
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		return err
+	}
+	oldValues := dashboardruntime.Values(cloneStringMap(store.Snapshot()))
+	if !store.Exists() {
+		oldValues = dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
 	}
 	config, err := store.RuntimeConfig()
 	if err != nil {
@@ -938,15 +944,18 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	if err := r.ParseForm(); err != nil {
 		return err
 	}
-	values := s.cfg.Snapshot()
-	oldValues := dashboardruntime.Values(cloneStringMap(values))
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		return err
 	}
+	oldValues := dashboardruntime.Values(cloneStringMap(store.Snapshot()))
+	if !store.Exists() {
+		oldValues = dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
+	}
+	values := map[string]string(oldValues)
 	config, err := store.RuntimeConfig()
 	if err != nil {
-		config = dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(values)}
+		config = dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(oldValues)}
 	}
 	postedValue := func(keys ...string) (string, bool) {
 		for _, key := range keys {
@@ -2902,11 +2911,7 @@ func (s *Server) saveRuntimeCandidate(base dashboardruntime.Values, store *dashb
 	if err != nil {
 		return err
 	}
-	memoryCanonical, err := canonicalCompatibilityValues(s.cfg.Snapshot())
-	if err != nil {
-		return err
-	}
-	if (current.Exists() && !equalStringMaps(baseCanonical, persistedCanonical)) || !equalStringMaps(baseCanonical, memoryCanonical) {
+	if current.Exists() && !equalStringMaps(baseCanonical, persistedCanonical) {
 		return errors.New("configuration changed while preparing the device; retry")
 	}
 	return store.SaveRuntimeConfig(candidate)
