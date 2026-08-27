@@ -163,6 +163,7 @@ func (h *Hub) poll(ctx context.Context) {
 	// Render and broadcast each live region.
 	h.broadcast("health", event{name: "pill", data: h.render.Fragment("pill", h.pillData(snap))})
 	h.broadcast("devices", event{name: "rows", data: h.render.Fragment("device_rows", devices)})
+	h.broadcast("devices", event{name: "configured", data: h.render.Fragment("configured_device_rows", PageData{Runner: h.cfg, Snapshot: snap})})
 	h.broadcast("workers", event{name: "rows", data: h.render.Fragment("worker_rows", workers)})
 }
 
@@ -305,6 +306,13 @@ func (h *Hub) pillData(s Snapshot) PillData {
 	for _, d := range s.Devices {
 		if d.Status == Offline {
 			issues++
+		}
+	}
+	if h.cfg != nil {
+		for _, configured := range (PageData{Runner: h.cfg, Snapshot: s}).ConfiguredDeviceViews() {
+			if configured.ADBWarning {
+				issues++
+			}
 		}
 	}
 	p := PillData{Issues: issues, OK: issues == 0, Label: "All healthy"}

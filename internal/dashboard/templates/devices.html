@@ -4,27 +4,7 @@
 
   <section class="card" style="margin-bottom:16px">
     <header class="card-h">{{icon "phone"}}<div><h3>Configured inventory</h3><div class="sub">IDs are created from the device name and cannot be edited; registration happens when a device is saved.</div></div></header>
-    <div class="card-b flush">
-      {{if .ConfiguredDevices}}<div class="list">{{range .ConfiguredDeviceViews}}
-        <div class="row">
-          <span class="ic {{if .Enabled}}okbg{{else}}downbg{{end}}">{{icon "phone"}}</span>
-          <div class="nm"><div class="t">{{.Name}} <span class="tag kind">{{.Type}}</span><span class="tag">{{.Mode}}</span></div><div class="s mono">{{.ID}}{{if .Serial}} · {{.Serial}}{{end}}</div></div>
-          <div class="rt"><span class="{{if .Enabled}}chip ok{{else}}chip down{{end}}"><span class="d"></span>{{if .Enabled}}enabled{{else}}disabled{{end}}</span>{{if .ADBWarning}} <span class="chip down" title="This target is configured, but adb does not currently report the device."><span class="d"></span>ADB offline</span>{{end}}
-            <button type="button" class="btn btn-out btn-sm" data-device-edit
-              data-device-id="{{.ID}}" data-device-name="{{.Name}}" data-device-description="{{.Description}}"
-              data-device-type="{{.Type}}" data-device-mode="{{.Mode}}" data-device-serial="{{.Serial}}"
-              data-device-wifi-ip="{{index .Values "WIFI_IP"}}" data-device-wifi-port="{{index .Values "WIFI_PORT"}}"
-              data-device-base-name="{{index .Values "BASE_NAME"}}" data-device-golden-path="{{index .Values "GOLDEN_PATH"}}"
-              data-device-host-avd-home="{{index .Values "HOST_AVD_HOME_PATH"}}" data-device-host-avd-golden="{{index .Values "HOST_AVD_GOLDEN_PATH"}}"
-              data-device-redroid-data-dir="{{index .Values "REDROID_DATA_DIR"}}" data-device-redroid-data-tar="{{index .Values "REDROID_DATA_TAR"}}"
-              data-device-ssh-target="{{index .Values "AVDCTL_SSH_TARGET"}}" data-device-known-hosts="{{index .Values "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}"
-              data-device-sudo="{{index .Values "AVDCTL_SUDO"}}" data-device-ios-udid="{{index .Values "IOS_UDID"}}">Edit</button>
-            <form method="post" action="{{if .Enabled}}/devices/disable{{else}}/devices/enable{{end}}"><input type="hidden" name="device_id" value="{{.ID}}"><button class="btn btn-out btn-sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form>
-            <form method="post" action="/devices/remove" hx-post="/devices/remove" hx-swap="none" onsubmit="return confirm('Remove this device from this runner and Credimi?')"><input type="hidden" name="device_id" value="{{.ID}}"><input type="hidden" name="confirm" value="true"><button class="btn btn-danger btn-sm">{{icon "trash"}} Remove</button></form>
-          </div>
-        </div>
-      {{end}}</div>{{else}}<div class="callout info">{{icon "info"}}<div>No devices are configured yet. Add the first target below.</div></div>{{end}}
-    </div>
+    <div class="card-b flush" id="configured-device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="configured">{{template "configured_device_rows" .}}</div>
   </section>
 
   <section class="card" style="margin-bottom:16px"><header class="card-h">{{icon "shield"}}<div><h3>Detected devices</h3><div class="sub">Live device snapshot</div></div></header><div class="card-b flush"><div class="list" id="device-list" hx-ext="sse" sse-connect="/events/devices" sse-swap="rows">{{template "device_rows" .Snapshot.Devices}}</div></div></section>
@@ -36,4 +16,5 @@
   </form>
 
 </main>
+<div id="device-conflict-modal" class="modal-bk" hidden><div class="modal" role="dialog" aria-modal="true"><div class="modal-h">{{icon "warn"}}<div><h3>Device already exists</h3><p data-device-conflict-summary>Choose how to continue.</p></div><button type="button" class="iconbtn x" data-device-conflict-cancel title="Close">{{icon "x"}}</button></div><div class="modal-f"><button type="button" class="btn btn-out btn-sm" data-device-conflict-cancel>Cancel</button><button type="button" class="btn btn-out btn-sm" data-device-conflict-choice="update">Update existing device</button><button type="button" class="btn btn-pri btn-sm" data-device-conflict-choice="create">{{icon "plus"}} Create new device</button></div></div></div>
 {{end}}

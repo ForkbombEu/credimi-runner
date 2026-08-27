@@ -44,6 +44,25 @@
   });
   document.body.addEventListener('closeModal', () => closeModals());
 
+  const chooseDeviceConflict = (name, preview) => new Promise((resolve) => {
+    const modal = $('#device-conflict-modal');
+    if (!modal) { resolve(null); return; }
+    const summary = $('[data-device-conflict-summary]', modal);
+    if (summary) summary.textContent = `A device named ${name} already exists. Choose how to continue.`;
+    modal.hidden = false;
+    const finish = (choice) => {
+      modal.hidden = true;
+      modal.querySelectorAll('[data-device-conflict-choice], [data-device-conflict-cancel]').forEach((button) => button.removeEventListener('click', onClick));
+      resolve(choice);
+    };
+    const onClick = (event) => {
+      const choice = event.target.closest('[data-device-conflict-choice]');
+      if (choice) finish(choice.dataset.deviceConflictChoice);
+      else if (event.target.closest('[data-device-conflict-cancel]')) finish(null);
+    };
+    modal.querySelectorAll('[data-device-conflict-choice], [data-device-conflict-cancel]').forEach((button) => button.addEventListener('click', onClick));
+  });
+
   // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
   let runtimeOperationTimer = null;
   let runtimeRecoveryTimer = null;
@@ -62,6 +81,38 @@
     const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
     return `Runner operation failed: ${message}`;
   }
+  function startRuntimeRecovery(operation) {
+    clearInterval(runtimeOperationTimer);
+    runtimeOperationTimer = null;
+    let attempts = 0;
+    clearInterval(runtimeRecoveryTimer);
+    runtimeRecoveryTimer = setInterval(async () => {
+      if (++attempts > 300) {
+        clearInterval(runtimeRecoveryTimer);
+        runtimeRecoveryTimer = null;
+        runtimeOperationActive = false;
+        hideBusy();
+        toast('Runner operation status was lost during restart.', 'error');
+        return;
+      }
+      try {
+        const recovery = await fetch(dashboardURL('/startup/status'), { headers: { Accept: 'application/json' } });
+        if (!recovery.ok) return;
+        const state = await recovery.json();
+        if (state.phase !== 'ready' && state.phase !== 'needs_attention') return;
+        clearInterval(runtimeRecoveryTimer);
+        runtimeRecoveryTimer = null;
+        runtimeOperationActive = false;
+        hideBusy();
+        if (state.phase === 'ready') {
+          toast(operation.success || 'Runner operation completed successfully.');
+        } else {
+          toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
+        }
+        refreshOverview(operation.refresh || '/');
+      } catch (_) {}
+    }, 1000);
+  }
   async function pollRuntimeOperation(operation) {
     operation._pollFailures = operation._pollFailures || 0;
     try {
@@ -69,37 +120,7 @@
       if (!response.ok) {
         operation._pollFailures++;
         if (operation._pollFailures < 3) return;
-        clearInterval(runtimeOperationTimer);
-        runtimeOperationTimer = null;
-        let attempts = 0;
-        clearInterval(runtimeRecoveryTimer);
-        runtimeRecoveryTimer = setInterval(async () => {
-          if (++attempts > 80) {
-            clearInterval(runtimeRecoveryTimer);
-            runtimeRecoveryTimer = null;
-            runtimeOperationActive = false;
-            hideBusy();
-            toast('Runner operation status was lost during restart.', 'error');
-            return;
-          }
-          try {
-            const recovery = await fetch(dashboardURL('/startup/status'), { headers: { Accept: 'application/json' } });
-            if (!recovery.ok) return;
-            const state = await recovery.json();
-            if (state.phase !== 'ready' && state.phase !== 'needs_attention') return;
-            clearInterval(runtimeRecoveryTimer);
-            runtimeRecoveryTimer = null;
-            runtimeOperationActive = false;
-            hideBusy();
-            if (state.phase === 'ready') {
-              toast(operation.success || 'Runner operation completed successfully.');
-              refreshOverview(operation.refresh || '/');
-            } else {
-              toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
-              refreshOverview(operation.refresh || '/');
-            }
-          } catch (_) {}
-        }, 1000);
+        startRuntimeRecovery(operation);
         return;
       }
       operation._pollFailures = 0;
@@ -130,7 +151,10 @@
 			refreshOverview(operation.refresh || '/');
       };
       setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
-    } catch (_) {}
+    } catch (_) {
+      operation._pollFailures++;
+      if (operation._pollFailures >= 3) startRuntimeRecovery(operation);
+    }
   }
   document.body.addEventListener('runtimeOperation', (e) => {
     const operation = e.detail && (e.detail.value || e.detail);
@@ -520,10 +544,14 @@
       const action = form.querySelector('[data-device-conflict-action]');
       const id = form.querySelector('[data-device-id]');
       if (preview.conflict) {
-        const update = window.confirm(`A device named ${name} already exists (${preview.existing_device_id}). Press OK to update it, or Cancel to create ${preview.device_id}.`);
-        if (action) action.value = update ? 'update' : 'create';
-        if (id) id.value = update ? (preview.existing_device_id || '') : (preview.device_id || '');
-      } else if (id) {
+        const choice = await chooseDeviceConflict(name, preview);
+        if (!choice) {
+          setSubmitInFlight(false);
+          return;
+        }
+        if (action) action.value = choice;
+        if (!form.dataset.deviceEditing && id) id.value = choice === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
+      } else if (!form.dataset.deviceEditing && id) {
         id.value = preview.device_id || '';
       }
       form.dataset.deviceConflictResolved = '1';

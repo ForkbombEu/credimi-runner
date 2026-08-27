@@ -86,7 +86,10 @@ type Server struct {
 	mu         sync.RWMutex
 	nextID     uint64
 	results    map[string]OperationResult
+	history    []string
 }
+
+const maxOperationResults = 32
 
 // Serve starts the private launcher control channel. The socket is deliberately
 // an allow-listed application operation, not a command or Docker API proxy.
@@ -260,6 +263,16 @@ func persistOperationReference(configDir, filename, operationID string) error {
 func (s *Server) setOperation(result OperationResult) {
 	s.mu.Lock()
 	s.results[result.ID] = result
+	if result.Phase == PhaseSucceeded || result.Phase == PhaseFailed {
+		s.history = append(s.history, result.ID)
+		if len(s.history) > maxOperationResults {
+			cut := len(s.history) - maxOperationResults
+			for _, oldID := range s.history[:cut] {
+				delete(s.results, oldID)
+			}
+			s.history = append([]string(nil), s.history[cut:]...)
+		}
+	}
 	s.mu.Unlock()
 }
 

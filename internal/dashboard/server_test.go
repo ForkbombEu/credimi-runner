@@ -2909,19 +2909,14 @@ func TestConfigApplyOperationCancelsWithCoordinator(t *testing.T) {
 }
 
 func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
-	original := ensureCandidateEmulatorReady
-	defer func() { ensureCandidateEmulatorReady = original }()
+	original := beforeCandidateCommit
+	defer func() { beforeCandidateCommit = original }()
 	s := newTestServer(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	ensureCandidateEmulatorReady = func(ctx context.Context, _ runnerconfig.Config, _ string, _ androidtools.EmulatorProgress) error {
+	beforeCandidateCommit = func() {
 		close(started)
-		select {
-		case <-release:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		<-release
 	}
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
 	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
@@ -2960,6 +2955,40 @@ func TestConfigApplyOperationRejectsStaleCandidate(t *testing.T) {
 	completed, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
 	if err != nil || completed.Phase != controller.PhaseFailed || !strings.Contains(completed.Error, "configuration changed") {
 		t.Fatalf("stale candidate result = %#v err=%v", completed, err)
+	}
+}
+
+func TestProvisionCandidateCapabilitiesUsesDeviceDelta(t *testing.T) {
+	original := ensureCandidateEmulatorReady
+	defer func() { ensureCandidateEmulatorReady = original }()
+	calls := 0
+	ensureCandidateEmulatorReady = func(context.Context, runnerconfig.Config, string, androidtools.EmulatorProgress) error {
+		calls++
+		return nil
+	}
+	old := candidateProvisionValues()
+	old["CREDIMI_DEVICE_1_TYPE"] = "android_emulator"
+	old["CREDIMI_DEVICE_1_MODE"] = "emulator"
+	old["CREDIMI_DEVICE_1_BASE_NAME"] = "credimi"
+	old["CREDIMI_DEVICE_1_GOLDEN_PATH"] = "/avd-golden/credimi-golden"
+	unchanged := dashboardruntime.Values(old)
+	unchanged["CREDIMI_RUNNER_DESCRIPTION"] = "updated"
+	if err := provisionCandidateCapabilitiesForChange(context.Background(), old, unchanged, nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("unchanged emulator was provisioned %d times", calls)
+	}
+	added := dashboardruntime.Values(candidateProvisionValues())
+	added["CREDIMI_DEVICE_1_TYPE"] = "android_emulator"
+	added["CREDIMI_DEVICE_1_MODE"] = "emulator"
+	added["CREDIMI_DEVICE_1_BASE_NAME"] = "credimi"
+	added["CREDIMI_DEVICE_1_GOLDEN_PATH"] = "/avd-golden/credimi-golden"
+	if err := provisionCandidateCapabilitiesForChange(context.Background(), candidateProvisionValues(), added, nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("added emulator provision calls = %d, want 1", calls)
 	}
 }
 

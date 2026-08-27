@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -37,6 +38,30 @@ func TestUpgradeRequestIsAllowListedAndAcceptedBeforeReplacement(t *testing.T) {
 	close(finished)
 	if err := <-result; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLauncherOperationResultsAreBounded(t *testing.T) {
+	s := &Server{results: make(map[string]OperationResult)}
+	for i := 0; i < maxOperationResults+4; i++ {
+		id := fmt.Sprintf("op-%d", i)
+		s.setOperation(OperationResult{ID: id, Phase: PhaseSucceeded})
+	}
+	if len(s.results) != maxOperationResults {
+		t.Fatalf("retained %d results, want %d", len(s.results), maxOperationResults)
+	}
+	if _, ok := s.results["op-0"]; ok {
+		t.Fatal("old result was not pruned")
+	}
+	if _, ok := s.results["op-35"]; !ok {
+		t.Fatal("recent result was pruned")
+	}
+	s.setOperation(OperationResult{ID: "running", Phase: PhaseRunning})
+	for i := maxOperationResults + 4; i < maxOperationResults+8; i++ {
+		s.setOperation(OperationResult{ID: fmt.Sprintf("op-%d", i), Phase: PhaseSucceeded})
+	}
+	if _, ok := s.results["running"]; !ok {
+		t.Fatal("running operation was pruned")
 	}
 }
 

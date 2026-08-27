@@ -60,6 +60,9 @@ var (
 		time.AfterFunc(delay, func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
 	}
 	ensureCandidateEmulatorReady = androidtools.EnsureEmulatorReady
+	// beforeCandidateCommit is a deterministic test seam for the optimistic
+	// concurrency window; production leaves it nil.
+	beforeCandidateCommit func()
 )
 
 type Server struct {
@@ -1277,6 +1280,9 @@ func activeMobileActivities(configDir string) bool {
 
 func (s *Server) applyDeviceChange(ctx context.Context, oldValues, newValues dashboardruntime.Values) (applyOutcome, error) {
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
+	if activeMobileActivities(filepath.Dir(s.cfg.Path())) && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+		return applyOutcome{Deferred: true}, nil
+	}
 	if s.runtimeOwned {
 		if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 			if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
@@ -1379,8 +1385,11 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	}
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
-	if err := provisionCandidateCapabilities(provisionCtx, candidateSnapshot, progress); err != nil {
+	if err := provisionCandidateCapabilitiesForChange(provisionCtx, oldSnapshot, candidateSnapshot, progress); err != nil {
 		return fmt.Errorf("configuration was not activated because Android capabilities are unavailable: %w", err)
+	}
+	if beforeCandidateCommit != nil {
+		beforeCandidateCommit()
 	}
 	s.mutationMu.Lock()
 	currentStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
@@ -1429,7 +1438,10 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	appliedCleanly := true
 	deferred := false
 	var reconcileErr error
-	if s.runtimeOwned {
+	if activeMobileActivities(filepath.Dir(s.cfg.Path())) && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+		appliedCleanly = false
+		deferred = true
+	} else if s.runtimeOwned {
 		if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 			appliedCleanly = false
 			deferred = true
@@ -3518,6 +3530,7 @@ func (s *Server) sse(stream string) http.HandlerFunc {
 			writeSSE(w, "pill", s.render.Fragment("pill", s.hub.pillData(s.hub.CurrentSnapshot())))
 		case "devices":
 			writeSSE(w, "rows", s.render.Fragment("device_rows", s.hub.CurrentSnapshot().Devices))
+			writeSSE(w, "configured", s.render.Fragment("configured_device_rows", PageData{Runner: s.cfg, Snapshot: s.hub.CurrentSnapshot()}))
 		case "runtime":
 			writeSSE(w, "runtime", s.render.Fragment("runtime_status", s.pageData("overview", nil)))
 		case "workers":

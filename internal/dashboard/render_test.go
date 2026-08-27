@@ -649,6 +649,9 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 	if devices := d.ConfiguredDevices(); len(devices) != 1 || devices[0].ID != "acme/runner/pixel" {
 		t.Fatalf("configured devices = %#v", devices)
 	}
+	if views := d.ConfiguredDeviceViews(); len(views) != 1 || !views[0].ADBWarning {
+		t.Fatalf("missing configured ADB warning for absent USB device: %#v", views)
+	}
 	if !d.RuntimeHealthy() || d.RuntimeHeadline() != "Running" || !d.RuntimeRunning() {
 		t.Fatalf("runtime state headline=%q healthy=%t running=%t", d.RuntimeHeadline(), d.RuntimeHealthy(), d.RuntimeRunning())
 	}
