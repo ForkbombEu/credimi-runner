@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
@@ -24,8 +23,6 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
-
-var clientCache sync.Map
 
 const defaultTemporalAddress = "temporal.credimi.io:7233"
 
@@ -177,7 +174,11 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 				observability.String("task_queue", taskqueue),
 				observability.String("runner_id", runnerID),
 			)
-			if err := w.Run(shutdownCh); err != nil {
+			err = w.Run(shutdownCh)
+			if c != nil {
+				c.Close()
+			}
+			if err != nil {
 				if ctx.Err() != nil {
 					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "context_canceled")))
 					log.Printf("Temporal worker stopped for namespace %s", namespace)
@@ -265,9 +266,6 @@ func growBackoff(current, max time.Duration) time.Duration {
 }
 
 func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
-	if c, ok := clientCache.Load(namespace); ok {
-		return c.(client.Client), nil
-	}
 	temporalInterceptor, err := observability.NewTemporalInterceptor()
 	if err != nil {
 		return nil, fmt.Errorf("unable to create tracing interceptor: %w", err)
@@ -284,6 +282,5 @@ func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
 		return nil, fmt.Errorf("unable to create client: %w", err)
 	}
 
-	clientCache.Store(namespace, c)
 	return c, nil
 }

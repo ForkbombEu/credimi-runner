@@ -760,6 +760,9 @@ func hydrateTypedRuntimeEnvironment(configDir string) error {
 			continue
 		}
 		if value == "" {
+			if err := os.Unsetenv(key); err != nil {
+				return fmt.Errorf("clear %s from typed configuration: %w", key, err)
+			}
 			continue
 		}
 		if err := os.Setenv(key, value); err != nil {

@@ -892,6 +892,25 @@ func TestHydrateTypedRuntimeEnvironmentUsesTOMLAsSource(t *testing.T) {
 	}
 }
 
+func TestHydrateTypedRuntimeEnvironmentClearsEmptyManagedValues(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "current"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	cfg.Server.APIListen, cfg.Server.DashboardListen = "127.0.0.1:8050", "127.0.0.1:8051"
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CREDIMI_INTERNAL_ADMIN_KEY", "stale")
+	if err := hydrateTypedRuntimeEnvironment(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := os.LookupEnv("CREDIMI_INTERNAL_ADMIN_KEY"); ok {
+		t.Fatal("empty typed value left stale compatibility environment value")
+	}
+}
+
 func TestConfigureInternalListenersUsesTypedAPIAddress(t *testing.T) {
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()

@@ -25,6 +25,13 @@ type fakeTemporalWorker struct {
 	runErr                error
 }
 
+type closableTemporalClient struct {
+	client.Client
+	closed int
+}
+
+func (c *closableTemporalClient) Close() { c.closed++ }
+
 func (f *fakeTemporalWorker) RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions) {
 	f.workflowRegistrations++
 	f.workflowNames = append(f.workflowNames, options.Name)
@@ -145,6 +152,21 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	require.Contains(t, fake.activityNames, "Disable Android Play Store")
 	require.Contains(t, fake.activityNames, "Start recording iOS device screen")
 	require.Contains(t, fake.activityNames, "Stop recording iOS device screen")
+}
+
+func TestRunTemporalWorkerClosesItsGenerationClient(t *testing.T) {
+	setWorkerManagerTestHooks(t)
+	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
+	temporalClient := &closableTemporalClient{}
+	temporalClientGetter = func(string) (client.Client, error) { return temporalClient, nil }
+	temporalWorkerFactory = func(client.Client, string, worker.Options) temporalWorker { return &fakeTemporalWorker{} }
+
+	if err := RunTemporalWorker("namespace-close")(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if temporalClient.closed != 1 {
+		t.Fatalf("closed clients = %d, want 1", temporalClient.closed)
+	}
 }
 
 func TestRunTemporalWorker_RetryableRunErrorThenSuccess(t *testing.T) {

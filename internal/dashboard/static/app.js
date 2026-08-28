@@ -87,14 +87,15 @@
   // Candidate provisioning allows ten minutes and launcher quick-tunnel
   // resolution another two; retain a small reconnect margin for replacement.
   const runtimeRecoveryMaxAttempts = 900;
+  const runtimeRecoveryRequestTimeout = 10000;
   function startRuntimeRecovery(operation) {
     clearInterval(runtimeOperationTimer);
     runtimeOperationTimer = null;
     let attempts = 0;
-    clearInterval(runtimeRecoveryTimer);
-    runtimeRecoveryTimer = setInterval(async () => {
+    clearTimeout(runtimeRecoveryTimer);
+    const poll = async () => {
       if (++attempts > runtimeRecoveryMaxAttempts) {
-        clearInterval(runtimeRecoveryTimer);
+        clearTimeout(runtimeRecoveryTimer);
         runtimeRecoveryTimer = null;
         runtimeOperationActive = false;
         hideBusy();
@@ -102,11 +103,20 @@
         return;
       }
       try {
-        const recovery = await fetch(dashboardURL('/startup/status', operation.recoveryToken), { headers: { Accept: 'application/json' } });
-        if (!recovery.ok) return;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), runtimeRecoveryRequestTimeout);
+        const recovery = await fetch(dashboardURL('/startup/status', operation.recoveryToken), { headers: { Accept: 'application/json' }, signal: controller.signal });
+        clearTimeout(timeout);
+        if (!recovery.ok) {
+          runtimeRecoveryTimer = setTimeout(poll, 1000);
+          return;
+        }
         const state = await recovery.json();
-        if (state.phase !== 'ready' && state.phase !== 'needs_attention') return;
-        clearInterval(runtimeRecoveryTimer);
+        if (state.phase !== 'ready' && state.phase !== 'needs_attention') {
+          runtimeRecoveryTimer = setTimeout(poll, 1000);
+          return;
+        }
+        clearTimeout(runtimeRecoveryTimer);
         runtimeRecoveryTimer = null;
         runtimeOperationActive = false;
         hideBusy();
@@ -116,8 +126,11 @@
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
         refreshOverview(operation.refresh || '/', operation.recoveryToken);
-      } catch (_) {}
-    }, 1000);
+      } catch (_) {
+        runtimeRecoveryTimer = setTimeout(poll, 1000);
+      }
+    };
+    void poll();
   }
   async function pollRuntimeOperation(operation) {
     operation._pollFailures = operation._pollFailures || 0;
@@ -202,7 +215,7 @@
   }
   async function pollBusyLogs() {
     try {
-      const res = await fetch('/runtime/logs', { headers: { Accept: 'application/json' } });
+      const res = await fetch(dashboardURL('/runtime/logs'), { headers: { Accept: 'application/json' } });
       if (!res.ok) return;
       const data = await res.json();
       (data.lines || []).slice(-24).forEach(appendBusyLog);
@@ -365,12 +378,6 @@
   let upgradeTimer = null;
   let upgradeNextID = 0;
   let upgradeDisconnected = false;
-  function upgradeURL(path) {
-    const url = new URL(path, window.location.origin);
-    const token = new URLSearchParams(window.location.search).get('token');
-    if (token) url.searchParams.set('token', token);
-    return `${url.pathname}${url.search}`;
-  }
   function appendUpgradeLog(line) {
     const log = $('[data-upgrade-log]');
     const text = String(line || '').trim();
@@ -381,7 +388,7 @@
   }
   async function pollUpgrade() {
     try {
-      const url = upgradeURL(upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status');
+      const url = dashboardURL(upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status');
       const response = await fetch(url, { headers: { Accept: 'application/json' } });
       if (!response.ok) return;
       if (upgradeDisconnected) {
@@ -414,7 +421,7 @@
     if (check) {
       check.disabled = true;
       try {
-        const response = await fetch(upgradeURL('/maintenance/check'), { method: 'POST', headers: { Accept: 'application/json' } });
+        const response = await fetch(dashboardURL('/maintenance/check'), { method: 'POST', headers: { Accept: 'application/json' } });
         if (!response.ok) throw new Error(await response.text());
         window.location.reload();
       } catch (error) {
@@ -439,7 +446,7 @@
       const controller = new AbortController();
       const requestTimeout = setTimeout(() => controller.abort(), 10000);
       try {
-        const response = await fetch(upgradeURL('/maintenance/upgrade'), {
+        const response = await fetch(dashboardURL('/maintenance/upgrade'), {
           method: 'POST',
           headers: { Accept: 'application/json' },
           signal: controller.signal,
@@ -502,7 +509,7 @@
       box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     };
     const save = async () => {
-      const response = await fetch(form.action, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(new FormData(form)), redirect: 'follow' });
+      const response = await fetch(dashboardURL(form.action), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(new FormData(form)), redirect: 'follow' });
       if (!response.ok) {
         const body = (await response.text()).trim();
         let message = body;
@@ -553,7 +560,7 @@
     try {
       const body = new URLSearchParams(new FormData(form));
       body.set('name', name);
-      const res = await fetch('/devices/preview-id', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+      const res = await fetch(dashboardURL('/devices/preview-id'), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
       const preview = await res.json();
       if (!res.ok) throw new Error(preview.message || 'Unable to resolve device ID');
       const action = form.querySelector('[data-device-conflict-action]');
@@ -1403,7 +1410,7 @@
     }
 
     try {
-      const res = await fetch(`/devices/ios-simulator/status?name=${encodeURIComponent(name)}`);
+      const res = await fetch(dashboardURL(`/devices/ios-simulator/status?name=${encodeURIComponent(name)}`));
       if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
       const data = await res.json();
       if (!data.supported) {
@@ -1459,7 +1466,7 @@
         golden_root: fieldValue(root, 'HOST_AVD_GOLDEN_PATH'),
         golden_path: fieldValue(root, 'GOLDEN_PATH'),
       });
-      const res = await fetch(`/devices/android-emulator/assets/status?${query.toString()}`);
+      const res = await fetch(dashboardURL(`/devices/android-emulator/assets/status?${query.toString()}`));
       if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
       const data = await res.json();
 		if (!fieldValue(root, 'ANDROID_KEYS_DIR') && data.android_keys_dir) setFieldValue(root, 'ANDROID_KEYS_DIR', data.android_keys_dir);
@@ -1566,7 +1573,7 @@
     }
   };
   const applyNormalizedPreview = async (root) => {
-    const res = await fetch('/config/normalize', {
+    const res = await fetch(dashboardURL('/config/normalize'), {
       method: 'POST',
       body: formParams(root),
     });
@@ -1579,7 +1586,7 @@
   };
   async function refreshConnectedAndroidDevices(root = document) {
     try {
-      const response = await fetch('/devices/android/connected', { headers: { Accept: 'application/json' } });
+      const response = await fetch(dashboardURL('/devices/android/connected'), { headers: { Accept: 'application/json' } });
       if (!response.ok) return;
       const devices = (await response.json()).filter((device) => device && device.status === 'online');
       root.querySelectorAll('[data-android-phone-device-select]').forEach((select) => {
@@ -1719,7 +1726,7 @@
       const runtime = panel && panel.querySelector('[data-ios-simulator-runtime]');
       create.disabled = true;
       try {
-        const res = await fetch('/devices/ios-simulator/create', {
+        const res = await fetch(dashboardURL('/devices/ios-simulator/create'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1785,7 +1792,7 @@
       resetAndroidEmulatorProgress(panel);
       setCallout(message, 'info', 'Downloading and extracting Credimi emulator assets. Keep this page open.');
       try {
-        const res = await fetch('/devices/android-emulator/assets/download', {
+        const res = await fetch(dashboardURL('/devices/android-emulator/assets/download'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2256,7 +2263,7 @@
     let message = 'Save these changes?';
     let confirmRequired = false;
     try {
-      const res = await fetch('/config/diff', { method: 'POST', body });
+      const res = await fetch(dashboardURL('/config/diff'), { method: 'POST', body });
       if (res.ok) {
         const data = await res.json();
         confirmRequired = data.confirm_required === true;
