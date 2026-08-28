@@ -91,11 +91,6 @@
     <div class="meta">{{if .StartupMessage}}{{.StartupMessage}}{{else if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
   </div>
   <div class="stat">
-    <div class="k">{{icon "server"}} Runner API</div>
-    <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.RunnerAPIURL}}</div>
-    <div class="meta">{{if .RuntimeStatus.RunnerRunning}}process running{{else}}process stopped{{end}}</div>
-  </div>
-  <div class="stat">
     <div class="k">{{icon "cloud"}} Public URL <button type="button" class="minibtn" data-copy-value="{{.PublicURL}}" title="Copy public URL">{{icon "copy"}} Copy</button></div>
     <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.PublicURL}}</div>
     <div class="meta">{{.Runner.Get "CREDIMI_SERVICE_MODE"}} exposure</div>

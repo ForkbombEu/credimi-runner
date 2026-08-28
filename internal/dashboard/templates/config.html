@@ -47,12 +47,11 @@
               <p class="hint">User-scoped runners use the organization connected to the API key.</p>
             </div>
           {{end}}
-          {{template "field" .Field "TEMPORAL_ADDRESS"}}
         </div>
         {{template "field" .Field "CREDIMI_RUNNER_DESCRIPTION"}}
         <details class="gear-panel">
-          <summary>{{icon "gear"}} Credimi platform defaults</summary>
-          {{template "field" .Field "CREDIMI_URL"}}
+          <summary>{{icon "gear"}} Credimi platform connection</summary>
+          <div class="field-row">{{template "field" .Field "CREDIMI_URL"}}{{template "field" .Field "TEMPORAL_ADDRESS"}}</div>
         </details>
       </div>
     </section>

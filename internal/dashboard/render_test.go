@@ -194,6 +194,54 @@ func TestRendererNetworkUsesSetupServiceModeLabels(t *testing.T) {
 			t.Fatalf("network page contains obsolete label %q: %s", obsolete, html)
 		}
 	}
+	for _, want := range []string{"Advanced infrastructure", "Show internal listener and edge settings", "Internal runner API port"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("network page missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "Temporal</span>") || strings.Contains(html, "Edge &amp; tunnel") {
+		t.Fatalf("network page exposes unrelated service details: %s", html)
+	}
+	manual := strings.Index(html, "Manual public URL")
+	endpoint := strings.Index(html, "Public endpoint")
+	managed := strings.Index(html, "Runner domain")
+	if endpoint < 0 || manual < endpoint || managed < manual {
+		t.Fatalf("public endpoint fields are ordered incorrectly: endpoint=%d manual=%d managed=%d", endpoint, manual, managed)
+	}
+}
+
+func TestRendererConfigGroupsTemporalWithCredimiPlatform(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := renderer.Page("config", PageData{Active: "config", Title: "API & Config", Runner: &Config{values: Defaults}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform := strings.Index(html, "Credimi platform connection")
+	credimi := strings.Index(html, "Credimi platform URL")
+	temporal := strings.Index(html, "Temporal address")
+	if platform < 0 || credimi < platform || temporal < credimi {
+		t.Fatalf("Credimi platform connection fields are ordered incorrectly: platform=%d credimi=%d temporal=%d", platform, credimi, temporal)
+	}
+}
+
+func TestRuntimeStatusOmitsInternalRunnerAPIAddress(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := renderer.Fragment("runtime_status", PageData{
+		Runner: &Config{values: map[string]string{"CREDIMI_SERVICE_MODE": "manual"}},
+		Data:   map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: true}},
+	})
+	if strings.Contains(html, "Runner API") || strings.Contains(html, "127.0.0.1") {
+		t.Fatalf("runtime status exposes an internal runner address: %s", html)
+	}
+	if !strings.Contains(html, "Public URL") {
+		t.Fatalf("runtime status lost public endpoint: %s", html)
+	}
 }
 
 func TestRendererOverviewPageIncludesUpgradeLogModal(t *testing.T) {

@@ -57,7 +57,7 @@ var Registry = []Field{
 	{Key: "CREDIMI_SERVICE_MODE", Label: "Service mode", Group: "Network", Type: TypeSelect,
 		Options: []string{"auto", "cloudflare-managed", "manual"}, Hint: "auto = quick tunnel · cloudflare-managed = named tunnel · manual = direct."},
 	{Key: "RUNNER_HOST", Label: "Bind host", Group: "Network", Type: TypeText},
-	{Key: "RUNNER_PORT", Label: "Runner port", Group: "Network", Type: TypeText, Hint: "Local runner API port. Default is 8050."},
+	{Key: "RUNNER_PORT", Label: "Internal runner API port", Group: "Network", Type: TypeText, Hint: "Internal runtime listener only; this is not the public URL port. Default is 8050."},
 	{Key: "RUNNER_CADDY_SITE", Label: "Caddy site address", Group: "Network", Type: TypeText, Hint: "Keep :80 behind Cloudflare Tunnel."},
 	{Key: "RUNNER_DOMAIN", Label: "Runner domain", Group: "Network", Type: TypeText, Hint: "Public hostname pointed at http://caddy:80."},
 	{Key: "RUNNER_PUBLIC_URL", Label: "Manual public URL", Group: "Network", Type: TypeText, Hint: "Required when service mode is manual."},
