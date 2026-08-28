@@ -130,6 +130,38 @@ func TestPillData(t *testing.T) {
 	}
 }
 
+func TestPillDataDeduplicatesConfiguredOfflineDevice(t *testing.T) {
+	h := &Hub{cfg: &Config{values: map[string]string{
+		"CREDIMI_DEVICE_COUNT":     "1",
+		"CREDIMI_DEVICE_1_ID":      "acme/runner/phone",
+		"CREDIMI_DEVICE_1_NAME":    "Phone",
+		"CREDIMI_DEVICE_1_TYPE":    "android_phone",
+		"CREDIMI_DEVICE_1_MODE":    "usb",
+		"CREDIMI_DEVICE_1_SERIAL":  "usb-1",
+		"CREDIMI_DEVICE_1_ENABLED": "true",
+	}}}
+	snap := Snapshot{Devices: []Device{{Serial: "usb-1", Status: Offline}}}
+	if got := h.pillData(snap); got.Issues != 1 || got.OK {
+		t.Fatalf("configured offline device health = %#v, want one issue", got)
+	}
+}
+
+func TestPillDataDeduplicatesConfiguredDegradedDevice(t *testing.T) {
+	h := &Hub{cfg: &Config{values: map[string]string{
+		"CREDIMI_DEVICE_COUNT":     "1",
+		"CREDIMI_DEVICE_1_ID":      "acme/runner/phone",
+		"CREDIMI_DEVICE_1_NAME":    "Phone",
+		"CREDIMI_DEVICE_1_TYPE":    "android_phone",
+		"CREDIMI_DEVICE_1_MODE":    "usb",
+		"CREDIMI_DEVICE_1_SERIAL":  "usb-1",
+		"CREDIMI_DEVICE_1_ENABLED": "true",
+	}}}
+	snap := Snapshot{Devices: []Device{{Serial: "usb-1", Status: Degraded}}}
+	if got := h.pillData(snap); got.Issues != 1 || got.OK {
+		t.Fatalf("configured degraded device health = %#v, want one issue", got)
+	}
+}
+
 func TestProbeAndroidWithFakeADB(t *testing.T) {
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "adb"), `#!/bin/sh

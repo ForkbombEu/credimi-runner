@@ -65,6 +65,16 @@ var (
 	beforeCandidateCommit func()
 )
 
+var nativeQuickTunnelResolver func(context.Context) (string, error)
+
+// SetNativeQuickTunnelResolver wires the single native edge owner into the
+// runtime-owned dashboard. It returns a restore function for shutdown/tests.
+func SetNativeQuickTunnelResolver(resolver func(context.Context) (string, error)) func() {
+	previous := nativeQuickTunnelResolver
+	nativeQuickTunnelResolver = resolver
+	return func() { nativeQuickTunnelResolver = previous }
+}
+
 type Server struct {
 	cfg                     *Config
 	hub                     *Hub
@@ -637,7 +647,15 @@ func staticHTTPHandler() (http.Handler, error) {
 // auth wraps the mux with optional bearer/basic protection.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.authToken == "" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" || r.URL.Path == "/internal/controller/identity" {
+		authToken := s.authToken
+		if s.cfg != nil {
+			if values := s.cfg.Snapshot(); values != nil {
+				if configured, ok := values["DASHBOARD_TOKEN"]; ok {
+					authToken = strings.TrimSpace(configured)
+				}
+			}
+		}
+		if authToken == "" || strings.HasPrefix(r.URL.Path, "/static/") || r.URL.Path == "/healthz" || r.URL.Path == "/internal/controller/identity" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -646,7 +664,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		if got == "" {
 			got = r.URL.Query().Get("token")
 		}
-		if got != s.authToken {
+		if got != authToken {
 			w.Header().Set("WWW-Authenticate", `Bearer`)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
@@ -708,10 +726,17 @@ func (s *Server) pageData(active string, payload any) PageData {
 // runner container replacement. The URL is ephemeral launcher state, not TOML,
 // so a newly created Dashboard cannot rely only on its in-memory value.
 func (s *Server) runtimeOwnedPublicURL() string {
-	if !s.runtimeOwned || s.launcherSocket == "" || normalizedApplyServiceMode(s.cfg.Get("CREDIMI_SERVICE_MODE")) != "auto" {
+	if !s.runtimeOwned || normalizedApplyServiceMode(s.cfg.Get("CREDIMI_SERVICE_MODE")) != "auto" {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 		return s.publicURL
+	}
+	if s.launcherSocket == "" && nativeQuickTunnelResolver != nil {
+		publicURL, err := nativeQuickTunnelResolver(context.Background())
+		if err != nil {
+			return ""
+		}
+		return publicURL
 	}
 
 	publicURL, err := launcher.ReadQuickTunnelURL(filepath.Dir(s.cfg.Path()))
@@ -2022,6 +2047,9 @@ func (s *Server) applyRuntimeOwnedConfigInOperation(ctx context.Context, diff da
 		}
 		return s.finishConfigReconcileRecovery(ctx, values, handle.ID, false)
 	}
+	if s.runtimeOwned && s.runtimeControlFile != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+		return writeNativeRuntimeControl(s.runtimeControlFile, "restart")
+	}
 	if s.runtimeOwned && !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 		return nil
 	}
@@ -2702,6 +2730,8 @@ func (s *Server) runtimeLifecycle(values map[string]string) controller.RuntimeLi
 			// replacement.
 			return launcher.ReadQuickTunnelURL(filepath.Dir(s.cfg.Path()))
 		}
+	} else if nativeQuickTunnelResolver != nil {
+		lifecycle.QuickTunnelURL = nativeQuickTunnelResolver
 	}
 	return lifecycle
 }

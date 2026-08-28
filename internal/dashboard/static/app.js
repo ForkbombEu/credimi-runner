@@ -42,6 +42,7 @@
     const detail = e.detail;
     toast(typeof detail === 'string' ? detail : detail && (detail.value || detail.message), detail && detail.tone || 'success');
   });
+  let dismissDeviceConflict = null;
   document.body.addEventListener('closeModal', () => closeModals());
 
   const chooseDeviceConflict = (name, preview) => new Promise((resolve) => {
@@ -51,10 +52,12 @@
     if (summary) summary.textContent = `A device named ${name} already exists. Choose how to continue.`;
     modal.hidden = false;
     const finish = (choice) => {
+      if (dismissDeviceConflict === finish) dismissDeviceConflict = null;
       modal.hidden = true;
       modal.querySelectorAll('[data-device-conflict-choice], [data-device-conflict-cancel]').forEach((button) => button.removeEventListener('click', onClick));
       resolve(choice);
     };
+    dismissDeviceConflict = finish;
     const onClick = (event) => {
       const choice = event.target.closest('[data-device-conflict-choice]');
       if (choice) finish(choice.dataset.deviceConflictChoice);
@@ -68,26 +71,29 @@
   let runtimeRecoveryTimer = null;
   let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
-  function dashboardURL(path) {
+  function dashboardURL(path, tokenOverride) {
     const url = new URL(path, window.location.origin);
-    const token = new URLSearchParams(window.location.search).get('token');
+    const token = tokenOverride === undefined ? new URLSearchParams(window.location.search).get('token') : tokenOverride;
     if (token) url.searchParams.set('token', token);
     return `${url.pathname}${url.search}`;
   }
-	function refreshOverview(path = '/') {
-		htmx.ajax('GET', dashboardURL(path), { target: 'main', select: 'main', swap: 'outerHTML' });
+	function refreshOverview(path = '/', tokenOverride) {
+		htmx.ajax('GET', dashboardURL(path, tokenOverride), { target: 'main', select: 'main', swap: 'outerHTML' });
   }
   function runtimeOperationFailure(snapshot) {
     const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
     return `Runner operation failed: ${message}`;
   }
+  // Candidate provisioning allows ten minutes and launcher quick-tunnel
+  // resolution another two; retain a small reconnect margin for replacement.
+  const runtimeRecoveryMaxAttempts = 900;
   function startRuntimeRecovery(operation) {
     clearInterval(runtimeOperationTimer);
     runtimeOperationTimer = null;
     let attempts = 0;
     clearInterval(runtimeRecoveryTimer);
     runtimeRecoveryTimer = setInterval(async () => {
-      if (++attempts > 300) {
+      if (++attempts > runtimeRecoveryMaxAttempts) {
         clearInterval(runtimeRecoveryTimer);
         runtimeRecoveryTimer = null;
         runtimeOperationActive = false;
@@ -96,7 +102,7 @@
         return;
       }
       try {
-        const recovery = await fetch(dashboardURL('/startup/status'), { headers: { Accept: 'application/json' } });
+        const recovery = await fetch(dashboardURL('/startup/status', operation.recoveryToken), { headers: { Accept: 'application/json' } });
         if (!recovery.ok) return;
         const state = await recovery.json();
         if (state.phase !== 'ready' && state.phase !== 'needs_attention') return;
@@ -109,7 +115,7 @@
         } else {
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
-        refreshOverview(operation.refresh || '/');
+        refreshOverview(operation.refresh || '/', operation.recoveryToken);
       } catch (_) {}
     }, 1000);
   }
@@ -145,10 +151,10 @@
           toast(runtimeOperationFailure(snapshot), 'error');
         }
 			if ($('.app.setup-shell')) {
-				window.location.assign(dashboardURL(operation.refresh || '/'));
+				window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken));
 				return;
 			}
-			refreshOverview(operation.refresh || '/');
+			refreshOverview(operation.refresh || '/', operation.recoveryToken);
       };
       setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
     } catch (_) {
@@ -159,6 +165,10 @@
   document.body.addEventListener('runtimeOperation', (e) => {
     const operation = e.detail && (e.detail.value || e.detail);
     if (!operation || !operation.id) return;
+    if (operation.recoveryToken === undefined) {
+      const tokenField = document.querySelector('[name="DASHBOARD_TOKEN"]');
+      if (tokenField) operation.recoveryToken = tokenField.value.trim();
+    }
     runtimeOperationActive = true;
     clearInterval(runtimeOperationTimer);
     runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
@@ -459,12 +469,15 @@
   });
 
   // ── Modal open / close ───────────────────────────────────────────────────
-  function closeModals() { $$('.modal-bk').forEach((m) => { if (m.dataset.upgradeRunning !== '1') m.hidden = true; }); }
+  function closeModals() {
+    if (dismissDeviceConflict) dismissDeviceConflict(null);
+    $$('.modal-bk').forEach((m) => { if (m.dataset.upgradeRunning !== '1') m.hidden = true; });
+  }
   document.addEventListener('click', (e) => {
     const open = e.target.closest('[data-open-modal]');
     if (open) { const m = $('#modal-' + open.dataset.openModal); if (m) { m.hidden = false; resetWizard(m); } }
     if (e.target.closest('[data-close-modal]')) closeModals();
-    if (e.target.classList && e.target.classList.contains('modal-bk') && e.target.dataset.upgradeRunning !== '1') e.target.hidden = true;
+    if (e.target.classList && e.target.classList.contains('modal-bk') && e.target.dataset.upgradeRunning !== '1') closeModals();
   });
 
   // A name that already exists in Credimi is not silently suffixed. Let the
@@ -504,6 +517,8 @@
         try {
           const event = JSON.parse(trigger).runtimeOperation;
           if (event && event.id) {
+            const tokenField = form.querySelector('[name="DASHBOARD_TOKEN"]');
+            if (tokenField) event.recoveryToken = tokenField.value.trim();
             showBusy(form.dataset.busyMessage, {
               title: form.dataset.busyTitle,
               controllerProgress: form.dataset.busyControllerProgress === 'true',

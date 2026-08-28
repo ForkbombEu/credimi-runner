@@ -53,6 +53,12 @@ var runInternalDashboardFunc = runDashboardOwned
 var runInternalServerFunc = func(cmd *cobra.Command, args []string) error { return serverCmd.RunE(cmd, args) }
 var ensureEmulatorRuntime = androidtools.EnsureEmulatorReadyAt
 
+// nativeRuntimeReconcile is installed only while the native foreground
+// runtime is running. The server control loop invokes it for restart-impact
+// configuration changes so native edge/runtime components are rebuilt from the
+// newly persisted typed configuration.
+var nativeRuntimeReconcile func(context.Context) error
+
 var rootCmd = &cobra.Command{
 	Use:           "credimi-runner",
 	Short:         "Credimi mobile runner",
@@ -611,7 +617,11 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 	}
 	serverStarted := false
 	var edgeManager *dashboardruntime.LifecycleManager
+	restoreNativeResolver := dashboard.SetNativeQuickTunnelResolver(nil)
+	previousNativeReconcile := nativeRuntimeReconcile
 	defer func() {
+		nativeRuntimeReconcile = previousNativeReconcile
+		restoreNativeResolver()
 		if edgeManager != nil {
 			_ = edgeManager.Stop(context.Background())
 			_ = edgeManager.Close()
@@ -631,7 +641,31 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("start macOS edge services: %w", err)
 		}
 		edgeManager = manager
+		// Registration in the runtime-owned dashboard must query this same
+		// native edge manager rather than constructing a competing manager.
+		dashboard.SetNativeQuickTunnelResolver(edgeManager.QuickTunnelURL)
 		return nil
+	}
+	nativeRuntimeReconcile = func(ctx context.Context) error {
+		if stdruntime.GOOS != "darwin" {
+			return nil
+		}
+		if edgeManager != nil {
+			if err := edgeManager.Stop(ctx); err != nil {
+				return err
+			}
+			if err := edgeManager.Close(); err != nil {
+				return err
+			}
+			edgeManager = nil
+		}
+		if err := hydrateTypedRuntimeEnvironment(configDir); err != nil {
+			return err
+		}
+		if err := configureInternalListeners(configDir); err != nil {
+			return err
+		}
+		return startNativeEdges()
 	}
 	startServer := func() {
 		if serverStarted {

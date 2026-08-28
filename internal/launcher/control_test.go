@@ -65,6 +65,36 @@ func TestLauncherOperationResultsAreBounded(t *testing.T) {
 	}
 }
 
+func TestLauncherOperationResultsKeepDurableReferences(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, configOperationFile), []byte("op-0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, setupOperationFile), []byte("op-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{configDir: dir, results: make(map[string]OperationResult)}
+	for i := 0; i < maxOperationResults+1; i++ {
+		s.setOperation(OperationResult{ID: fmt.Sprintf("op-%d", i), Phase: PhaseSucceeded})
+	}
+	if _, ok := s.results["op-0"]; !ok {
+		t.Fatal("durably referenced result was pruned")
+	}
+	if _, ok := s.results["op-1"]; !ok {
+		t.Fatal("setup operation result was pruned")
+	}
+	if err := os.Remove(filepath.Join(dir, configOperationFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, setupOperationFile)); err != nil {
+		t.Fatal(err)
+	}
+	s.setOperation(OperationResult{ID: "op-final", Phase: PhaseSucceeded})
+	if _, ok := s.results["op-0"]; ok {
+		t.Fatal("released durable reference remained indefinitely")
+	}
+}
+
 func TestLauncherRejectsUnknownAndExtraOperations(t *testing.T) {
 	called := false
 	server, err := Serve(filepath.Join(t.TempDir(), "control.sock"), func(context.Context) error {

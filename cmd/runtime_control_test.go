@@ -123,6 +123,34 @@ func TestRuntimeControlLoopKeepsDashboardAliveWhileTogglingWorkers(t *testing.T)
 	}
 }
 
+func TestRuntimeControlLoopReconcilesNativeRuntimeBeforeRestart(t *testing.T) {
+	dir := t.TempDir()
+	server := &runtimeControlServerFake{}
+	lifecycle := &runtimeControlLifecycleFake{}
+	store := &runtimeControlStoreFake{}
+	called := make(chan struct{}, 1)
+	previous := nativeRuntimeReconcile
+	nativeRuntimeReconcile = func(context.Context) error {
+		called <- struct{}{}
+		return nil
+	}
+	t.Cleanup(func() { nativeRuntimeReconcile = previous })
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := startRuntimeControlLoop(ctx, dir, server, lifecycle, store, nil)
+	t.Cleanup(func() {
+		cancel()
+		stop()
+	})
+	if err := writeRuntimeCommand(dir, "restart"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("native runtime reconcile was not called")
+	}
+}
+
 func TestRuntimeControlLoopStartsSetupRuntimeInOrder(t *testing.T) {
 	dir := t.TempDir()
 	events := make(chan string, 3)

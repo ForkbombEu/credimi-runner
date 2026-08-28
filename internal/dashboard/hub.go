@@ -303,16 +303,20 @@ func (h *Hub) pillData(s Snapshot) PillData {
 			issues++
 		}
 	}
-	for _, d := range s.Devices {
-		if d.Status == Offline {
-			issues++
-		}
-	}
+	configuredIssues := map[string]bool{}
 	if h.cfg != nil {
 		for _, configured := range (PageData{Runner: h.cfg, Snapshot: s}).ConfiguredDeviceViews() {
 			if configured.ADBWarning {
+				if serial := strings.TrimSpace(configured.Serial); serial != "" {
+					configuredIssues[serial] = true
+				}
 				issues++
 			}
+		}
+	}
+	for _, d := range s.Devices {
+		if (d.Status == Offline || d.Status == Degraded) && !configuredIssues[strings.TrimSpace(d.Serial)] {
+			issues++
 		}
 	}
 	p := PillData{Issues: issues, OK: issues == 0, Label: "All healthy"}

@@ -78,6 +78,7 @@ type Operations struct {
 
 type Server struct {
 	listener   net.Listener
+	configDir  string
 	close      chan struct{}
 	closed     sync.Once
 	upgrade    func(context.Context) error
@@ -117,7 +118,7 @@ func ServeWithOperations(path string, upgrade func(context.Context) error, busy 
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("secure launcher control socket: %w", err)
 	}
-	server := &Server{listener: listener, close: make(chan struct{}), upgrade: upgrade, busy: busy, operations: operations, results: map[string]OperationResult{}}
+	server := &Server{listener: listener, configDir: filepath.Dir(path), close: make(chan struct{}), upgrade: upgrade, busy: busy, operations: operations, results: map[string]OperationResult{}}
 	go server.acceptLoop()
 	return server, nil
 }
@@ -265,15 +266,37 @@ func (s *Server) setOperation(result OperationResult) {
 	s.results[result.ID] = result
 	if result.Phase == PhaseSucceeded || result.Phase == PhaseFailed {
 		s.history = append(s.history, result.ID)
-		if len(s.history) > maxOperationResults {
-			cut := len(s.history) - maxOperationResults
-			for _, oldID := range s.history[:cut] {
-				delete(s.results, oldID)
-			}
-			s.history = append([]string(nil), s.history[cut:]...)
-		}
+		s.pruneResultsLocked()
 	}
 	s.mu.Unlock()
+}
+
+func (s *Server) pruneResultsLocked() {
+	pinned := map[string]bool{}
+	for _, filename := range []string{setupOperationFile, configOperationFile} {
+		if s.configDir == "" {
+			break
+		}
+		raw, err := os.ReadFile(filepath.Join(s.configDir, filename))
+		if err == nil && strings.TrimSpace(string(raw)) != "" {
+			pinned[strings.TrimSpace(string(raw))] = true
+		}
+	}
+	for len(s.results) > maxOperationResults {
+		removed := false
+		for index, id := range s.history {
+			if pinned[id] {
+				continue
+			}
+			delete(s.results, id)
+			s.history = append(s.history[:index], s.history[index+1:]...)
+			removed = true
+			break
+		}
+		if !removed {
+			break
+		}
+	}
 }
 
 func (s *Server) writeOperationStatus(connection net.Conn, id string) {

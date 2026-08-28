@@ -342,7 +342,7 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	for _, want := range []string{
 		"const form = document.querySelector('[data-device-add-form]');",
 		"if ($('.app.setup-shell'))",
-		"window.location.assign(dashboardURL(operation.refresh || '/'));",
+		"window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken));",
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Fatalf("dashboard script missing %q", want)

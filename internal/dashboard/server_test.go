@@ -1017,6 +1017,21 @@ func TestRuntimeOwnedLifecycleReadsLauncherQuickTunnelState(t *testing.T) {
 	}
 }
 
+func TestRuntimeOwnedLifecycleUsesNativeQuickTunnelResolver(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	s.launcherSocket = ""
+	restore := SetNativeQuickTunnelResolver(func(context.Context) (string, error) {
+		return "https://native.trycloudflare.com", nil
+	})
+	t.Cleanup(restore)
+	url, err := s.runtimeLifecycle(s.cfg.Snapshot()).QuickTunnelURL(context.Background())
+	if err != nil || url != "https://native.trycloudflare.com" {
+		t.Fatalf("native quick tunnel resolver = %q, %v", url, err)
+	}
+}
+
 func TestRuntimeOwnedNativeControlsUsePrivateRuntimeChannel(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
@@ -1343,6 +1358,19 @@ func TestServerAuth(t *testing.T) {
 	s.auth(next).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("bearer token code = %d", rec.Code)
+	}
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_TOKEN"] = "rotated"
+	s.cfg.mu.Unlock()
+	rec = httptest.NewRecorder()
+	s.auth(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config?token=token", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old token remained valid after rotation = %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	s.auth(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config?token=rotated", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("rotated token code = %d", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()
