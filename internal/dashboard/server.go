@@ -65,14 +65,17 @@ var (
 	beforeCandidateCommit func()
 )
 
-var nativeQuickTunnelResolver func(context.Context) (string, error)
-
-// SetNativeQuickTunnelResolver wires the single native edge owner into the
-// runtime-owned dashboard. It returns a restore function for shutdown/tests.
-func SetNativeQuickTunnelResolver(resolver func(context.Context) (string, error)) func() {
-	previous := nativeQuickTunnelResolver
-	nativeQuickTunnelResolver = resolver
-	return func() { nativeQuickTunnelResolver = previous }
+// NativeRuntimeControl is implemented by the macOS application owner. The
+// dashboard orchestrates registration; the native runtime owns the single
+// configuration-dependent execution generation.
+type NativeRuntimeControl interface {
+	Prepare(context.Context) error
+	Reconcile(context.Context, bool) error
+	StartExecution(context.Context) error
+	Stop(context.Context) error
+	CurrentPublicURL(context.Context) (string, error)
+	VerifyPublicURL(context.Context, string) error
+	Status(context.Context) dashboardruntime.RuntimeStatus
 }
 
 type Server struct {
@@ -84,7 +87,6 @@ type Server struct {
 	hubCtx                  context.Context
 	hubStartOnce            sync.Once
 	hubWG                   sync.WaitGroup
-	authToken               string
 	controllerID            string
 	controllerIdentityToken string
 	controllerFingerprint   string
@@ -107,6 +109,7 @@ type Server struct {
 	runtimeOwned            bool
 	launcherSocket          string
 	runtimeControlFile      string
+	nativeRuntime           NativeRuntimeControl
 	publicURL               string
 	mutationMu              sync.Mutex
 	mu                      sync.RWMutex
@@ -177,21 +180,21 @@ func NewHandlerWithManagerContextAndIdentity(parent context.Context, composeDir 
 // NewHandlerWithManagerContextAndIdentityAndCoordinator makes all dashboard
 // actions and non-HTTP entrypoints share one operation owner.
 func NewHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
-	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, false, nil)
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, false, nil, false)
 }
 
 // NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap starts a
 // configured runtime through the dashboard lifecycle controller after the
 // handler is ready. It is used only by the plain credimi-runner command.
 func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrap(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator) (http.Handler, context.CancelFunc, error) {
-	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, nil)
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, nil, false)
 }
 
 // NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress
 // additionally mirrors controller bootstrap progress to the process that
 // launched the dashboard.
 func NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, progress func(string)) (http.Handler, context.CancelFunc, error) {
-	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, progress)
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, manager, controllerID, identityToken, fingerprint, operations, true, progress, false)
 }
 
 // NewRuntimeOwnedHandler starts the dashboard as part of the already-running
@@ -202,8 +205,18 @@ func NewRuntimeOwnedHandler(parent context.Context, composeDir string, controlle
 	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, nil, controllerID, identityToken, fingerprint, operations, false, nil, true)
 }
 
-func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool, progress func(string), runtimeOwned ...bool) (http.Handler, context.CancelFunc, error) {
-	owned := len(runtimeOwned) > 0 && runtimeOwned[0]
+// NewRuntimeOwnedHandlerWithNativeRuntime wires the long-lived Dashboard to
+// the one macOS runtime supervisor without using package-global callbacks.
+func NewRuntimeOwnedHandlerWithNativeRuntime(parent context.Context, composeDir string, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, native NativeRuntimeControl) (http.Handler, context.CancelFunc, error) {
+	return newHandlerWithManagerContextAndIdentityAndCoordinator(parent, composeDir, nil, controllerID, identityToken, fingerprint, operations, false, nil, true, native)
+}
+
+func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Context, composeDir string, manager dashboardruntime.Manager, controllerID, identityToken, fingerprint string, operations *controller.Coordinator, bootstrap bool, progress func(string), runtimeOwned bool, native ...NativeRuntimeControl) (http.Handler, context.CancelFunc, error) {
+	owned := runtimeOwned
+	var nativeRuntime NativeRuntimeControl
+	if len(native) > 0 {
+		nativeRuntime = native[0]
+	}
 	cfg, err := LoadConfig(composeDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
@@ -247,7 +260,6 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 		render:                  render,
 		composeDir:              composeDir,
 		ctx:                     parent,
-		authToken:               strings.TrimSpace(cfg.Get("DASHBOARD_TOKEN")),
 		controllerID:            controllerID,
 		controllerIdentityToken: identityToken,
 		controllerFingerprint:   fingerprint,
@@ -255,6 +267,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 		runtimeOwned:            owned,
 		launcherSocket:          strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_LAUNCHER_SOCKET")),
 		runtimeControlFile:      strings.TrimSpace(os.Getenv(RuntimeControlFileEnv)),
+		nativeRuntime:           nativeRuntime,
 		operations:              operations,
 		lookupPath:              lookupPath,
 		statPath:                statPath,
@@ -284,7 +297,15 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
-	if owned && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
+	if owned && nativeRuntime != nil && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" && runtimeOperational(filepath.Dir(cfg.Path())) {
+		// The supervisor owns infrastructure. An already-running native runtime
+		// still follows the normal registration-before-execution sequence.
+		srv.startExistingRuntimeJob(cfg.Snapshot())
+	} else if owned && nativeRuntime != nil {
+		// A stopped native generation remains constructed but does not expose or
+		// execute until an explicit Start operation.
+		srv.startHub()
+	} else if owned && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
 		srv.startExistingRuntimeJob(cfg.Snapshot())
 	} else if !owned && bootstrap && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" {
 		if !srv.bootstrapConfiguredRuntime() {
@@ -647,7 +668,7 @@ func staticHTTPHandler() (http.Handler, error) {
 // auth wraps the mux with optional bearer/basic protection.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authToken := s.authToken
+		authToken := ""
 		if s.cfg != nil {
 			if values := s.cfg.Snapshot(); values != nil {
 				if configured, ok := values["DASHBOARD_TOKEN"]; ok {
@@ -688,6 +709,8 @@ func (s *Server) pageData(active string, payload any) PageData {
 	runtimeStatus := dashboardruntime.RuntimeStatus{}
 	if s.manager != nil {
 		runtimeStatus = s.manager.Status(context.Background())
+	} else if s.nativeRuntime != nil {
+		runtimeStatus = s.nativeRuntime.Status(context.Background())
 	} else if s.runtimeOwned {
 		runtimeStatus = dashboardruntime.RuntimeStatus{Configured: s.cfg.Exists(), RunnerRunning: runtimeOperational(filepath.Dir(s.cfg.Path())), PublicURL: s.runtimeOwnedPublicURL()}
 	}
@@ -701,7 +724,7 @@ func (s *Server) pageData(active string, payload any) PageData {
 		"RuntimeStatus":                 runtimeStatus,
 		"RuntimeOwned":                  s.runtimeOwned,
 		"LauncherControlAvailable":      s.launcherSocket != "",
-		"NativeRuntimeControlAvailable": s.runtimeControlFile != "" && s.launcherSocket == "",
+		"NativeRuntimeControlAvailable": s.nativeRuntime != nil,
 		"Startup":                       s.startupSnapshot(),
 		"RunnerVersion":                 buildinfo.String(),
 		"Maintenance":                   maintenanceStatus,
@@ -731,8 +754,8 @@ func (s *Server) runtimeOwnedPublicURL() string {
 		defer s.mu.RUnlock()
 		return s.publicURL
 	}
-	if s.launcherSocket == "" && nativeQuickTunnelResolver != nil {
-		publicURL, err := nativeQuickTunnelResolver(context.Background())
+	if s.nativeRuntime != nil {
+		publicURL, err := s.nativeRuntime.CurrentPublicURL(context.Background())
 		if err != nil {
 			return ""
 		}
@@ -1714,6 +1737,22 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	}
 	if deferStart {
 		if s.runtimeOwned {
+			if s.nativeRuntime != nil {
+				if err := s.nativeRuntime.Prepare(r.Context()); err != nil {
+					return fmt.Errorf("prepare native runtime: %w", err)
+				}
+				if err := s.registerCurrent(r.Context(), map[string]string(values)); err != nil {
+					return err
+				}
+				if err := s.nativeRuntime.StartExecution(r.Context()); err != nil {
+					return fmt.Errorf("start native execution: %w", err)
+				}
+				if err := clearSetupPending(filepath.Dir(s.cfg.Path())); err != nil {
+					return err
+				}
+				s.setStartupState(StartupReady, "Setup complete. Runner started and registered with Credimi.")
+				return nil
+			}
 			operationID := ""
 			if s.launcherSocket != "" {
 				handle, err := launcher.RequestSetupReconcileAsync(r.Context(), s.launcherSocket)
@@ -1979,6 +2018,9 @@ func (s *Server) startSetupRuntime(ctx context.Context) error {
 }
 
 func (s *Server) startRegisteredRuntime(ctx context.Context, controlAction string) error {
+	if s.nativeRuntime != nil {
+		return s.nativeRuntime.StartExecution(ctx)
+	}
 	if strings.TrimSpace(s.runtimeControlFile) == "" {
 		return nil
 	}
@@ -2033,6 +2075,22 @@ func (s *Server) applyRuntimeOwnedConfig(diff dashboardruntime.ConfigDiff, value
 		s.startConfigReconcileRecovery(values, handle.ID, false)
 		return nil
 	}
+	if s.nativeRuntime != nil && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+		running := runtimeOperational(filepath.Dir(s.cfg.Path()))
+		if err := s.nativeRuntime.Reconcile(context.Background(), running); err != nil {
+			return err
+		}
+		if !running {
+			return clearReconcilePending(filepath.Dir(s.cfg.Path()))
+		}
+		if err := s.registerCurrent(context.Background(), values); err != nil {
+			return err
+		}
+		if err := s.nativeRuntime.StartExecution(context.Background()); err != nil {
+			return err
+		}
+		return clearReconcilePending(filepath.Dir(s.cfg.Path()))
+	}
 	if s.runtimeOwned && !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 		return nil
 	}
@@ -2047,8 +2105,21 @@ func (s *Server) applyRuntimeOwnedConfigInOperation(ctx context.Context, diff da
 		}
 		return s.finishConfigReconcileRecovery(ctx, values, handle.ID, false)
 	}
-	if s.runtimeOwned && s.runtimeControlFile != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
-		return writeNativeRuntimeControl(s.runtimeControlFile, "restart")
+	if s.nativeRuntime != nil && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
+		running := runtimeOperational(filepath.Dir(s.cfg.Path()))
+		if err := s.nativeRuntime.Reconcile(ctx, running); err != nil {
+			return err
+		}
+		if !running {
+			return clearReconcilePending(filepath.Dir(s.cfg.Path()))
+		}
+		if err := s.registerCurrent(ctx, values); err != nil {
+			return err
+		}
+		if err := s.nativeRuntime.StartExecution(ctx); err != nil {
+			return err
+		}
+		return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 	}
 	if s.runtimeOwned && !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 		return nil
@@ -2109,6 +2180,12 @@ func (s *Server) startExistingRuntimeJob(values map[string]string) {
 			return nil
 		}
 		s.setStartupState(StartupRegistering, "Runner already running. Updating Credimi registration.")
+		if s.nativeRuntime != nil {
+			if err := s.nativeRuntime.Prepare(ctx); err != nil {
+				s.setStartupState(StartupNeedsAttention, "Runner is already running, but native runtime preparation failed: "+err.Error())
+				return err
+			}
+		}
 		if err := s.runtimeLifecycle(cloneStringMap(values)).RegisterRunning(ctx); err != nil {
 			s.mu.Lock()
 			s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
@@ -2503,6 +2580,8 @@ func (s *Server) controllerStatus(w http.ResponseWriter, r *http.Request) {
 	status := dashboardruntime.RuntimeStatus{}
 	if s.manager != nil {
 		status = s.manager.Status(r.Context())
+	} else if s.nativeRuntime != nil {
+		status = s.nativeRuntime.Status(r.Context())
 	}
 	writeJSON(w, map[string]any{"runtime": status, "operation": s.operations.Current()})
 }
@@ -2569,7 +2648,7 @@ func (s *Server) controllerUpgradeImage(w http.ResponseWriter, r *http.Request) 
 var errRuntimeManagerUnavailable = errors.New("runtime manager unavailable")
 
 func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error) {
-	if s.manager == nil && (!s.runtimeOwned || (s.launcherSocket == "" && s.runtimeControlFile == "")) {
+	if s.manager == nil && s.nativeRuntime == nil && (!s.runtimeOwned || s.launcherSocket == "") {
 		return controller.Snapshot{}, errRuntimeManagerUnavailable
 	}
 	var kind controller.OperationKind
@@ -2589,6 +2668,37 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 	values := s.cfg.Snapshot()
 	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, progress func(controller.Progress)) error {
 		if s.manager == nil {
+			if s.nativeRuntime != nil {
+				switch action {
+				case "stop":
+					return s.nativeRuntime.Stop(ctx)
+				case "start":
+					if err := s.nativeRuntime.Prepare(ctx); err != nil {
+						return err
+					}
+					if err := s.registerCurrent(ctx, values); err != nil {
+						return err
+					}
+					if err := s.nativeRuntime.StartExecution(ctx); err != nil {
+						return err
+					}
+					return clearReconcilePending(filepath.Dir(s.cfg.Path()))
+				case "restart":
+					if err := s.nativeRuntime.Stop(ctx); err != nil {
+						return err
+					}
+					if err := s.nativeRuntime.Reconcile(ctx, true); err != nil {
+						return err
+					}
+					if err := s.registerCurrent(ctx, s.cfg.Snapshot()); err != nil {
+						return err
+					}
+					if err := s.nativeRuntime.StartExecution(ctx); err != nil {
+						return err
+					}
+					return clearReconcilePending(filepath.Dir(s.cfg.Path()))
+				}
+			}
 			if s.launcherSocket != "" {
 				if err := launcher.RequestRuntimeAction(ctx, s.launcherSocket, action); err != nil {
 					return err
@@ -2607,7 +2717,7 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 				}
 				return nil
 			}
-			return writeNativeRuntimeControl(s.runtimeControlFile, action)
+			return errRuntimeManagerUnavailable
 		}
 		lifecycle := s.runtimeLifecycle(values)
 		progressFn := func(message string) { progress(controller.Progress{Message: message}) }
@@ -2635,21 +2745,6 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 		}
 	})
 	return snapshot, err
-}
-
-func writeNativeRuntimeControl(path, action string) error {
-	switch action {
-	case "start", "stop", "restart":
-	default:
-		return fmt.Errorf("unsupported runtime action %q", action)
-	}
-	if strings.TrimSpace(path) == "" {
-		return errRuntimeManagerUnavailable
-	}
-	if err := os.WriteFile(path, []byte(action+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write native runtime control: %w", err)
-	}
-	return nil
 }
 
 func writeSetupRuntimeControl(path string) error {
@@ -2730,8 +2825,9 @@ func (s *Server) runtimeLifecycle(values map[string]string) controller.RuntimeLi
 			// replacement.
 			return launcher.ReadQuickTunnelURL(filepath.Dir(s.cfg.Path()))
 		}
-	} else if nativeQuickTunnelResolver != nil {
-		lifecycle.QuickTunnelURL = nativeQuickTunnelResolver
+	} else if s.nativeRuntime != nil {
+		lifecycle.QuickTunnelURL = s.nativeRuntime.CurrentPublicURL
+		lifecycle.VerifyPublicURL = s.nativeRuntime.VerifyPublicURL
 	}
 	return lifecycle
 }

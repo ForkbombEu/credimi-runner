@@ -501,6 +501,47 @@ func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
 	}
 }
 
+func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"const runtimeRecoveryMaxDuration = 15 * 60 * 1000;",
+		"const deadline = Date.now() + runtimeRecoveryMaxDuration;",
+		"dashboardURL('/startup/status', operation.recoveryToken)",
+		"runtimeRecoveryAbort.abort()",
+		"clearTimeout(timeout);",
+		"fetch(dashboardURL(url), { headers: { Accept: 'application/json' } })",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("runtime recovery is missing %q", want)
+		}
+	}
+	if strings.Contains(content, "runtimeRecoveryMaxAttempts") {
+		t.Fatal("recovery must use a wall-clock deadline, not an attempt count")
+	}
+}
+
+func TestStaticDashboardRequestsPreserveQueryToken(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"htmx:configRequest",
+		"preserveDashboardToken",
+		"[sse-connect]",
+		"fetch(dashboardURL(url)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("dashboard token preservation missing %q", want)
+		}
+	}
+}
+
 func TestStaticAppShowsDeviceProvisioningProgress(t *testing.T) {
 	script, err := os.ReadFile("static/app.js")
 	if err != nil {

@@ -192,7 +192,6 @@ func newTestServer(t *testing.T) *Server {
 		render:             render,
 		composeDir:         t.TempDir(),
 		ctx:                context.Background(),
-		authToken:          "token",
 		manager:            &fakeManager{quickTunnelURL: "https://runner.example.trycloudflare.com"},
 		runnerReady:        func(context.Context, map[string]string) error { return nil },
 		lookupPath:         func(string) (string, error) { return "/tmp/fake-bin", nil },
@@ -1017,53 +1016,269 @@ func TestRuntimeOwnedLifecycleReadsLauncherQuickTunnelState(t *testing.T) {
 	}
 }
 
-func TestRuntimeOwnedLifecycleUsesNativeQuickTunnelResolver(t *testing.T) {
+type nativeRuntimeControlFake struct {
+	url        string
+	prepared   int
+	stopped    int
+	execution  int
+	reconciled int
+	err        error
+	prepareErr error
+}
+
+func (f *nativeRuntimeControlFake) Prepare(context.Context) error { f.prepared++; return f.prepareErr }
+func (f *nativeRuntimeControlFake) Reconcile(context.Context, bool) error {
+	f.reconciled++
+	return f.err
+}
+func (f *nativeRuntimeControlFake) StartExecution(context.Context) error { f.execution++; return nil }
+func (f *nativeRuntimeControlFake) Stop(context.Context) error           { f.stopped++; return nil }
+func (f *nativeRuntimeControlFake) CurrentPublicURL(context.Context) (string, error) {
+	return f.url, nil
+}
+func (f *nativeRuntimeControlFake) VerifyPublicURL(context.Context, string) error { return nil }
+func (f *nativeRuntimeControlFake) Status(context.Context) dashboardruntime.RuntimeStatus {
+	return dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: true, PublicURL: f.url}
+}
+
+func TestRuntimeOwnedLifecycleUsesInjectedNativeRuntime(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
 	s.launcherSocket = ""
-	restore := SetNativeQuickTunnelResolver(func(context.Context) (string, error) {
-		return "https://native.trycloudflare.com", nil
-	})
-	t.Cleanup(restore)
-	url, err := s.runtimeLifecycle(s.cfg.Snapshot()).QuickTunnelURL(context.Background())
+	s.nativeRuntime = &nativeRuntimeControlFake{url: "https://native.trycloudflare.com"}
+	lifecycle := s.runtimeLifecycle(s.cfg.Snapshot())
+	url, err := lifecycle.QuickTunnelURL(context.Background())
 	if err != nil || url != "https://native.trycloudflare.com" {
-		t.Fatalf("native quick tunnel resolver = %q, %v", url, err)
+		t.Fatalf("native quick tunnel URL = %q, %v", url, err)
+	}
+	if lifecycle.VerifyPublicURL == nil {
+		t.Fatal("native runtime did not provide endpoint verification")
 	}
 }
 
-func TestRuntimeOwnedNativeControlsUsePrivateRuntimeChannel(t *testing.T) {
+func TestNativeRuntimeOwnedHandlerUsesSupervisorStatusAndStop(t *testing.T) {
+	dir := t.TempDir()
+	writeDashboardTestConfig(t, dir, "token")
+	native := &nativeRuntimeControlFake{url: "https://native.trycloudflare.com"}
+	handler, cancel, err := NewRuntimeOwnedHandlerWithNativeRuntime(context.Background(), dir, "controller", "identity", "fingerprint", controller.NewCoordinator(context.Background()), native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/controller/status?token=token", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "native.trycloudflare.com") {
+		t.Fatalf("native controller status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	server := newTestServer(t)
+	server.manager = nil
+	server.runtimeOwned = true
+	server.nativeRuntime = native
+	snapshot, err := server.submitRuntimeAction("stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := server.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil || completed.Phase != controller.PhaseSucceeded || native.stopped != 1 {
+		t.Fatalf("native stop = %#v stopped=%d err=%v", completed, native.stopped, err)
+	}
+}
+
+func TestNativeStoppedConfigReconcileBuildsCurrentGenerationWithoutExecution(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	s.launcherSocket = ""
-	s.runtimeControlFile = filepath.Join(t.TempDir(), "runtime-control")
-	if !s.pageData("overview", nil).RuntimeControlsAvailable() {
-		t.Fatal("native runtime controls were hidden")
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state"), []byte("stopped\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	snapshot, err := s.submitRuntimeAction("stop")
+	diff := dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}}
+	if err := s.applyRuntimeOwnedConfigInOperation(context.Background(), diff, s.cfg.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if native.reconciled != 1 || native.execution != 0 {
+		t.Fatalf("stopped native reconcile = reconciled %d execution %d", native.reconciled, native.execution)
+	}
+	if got := s.runtimeOwnedPublicURL(); got != "" {
+		t.Fatalf("manual native public URL = %q, want empty", got)
+	}
+	if err := s.applyRuntimeOwnedConfig(diff, s.cfg.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if native.reconciled != 2 || native.execution != 0 {
+		t.Fatalf("asynchronous stopped native reconcile = reconciled %d execution %d", native.reconciled, native.execution)
+	}
+}
+
+func TestRuntimeOwnedNativeAutoPublicURLUsesCurrentGeneration(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+	s.cfg.mu.Unlock()
+	s.nativeRuntime = &nativeRuntimeControlFake{url: "https://current.trycloudflare.com"}
+	if got := s.runtimeOwnedPublicURL(); got != "https://current.trycloudflare.com" {
+		t.Fatalf("native current public URL = %q", got)
+	}
+	data := s.pageData("overview", nil)
+	if !data.Data.(map[string]any)["NativeRuntimeControlAvailable"].(bool) || data.RuntimeStatus().PublicURL != "https://current.trycloudflare.com" {
+		t.Fatal("page data did not expose the current native runtime generation")
+	}
+}
+
+func TestNativeRuntimeActionReportsSupervisorReconcileFailure(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	s.nativeRuntime = &nativeRuntimeControlFake{err: errors.New("native generation unavailable")}
+	snapshot, err := s.submitRuntimeAction("restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil || completed.Phase != controller.PhaseFailed || !strings.Contains(completed.Error, "native generation unavailable") {
+		t.Fatalf("native restart failure = %#v err=%v", completed, err)
+	}
+}
+
+func TestNativeRuntimeStartStopsBeforeRegistrationWhenPreparationFails(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{prepareErr: errors.New("listener bind failed")}
+	s.nativeRuntime = native
+	snapshot, err := s.submitRuntimeAction("start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil || completed.Phase != controller.PhaseFailed || !strings.Contains(completed.Error, "listener bind failed") {
+		t.Fatalf("native start failure = %#v err=%v", completed, err)
+	}
+	if native.prepared != 1 || native.execution != 0 {
+		t.Fatalf("failed native preparation execution=%d prepared=%d", native.execution, native.prepared)
+	}
+}
+
+func TestNativeRuntimeStartPreparesButNeverExecutesWhenRegistrationFails(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_USER_API_KEY"] = ""
+	s.cfg.values["CREDIMI_INTERNAL_ADMIN_KEY"] = ""
+	s.cfg.mu.Unlock()
+	snapshot, err := s.submitRuntimeAction("start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil || completed.Phase != controller.PhaseFailed || !strings.Contains(completed.Error, "missing Credimi API key") {
+		t.Fatalf("native start registration failure = %#v err=%v", completed, err)
+	}
+	if native.prepared != 1 || native.execution != 0 {
+		t.Fatalf("registration failure execution=%d prepared=%d", native.execution, native.prepared)
+	}
+}
+
+func TestNativeRuntimeStartRegistersBeforeStartingExecution(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	originalClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	snapshot, err := s.submitRuntimeAction("start")
 	if err != nil {
 		t.Fatal(err)
 	}
 	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
 	if err != nil || completed.Phase != controller.PhaseSucceeded {
-		t.Fatalf("native runtime control operation = %#v err=%v", completed, err)
+		t.Fatalf("native start = %#v err=%v", completed, err)
 	}
-	raw, err := os.ReadFile(s.runtimeControlFile)
-	if err != nil || string(raw) != "stop\n" {
-		t.Fatalf("native runtime control file=%q err=%v", raw, err)
+	if native.prepared != 1 || native.execution != 1 {
+		t.Fatalf("native start ordering prepared=%d execution=%d", native.prepared, native.execution)
 	}
 }
 
-func TestWriteNativeRuntimeControlRejectsInvalidRequests(t *testing.T) {
-	if err := writeNativeRuntimeControl(t.TempDir()+"/control", "exec"); err == nil || !strings.Contains(err.Error(), "unsupported runtime action") {
-		t.Fatalf("unsupported native action = %v", err)
+func TestExistingNativeRuntimePreparesBeforeRegistrationAndExecution(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	configDir := filepath.Dir(s.cfg.Path())
+	if err := os.WriteFile(filepath.Join(configDir, "runtime-state"), []byte("running\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if err := writeNativeRuntimeControl("", "start"); !errors.Is(err, errRuntimeManagerUnavailable) {
-		t.Fatalf("empty native control path = %v", err)
+	originalClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	s.startExistingRuntimeJob(s.cfg.Snapshot())
+	s.mu.RLock()
+	done := s.startup.done
+	s.mu.RUnlock()
+	if done == nil {
+		t.Fatal("existing runtime registration was not started")
 	}
-	if err := writeNativeRuntimeControl(filepath.Join(t.TempDir(), "missing", "control"), "start"); err == nil || !strings.Contains(err.Error(), "write native runtime control") {
-		t.Fatalf("unwritable native control path = %v", err)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("existing native runtime registration did not complete")
+	}
+	if native.prepared != 1 || native.execution != 1 {
+		t.Fatalf("existing native startup prepared=%d execution=%d", native.prepared, native.execution)
+	}
+}
+
+func TestRunningNativeConfigReconcileDoesNotStartWorkersBeforeRegistration(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_USER_API_KEY"] = ""
+	s.cfg.values["CREDIMI_INTERNAL_ADMIN_KEY"] = ""
+	s.cfg.mu.Unlock()
+	diff := dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}}
+	err := s.applyRuntimeOwnedConfigInOperation(context.Background(), diff, s.cfg.Snapshot())
+	if err == nil || !strings.Contains(err.Error(), "missing Credimi API key") {
+		t.Fatalf("running native reconcile error = %v", err)
+	}
+	if native.reconciled != 1 || native.execution != 0 {
+		t.Fatalf("registration failure started execution: reconciled=%d execution=%d", native.reconciled, native.execution)
+	}
+}
+
+func TestRunningNativeBackgroundConfigReconcileAlsoWaitsForRegistration(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_USER_API_KEY"] = ""
+	s.cfg.values["CREDIMI_INTERNAL_ADMIN_KEY"] = ""
+	s.cfg.mu.Unlock()
+	diff := dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}}
+	err := s.applyRuntimeOwnedConfig(diff, s.cfg.Snapshot())
+	if err == nil || !strings.Contains(err.Error(), "missing Credimi API key") {
+		t.Fatalf("background native reconcile error = %v", err)
+	}
+	if native.reconciled != 1 || native.execution != 0 {
+		t.Fatalf("background registration failure started execution: reconciled=%d execution=%d", native.reconciled, native.execution)
 	}
 }
 
@@ -1335,6 +1550,9 @@ func TestNewHandlerAppliesDashboardTokenAuth(t *testing.T) {
 
 func TestServerAuth(t *testing.T) {
 	s := newTestServer(t)
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_TOKEN"] = "token"
+	s.cfg.mu.Unlock()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})

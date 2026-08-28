@@ -40,14 +40,22 @@ var dashboardSignalSource = func() (<-chan os.Signal, func()) {
 }
 
 func runDashboard(cmd *cobra.Command, args []string) error {
-	return runDashboardMode(cmd, args, false)
+	return runDashboardModeWithNativeRuntime(cmd, args, false, nil)
 }
 
 func runDashboardOwned(cmd *cobra.Command, args []string) error {
-	return runDashboardMode(cmd, args, true)
+	return runDashboardModeWithNativeRuntime(cmd, args, true, nil)
+}
+
+func runDashboardOwnedWithNativeRuntime(cmd *cobra.Command, args []string, native dashboard.NativeRuntimeControl) error {
+	return runDashboardModeWithNativeRuntime(cmd, args, true, native)
 }
 
 func runDashboardMode(cmd *cobra.Command, args []string, runtimeOwned bool) error {
+	return runDashboardModeWithNativeRuntime(cmd, args, runtimeOwned, nil)
+}
+
+func runDashboardModeWithNativeRuntime(cmd *cobra.Command, args []string, runtimeOwned bool, native dashboard.NativeRuntimeControl) error {
 	configDir := effectiveConfigDir()
 	closeVerboseLog, err := enableVerboseLog(cmd, configDir)
 	if err != nil {
@@ -111,7 +119,11 @@ func runDashboardMode(cmd *cobra.Command, args []string, runtimeOwned bool) erro
 	var handler http.Handler
 	var cancelHandler context.CancelFunc
 	if runtimeOwned {
-		handler, cancelHandler, err = dashboard.NewRuntimeOwnedHandler(dashboardCtx, configDir, controllerID, identityToken, plan.ConfigFingerprint, operations)
+		if native != nil {
+			handler, cancelHandler, err = dashboard.NewRuntimeOwnedHandlerWithNativeRuntime(dashboardCtx, configDir, controllerID, identityToken, plan.ConfigFingerprint, operations, native)
+		} else {
+			handler, cancelHandler, err = dashboard.NewRuntimeOwnedHandler(dashboardCtx, configDir, controllerID, identityToken, plan.ConfigFingerprint, operations)
+		}
 	} else {
 		handler, cancelHandler, err = dashboard.NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(dashboardCtx, configDir, manager, controllerID, identityToken, plan.ConfigFingerprint, operations, func(message string) {
 			cmd.Println(message)

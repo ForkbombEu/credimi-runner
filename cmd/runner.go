@@ -53,12 +53,6 @@ var runInternalDashboardFunc = runDashboardOwned
 var runInternalServerFunc = func(cmd *cobra.Command, args []string) error { return serverCmd.RunE(cmd, args) }
 var ensureEmulatorRuntime = androidtools.EnsureEmulatorReadyAt
 
-// nativeRuntimeReconcile is installed only while the native foreground
-// runtime is running. The server control loop invokes it for restart-impact
-// configuration changes so native edge/runtime components are rebuilt from the
-// newly persisted typed configuration.
-var nativeRuntimeReconcile func(context.Context) error
-
 var rootCmd = &cobra.Command{
 	Use:           "credimi-runner",
 	Short:         "Credimi mobile runner",
@@ -589,6 +583,16 @@ func requestRuntimeCommandAndWait(ctx context.Context, configDir, action, expect
 // runApplicationRuntime is the one foreground application unit used by both
 // native macOS startup and the Linux managed container.
 func runApplicationRuntime(cmd *cobra.Command, args []string) error {
+	if stdruntime.GOOS == "darwin" {
+		return runNativeApplicationRuntime(cmd, args)
+	}
+	return runManagedApplicationRuntime(cmd, args)
+}
+
+// runManagedApplicationRuntime is the Linux container path. Its control file
+// remains an internal handoff from the Dashboard to the in-container server;
+// native macOS does not use it.
+func runManagedApplicationRuntime(cmd *cobra.Command, args []string) error {
 	configDir := effectiveConfigDir()
 	if err := os.Setenv("CREDIMI_RUNNER_CONFIG_DIR", configDir); err != nil {
 		return err
@@ -616,57 +620,6 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 		go func() { errCh <- runInternalDashboardFunc(cmd, args) }()
 	}
 	serverStarted := false
-	var edgeManager *dashboardruntime.LifecycleManager
-	restoreNativeResolver := dashboard.SetNativeQuickTunnelResolver(nil)
-	previousNativeReconcile := nativeRuntimeReconcile
-	defer func() {
-		nativeRuntimeReconcile = previousNativeReconcile
-		restoreNativeResolver()
-		if edgeManager != nil {
-			_ = edgeManager.Stop(context.Background())
-			_ = edgeManager.Close()
-		}
-	}()
-	startNativeEdges := func() error {
-		if stdruntime.GOOS != "darwin" || edgeManager != nil {
-			return nil
-		}
-		values, err := runtimeValuesFromConfig(configDir)
-		if err != nil {
-			return err
-		}
-		manager := dashboardruntime.NewLifecycleManagerForOS("", configDir, values, nil, "darwin")
-		if err := manager.Start(cmd.Context()); err != nil {
-			_ = manager.Close()
-			return fmt.Errorf("start macOS edge services: %w", err)
-		}
-		edgeManager = manager
-		// Registration in the runtime-owned dashboard must query this same
-		// native edge manager rather than constructing a competing manager.
-		dashboard.SetNativeQuickTunnelResolver(edgeManager.QuickTunnelURL)
-		return nil
-	}
-	nativeRuntimeReconcile = func(ctx context.Context) error {
-		if stdruntime.GOOS != "darwin" {
-			return nil
-		}
-		if edgeManager != nil {
-			if err := edgeManager.Stop(ctx); err != nil {
-				return err
-			}
-			if err := edgeManager.Close(); err != nil {
-				return err
-			}
-			edgeManager = nil
-		}
-		if err := hydrateTypedRuntimeEnvironment(configDir); err != nil {
-			return err
-		}
-		if err := configureInternalListeners(configDir); err != nil {
-			return err
-		}
-		return startNativeEdges()
-	}
 	startServer := func() {
 		if serverStarted {
 			return
@@ -676,9 +629,6 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 	}
 	if _, err := os.Stat(filepath.Join(configDir, "config.toml")); err == nil {
 		if err := prepareInternalRuntime(cmd.Context(), configDir); err != nil {
-			return err
-		}
-		if err := startNativeEdges(); err != nil {
 			return err
 		}
 		// The owned dashboard begins registration immediately. Provision the
@@ -699,9 +649,6 @@ func runApplicationRuntime(cmd *cobra.Command, args []string) error {
 			if _, err := os.Stat(filepath.Join(configDir, "config.toml")); err == nil {
 				if !serverStarted {
 					if err := prepareInternalRuntime(cmd.Context(), configDir); err != nil {
-						return err
-					}
-					if err := startNativeEdges(); err != nil {
 						return err
 					}
 				}

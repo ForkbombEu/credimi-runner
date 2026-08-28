@@ -69,6 +69,7 @@
   // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
   let runtimeOperationTimer = null;
   let runtimeRecoveryTimer = null;
+  let runtimeRecoveryAbort = null;
   let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
   function dashboardURL(path, tokenOverride) {
@@ -77,6 +78,20 @@
     if (token) url.searchParams.set('token', token);
     return `${url.pathname}${url.search}`;
   }
+
+  // Query-token authentication is a Dashboard boundary. Keep internal htmx,
+  // SSE and ordinary navigation on that boundary without copying tokens into
+  // server-rendered templates or external/public links.
+  function preserveDashboardToken(root = document) {
+    root.querySelectorAll?.('a[href^="/"]').forEach((link) => { link.href = dashboardURL(link.getAttribute('href')); });
+    root.querySelectorAll?.('[sse-connect]').forEach((node) => { node.setAttribute('sse-connect', dashboardURL(node.getAttribute('sse-connect'))); });
+  }
+  document.body.addEventListener('htmx:configRequest', (event) => {
+    const detail = event.detail || {};
+    if (typeof detail.path === 'string' && detail.path.startsWith('/')) detail.path = dashboardURL(detail.path);
+  });
+  document.body.addEventListener('htmx:afterSwap', (event) => preserveDashboardToken(event.target || document));
+  preserveDashboardToken();
 	function refreshOverview(path = '/', tokenOverride) {
 		htmx.ajax('GET', dashboardURL(path, tokenOverride), { target: 'main', select: 'main', swap: 'outerHTML' });
   }
@@ -86,27 +101,31 @@
   }
   // Candidate provisioning allows ten minutes and launcher quick-tunnel
   // resolution another two; retain a small reconnect margin for replacement.
-  const runtimeRecoveryMaxAttempts = 900;
+  const runtimeRecoveryMaxDuration = 15 * 60 * 1000;
   const runtimeRecoveryRequestTimeout = 10000;
   function startRuntimeRecovery(operation) {
-    clearInterval(runtimeOperationTimer);
+    clearTimeout(runtimeOperationTimer);
     runtimeOperationTimer = null;
-    let attempts = 0;
+    const deadline = Date.now() + runtimeRecoveryMaxDuration;
     clearTimeout(runtimeRecoveryTimer);
+    if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
     const poll = async () => {
-      if (++attempts > runtimeRecoveryMaxAttempts) {
+      if (Date.now() >= deadline || !runtimeOperationActive) {
         clearTimeout(runtimeRecoveryTimer);
         runtimeRecoveryTimer = null;
+        if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
+        runtimeRecoveryAbort = null;
         runtimeOperationActive = false;
         hideBusy();
-        toast('Runner operation status was lost during restart.', 'error');
+        toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
         return;
       }
+      let timeout;
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), runtimeRecoveryRequestTimeout);
+        runtimeRecoveryAbort = controller;
+        timeout = setTimeout(() => controller.abort(), runtimeRecoveryRequestTimeout);
         const recovery = await fetch(dashboardURL('/startup/status', operation.recoveryToken), { headers: { Accept: 'application/json' }, signal: controller.signal });
-        clearTimeout(timeout);
         if (!recovery.ok) {
           runtimeRecoveryTimer = setTimeout(poll, 1000);
           return;
@@ -118,6 +137,7 @@
         }
         clearTimeout(runtimeRecoveryTimer);
         runtimeRecoveryTimer = null;
+        runtimeRecoveryAbort = null;
         runtimeOperationActive = false;
         hideBusy();
         if (state.phase === 'ready') {
@@ -127,7 +147,9 @@
         }
         refreshOverview(operation.refresh || '/', operation.recoveryToken);
       } catch (_) {
-        runtimeRecoveryTimer = setTimeout(poll, 1000);
+        if (Date.now() < deadline && runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
+      } finally {
+        clearTimeout(timeout);
       }
     };
     void poll();
@@ -153,7 +175,7 @@
         appendBusyLog(message);
       }
       if (phase === 'queued' || phase === 'running') return;
-      clearInterval(runtimeOperationTimer);
+      clearTimeout(runtimeOperationTimer);
       runtimeOperationTimer = null;
       const finish = () => {
         runtimeOperationActive = false;
@@ -183,11 +205,15 @@
       if (tokenField) operation.recoveryToken = tokenField.value.trim();
     }
     runtimeOperationActive = true;
-    clearInterval(runtimeOperationTimer);
+    clearTimeout(runtimeOperationTimer);
     runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
     appendBusyLog('Runtime operation accepted. Waiting for completion.');
-    pollRuntimeOperation(operation);
-    runtimeOperationTimer = setInterval(() => pollRuntimeOperation(operation), 500);
+    const poll = async () => {
+      if (!runtimeOperationActive) return;
+      await pollRuntimeOperation(operation);
+      if (runtimeOperationActive) runtimeOperationTimer = setTimeout(poll, 500);
+    };
+    void poll();
   });
 
   // ── Global busy overlay for runtime-changing requests ───────────────────
@@ -240,7 +266,7 @@
   async function pollBusyStartupStatus() {
     try {
       const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
-      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      const res = await fetch(dashboardURL(url), { headers: { Accept: 'application/json' } });
       if (!res.ok) return;
       const data = await res.json();
       const phase = String(data.phase || '');
@@ -265,7 +291,7 @@
         busyStartupTimer = null;
         const delay = phase === 'needs_attention' ? 2500 : 1000;
         const destination = phase === 'needs_attention' ? '/setup' : '/';
-        setTimeout(() => { window.location.assign(destination); }, delay);
+        setTimeout(() => { window.location.assign(dashboardURL(destination)); }, delay);
       }
     } catch (_) {}
   }
@@ -776,7 +802,7 @@
         syncStepActions();
       };
       const jsonPost = async (url, body) => {
-        const res = await fetch(url, {
+        const res = await fetch(dashboardURL(url), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),

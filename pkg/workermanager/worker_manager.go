@@ -160,11 +160,16 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 				w.RegisterActivityWithOptions(registeredActivityExecutor(item, provider), activity.RegisterOptions{Name: item.Activity.Name()})
 			}
 
-			// Shutdown channel
+			// The forwarding goroutine is attempt-scoped. A retryable Run error
+			// must release it before the next attempt starts.
 			shutdownCh := make(chan interface{})
+			attemptDone := make(chan struct{})
 			go func() {
-				<-ctx.Done()
-				close(shutdownCh)
+				select {
+				case <-ctx.Done():
+					close(shutdownCh)
+				case <-attemptDone:
+				}
 			}()
 
 			log.Printf("Temporal worker running for namespace %s", namespace)
@@ -175,6 +180,7 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 				observability.String("runner_id", runnerID),
 			)
 			err = w.Run(shutdownCh)
+			close(attemptDone)
 			if c != nil {
 				c.Close()
 			}

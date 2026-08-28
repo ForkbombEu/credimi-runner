@@ -261,12 +261,6 @@ func startRuntimeControlLoop(ctx context.Context, configDir string, srv interfac
 					_ = writeRuntimeState(configDir, "restarting")
 					store.StopAll()
 					_ = lifecycle.Pause(controlCtx, "dashboard_restart")
-					if nativeRuntimeReconcile != nil {
-						if err := nativeRuntimeReconcile(controlCtx); err != nil {
-							_ = writeRuntimeState(configDir, "failed: "+err.Error())
-							continue
-						}
-					}
 					if err := srv.StartExistingWorkers(controlCtx); err == nil {
 						if err := lifecycle.Resume(controlCtx, "dashboard_restart"); err != nil {
 							cluelog.Printf(controlCtx, "Warning: failed to resume runner lifecycle during restart: %v", err)
