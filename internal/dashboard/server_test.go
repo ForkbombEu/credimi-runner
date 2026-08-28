@@ -1210,6 +1210,30 @@ func TestNativeRuntimeStartRegistersBeforeStartingExecution(t *testing.T) {
 	}
 }
 
+func TestNativeRuntimeRestartReplacesThenRegistersBeforeExecution(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	originalClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	snapshot, err := s.submitRuntimeAction("restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil || completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("native restart = %#v err=%v", completed, err)
+	}
+	if native.stopped != 1 || native.reconciled != 1 || native.execution != 1 {
+		t.Fatalf("native restart stopped=%d reconciled=%d execution=%d", native.stopped, native.reconciled, native.execution)
+	}
+}
+
 func TestExistingNativeRuntimePreparesBeforeRegistrationAndExecution(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
@@ -1262,6 +1286,29 @@ func TestRunningNativeConfigReconcileDoesNotStartWorkersBeforeRegistration(t *te
 	}
 }
 
+func TestRunningNativeConfigReconcileRegistersBeforeExecution(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state"), []byte("running\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	diff := dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}}
+	if err := s.applyRuntimeOwnedConfigInOperation(context.Background(), diff, s.cfg.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if native.reconciled != 1 || native.execution != 1 {
+		t.Fatalf("running native reconcile = reconciled %d execution %d", native.reconciled, native.execution)
+	}
+}
+
 func TestRunningNativeBackgroundConfigReconcileAlsoWaitsForRegistration(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
@@ -1279,6 +1326,29 @@ func TestRunningNativeBackgroundConfigReconcileAlsoWaitsForRegistration(t *testi
 	}
 	if native.reconciled != 1 || native.execution != 0 {
 		t.Fatalf("background registration failure started execution: reconciled=%d execution=%d", native.reconciled, native.execution)
+	}
+}
+
+func TestRunningNativeBackgroundConfigReconcileStartsExecutionAfterRegistration(t *testing.T) {
+	s := newTestServer(t)
+	s.manager = nil
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{}
+	s.nativeRuntime = native
+	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state"), []byte("running\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})}
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	diff := dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}}
+	if err := s.applyRuntimeOwnedConfig(diff, s.cfg.Snapshot()); err != nil {
+		t.Fatal(err)
+	}
+	if native.reconciled != 1 || native.execution != 1 {
+		t.Fatalf("background native reconcile = reconciled %d execution %d", native.reconciled, native.execution)
 	}
 }
 
