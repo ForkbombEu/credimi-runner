@@ -1018,6 +1018,7 @@ func TestRuntimeOwnedLifecycleReadsLauncherQuickTunnelState(t *testing.T) {
 
 type nativeRuntimeControlFake struct {
 	url        string
+	running    bool
 	prepared   int
 	stopped    int
 	execution  int
@@ -1038,8 +1039,9 @@ func (f *nativeRuntimeControlFake) CurrentPublicURL(context.Context) (string, er
 }
 func (f *nativeRuntimeControlFake) VerifyPublicURL(context.Context, string) error { return nil }
 func (f *nativeRuntimeControlFake) Status(context.Context) dashboardruntime.RuntimeStatus {
-	return dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: true, PublicURL: f.url}
+	return dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: f.running, PublicURL: f.url}
 }
+func (f *nativeRuntimeControlFake) ExecutionRunning() bool { return f.running }
 
 func TestRuntimeOwnedLifecycleUsesInjectedNativeRuntime(t *testing.T) {
 	s := newTestServer(t)
@@ -1167,7 +1169,7 @@ func TestNativeRuntimeStartPreparesButNeverExecutesWhenRegistrationFails(t *test
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	s.cfg.mu.Lock()
 	s.cfg.values["CREDIMI_USER_API_KEY"] = ""
@@ -1190,7 +1192,7 @@ func TestNativeRuntimeStartRegistersBeforeStartingExecution(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	originalClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -1214,7 +1216,7 @@ func TestNativeRuntimeRestartReplacesThenRegistersBeforeExecution(t *testing.T) 
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	originalClient := http.DefaultClient
 	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -1238,7 +1240,7 @@ func TestExistingNativeRuntimePreparesBeforeRegistrationAndExecution(t *testing.
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	configDir := filepath.Dir(s.cfg.Path())
 	if err := os.WriteFile(filepath.Join(configDir, "runtime-state"), []byte("running\n"), 0o600); err != nil {
@@ -1270,7 +1272,7 @@ func TestRunningNativeConfigReconcileDoesNotStartWorkersBeforeRegistration(t *te
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	s.cfg.mu.Lock()
 	s.cfg.values["CREDIMI_USER_API_KEY"] = ""
@@ -1290,7 +1292,7 @@ func TestRunningNativeConfigReconcileRegistersBeforeExecution(t *testing.T) {
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state"), []byte("running\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1313,7 +1315,7 @@ func TestRunningNativeBackgroundConfigReconcileAlsoWaitsForRegistration(t *testi
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	s.cfg.mu.Lock()
 	s.cfg.values["CREDIMI_USER_API_KEY"] = ""
@@ -1333,7 +1335,7 @@ func TestRunningNativeBackgroundConfigReconcileStartsExecutionAfterRegistration(
 	s := newTestServer(t)
 	s.manager = nil
 	s.runtimeOwned = true
-	native := &nativeRuntimeControlFake{}
+	native := &nativeRuntimeControlFake{running: true}
 	s.nativeRuntime = native
 	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state"), []byte("running\n"), 0o600); err != nil {
 		t.Fatal(err)

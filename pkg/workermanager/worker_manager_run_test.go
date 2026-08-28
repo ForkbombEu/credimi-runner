@@ -91,6 +91,31 @@ func requireWorkerManagerSpanEvent(t *testing.T, recorder *tracetest.SpanRecorde
 	t.Fatalf("expected event %q on span %q", eventName, spanName)
 }
 
+func TestVerifyTemporalWorkerChecksAndClosesStartupClient(t *testing.T) {
+	setWorkerManagerTestHooks(t)
+	startupClient := &closableTemporalClient{}
+	temporalClientGetter = func(namespace string) (client.Client, error) {
+		if namespace != "namespace-a" {
+			t.Fatalf("namespace = %q", namespace)
+		}
+		return startupClient, nil
+	}
+	if err := VerifyTemporalWorker("namespace-a"); err != nil {
+		t.Fatal(err)
+	}
+	if startupClient.closed != 1 {
+		t.Fatalf("startup client close count = %d", startupClient.closed)
+	}
+	temporalClientGetter = func(string) (client.Client, error) { return nil, errors.New("dial failed") }
+	if err := VerifyTemporalWorker("namespace-a"); err == nil || err.Error() != "dial failed" {
+		t.Fatalf("startup error = %v", err)
+	}
+	temporalClientGetter = func(string) (client.Client, error) { return nil, nil }
+	if err := VerifyTemporalWorker("namespace-a"); err == nil || err.Error() != "Temporal client is unavailable" {
+		t.Fatalf("nil startup client error = %v", err)
+	}
+}
+
 func TestRunTemporalWorker_RetriesInitErrorUntilCanceled(t *testing.T) {
 	setWorkerManagerTestHooks(t)
 	recorder := installWorkerManagerTracer(t)

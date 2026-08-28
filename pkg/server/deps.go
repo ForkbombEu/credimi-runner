@@ -39,6 +39,7 @@ type CommandRunner interface {
 type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
 type InventoryWorkerRunnerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) func(ctx context.Context) error
 type RuntimeConfigLoader func() (dashboardruntime.RunnerRuntimeConfig, error)
+type WorkerStartupCheck func(namespace string) error
 
 type Deps struct {
 	HTTPClient                   HTTPClient
@@ -46,6 +47,7 @@ type Deps struct {
 	CommandRunner                CommandRunner
 	WorkerRunnerFactory          WorkerRunnerFactory
 	InventoryWorkerRunnerFactory InventoryWorkerRunnerFactory
+	WorkerStartupCheck           WorkerStartupCheck
 	RuntimeConfig                *dashboardruntime.RunnerRuntimeConfig
 	RuntimeConfigLoader          RuntimeConfigLoader
 	Sleeper                      func(time.Duration)
@@ -62,11 +64,15 @@ func (d *Deps) WithDefaults() {
 	if d.CommandRunner == nil {
 		d.CommandRunner = execCommandRunner{}
 	}
-	if d.WorkerRunnerFactory == nil {
+	defaultWorkerRunner := d.WorkerRunnerFactory == nil
+	if defaultWorkerRunner {
 		d.WorkerRunnerFactory = workermanager.RunTemporalWorker
 	}
 	if d.InventoryWorkerRunnerFactory == nil {
 		d.InventoryWorkerRunnerFactory = workermanager.RunTemporalWorkerWithConfigProvider
+	}
+	if d.WorkerStartupCheck == nil && defaultWorkerRunner {
+		d.WorkerStartupCheck = workermanager.VerifyTemporalWorker
 	}
 	if d.Sleeper == nil {
 		d.Sleeper = time.Sleep

@@ -21,7 +21,6 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/launcher"
 	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
-	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 	"github.com/spf13/cobra"
 )
 
@@ -345,7 +344,7 @@ func runContainerLauncher(cmd *cobra.Command, configDir string, values map[strin
 	}
 	control, err := launcher.ServeWithOperations(filepath.Join(configDir, "control.sock"), upgrade, func() bool {
 		status := manager.Status(context.Background())
-		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate || readActiveMobileActivities(configDir)
+		return status.PendingRestart || status.PendingRecreate || status.PendingCredimiUpdate
 	}, launcher.Operations{
 		ReconcileConfig: reconcile,
 		ReconcileSetup:  reconcileSetup,
@@ -499,15 +498,6 @@ func hostBootstrapContext(beforeSetup bool) dashboardruntime.BootstrapContext {
 		HostNetwork:         beforeSetup,
 		BeforeSetup:         beforeSetup,
 	}
-}
-
-func readActiveMobileActivities(configDir string) bool {
-	raw, err := os.ReadFile(filepath.Join(configDir, "active-mobile-activities"))
-	if err != nil {
-		return false
-	}
-	count, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
-	return err == nil && count > 0
 }
 
 func hasApplyClass(diff dashboardruntime.ConfigDiff, class dashboardruntime.ApplyClass) bool {
@@ -673,7 +663,6 @@ func runtimeValuesFromConfig(configDir string) (dashboardruntime.Values, error) 
 }
 
 func prepareInternalRuntime(ctx context.Context, configDir string) error {
-	workermanager.ConfigureMobileActivityStateFile(filepath.Join(configDir, "active-mobile-activities"))
 	if err := configureInternalListeners(configDir); err != nil {
 		return err
 	}

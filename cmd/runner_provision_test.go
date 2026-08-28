@@ -1038,25 +1038,6 @@ func TestRunPublicRejectsInvalidBootstrapPolicyBeforeStartingDocker(t *testing.T
 	}
 }
 
-func TestReadActiveMobileActivitiesReadsLauncherGuardState(t *testing.T) {
-	dir := t.TempDir()
-	if readActiveMobileActivities(dir) {
-		t.Fatal("missing activity state reported as busy")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "active-mobile-activities"), []byte("2\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if !readActiveMobileActivities(dir) {
-		t.Fatal("active activity state was not reported as busy")
-	}
-	if err := os.WriteFile(filepath.Join(dir, "active-mobile-activities"), []byte("not-a-count\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if readActiveMobileActivities(dir) {
-		t.Fatal("invalid activity state reported as busy")
-	}
-}
-
 func TestRuntimeValuesFromConfigNormalizesTypedValues(t *testing.T) {
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()

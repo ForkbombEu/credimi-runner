@@ -78,7 +78,10 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 			return err
 		}
 		for _, namespace := range namespaces {
-			startAttempts = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			startAttempts, err = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -88,7 +91,10 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 			return err
 		}
 		for _, namespace := range namespaces {
-			startAttempts = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			startAttempts, err = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -97,8 +103,8 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.startWorkerIfNeeded(ctx, span, orgName, namespace, runnerID, startAttempts, startDelay)
-	return nil
+	_, err = s.startWorkerIfNeeded(ctx, span, orgName, namespace, runnerID, startAttempts, startDelay)
+	return err
 }
 
 func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Instance) ([]string, error) {
@@ -228,11 +234,11 @@ func (s *runnerService) startWorkerIfNeeded(
 	runnerID string,
 	startAttempts int,
 	startDelay time.Duration,
-) int {
+) (int, error) {
 	attrs := workerTraceAttrs(orgName, namespace, runnerID)
 	if namespace == "" {
 		span.AddEvent("worker.start_skipped", trace.WithAttributes(append(attrs, attribute.String("reason", "namespace_empty"))...))
-		return startAttempts
+		return startAttempts, nil
 	}
 	if proc, exists := s.Store.Get(namespace); exists {
 		if proc.IsRunning() {
@@ -242,17 +248,27 @@ func (s *runnerService) startWorkerIfNeeded(
 				observability.String("organization.name", orgName),
 				observability.String("namespace", namespace),
 			)
-			return startAttempts
+			return startAttempts, nil
+		}
+		if s.Deps.WorkerStartupCheck != nil {
+			if err := s.Deps.WorkerStartupCheck(namespace); err != nil {
+				return startAttempts, fmt.Errorf("initialize worker for namespace %s: %w", namespace, err)
+			}
 		}
 		if err := proc.Start(); err != nil {
 			span.RecordError(err)
 			log.Printf("Failed to restart worker for %s: %v", namespace, err)
-			return startAttempts
+			return startAttempts, err
 		}
-		return startAttempts + 1
+		return startAttempts + 1, nil
 	}
 	if startDelay > 0 && startAttempts > 0 {
 		s.Deps.Sleeper(startDelay)
+	}
+	if s.Deps.WorkerStartupCheck != nil {
+		if err := s.Deps.WorkerStartupCheck(namespace); err != nil {
+			return startAttempts, fmt.Errorf("initialize worker for namespace %s: %w", namespace, err)
+		}
 	}
 	startAttempts++
 	span.AddEvent("worker.start_requested", trace.WithAttributes(attrs...))
@@ -296,11 +312,11 @@ func (s *runnerService) startWorkerIfNeeded(
 			observability.String("organization.name", orgName),
 			observability.String("namespace", namespace),
 		)
-		return startAttempts
+		return startAttempts, err
 	}
 	span.AddEvent("worker.started", trace.WithAttributes(attrs...))
 
-	return startAttempts
+	return startAttempts, nil
 }
 
 func (s *runnerService) currentRuntimeConfig() (dashboardruntime.RunnerRuntimeConfig, error) {

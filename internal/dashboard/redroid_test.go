@@ -125,30 +125,3 @@ func TestDashboardEditRedroidPreservesBlankSecrets(t *testing.T) {
 		t.Fatalf("edited Redroid = %#v", redroid)
 	}
 }
-
-func TestDeviceRenameRejectsActiveMobileActivity(t *testing.T) {
-	s := newTestServer(t)
-	cfg := runnerconfig.Bootstrap()
-	cfg.Runner = runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"}
-	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
-	cfg.Temporal.Address = "temporal.example:7233"
-	cfg.Storage.StateDir = t.TempDir()
-	cfg.Devices = []runnerconfig.DeviceConfig{{ID: "acme/runner/old", Name: "Old", Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{Host: "192.0.2.60", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555}}}
-	if err := runnerconfig.WriteFile(s.cfg.Path(), cfg); err != nil {
-		t.Fatal(err)
-	}
-	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg = loadConfigSnapshot(store, s.cfg)
-	if err := os.WriteFile(filepath.Join(filepath.Dir(s.cfg.Path()), "active-mobile-activities"), []byte("1\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	form := url.Values{"device_id": {"acme/runner/old"}, "name": {"New"}, "type": {"redroid"}, "mode": {"no_device"}, "CREDIMI_RUNNER_WIFI_IP": {"192.0.2.60"}, "CREDIMI_RUNNER_WIFI_PORT": {"5555"}}
-	req := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	if err := s.saveDevicesConfigSync(req, nil); err == nil || !strings.Contains(err.Error(), "mobile activity") {
-		t.Fatalf("active rename error = %v", err)
-	}
-}

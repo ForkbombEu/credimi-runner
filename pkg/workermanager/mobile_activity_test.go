@@ -3,36 +3,11 @@ package workermanager
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
 	"github.com/forkbombeu/credimi/pkg/workflowengine"
 )
-
-func TestMobileActivityTrackerPublishesAtomicCount(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "active-mobile-activities")
-	ConfigureMobileActivityStateFile(path)
-	t.Cleanup(func() { ConfigureMobileActivityStateFile("") })
-	if got := ActiveMobileActivities(); got != 0 {
-		t.Fatalf("initial active count = %d", got)
-	}
-	finishA := beginMobileActivity()
-	finishB := beginMobileActivity()
-	if got := ActiveMobileActivities(); got != 2 {
-		t.Fatalf("active count = %d, want 2", got)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil || string(content) != "2\n" {
-		t.Fatalf("state file = %q, err=%v", content, err)
-	}
-	finishA()
-	finishB()
-	if got := ActiveMobileActivities(); got != 0 {
-		t.Fatalf("final active count = %d", got)
-	}
-}
 
 type fakeMobileActivity struct {
 	name string

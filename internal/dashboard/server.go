@@ -76,6 +76,7 @@ type NativeRuntimeControl interface {
 	CurrentPublicURL(context.Context) (string, error)
 	VerifyPublicURL(context.Context, string) error
 	Status(context.Context) dashboardruntime.RuntimeStatus
+	ExecutionRunning() bool
 }
 
 type Server struct {
@@ -230,6 +231,9 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 		if manager == nil && !owned {
 			return dashboardruntime.RuntimeStatus{}
 		}
+		if nativeRuntime != nil {
+			return nativeRuntime.Status(context.Background())
+		}
 		if owned {
 			return dashboardruntime.RuntimeStatus{Configured: cfg.Exists(), RunnerRunning: runtimeOperational(filepath.Dir(cfg.Path()))}
 		}
@@ -297,7 +301,7 @@ func newHandlerWithManagerContextAndIdentityAndCoordinator(parent context.Contex
 
 	mux := http.NewServeMux()
 	srv.routes(mux)
-	if owned && nativeRuntime != nil && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" && runtimeOperational(filepath.Dir(cfg.Path())) {
+	if owned && nativeRuntime != nil && cfg.Exists() && strings.TrimSpace(cfg.Get("CREDIMI_RUNNER_ID")) != "" && nativeRuntime.ExecutionRunning() {
 		// The supervisor owns infrastructure. An already-running native runtime
 		// still follows the normal registration-before-execution sequence.
 		srv.startExistingRuntimeJob(cfg.Snapshot())
@@ -459,9 +463,6 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 		return err
 	}
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
-	if !enabled && activeMobileActivities(filepath.Dir(s.cfg.Path())) {
-		return errors.New("device cannot be disabled while mobile activity execution is active; retry when execution is idle")
-	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		return err
@@ -527,9 +528,6 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 		return errors.New("confirmation required")
 	}
 	deviceID := strings.TrimPrefix(strings.TrimSpace(r.FormValue("device_id")), "/")
-	if activeMobileActivities(filepath.Dir(s.cfg.Path())) {
-		return errors.New("device cannot be removed while mobile activity execution is active; retry when execution is idle")
-	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		return err
@@ -755,11 +753,10 @@ func (s *Server) runtimeOwnedPublicURL() string {
 		return s.publicURL
 	}
 	if s.nativeRuntime != nil {
-		publicURL, err := s.nativeRuntime.CurrentPublicURL(context.Background())
-		if err != nil {
-			return ""
-		}
-		return publicURL
+		// Native runtime status clears the endpoint when execution is stopped.
+		// A stopped quick tunnel must never be presented as active merely because
+		// the previous edge generation still remembers its last URL.
+		return s.nativeRuntime.Status(context.Background()).PublicURL
 	}
 
 	publicURL, err := launcher.ReadQuickTunnelURL(filepath.Dir(s.cfg.Path()))
@@ -1186,9 +1183,6 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 				delete(device.Values, "AVDCTL_SUDO_PASSWORD")
 			}
 			if namePosted && strings.TrimSpace(name) != strings.TrimSpace(existing.Name) {
-				if activeMobileActivities(filepath.Dir(s.cfg.Path())) {
-					return errors.New("device identity cannot be renamed while mobile activity is running; retry when execution is idle")
-				}
 				key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
 				if key == "" {
 					key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
@@ -1317,22 +1311,15 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	return nil
 }
 
-func activeMobileActivities(configDir string) bool {
-	raw, err := os.ReadFile(filepath.Join(configDir, "active-mobile-activities"))
-	if err != nil {
-		return false
-	}
-	count, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
-	return err == nil && count > 0
-}
-
 func (s *Server) applyDeviceChange(ctx context.Context, oldValues, newValues dashboardruntime.Values) (applyOutcome, error) {
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
-	if activeMobileActivities(filepath.Dir(s.cfg.Path())) && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
-		return applyOutcome{Deferred: true}, nil
-	}
 	if s.runtimeOwned {
-		if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
+		if s.nativeRuntime != nil {
+			if err := s.applyRuntimeOwnedConfigInOperation(ctx, diff, map[string]string(newValues)); err != nil {
+				return applyOutcome{}, err
+			}
+			return applyOutcome{Applied: true}, nil
+		} else if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 			if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
 				if err := s.applyRuntimeOwnedConfigInOperation(ctx, diff, map[string]string(newValues)); err != nil {
 					return applyOutcome{}, err
@@ -1486,11 +1473,13 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	appliedCleanly := true
 	deferred := false
 	var reconcileErr error
-	if activeMobileActivities(filepath.Dir(s.cfg.Path())) && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
-		appliedCleanly = false
-		deferred = true
-	} else if s.runtimeOwned {
-		if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
+	if s.runtimeOwned {
+		if s.nativeRuntime != nil {
+			if err := s.applyRuntimeOwnedConfigInOperation(r.Context(), diff, newSnapshot); err != nil {
+				appliedCleanly = false
+				reconcileErr = err
+			}
+		} else if !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 			appliedCleanly = false
 			deferred = true
 			if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
@@ -1741,10 +1730,7 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 				if err := s.nativeRuntime.Prepare(r.Context()); err != nil {
 					return fmt.Errorf("prepare native runtime: %w", err)
 				}
-				if err := s.registerCurrent(r.Context(), map[string]string(values)); err != nil {
-					return err
-				}
-				if err := s.nativeRuntime.StartExecution(r.Context()); err != nil {
+				if err := s.activateNativeRuntime(r.Context(), map[string]string(values)); err != nil {
 					return fmt.Errorf("start native execution: %w", err)
 				}
 				if err := clearSetupPending(filepath.Dir(s.cfg.Path())); err != nil {
@@ -2076,22 +2062,19 @@ func (s *Server) applyRuntimeOwnedConfig(diff dashboardruntime.ConfigDiff, value
 		return nil
 	}
 	if s.nativeRuntime != nil && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
-		running := runtimeOperational(filepath.Dir(s.cfg.Path()))
+		running := s.nativeRuntime.ExecutionRunning()
 		if err := s.nativeRuntime.Reconcile(context.Background(), running); err != nil {
 			return err
 		}
 		if !running {
 			return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 		}
-		if err := s.registerCurrent(context.Background(), values); err != nil {
-			return err
-		}
-		if err := s.nativeRuntime.StartExecution(context.Background()); err != nil {
+		if err := s.activateNativeRuntime(context.Background(), values); err != nil {
 			return err
 		}
 		return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 	}
-	if s.runtimeOwned && !runtimeOperational(filepath.Dir(s.cfg.Path())) {
+	if s.runtimeOwned && s.nativeRuntime == nil && !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 		return nil
 	}
 	return s.applyRuntimeOwnedRegistration(values)
@@ -2106,25 +2089,33 @@ func (s *Server) applyRuntimeOwnedConfigInOperation(ctx context.Context, diff da
 		return s.finishConfigReconcileRecovery(ctx, values, handle.ID, false)
 	}
 	if s.nativeRuntime != nil && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
-		running := runtimeOperational(filepath.Dir(s.cfg.Path()))
+		running := s.nativeRuntime.ExecutionRunning()
 		if err := s.nativeRuntime.Reconcile(ctx, running); err != nil {
 			return err
 		}
 		if !running {
 			return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 		}
-		if err := s.registerCurrent(ctx, values); err != nil {
-			return err
-		}
-		if err := s.nativeRuntime.StartExecution(ctx); err != nil {
+		if err := s.activateNativeRuntime(ctx, values); err != nil {
 			return err
 		}
 		return clearReconcilePending(filepath.Dir(s.cfg.Path()))
 	}
-	if s.runtimeOwned && !runtimeOperational(filepath.Dir(s.cfg.Path())) {
+	if s.runtimeOwned && s.nativeRuntime == nil && !runtimeOperational(filepath.Dir(s.cfg.Path())) {
 		return nil
 	}
 	return s.registerCurrent(ctx, values)
+}
+
+func (s *Server) activateNativeRuntime(ctx context.Context, values map[string]string) error {
+	if err := s.registerCurrent(ctx, values); err != nil {
+		cleanupErr := s.nativeRuntime.Stop(ctx)
+		if cleanupErr != nil {
+			return errors.Join(err, fmt.Errorf("clean up native runtime after registration failure: %w", cleanupErr))
+		}
+		return err
+	}
+	return s.nativeRuntime.StartExecution(ctx)
 }
 
 func (s *Server) bootstrapConfiguredRuntime() bool {
@@ -2187,6 +2178,9 @@ func (s *Server) startExistingRuntimeJob(values map[string]string) {
 			}
 		}
 		if err := s.runtimeLifecycle(cloneStringMap(values)).RegisterRunning(ctx); err != nil {
+			if s.nativeRuntime != nil {
+				_ = s.nativeRuntime.Stop(ctx)
+			}
 			s.mu.Lock()
 			s.pendingDiff = dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}
 			s.mu.Unlock()
@@ -2676,10 +2670,7 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 					if err := s.nativeRuntime.Prepare(ctx); err != nil {
 						return err
 					}
-					if err := s.registerCurrent(ctx, values); err != nil {
-						return err
-					}
-					if err := s.nativeRuntime.StartExecution(ctx); err != nil {
+					if err := s.activateNativeRuntime(ctx, values); err != nil {
 						return err
 					}
 					return clearReconcilePending(filepath.Dir(s.cfg.Path()))
@@ -2690,10 +2681,7 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 					if err := s.nativeRuntime.Reconcile(ctx, true); err != nil {
 						return err
 					}
-					if err := s.registerCurrent(ctx, s.cfg.Snapshot()); err != nil {
-						return err
-					}
-					if err := s.nativeRuntime.StartExecution(ctx); err != nil {
+					if err := s.activateNativeRuntime(ctx, s.cfg.Snapshot()); err != nil {
 						return err
 					}
 					return clearReconcilePending(filepath.Dir(s.cfg.Path()))

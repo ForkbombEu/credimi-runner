@@ -3,61 +3,10 @@ package workermanager
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
-	"sync/atomic"
 
 	"github.com/forkbombeu/credimi/pkg/workflowengine"
 )
-
-var activeMobileActivities atomic.Int64
-var mobileActivityStateFile atomic.Value
-
-func init() { mobileActivityStateFile.Store("") }
-
-// ConfigureMobileActivityStateFile publishes the active mobile activity count
-// for the outer Linux launcher. The file is deliberately a tiny local state
-// boundary; device configuration remains context-scoped and in-memory.
-func ConfigureMobileActivityStateFile(path string) {
-	mobileActivityStateFile.Store(strings.TrimSpace(path))
-	writeMobileActivityState(0)
-}
-
-// ActiveMobileActivities returns the number of currently executing device
-// activities in this runner process.
-func ActiveMobileActivities() int64 { return activeMobileActivities.Load() }
-
-func beginMobileActivity() func() {
-	writeMobileActivityState(activeMobileActivities.Add(1))
-	return func() { writeMobileActivityState(activeMobileActivities.Add(-1)) }
-}
-
-func writeMobileActivityState(count int64) {
-	path, _ := mobileActivityStateFile.Load().(string)
-	if path == "" {
-		return
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".active-mobile-activities-*")
-	if err != nil {
-		return
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	if _, err := temporary.WriteString(strconv.FormatInt(count, 10) + "\n"); err != nil {
-		_ = temporary.Close()
-		return
-	}
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return
-	}
-	if err := temporary.Close(); err != nil {
-		return
-	}
-	_ = os.Rename(name, path)
-}
 
 type mobileActivityPayload struct {
 	DeviceID string `json:"device_id"`
@@ -85,9 +34,6 @@ func mobileActivityExecutorWithScope(
 		if deviceID == "" {
 			return workflowengine.ActivityResult{}, activity.NewMissingOrInvalidPayloadError(fmt.Errorf("device_id is required for %s", activity.Name()))
 		}
-		finish := beginMobileActivity()
-		defer finish()
-
 		config, err := provider()
 		if err != nil {
 			return workflowengine.ActivityResult{}, fmt.Errorf("load current runner inventory for device %q: %w", deviceID, err)

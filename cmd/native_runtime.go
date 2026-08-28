@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,6 +25,15 @@ import (
 	cluelog "goa.design/clue/log"
 )
 
+type ExecutionIntent uint8
+
+const (
+	ExecutionStopped ExecutionIntent = iota
+	ExecutionRunning
+)
+
+func noopCancel() {}
+
 // NativeRuntimeSupervisor owns the only macOS execution generation. The
 // Dashboard outlives generations and asks this owner to replace them.
 type NativeRuntimeSupervisor struct {
@@ -33,6 +43,7 @@ type NativeRuntimeSupervisor struct {
 	transitionMu sync.Mutex
 	mu           sync.RWMutex
 	generation   *nativeRuntimeGeneration
+	intent       ExecutionIntent
 	executing    bool
 }
 
@@ -49,6 +60,8 @@ type nativeRuntimeGeneration struct {
 	stopBeat     func()
 	shutdownOTEL func(context.Context) error
 	stopOnce     sync.Once
+	edgeMu       sync.Mutex
+	edgeStarted  bool
 }
 
 func NewNativeRuntimeSupervisor(configDir string) *NativeRuntimeSupervisor {
@@ -106,9 +119,12 @@ func (s *NativeRuntimeSupervisor) Prepare(ctx context.Context) error {
 	matched := current != nil && reflect.DeepEqual(current.values, values)
 	s.mu.RUnlock()
 	if !matched {
+		s.mu.Lock()
+		s.intent = ExecutionRunning
+		s.mu.Unlock()
 		return s.reconcileLocked(ctx, values, true)
 	}
-	return current.startEdge(ctx)
+	return current.ensureEdgeStarted(ctx)
 }
 
 // Reconcile replaces the generation from the current typed TOML. It never
@@ -120,28 +136,39 @@ func (s *NativeRuntimeSupervisor) Reconcile(ctx context.Context, running bool) e
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	if running {
+		s.intent = ExecutionRunning
+	} else {
+		s.intent = ExecutionStopped
+	}
+	s.mu.Unlock()
 	return s.reconcileLocked(ctx, values, running)
 }
 
 func (s *NativeRuntimeSupervisor) reconcileLocked(ctx context.Context, values dashboardruntime.Values, running bool) error {
-	s.mu.Lock()
+	s.mu.RLock()
 	previous := s.generation
 	wasExecuting := s.executing
-	s.generation = nil
-	s.executing = false
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	if previous != nil {
 		if err := previous.close(ctx, wasExecuting); err != nil {
 			return fmt.Errorf("close previous native runtime generation: %w", err)
 		}
 	}
+	s.mu.Lock()
+	if s.generation == previous {
+		s.generation = nil
+		s.executing = false
+	}
+	s.mu.Unlock()
 	next, err := newNativeRuntimeGeneration(s.root, s.configDir, values)
 	if err != nil {
 		_ = writeRuntimeState(s.configDir, "failed: "+err.Error())
 		return err
 	}
 	if running {
-		if err := next.startEdge(ctx); err != nil {
+		if err := next.ensureEdgeStarted(ctx); err != nil {
 			_ = next.close(ctx, false)
 			_ = writeRuntimeState(s.configDir, "failed: "+err.Error())
 			return err
@@ -159,30 +186,28 @@ func (s *NativeRuntimeSupervisor) reconcileLocked(ctx context.Context, values da
 func (s *NativeRuntimeSupervisor) StartExecution(ctx context.Context) error {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
-	s.mu.RLock()
+	s.mu.Lock()
 	generation := s.generation
 	alreadyRunning := s.executing
-	s.mu.RUnlock()
+	s.intent = ExecutionRunning
+	s.mu.Unlock()
 	if generation == nil {
 		return fmt.Errorf("native runtime generation is unavailable")
 	}
 	if alreadyRunning {
 		return nil
 	}
-	if err := generation.startEdge(ctx); err != nil {
-		return fmt.Errorf("start native edge: %w", err)
+	if err := generation.ensureEdgeStarted(ctx); err != nil {
+		return s.rollbackActivation(ctx, generation, fmt.Errorf("start native edge: %w", err))
 	}
 	if err := generation.service.StartExistingWorkers(generation.ctx); err != nil {
-		return fmt.Errorf("start native workers: %w", err)
+		return s.rollbackActivation(ctx, generation, fmt.Errorf("start native workers: %w", err))
 	}
 	if err := generation.lifecycle.Resume(ctx, "dashboard_start"); err != nil {
-		generation.store.StopAll()
-		return fmt.Errorf("resume runner lifecycle: %w", err)
+		return s.rollbackActivation(ctx, generation, fmt.Errorf("resume runner lifecycle: %w", err))
 	}
 	if err := generation.lifecycle.Heartbeat(ctx); err != nil {
-		generation.store.StopAll()
-		_ = generation.lifecycle.Pause(ctx, "startup_failed")
-		return fmt.Errorf("send runner heartbeat: %w", err)
+		return s.rollbackActivation(ctx, generation, fmt.Errorf("send runner heartbeat: %w", err))
 	}
 	generation.stopBeat = generation.lifecycle.StartHeartbeatLoop(generation.ctx)
 	s.mu.Lock()
@@ -191,30 +216,50 @@ func (s *NativeRuntimeSupervisor) StartExecution(ctx context.Context) error {
 	return writeRuntimeState(s.configDir, "running")
 }
 
-func (s *NativeRuntimeSupervisor) Stop(ctx context.Context) error {
-	s.transitionMu.Lock()
-	defer s.transitionMu.Unlock()
-	s.mu.RLock()
-	generation := s.generation
-	s.mu.RUnlock()
-	if generation == nil {
-		return writeRuntimeState(s.configDir, "stopped")
-	}
+func (s *NativeRuntimeSupervisor) rollbackActivation(ctx context.Context, generation *nativeRuntimeGeneration, cause error) error {
 	generation.store.StopAll()
-	if generation.stopBeat != nil {
-		generation.stopBeat()
-		generation.stopBeat = nil
-	}
-	if err := generation.lifecycle.Pause(ctx, "dashboard_stop"); err != nil {
-		return fmt.Errorf("pause runner lifecycle: %w", err)
+	generation.stopHeartbeat()
+	var errs []error
+	if err := generation.lifecycle.Pause(ctx, "startup_failed"); err != nil {
+		errs = append(errs, fmt.Errorf("pause runner lifecycle after failed startup: %w", err))
 	}
 	if err := generation.stopEdge(ctx); err != nil {
-		return fmt.Errorf("stop native edge: %w", err)
+		errs = append(errs, fmt.Errorf("stop native edge after failed startup: %w", err))
 	}
 	s.mu.Lock()
 	s.executing = false
+	s.intent = ExecutionStopped
 	s.mu.Unlock()
-	return writeRuntimeState(s.configDir, "stopped")
+	if err := writeRuntimeState(s.configDir, "failed: "+cause.Error()); err != nil {
+		errs = append(errs, fmt.Errorf("mark failed native runtime: %w", err))
+	}
+	return errors.Join(append([]error{cause}, errs...)...)
+}
+
+func (s *NativeRuntimeSupervisor) Stop(ctx context.Context) error {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	s.mu.Lock()
+	generation := s.generation
+	s.intent = ExecutionStopped
+	s.executing = false
+	s.mu.Unlock()
+	if generation == nil {
+		return writeRuntimeState(s.configDir, "stopped")
+	}
+	var errs []error
+	generation.store.StopAll()
+	generation.stopHeartbeat()
+	if err := generation.lifecycle.Pause(ctx, "dashboard_stop"); err != nil {
+		errs = append(errs, fmt.Errorf("pause runner lifecycle: %w", err))
+	}
+	if err := generation.stopEdge(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("stop native edge: %w", err))
+	}
+	if err := writeRuntimeState(s.configDir, "stopped"); err != nil {
+		errs = append(errs, fmt.Errorf("mark native runtime stopped: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func (s *NativeRuntimeSupervisor) CurrentPublicURL(ctx context.Context) (string, error) {
@@ -257,16 +302,30 @@ func (s *NativeRuntimeSupervisor) Status(ctx context.Context) dashboardruntime.R
 func (s *NativeRuntimeSupervisor) Close(ctx context.Context) error {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
-	s.mu.Lock()
+	s.mu.RLock()
 	generation := s.generation
 	wasExecuting := s.executing
-	s.generation = nil
-	s.executing = false
-	s.mu.Unlock()
+	s.mu.RUnlock()
 	if generation == nil {
 		return nil
 	}
-	return generation.close(ctx, wasExecuting)
+	if err := generation.close(ctx, wasExecuting); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.generation == generation {
+		s.generation = nil
+		s.executing = false
+		s.intent = ExecutionStopped
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *NativeRuntimeSupervisor) ExecutionRunning() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.intent == ExecutionRunning
 }
 
 func newNativeRuntimeGeneration(parent context.Context, configDir string, values dashboardruntime.Values) (*nativeRuntimeGeneration, error) {
@@ -307,7 +366,7 @@ func newNativeRuntimeGeneration(parent context.Context, configDir string, values
 		values: values, ctx: generationCtx, cancel: cancel, listener: listener, http: httpServer,
 		store: store, service: service, lifecycle: lifecycle,
 		edge:     dashboardruntime.NewLifecycleManagerForOS("", configDir, values, nil, "darwin"),
-		stopBeat: func() {}, shutdownOTEL: otelShutdown,
+		stopBeat: noopCancel, shutdownOTEL: otelShutdown,
 	}
 	go func() { _ = httpServer.Serve(listener) }()
 	return generation, nil
@@ -335,49 +394,66 @@ func nativeRuntimeValues(configDir string) (dashboardruntime.Values, error) {
 	return dashboardruntime.NormalizeValues(store.Snapshot(), "darwin")
 }
 
-func (g *nativeRuntimeGeneration) startEdge(ctx context.Context) error {
+func (g *nativeRuntimeGeneration) ensureEdgeStarted(ctx context.Context) error {
+	g.edgeMu.Lock()
+	defer g.edgeMu.Unlock()
+	if g.edgeStarted {
+		return nil
+	}
 	if err := g.edge.Start(ctx); err != nil {
 		return err
 	}
+	g.edgeStarted = true
 	return nil
 }
 
 func (g *nativeRuntimeGeneration) stopEdge(ctx context.Context) error {
+	g.edgeMu.Lock()
+	defer g.edgeMu.Unlock()
+	if !g.edgeStarted {
+		return nil
+	}
+	g.edgeStarted = false
 	return g.edge.Stop(ctx)
 }
 
+func (g *nativeRuntimeGeneration) stopHeartbeat() {
+	g.stopBeat()
+	g.stopBeat = noopCancel
+}
+
 func (g *nativeRuntimeGeneration) close(ctx context.Context, pause bool) error {
-	var result error
+	var errs []error
 	g.stopOnce.Do(func() {
 		g.store.StopAll()
-		g.stopBeat()
-		g.cancel()
+		g.stopHeartbeat()
 		if pause {
 			if err := g.lifecycle.Pause(ctx, "generation_replaced"); err != nil {
-				result = fmt.Errorf("pause generation lifecycle: %w", err)
+				errs = append(errs, fmt.Errorf("pause generation lifecycle: %w", err))
 			}
 		}
-		if err := g.stopEdge(ctx); err != nil && result == nil {
-			result = fmt.Errorf("stop generation edge: %w", err)
+		if err := g.stopEdge(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("stop generation edge: %w", err))
 		}
-		if err := g.edge.Close(); err != nil && result == nil {
-			result = fmt.Errorf("close generation edge: %w", err)
+		if err := g.edge.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close generation edge: %w", err))
 		}
+		g.cancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := g.http.Shutdown(shutdownCtx); err != nil && result == nil {
-			result = fmt.Errorf("shutdown generation HTTP server: %w", err)
+		if err := g.http.Shutdown(shutdownCtx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown generation HTTP server: %w", err))
 		}
-		if err := g.listener.Close(); err != nil && !strings.Contains(err.Error(), "use of closed network connection") && result == nil {
-			result = fmt.Errorf("close generation listener: %w", err)
+		if err := g.listener.Close(); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			errs = append(errs, fmt.Errorf("close generation listener: %w", err))
 		}
 		if g.shutdownOTEL != nil {
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer shutdownCancel()
-			if err := g.shutdownOTEL(shutdownCtx); err != nil && result == nil {
-				result = fmt.Errorf("shutdown generation observability: %w", err)
+			if err := g.shutdownOTEL(shutdownCtx); err != nil {
+				errs = append(errs, fmt.Errorf("shutdown generation observability: %w", err))
 			}
 		}
 	})
-	return result
+	return errors.Join(errs...)
 }

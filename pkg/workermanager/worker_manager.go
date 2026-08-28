@@ -94,6 +94,21 @@ func RunTemporalWorkerWithConfigProvider(namespace string, provider RuntimeConfi
 	return runTemporalWorker(namespace, provider)
 }
 
+// VerifyTemporalWorker performs the connection step required before a worker
+// can enter its long-running loop. The caller closes the short-lived client;
+// the worker creates and owns its own client afterwards.
+func VerifyTemporalWorker(namespace string) error {
+	client, err := temporalClientGetter(namespace)
+	if err != nil {
+		return err
+	}
+	if client == nil {
+		return errors.New("Temporal client is unavailable")
+	}
+	client.Close()
+	return nil
+}
+
 func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		temporalInterceptor, err := observability.NewTemporalInterceptor()

@@ -142,6 +142,31 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 	proc.Stop()
 }
 
+func TestStartExistingWorkersReturnsInitialWorkerReadinessFailure(t *testing.T) {
+	store := NewProcessStore()
+	client := &startWorkersHTTPClient{
+		responder: func(req *http.Request) (*http.Response, error) {
+			require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+			return httpResp(http.StatusOK, `{"namespaces":["new-ns"]}`), nil
+		},
+	}
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{
+		URL:              "http://example.local",
+		InternalAdminKey: "internal-admin-key",
+	}, Deps{
+		HTTPClient: client,
+		WorkerRunnerFactory: func(string) func(context.Context) error {
+			return func(context.Context) error { return nil }
+		},
+		WorkerStartupCheck: func(string) error { return errors.New("Temporal unavailable") },
+	})
+	err := srv.StartExistingWorkers(context.Background())
+	require.ErrorContains(t, err, "initialize worker for namespace new-ns")
+	if _, found := store.Get("new-ns"); found {
+		t.Fatal("worker was added despite failed initial readiness")
+	}
+}
+
 func TestStartExistingWorkersGivesEachNamespaceWorkerLiveInventoryProvider(t *testing.T) {
 	store := NewProcessStore()
 	client := &startWorkersHTTPClient{responder: func(req *http.Request) (*http.Response, error) {

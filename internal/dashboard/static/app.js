@@ -72,11 +72,20 @@
   let runtimeRecoveryAbort = null;
   let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
+  let currentDashboardToken = new URLSearchParams(window.location.search).get('token') || '';
   function dashboardURL(path, tokenOverride) {
     const url = new URL(path, window.location.origin);
-    const token = tokenOverride === undefined ? new URLSearchParams(window.location.search).get('token') : tokenOverride;
+    const token = tokenOverride === undefined ? currentDashboardToken : tokenOverride;
     if (token) url.searchParams.set('token', token);
     return `${url.pathname}${url.search}`;
+  }
+  function setDashboardToken(token) {
+    currentDashboardToken = String(token || '').trim();
+    const url = new URL(window.location.href);
+    if (currentDashboardToken) url.searchParams.set('token', currentDashboardToken);
+    else url.searchParams.delete('token');
+    history.replaceState(history.state, '', `${url.pathname}${url.search}${url.hash}`);
+    preserveDashboardToken();
   }
 
   // Query-token authentication is a Dashboard boundary. Keep internal htmx,
@@ -103,6 +112,16 @@
   // resolution another two; retain a small reconnect margin for replacement.
   const runtimeRecoveryMaxDuration = 15 * 60 * 1000;
   const runtimeRecoveryRequestTimeout = 10000;
+  function finishRuntimeRecoveryTimeout() {
+    if (!runtimeOperationActive) return;
+    if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
+    runtimeRecoveryAbort = null;
+    clearTimeout(runtimeRecoveryTimer);
+    runtimeRecoveryTimer = null;
+    runtimeOperationActive = false;
+    hideBusy();
+    toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
+  }
   function startRuntimeRecovery(operation) {
     clearTimeout(runtimeOperationTimer);
     runtimeOperationTimer = null;
@@ -111,21 +130,19 @@
     if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
     const poll = async () => {
       if (Date.now() >= deadline || !runtimeOperationActive) {
-        clearTimeout(runtimeRecoveryTimer);
-        runtimeRecoveryTimer = null;
-        if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
-        runtimeRecoveryAbort = null;
-        runtimeOperationActive = false;
-        hideBusy();
-        toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
+        finishRuntimeRecoveryTimeout();
         return;
       }
       let timeout;
       try {
         const controller = new AbortController();
         runtimeRecoveryAbort = controller;
-        timeout = setTimeout(() => controller.abort(), runtimeRecoveryRequestTimeout);
+        timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now()));
         const recovery = await fetch(dashboardURL('/startup/status', operation.recoveryToken), { headers: { Accept: 'application/json' }, signal: controller.signal });
+        if (Date.now() >= deadline) {
+          finishRuntimeRecoveryTimeout();
+          return;
+        }
         if (!recovery.ok) {
           runtimeRecoveryTimer = setTimeout(poll, 1000);
           return;
@@ -147,7 +164,8 @@
         }
         refreshOverview(operation.refresh || '/', operation.recoveryToken);
       } catch (_) {
-        if (Date.now() < deadline && runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
+        if (Date.now() >= deadline) finishRuntimeRecoveryTimeout();
+        else if (runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
       } finally {
         clearTimeout(timeout);
       }
@@ -204,6 +222,7 @@
       const tokenField = document.querySelector('[name="DASHBOARD_TOKEN"]');
       if (tokenField) operation.recoveryToken = tokenField.value.trim();
     }
+    if (operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);
     runtimeOperationActive = true;
     clearTimeout(runtimeOperationTimer);
     runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);

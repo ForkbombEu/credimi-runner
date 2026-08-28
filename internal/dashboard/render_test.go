@@ -513,6 +513,8 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 		"dashboardURL('/startup/status', operation.recoveryToken)",
 		"runtimeRecoveryAbort.abort()",
 		"clearTimeout(timeout);",
+		"finishRuntimeRecoveryTimeout()",
+		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
 		"fetch(dashboardURL(url), { headers: { Accept: 'application/json' } })",
 	} {
 		if !strings.Contains(content, want) {
@@ -521,6 +523,28 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 	}
 	if strings.Contains(content, "runtimeRecoveryMaxAttempts") {
 		t.Fatal("recovery must use a wall-clock deadline, not an attempt count")
+	}
+}
+
+func TestStaticDashboardTokenHasOneCurrentSource(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"let currentDashboardToken =",
+		"function setDashboardToken(token)",
+		"history.replaceState",
+		"else url.searchParams.delete('token');",
+		"if (operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("dashboard token source is missing %q", want)
+		}
+	}
+	if strings.Contains(content, "new URLSearchParams(window.location.search).get('token') : tokenOverride") {
+		t.Fatal("dashboard URL helper must not repeatedly restore a stale query token")
 	}
 }
 
