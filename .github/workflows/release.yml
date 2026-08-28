@@ -84,7 +84,10 @@ jobs:
 
       - name: Run native supervisor tests
         shell: bash
-        run: go test -tags=credimi_extra ./cmd -run 'NativeRuntimeSupervisor|NativeRuntime'
+        run: |
+          set -euo pipefail
+          go generate ./...
+          go test -tags=credimi_extra ./cmd -run 'NativeRuntimeSupervisor|NativeRuntime'
 
       - name: Cleanup git auth
         if: always()
