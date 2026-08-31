@@ -36,10 +36,11 @@ type PlannedService struct {
 type ApplyClass string
 
 const (
-	ApplySavedOnly             ApplyClass = "saved_only"
-	ApplyRestartRequired       ApplyClass = "restart_required"
-	ApplyComposeRecreate       ApplyClass = "compose_recreate_required"
-	ApplyCredimiUpdateRequired ApplyClass = "credimi_update_required"
+	ApplySavedOnly              ApplyClass = "saved_only"
+	ApplyRestartRequired        ApplyClass = "restart_required"
+	ApplyComposeRecreate        ApplyClass = "compose_recreate_required"
+	ApplyServiceRestartRequired ApplyClass = "service_restart_required"
+	ApplyCredimiUpdateRequired  ApplyClass = "credimi_update_required"
 )
 
 type ConfigDiff struct {
@@ -274,6 +275,9 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		switch {
 		case impact.Recreate:
 			classSet[ApplyComposeRecreate] = struct{}{}
+			if goos == "linux" {
+				classSet[ApplyServiceRestartRequired] = struct{}{}
+			}
 		case impact.Restart:
 			classSet[ApplyRestartRequired] = struct{}{}
 		}
@@ -308,6 +312,9 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 	}
 	if runtimeTopologyChanged(oldValues, newValues, goos) {
 		classSet[ApplyComposeRecreate] = struct{}{}
+		if goos == "linux" {
+			classSet[ApplyServiceRestartRequired] = struct{}{}
+		}
 	}
 
 	if len(diff.ChangedKeys) == 0 {
@@ -318,7 +325,7 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		diff.Classes = []ApplyClass{ApplySavedOnly}
 		return diff
 	}
-	for _, class := range []ApplyClass{ApplyRestartRequired, ApplyComposeRecreate, ApplyCredimiUpdateRequired} {
+	for _, class := range []ApplyClass{ApplyRestartRequired, ApplyComposeRecreate, ApplyServiceRestartRequired, ApplyCredimiUpdateRequired} {
 		if _, ok := classSet[class]; ok {
 			diff.Classes = append(diff.Classes, class)
 		}

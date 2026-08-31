@@ -7,6 +7,7 @@ ARG TARGETOS=linux
 ARG TARGETARCH
 ARG VERSION=dev
 ARG BUILD_TIME
+ARG CLOUDFLARED_VERSION=2026.8.2
 ENV GOCACHE=/go-cache
 ENV GOMODCACHE=/gomod-cache
 
@@ -65,6 +66,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sdkmanager --sdk_root="$ANDROID_SDK_BOOTSTRAP" "platform-tools" "build-tools;35.0.0" && \
     ln -s "$ANDROID_SDK_BOOTSTRAP/build-tools/35.0.0/aapt2" /usr/local/bin/aapt2 && \
     curl -fsSL https://get.maestro.mobile.dev | bash && \
-    chmod 0555 /usr/local/bin/credimi-runner /usr/local/bin/avdctl && \
+    cloudflared_asset="cloudflared-linux-${TARGETARCH}" && \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${cloudflared_asset}" -o /usr/local/bin/cloudflared && \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/SHA256SUMS" -o /tmp/cloudflared.SHA256SUMS && \
+    grep "  ${cloudflared_asset}$" /tmp/cloudflared.SHA256SUMS | (cd /usr/local/bin && sha256sum -c -) && \
+    chmod 0555 /usr/local/bin/credimi-runner /usr/local/bin/avdctl /usr/local/bin/cloudflared && \
     rm -rf /var/lib/apt/lists/* /tmp/android-cmdline-tools.zip
 ENTRYPOINT ["/usr/local/bin/credimi-runner"]

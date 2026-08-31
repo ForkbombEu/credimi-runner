@@ -76,6 +76,17 @@ func TestDiffValuesCoverageBranches(t *testing.T) {
 	}
 }
 
+func TestDashboardTokenIsSavedOnlyAndTopologyRequiresServiceRestart(t *testing.T) {
+	token := DiffValuesForOS(Values{"DASHBOARD_TOKEN": "old"}, Values{"DASHBOARD_TOKEN": "new"}, "linux")
+	if len(token.Classes) != 1 || token.Classes[0] != ApplySavedOnly {
+		t.Fatalf("token diff=%#v", token)
+	}
+	topology := DiffValuesForOS(Values{"ANDROID_RUNNER_IMAGE": "runner:a"}, Values{"ANDROID_RUNNER_IMAGE": "runner:b"}, "linux")
+	if !containsApplyClass(topology.Classes, ApplyServiceRestartRequired) {
+		t.Fatalf("service restart class missing: %#v", topology)
+	}
+}
+
 func TestDiffValuesClassifiesOnlyTopologyChangingDeviceEditsAsRecreate(t *testing.T) {
 	base := Values{
 		"CREDIMI_RUNNER_ID":        "acme/runner",

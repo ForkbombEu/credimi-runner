@@ -4,6 +4,7 @@ set -eu
 REPO_OWNER="ForkbombEu"
 REPO_NAME="credimi-runner"
 PROJECT_NAME="credimi-runner"
+CLOUDFLARED_VERSION="2026.8.2"
 
 supports_color() {
   [ -t 2 ] || return 1
@@ -137,10 +138,14 @@ main() {
   need_cmd chmod
   need_cmd curl
   need_cmd grep
+  need_cmd awk
   need_cmd mkdir
   need_cmd mv
   need_cmd rm
   need_cmd uname
+  if [ "$(uname -s)" = "Darwin" ]; then
+    need_cmd shasum
+  fi
 
   bin_dir="${CREDIMI_RUNNER_BIN_DIR:-${XDG_BIN_HOME:-${HOME}/.local/bin}}"
   binary_path="${bin_dir}/${PROJECT_NAME}"
@@ -158,6 +163,28 @@ main() {
   chmod +x "$tmp_binary_path"
   mv "$tmp_binary_path" "$binary_path"
   tmp_binary_path=""
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    cloudflared_path="${bin_dir}/credimi-cloudflared"
+    cloudflared_tmp="${cloudflared_path}.tmp.$$"
+    case "$(uname -m)" in
+      x86_64|amd64) cloudflared_asset="cloudflared-darwin-amd64" ;;
+      arm64|aarch64) cloudflared_asset="cloudflared-darwin-arm64" ;;
+      *) die "unsupported macOS architecture: $(uname -m)" ;;
+    esac
+    cloudflared_url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${cloudflared_asset}"
+    say "Downloading cloudflared ${CLOUDFLARED_VERSION}"
+    curl -fsSL "$cloudflared_url" -o "$cloudflared_tmp"
+    checksums_tmp="${cloudflared_tmp}.sha256sums"
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/SHA256SUMS" -o "$checksums_tmp"
+    expected_checksum="$(awk -v asset="$cloudflared_asset" '$2 == asset {print $1; exit}' "$checksums_tmp")"
+    actual_checksum="$(shasum -a 256 "$cloudflared_tmp" | awk '{print $1}')"
+    rm -f "$checksums_tmp"
+    [ -n "$expected_checksum" ] && [ "$expected_checksum" = "$actual_checksum" ] || die "cloudflared checksum verification failed"
+    chmod +x "$cloudflared_tmp"
+    mv "$cloudflared_tmp" "$cloudflared_path"
+    success "Installed cloudflared at ${cloudflared_path}"
+  fi
 
   success "Installed ${PROJECT_NAME} at ${binary_path}"
   if ! path_has_dir "$bin_dir"; then

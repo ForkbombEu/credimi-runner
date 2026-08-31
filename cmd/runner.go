@@ -21,6 +21,7 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/launcher"
 	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/spf13/cobra"
 )
 
@@ -58,7 +59,61 @@ var rootCmd = &cobra.Command{
 	Version:       buildinfo.String(),
 	SilenceErrors: true,
 	SilenceUsage:  true,
-	RunE:          runPublic,
+	RunE:          runRoot,
+}
+
+// runRoot owns only the user-facing service experience. Runtime execution is
+// controlled through the Dashboard; the service manager owns Docker/launchd.
+var serviceManagerFactory = func(configDir string) servicemanager.Manager {
+	return servicemanager.ForCurrentPlatform(configDir)
+}
+
+var waitForDashboardFunc = func(ctx context.Context, manager servicemanager.Manager) (string, error) {
+	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		status, err := manager.Status(deadline)
+		if err == nil && strings.TrimSpace(status.DashboardURL) != "" {
+			return status.DashboardURL, nil
+		}
+		select {
+		case <-deadline.Done():
+			if err != nil {
+				return "", err
+			}
+			return "", deadline.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+func runRoot(cmd *cobra.Command, _ []string) error {
+	manager := serviceManagerFactory(effectiveConfigDir())
+	status, err := manager.Status(cmd.Context())
+	started := false
+	if err != nil {
+		if startErr := manager.Start(cmd.Context()); startErr != nil {
+			return startErr
+		}
+		started = true
+	}
+	if !started && !status.Running {
+		if err := manager.Start(cmd.Context()); err != nil {
+			return err
+		}
+	}
+	dashboardURL, err := waitForDashboardFunc(cmd.Context(), manager)
+	if err != nil {
+		return err
+	}
+	if dashboardOpen && dashboardCanOpenBrowser() {
+		if err := openDashboardBrowserFunc(dashboardURL); err != nil {
+			cmd.Printf("Dashboard: %s\n", dashboardURL)
+		}
+	} else {
+		cmd.Printf("Dashboard: %s\n", dashboardURL)
+	}
+	return manager.Logs(cmd.Context(), servicemanager.LogOptions{Follow: true, Lines: 200})
 }
 
 func Execute() {
@@ -72,17 +127,13 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to config.toml")
 	rootCmd.PersistentFlags().StringVar(&bootstrapImage, "bootstrap-image", "", "Runner image to use before the first config.toml is saved")
 	rootCmd.PersistentFlags().StringVar(&bootstrapPullPolicy, "bootstrap-pull-policy", "", "Runner image pull policy to use before the first config.toml is saved (always, if-not-present, never)")
-	rootCmd.AddCommand(&cobra.Command{
-		Use:    "internal-runtime",
-		Short:  "Run the foreground runtime inside the managed container",
-		Hidden: true,
-		RunE:   runApplicationRuntime,
-	})
+	// Runtime execution is owned by the persistent internal-service command.
+	// The legacy foreground entry point remains callable by old integration
+	// helpers but is intentionally not exposed as a command.
 }
 
-// runPublic is the host launcher. Container mode owns the operational
-// dashboard inside the managed container; native mode keeps the dashboard in
-// this process because CoreSimulator must execute on macOS.
+// runPublic is retained for the legacy platform-specific integration helpers.
+// The root command itself uses runRoot and the persistent service manager.
 func runPublic(cmd *cobra.Command, args []string) error {
 	return runPublicForOS(cmd, args, stdruntime.GOOS)
 }

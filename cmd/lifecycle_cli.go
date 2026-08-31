@@ -20,15 +20,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var lifecycleStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard and runner lifecycle status", RunE: runLifecycleStatus}
-var lifecycleRunnerCmd = &cobra.Command{Use: "runner", Short: "Control the configured runner"}
+var lifecycleStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard and runner lifecycle status", Hidden: true, RunE: runLifecycleStatus}
+var lifecycleRunnerCmd = &cobra.Command{Use: "runner", Short: "Control the configured runner", Hidden: true}
 var lifecycleRunnerActionCmd = func(name string) *cobra.Command {
 	title := strings.ToUpper(name[:1]) + name[1:]
 	return &cobra.Command{Use: name, Short: title + " the runner", RunE: func(cmd *cobra.Command, args []string) error {
 		return runLifecycleRuntimeAction(cmd, name)
 	}}
 }
-var lifecycleDashboardCmd = &cobra.Command{Use: "dashboard", Short: "Control the dashboard process"}
+var lifecycleDashboardCmd = &cobra.Command{Use: "dashboard", Short: "Control the dashboard process", Hidden: true}
 var lifecycleDashboardStopCmd = &cobra.Command{Use: "stop", Short: "Stop the dashboard process", RunE: runLifecycleDashboardStop}
 var lifecycleDashboardStatusCmd = &cobra.Command{Use: "status", Short: "Show dashboard status", RunE: runLifecycleStatus}
 var lifecycleDashboardOpenCmd = &cobra.Command{Use: "open", Short: "Open the running dashboard when a local display is available", RunE: runLifecycleDashboardOpen}
@@ -42,7 +42,7 @@ var lifecycleRuntimeWaitReady func(context.Context, dashboardruntime.Values) err
 var lifecycleRuntimeManagerFactory = func(binaryPath, configDir string, values dashboardruntime.Values) dashboardruntime.Manager {
 	return dashboardruntime.NewLifecycleManager(binaryPath, configDir, values, nil)
 }
-var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log"}
+var lifecycleLogCmd = &cobra.Command{Use: "lifecycle-log", Short: "Inspect the bounded lifecycle diagnostic log", Hidden: true}
 var lifecycleLogPathCmd = &cobra.Command{Use: "path", Short: "Print the lifecycle log path", RunE: func(cmd *cobra.Command, args []string) error { cmd.Println(lifecycleLogPath()); return nil }}
 var lifecycleLogTailCmd = &cobra.Command{Use: "tail", Short: "Print recent lifecycle events", RunE: runLifecycleLogTail}
 var lifecycleLogExportCmd = &cobra.Command{Use: "export", Short: "Export a sanitized Markdown diagnostic report", RunE: runLifecycleLogExport}
@@ -54,7 +54,9 @@ func init() {
 	lifecycleLogExportCmd.Flags().IntVar(&lifecycleLogLines, "lines", 500, "Number of lifecycle events")
 	lifecycleLogExportCmd.Flags().StringVar(&lifecycleLogOutput, "output", "", "Write report to this path instead of stdout")
 	lifecycleLogCmd.AddCommand(lifecycleLogPathCmd, lifecycleLogTailCmd, lifecycleLogExportCmd)
-	rootCmd.AddCommand(lifecycleStatusCmd, lifecycleRunnerCmd, lifecycleDashboardCmd, lifecycleLogCmd)
+	// Legacy lifecycle commands remain available to internal tests and old
+	// scripts, but are no longer part of the public command tree.
+	rootCmd.AddCommand(lifecycleStatusCmd, lifecycleRunnerCmd, lifecycleLogCmd)
 }
 
 func lifecycleLogPath() string { return filepath.Join(lifecycleConfigDir(), "lifecycle.jsonl") }

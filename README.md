@@ -1,9 +1,9 @@
 # Credimi Runner
 
-Credimi Runner is one foreground control-plane process for a multi-device
-Credimi runner. It reads one strict TOML file, exposes the generated GoA API,
-reconciles its own Docker resources when Android is configured, and reports
-each configured device independently.
+Credimi Runner is a persistent service for a multi-device Credimi runner. The
+service owns the Dashboard and local control API for its entire lifetime;
+runtime execution (the runner API, Temporal workers, lifecycle heartbeat and
+edge tunnel) is started and stopped independently.
 
 There is no `.env` runtime configuration or per-device runner image. One
 Android-capable image is shared by every configured device.
@@ -37,19 +37,33 @@ Pass `--config /path/to/config.toml` to use a different location. The process
 rejects symlinks and files readable by group or others; credentials never come
 from runtime environment variables.
 
-## Run
+## Service and runtime
 
-Run it in the foreground:
+The root command starts the service, waits for the Dashboard, and follows its
+logs. Pressing Ctrl+C only detaches the log follower; it does not stop the
+service.
 
 ```bash
 credimi-runner
-# or
-credimi-runner --config /srv/credimi-runner/config.toml
+credimi-runner service start
+credimi-runner service status
+credimi-runner logs --follow
+
+credimi-runner runtime start
+credimi-runner runtime stop
+credimi-runner runtime restart
+credimi-runner runtime status
+credimi-runner dashboard
 ```
 
-The default public GoA API listens on `0.0.0.0:8050`; the local dashboard
-control API listens on `127.0.0.1:8051`. The dashboard root is deliberately
-small and the useful endpoints are:
+On Linux the service is one Docker Compose `runner` container. On macOS it is
+a per-user LaunchAgent. Runtime stop keeps the Dashboard alive while closing
+the runner API, workers, heartbeat and edge exposure. Service restart preserves
+the runtime desired state and lets the application restore it after startup.
+
+The Dashboard control API listens on `127.0.0.1:8051`. The execution API is
+owned by the active runtime generation (normally port `8050`). Useful endpoints
+include:
 
 ```text
 GET  /healthz
@@ -68,17 +82,8 @@ Set `server.dashboard_token` to require either `X-Dashboard-Token` or an
 `Authorization: Bearer …` header for the dashboard API. The main API remains
 the generated GoA API and is available at `/docs/openapi.yaml`.
 
-An optional supervisor may manage the foreground command, for example:
-
-```ini
-# ~/.config/systemd/user/credimi-runner.service
-[Service]
-ExecStart=%h/.local/bin/credimi-runner --config %h/.config/credimi-runner/config.toml
-Restart=on-failure
-```
-
-The supervisor is optional: it must not generate configuration or start a
-second runner process.
+The Dashboard remains available while runtime operations are in progress and
+reports desired versus actual runtime state.
 
 ## TOML configuration
 
@@ -187,8 +192,8 @@ Useful checks:
 credimi-runner validate-config --config /path/to/config.toml
 curl -fsS http://127.0.0.1:8051/healthz
 curl -fsS http://127.0.0.1:8051/api/system/metrics
-docker ps --filter label=io.credimi.managed=true
-docker logs <managed-runner-container>
+credimi-runner service status
+credimi-runner logs --lines 200
 ```
 
 If a device is offline, inspect the Credimi-2 activity and device logs. A

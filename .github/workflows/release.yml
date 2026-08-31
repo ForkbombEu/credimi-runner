@@ -87,13 +87,41 @@ jobs:
         run: |
           set -euo pipefail
           go generate ./...
-          go test -tags=credimi_extra ./cmd -run 'NativeRuntimeSupervisor|NativeRuntime'
+          go test -tags=credimi_extra ./cmd ./internal/runtimesupervisor ./internal/application ./internal/edge -run 'NativeRuntimeSupervisor|NativeRuntime|Supervisor|Application|Edge|Cloudflared'
 
       - name: Cleanup git auth
         if: always()
         shell: bash
         run: |
           git config --global --unset-all url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadof || true
+
+  race:
+    name: 🏁 race
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Configure git auth for private Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CREDIMI_EXTRA_PAT:-}" ]; then exit 1; fi
+          git config --global url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadOf "https://github.com/"
+          go env -w GOPRIVATE=github.com/forkbombeu/*
+      - name: Run race tests
+        run: |
+          set -euo pipefail
+          go generate ./...
+          task test:race
+      - name: Cleanup git auth
+        if: always()
+        run: git config --global --unset-all url."https://${CREDIMI_EXTRA_PAT}@github.com/".insteadof || true
 
   semantic-release:
     name: 🤖 release
