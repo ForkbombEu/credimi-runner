@@ -22,7 +22,11 @@ type fakeTemporalWorker struct {
 	activityRegistrations int
 	workflowNames         []string
 	activityNames         []string
-	runErr                error
+	startErr              error
+	fatalErr              error
+	startHook             func()
+	options               worker.Options
+	stops                 int
 }
 
 type closableTemporalClient struct {
@@ -42,8 +46,21 @@ func (f *fakeTemporalWorker) RegisterActivityWithOptions(a interface{}, options 
 	f.activityNames = append(f.activityNames, options.Name)
 }
 
-func (f *fakeTemporalWorker) Run(interruptCh <-chan interface{}) error {
-	return f.runErr
+func (f *fakeTemporalWorker) Start() error {
+	if f.startErr != nil {
+		return f.startErr
+	}
+	if f.fatalErr != nil && f.options.OnFatalError != nil {
+		f.options.OnFatalError(f.fatalErr)
+	}
+	if f.startHook != nil {
+		f.startHook()
+	}
+	return nil
+}
+
+func (f *fakeTemporalWorker) Stop() {
+	f.stops++
 }
 
 func setWorkerManagerTestHooks(t *testing.T) {
@@ -154,8 +171,9 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 		return nil, nil
 	}
 
-	fake := &fakeTemporalWorker{runErr: serviceerror.NewInvalidArgument("bad worker config")}
+	fake := &fakeTemporalWorker{startErr: serviceerror.NewInvalidArgument("bad worker config")}
 	temporalWorkerFactory = func(c client.Client, taskqueue string, options worker.Options) temporalWorker {
+		fake.options = options
 		return fake
 	}
 	sleepWithContextFn = func(_ context.Context, d time.Duration) bool {
@@ -179,14 +197,34 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	require.Contains(t, fake.activityNames, "Stop recording iOS device screen")
 }
 
+func TestRunTemporalWorkerStartFailureClosesClientSynchronously(t *testing.T) {
+	setWorkerManagerTestHooks(t)
+	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
+	startupClient := &closableTemporalClient{}
+	fake := &fakeTemporalWorker{startErr: serviceerror.NewInvalidArgument("worker startup failed")}
+	temporalClientGetter = func(string) (client.Client, error) { return startupClient, nil }
+	temporalWorkerFactory = func(_ client.Client, _ string, options worker.Options) temporalWorker {
+		fake.options = options
+		return fake
+	}
+
+	err := RunTemporalWorker("namespace-start-failure")(context.Background())
+	require.ErrorContains(t, err, "worker startup failed")
+	require.Equal(t, 1, startupClient.closed)
+	require.Zero(t, fake.stops)
+}
+
 func TestRunTemporalWorkerClosesItsGenerationClient(t *testing.T) {
 	setWorkerManagerTestHooks(t)
 	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
 	temporalClient := &closableTemporalClient{}
 	temporalClientGetter = func(string) (client.Client, error) { return temporalClient, nil }
-	temporalWorkerFactory = func(client.Client, string, worker.Options) temporalWorker { return &fakeTemporalWorker{} }
+	ctx, cancel := context.WithCancel(context.Background())
+	temporalWorkerFactory = func(client.Client, string, worker.Options) temporalWorker {
+		return &fakeTemporalWorker{startHook: cancel}
+	}
 
-	if err := RunTemporalWorker("namespace-close")(context.Background()); err != nil {
+	if err := RunTemporalWorker("namespace-close")(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if temporalClient.closed != 1 {
@@ -202,13 +240,15 @@ func TestRunTemporalWorker_RetryableRunErrorThenSuccess(t *testing.T) {
 		return nil, nil
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	workers := []*fakeTemporalWorker{
-		{runErr: errors.New("temporary transport failure")},
-		{runErr: nil},
+		{fatalErr: errors.New("temporary transport failure")},
+		{startHook: cancel},
 	}
 	workerIdx := 0
 	temporalWorkerFactory = func(c client.Client, taskqueue string, options worker.Options) temporalWorker {
 		w := workers[workerIdx]
+		w.options = options
 		workerIdx++
 		return w
 	}
@@ -220,10 +260,12 @@ func TestRunTemporalWorker_RetryableRunErrorThenSuccess(t *testing.T) {
 	}
 
 	run := RunTemporalWorker("namespace-c")
-	err := run(context.Background())
+	err := run(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 2, workerIdx)
 	require.Equal(t, []time.Duration{time.Second}, sleeps)
+	require.Equal(t, 1, workers[0].stops)
+	require.Equal(t, 1, workers[1].stops)
 }
 
 func TestRunTemporalWorker_NonRetryableInitErrorReturnsError(t *testing.T) {
@@ -255,10 +297,13 @@ func TestRunTemporalWorkerWithConfigProviderUsesLiveConfigurationBoundary(t *tes
 
 	temporalClientGetter = func(string) (client.Client, error) { return nil, nil }
 	fake := &fakeTemporalWorker{}
+	ctx, cancel := context.WithCancel(context.Background())
 	temporalWorkerFactory = func(_ client.Client, _ string, options worker.Options) temporalWorker {
 		if options.MaxConcurrentActivityExecutionSize != 0 {
 			t.Fatalf("worker must use Temporal's normal concurrency instead of stale inventory sizing: %d", options.MaxConcurrentActivityExecutionSize)
 		}
+		fake.options = options
+		fake.startHook = cancel
 		return fake
 	}
 	providerCalls := 0
@@ -269,7 +314,7 @@ func TestRunTemporalWorkerWithConfigProviderUsesLiveConfigurationBoundary(t *tes
 			{ID: "acme/runner/two", Enabled: true},
 		}}, nil
 	}
-	if err := RunTemporalWorkerWithConfigProvider("namespace", provider)(context.Background()); err != nil {
+	if err := RunTemporalWorkerWithConfigProvider("namespace", provider)(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if providerCalls != 1 || fake.activityRegistrations == 0 {

@@ -30,7 +30,8 @@ const defaultTemporalAddress = "temporal.credimi.io:7233"
 type temporalWorker interface {
 	RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions)
 	RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions)
-	Run(interruptCh <-chan interface{}) error
+	Start() error
+	Stop()
 }
 
 var (
@@ -195,28 +196,42 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider, ready f
 				continue
 			}
 
+			fatal := make(chan error, 1)
 			w := temporalWorkerFactory(c, taskqueue, worker.Options{
 				Interceptors: []interceptor.WorkerInterceptor{temporalInterceptor},
+				OnFatalError: func(err error) {
+					select {
+					case fatal <- err:
+					default:
+					}
+				},
 			})
 
 			// Register activities
 			for _, item := range registeredActivities() {
 				w.RegisterActivityWithOptions(registeredActivityExecutor(item, provider), activity.RegisterOptions{Name: item.Activity.Name()})
 			}
-			signalReady(nil)
-
-			// The forwarding goroutine is attempt-scoped. A retryable Run error
-			// must release it before the next attempt starts.
-			shutdownCh := make(chan interface{})
-			attemptDone := make(chan struct{})
-			go func() {
-				select {
-				case <-ctx.Done():
-					close(shutdownCh)
-				case <-attemptDone:
+			wStartErr := w.Start()
+			if wStartErr != nil {
+				if c != nil {
+					c.Close()
 				}
-			}()
-
+				if !shouldRetryTemporalWorker(wStartErr) {
+					signalReady(wStartErr)
+					return wStartErr
+				}
+				if !sleepWithContextFn(ctx, backoff) {
+					return nil
+				}
+				backoff = growBackoff(backoff, maxBackoff)
+				continue
+			}
+			signalReady(nil)
+			var stopOnce sync.Once
+			stopWorker := func() { stopOnce.Do(w.Stop) }
+			// Temporal reports fatal post-start failures through OnFatalError.
+			// They are distinct from Start errors and retain the existing retry
+			// behavior without a second Run/shutdown channel.
 			log.Printf("Temporal worker running for namespace %s", namespace)
 			span.AddEvent("temporal_worker.started")
 			observability.Info(ctx, "credimi-runner.temporal", "temporal worker running",
@@ -224,8 +239,12 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider, ready f
 				observability.String("task_queue", taskqueue),
 				observability.String("runner_id", runnerID),
 			)
-			err = w.Run(shutdownCh)
-			close(attemptDone)
+			select {
+			case <-ctx.Done():
+				err = nil
+			case err = <-fatal:
+			}
+			stopWorker()
 			if c != nil {
 				c.Close()
 			}

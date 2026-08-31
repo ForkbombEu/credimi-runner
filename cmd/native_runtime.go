@@ -186,6 +186,19 @@ func (s *NativeRuntimeSupervisor) reconcileLocked(ctx context.Context, values da
 	s.mu.RUnlock()
 	if previous != nil {
 		if err := previous.close(ctx, wasExecuting); err != nil {
+			// A remote Pause failure is reportable, but it does not make a
+			// completely torn-down local generation executable. Release the
+			// generation once every local resource is gone; retain it only when
+			// cleanup still needs a retry.
+			if previous.localResourcesClosed() {
+				s.mu.Lock()
+				if s.generation == previous {
+					s.generation = nil
+					s.executing = false
+				}
+				s.mu.Unlock()
+				_ = writeNativeFailure(s.configDir, s.executionIntent(), err)
+			}
 			return fmt.Errorf("close previous native runtime generation: %w", err)
 		}
 	}
@@ -522,4 +535,13 @@ func (g *nativeRuntimeGeneration) close(ctx context.Context, pause bool) error {
 		shutdownCancel()
 	}
 	return errors.Join(errs...)
+}
+
+func (g *nativeRuntimeGeneration) localResourcesClosed() bool {
+	g.closeMu.Lock()
+	defer g.closeMu.Unlock()
+	g.edgeMu.Lock()
+	edgeStopped := !g.edgeStarted && g.edgeClosed
+	g.edgeMu.Unlock()
+	return edgeStopped && g.httpClosed && g.listenerClosed && g.otelClosed && g.contextCanceled
 }

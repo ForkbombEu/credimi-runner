@@ -40,9 +40,12 @@ func (*nativeEdgeFake) Status(context.Context) dashboardruntime.RuntimeStatus {
 	return dashboardruntime.RuntimeStatus{}
 }
 
-type nativeLifecycleFake struct{ pauses int }
+type nativeLifecycleFake struct {
+	pauses   int
+	pauseErr error
+}
 
-func (f *nativeLifecycleFake) Pause(context.Context, string) error     { f.pauses++; return nil }
+func (f *nativeLifecycleFake) Pause(context.Context, string) error     { f.pauses++; return f.pauseErr }
 func (*nativeLifecycleFake) Resume(context.Context, string) error      { return nil }
 func (*nativeLifecycleFake) Heartbeat(context.Context) error           { return nil }
 func (*nativeLifecycleFake) StartHeartbeatLoop(context.Context) func() { return noopCancel }
@@ -103,6 +106,79 @@ func TestNativeSupervisorStopRetriesEdgeAndKeepsTruthfulState(t *testing.T) {
 	state, err = os.ReadFile(filepath.Join(dir, "runtime-state"))
 	if err != nil || strings.TrimSpace(string(state)) != "stopped" {
 		t.Fatalf("runtime state=%q err=%v", state, err)
+	}
+}
+
+func TestNativeSupervisorStopPauseFailureStillCleansLocalResources(t *testing.T) {
+	dir := t.TempDir()
+	edge := &nativeEdgeFake{}
+	generation := testNativeGeneration(t, edge)
+	generation.lifecycle = &nativeLifecycleFake{pauseErr: errors.New("pause unavailable")}
+	supervisor := NewNativeRuntimeSupervisor(dir)
+	supervisor.generation = generation
+	supervisor.executing = true
+	supervisor.intent = ExecutionRunning
+
+	err := supervisor.Stop(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "pause unavailable") {
+		t.Fatalf("stop error = %v", err)
+	}
+	if supervisor.ExecutionRunning() {
+		t.Fatal("stop did not change execution intent")
+	}
+	if supervisor.Status(context.Background()).RunnerRunning {
+		t.Fatal("stopped runtime still reports execution")
+	}
+	state, readErr := os.ReadFile(filepath.Join(dir, "runtime-state"))
+	if readErr != nil || strings.TrimSpace(string(state)) != "stopped" {
+		t.Fatalf("runtime state=%q err=%v", state, readErr)
+	}
+	if generation.edgeStarted {
+		t.Fatal("edge remained owned after successful local cleanup")
+	}
+}
+
+func TestNativeGenerationPauseAndEdgeFailuresRemainRetryable(t *testing.T) {
+	edge := &nativeEdgeFake{stopErrs: []error{errors.New("edge unavailable"), nil}}
+	lifecycle := &nativeLifecycleFake{pauseErr: errors.New("pause unavailable")}
+	generation := testNativeGeneration(t, edge)
+	generation.lifecycle = lifecycle
+
+	err := generation.close(context.Background(), true)
+	if err == nil || !strings.Contains(err.Error(), "pause unavailable") || !strings.Contains(err.Error(), "edge unavailable") {
+		t.Fatalf("close error = %v", err)
+	}
+	if generation.localResourcesClosed() {
+		t.Fatal("failed edge cleanup was reported as locally complete")
+	}
+	if err := generation.close(context.Background(), true); err == nil || !strings.Contains(err.Error(), "pause unavailable") {
+		t.Fatalf("second close error = %v", err)
+	}
+	if generation.edgeStarted {
+		t.Fatal("successful retry did not release edge ownership")
+	}
+}
+
+func TestNativeSupervisorReconcileReleasesLocallyClosedGenerationAfterPauseFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeNativeRuntimeTestConfig(t, dir, lifecycleFreeListenAddress(t))
+	generation := testNativeGeneration(t, &nativeEdgeFake{})
+	generation.lifecycle = &nativeLifecycleFake{pauseErr: errors.New("pause unavailable")}
+	supervisor := NewNativeRuntimeSupervisor(dir)
+	supervisor.generation = generation
+	supervisor.executing = true
+	supervisor.intent = ExecutionRunning
+
+	err := supervisor.reconcileLocked(context.Background(), dashboardruntime.Values{}, false)
+	if err == nil || !strings.Contains(err.Error(), "pause unavailable") {
+		t.Fatalf("reconcile error = %v", err)
+	}
+	if supervisor.generation != nil || supervisor.Status(context.Background()).RunnerRunning {
+		t.Fatal("locally closed generation remained owned as executing")
+	}
+	state, readErr := os.ReadFile(filepath.Join(dir, "runtime-state"))
+	if readErr != nil || !strings.HasPrefix(string(state), "failed:running:") {
+		t.Fatalf("runtime state=%q err=%v", state, readErr)
 	}
 }
 
