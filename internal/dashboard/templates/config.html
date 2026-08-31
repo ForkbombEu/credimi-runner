@@ -11,8 +11,9 @@
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
   {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some fields need attention — see the highlighted inputs below.</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runner restart required before the latest changes take effect.</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime recreate required before the latest changes take effect.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime restart required before the latest changes take effect.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingReconcile}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime reconciliation is pending.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingServiceRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Service restart required before topology changes take effect.</div></div>{{end}}
   {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Credimi registration update required before the latest metadata is reflected remotely.</div></div>{{end}}
 
   <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Applying configuration changes to the runner in the background.">

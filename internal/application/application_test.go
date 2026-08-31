@@ -5,13 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
-	"github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 )
@@ -45,23 +43,6 @@ func TestApplicationUsesProvidedSupervisor(t *testing.T) {
 	if a.Supervisor() != s {
 		t.Fatal("application did not retain provided supervisor")
 	}
-}
-func TestRegistrationManagerImplementsRuntimeManager(t *testing.T) {
-	var _ runtime.Manager = (*registrationManager)(nil)
-	m := &registrationManager{url: "https://runner"}
-	if m.Status(context.Background()).PublicURL != "https://runner" {
-		t.Fatal("url missing")
-	}
-	if _, err := m.Logs(context.Background(), 10); err != nil {
-		t.Fatal(err)
-	}
-	for _, fn := range []func(context.Context) error{m.Start, m.Stop, m.Restart, m.UpdateImage} {
-		if err := fn(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	m.Configure(runtime.Values{})
-	m.SetPublicURL("https://other")
 }
 func TestRuntimeDependenciesCreateManualEdge(t *testing.T) {
 	deps := runtimeDependencies(t.TempDir())
@@ -126,57 +107,6 @@ func TestWorkerSetPropagatesStartupError(t *testing.T) {
 		t.Fatal("startup error not propagated")
 	}
 }
-func TestControllerAdapterDelegatesState(t *testing.T) {
-	s, err := runtimesupervisor.New(t.TempDir(), func() (runnerconfig.Config, error) { return runnerconfig.Config{}, nil }, runtimesupervisor.Dependencies{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := &controllerAdapter{supervisor: s}
-	if a.ExecutionRunning() {
-		t.Fatal("unexpected running intent")
-	}
-	if _, err := a.CurrentPublicURL(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.VerifyPublicURL(context.Background(), ""); err != nil {
-		t.Fatal(err)
-	}
-	if got := a.Status(context.Background()); got.Configured != true {
-		t.Fatal("status not configured")
-	}
-	_ = a.Prepare(context.Background())
-	_ = a.StartExecution(context.Background())
-	_ = a.Stop(context.Background())
-}
-
-func TestControllerAdapterReconcileLoadsTypedConfig(t *testing.T) {
-	dir := t.TempDir()
-	cfg := runnerconfig.Bootstrap()
-	cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
-	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
-	cfg.Temporal.Address = "temporal:7233"
-	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
-		t.Fatal(err)
-	}
-	if err := (runtimesupervisor.StateStore{Path: filepath.Join(dir, "runtime-state.json")}).Save(runtimesupervisor.PersistentState{Desired: runtimesupervisor.DesiredStopped, Actual: runtimesupervisor.ActualStopped}); err != nil {
-		t.Fatal(err)
-	}
-	s, err := runtimesupervisor.New(dir, nil, runtimesupervisor.Dependencies{
-		NewAPI: func(runnerconfig.Config, context.Context) (runtimesupervisor.API, error) { return &appTestAPI{}, nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := (&controllerAdapter{supervisor: s}).Reconcile(context.Background(), false); err != nil {
-		t.Fatal(err)
-	}
-}
-
-type appTestAPI struct{}
-
-func (*appTestAPI) Start() error                   { return nil }
-func (*appTestAPI) Shutdown(context.Context) error { return nil }
-func (*appTestAPI) Listening() bool                { return false }
 
 func TestApplicationShutdownIsIdempotent(t *testing.T) {
 	dir := t.TempDir()

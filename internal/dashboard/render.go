@@ -144,9 +144,7 @@ func serviceIcon(id string) template.HTML {
 	switch id {
 	case "runner":
 		return icon("server")
-	case "caddy":
-		return icon("shield")
-	case "cloudflared", "tunnel", "tunnel_named":
+	case "cloudflared":
 		return icon("cloud")
 	case "temporal":
 		return icon("workers")

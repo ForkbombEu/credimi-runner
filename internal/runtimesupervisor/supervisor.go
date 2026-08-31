@@ -187,6 +187,15 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (*
 	// returns and must never tear down a successfully activated generation.
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &generation{ctx: ctx, cancel: cancel, workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
+	created := false
+	defer func() {
+		if created {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		_, _ = s.teardownGeneration(cleanupCtx, g, "generation_create_failed", false)
+		cleanupCancel()
+	}()
 	if s.deps.NewProcessStore != nil {
 		g.store = s.deps.NewProcessStore()
 	} else {
@@ -250,6 +259,7 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (*
 		g.edge = e
 		g.setEdgeClosed(false)
 	}
+	created = true
 	return g, nil
 }
 
@@ -415,6 +425,13 @@ func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 		}
 		return s.updateState(func(st *PersistentState) { st.Actual = ActualRunning })
 	}
+	if _, err := s.teardownGeneration(ctx, g, "config_reconcile", false); err != nil {
+		return s.fail(desired, err)
+	}
+	if !g.localResourcesClosed() {
+		return s.fail(desired, errors.New("stopped generation teardown incomplete"))
+	}
+	s.setGeneration(nil)
 	return s.updateState(func(st *PersistentState) { st.Actual = ActualStopped })
 }
 

@@ -86,12 +86,8 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 			applyEnvironment(cfg)
 			return server.NewRunnerLifecycleClient(server.LoadRunnerLifecycleConfig(utils.LoadInstance()), http.DefaultClient, store)
 		},
-		Register: func(ctx context.Context, cfg runnerconfig.Config, publicURL string) error {
-			values := dashboardruntime.ValuesFromTypedConfig(cfg)
-			manager := &registrationManager{url: publicURL}
-			return (controller.RuntimeLifecycle{Values: values, GOOS: runtime.GOOS, Manager: manager}).Register(ctx)
-		},
-		VerifyPublicEndpoint: func(context.Context, runnerconfig.Config, string) error { return nil },
+		Register:             runtimesupervisor.Register,
+		VerifyPublicEndpoint: runtimesupervisor.VerifyPublicEndpoint,
 	}
 }
 
@@ -120,21 +116,6 @@ func (w *workerSet) Running() bool {
 		}
 	}
 	return false
-}
-
-type registrationManager struct{ url string }
-
-func (m *registrationManager) Start(context.Context) error       { return nil }
-func (m *registrationManager) Stop(context.Context) error        { return nil }
-func (m *registrationManager) Restart(context.Context) error     { return nil }
-func (m *registrationManager) UpdateImage(context.Context) error { return nil }
-func (m *registrationManager) Configure(dashboardruntime.Values) {}
-func (m *registrationManager) SetPublicURL(string)               {}
-func (m *registrationManager) Status(context.Context) dashboardruntime.RuntimeStatus {
-	return dashboardruntime.RuntimeStatus{PublicURL: m.url}
-}
-func (m *registrationManager) Logs(context.Context, int) ([]dashboardruntime.LogLine, error) {
-	return nil, nil
 }
 
 func (a *Application) Run(ctx context.Context) error {
@@ -173,7 +154,7 @@ func (a *Application) Run(ctx context.Context) error {
 	a.operations = controller.NewCoordinator(ctx)
 	identity, _ := controller.NewIdentityToken()
 	plan := dashboardruntime.BuildRuntimePlan(a.configDir, values)
-	handler, cancelHandler, err := dashboard.NewRuntimeOwnedHandlerWithNativeRuntime(ctx, a.configDir, fmt.Sprintf("application-%d", os.Getpid()), identity, plan.ConfigFingerprint, a.operations, &controllerAdapter{supervisor: a.supervisor})
+	handler, cancelHandler, err := dashboard.NewHandler(ctx, a.configDir, fmt.Sprintf("application-%d", os.Getpid()), identity, plan.ConfigFingerprint, a.supervisor, a.operations)
 	if err != nil {
 		listener.Close()
 		return err
@@ -242,25 +223,3 @@ func dashboardHostPort(values map[string]string) (string, string) {
 	}
 	return host, port
 }
-
-type controllerAdapter struct{ supervisor *runtimesupervisor.Supervisor }
-
-func (c *controllerAdapter) Prepare(ctx context.Context) error { return c.supervisor.Start(ctx) }
-func (c *controllerAdapter) Reconcile(ctx context.Context, _ bool) error {
-	cfg, err := runnerconfig.LoadFile(filepath.Join(c.supervisor.ConfigDir(), "config.toml"))
-	if err != nil {
-		return err
-	}
-	return c.supervisor.Reconcile(ctx, cfg)
-}
-func (c *controllerAdapter) StartExecution(ctx context.Context) error { return c.supervisor.Start(ctx) }
-func (c *controllerAdapter) Stop(ctx context.Context) error           { return c.supervisor.Stop(ctx) }
-func (c *controllerAdapter) CurrentPublicURL(context.Context) (string, error) {
-	return c.supervisor.Status().PublicURL, nil
-}
-func (c *controllerAdapter) VerifyPublicURL(context.Context, string) error { return nil }
-func (c *controllerAdapter) Status(context.Context) dashboardruntime.RuntimeStatus {
-	st := c.supervisor.Status()
-	return dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: st.Actual == runtimesupervisor.ActualRunning, PublicURL: st.PublicURL, LastError: st.LastError}
-}
-func (c *controllerAdapter) ExecutionRunning() bool { return c.supervisor.ExecutionRunning() }

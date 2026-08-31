@@ -54,7 +54,6 @@ func TestChipClass(t *testing.T) {
 func TestServiceIcon(t *testing.T) {
 	tests := []struct{ id, contains string }{
 		{"runner", "server"},
-		{"caddy", "shield"},
 		{"cloudflared", "cloud"},
 		{"tunnel", "cloud"},
 		{"temporal", "workers"},

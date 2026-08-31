@@ -7,8 +7,9 @@
   </div>
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runner restart.</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runtime recreate.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runtime restart.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingReconcile}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for runtime reconciliation.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingServiceRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes require a service restart.</div></div>{{end}}
   {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a Credimi registration update.</div></div>{{end}}
   {{if .Snapshot.ObservationStale}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime observation is stale. Refreshing local state.</div></div>{{end}}
   {{if .StartupMessage}}<div class="callout {{if eq .StartupPhase "needs_attention"}}danger{{else}}info{{end}}" style="margin-bottom:16px">{{icon "info"}}<div>{{.StartupMessage}}</div></div>{{end}}

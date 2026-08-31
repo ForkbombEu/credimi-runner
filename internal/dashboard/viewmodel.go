@@ -117,18 +117,12 @@ func (d PageData) WorkersTotal() int { return len(d.Workers) }
 
 func (d PageData) RuntimeHealthy() bool {
 	status := d.RuntimeStatus()
-	if !status.Configured {
-		return false
-	}
-	if d.HasCriticalServices() {
-		return d.ServicesAllUp()
-	}
-	return status.RunnerRunning
+	return status.Configured && status.RunnerRunning
 }
 
 func (d PageData) RuntimeRunning() bool {
 	status := d.RuntimeStatus()
-	return status.RunnerRunning || status.ComposeRunning
+	return status.RunnerRunning
 }
 
 func (d PageData) RuntimeHeadline() string {
@@ -197,6 +191,9 @@ func (d PageData) HasCriticalServices() bool {
 
 // PublicURL computes the externally reachable endpoint from the network config.
 func (d PageData) PublicURL() string {
+	if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
+		return publicURL
+	}
 	mode := d.Runner.Get("CREDIMI_SERVICE_MODE")
 	switch mode {
 	case "cloudflare-managed":
@@ -210,9 +207,6 @@ func (d PageData) PublicURL() string {
 		}
 		return "Waiting for manual public URL"
 	default:
-		if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
-			return publicURL
-		}
 		return "Waiting for quick tunnel URL"
 	}
 }
@@ -283,16 +277,7 @@ func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
 }
 
 func (d PageData) RuntimeControlsAvailable() bool {
-	owned, _ := d.payload()["RuntimeOwned"].(bool)
-	if !owned {
-		return true
-	}
-	available, _ := d.payload()["LauncherControlAvailable"].(bool)
-	if available {
-		return true
-	}
-	nativeControl, _ := d.payload()["NativeRuntimeControlAvailable"].(bool)
-	return nativeControl
+	return true
 }
 
 func (d PageData) RuntimeImageVisible() bool { return goruntime.GOOS != "darwin" }

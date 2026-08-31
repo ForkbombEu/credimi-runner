@@ -249,7 +249,7 @@ func TestExposurePublicPortRoundTripsTypedTOML(t *testing.T) {
 func TestManagedExposureRoundTripsTypedTOML(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := validConfig()
-	cfg.Exposure = ExposureConfig{Mode: "named_tunnel", Domain: "runner.example.com", CaddySite: ":80", CloudflareToken: "secret"}
+	cfg.Exposure = ExposureConfig{Mode: "named_tunnel", Domain: "runner.example.com", CloudflareToken: "secret"}
 	if err := WriteFile(path, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestManagedExposureRoundTripsTypedTOML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Exposure.Domain != "runner.example.com" || loaded.Exposure.CaddySite != ":80" || loaded.Exposure.CloudflareToken != "secret" {
+	if loaded.Exposure.Domain != "runner.example.com" || loaded.Exposure.CloudflareToken != "secret" {
 		t.Fatalf("managed exposure = %#v", loaded.Exposure)
 	}
 }
@@ -578,5 +578,17 @@ func TestParseADBPort(t *testing.T) {
 				t.Fatalf("ParseADBPort(%q) accepted %d", tc.value, got)
 			}
 		})
+	}
+}
+
+func TestAndroidWiFiSerial(t *testing.T) {
+	if got := AndroidWiFiSerial("", ""); got != "" {
+		t.Fatalf("empty Wi-Fi address = %q", got)
+	}
+	if got := AndroidWiFiSerial(" 192.0.2.10 ", ""); got != "192.0.2.10:5555" {
+		t.Fatalf("default Wi-Fi port = %q", got)
+	}
+	if got := AndroidWiFiSerial("192.0.2.10", "5556"); got != "192.0.2.10:5556" {
+		t.Fatalf("explicit Wi-Fi port = %q", got)
 	}
 }

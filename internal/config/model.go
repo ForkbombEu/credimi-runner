@@ -82,7 +82,6 @@ type ExposureConfig struct {
 	PublicURL       string `toml:"public_url"`
 	PublicPort      string `toml:"public_port"`
 	Domain          string `toml:"domain"`
-	CaddySite       string `toml:"caddy_site"`
 	CloudflareToken string `toml:"cloudflare_token"`
 }
 

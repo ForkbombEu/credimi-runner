@@ -84,3 +84,44 @@ func runRuntimeStatus(cmd *cobra.Command, _ []string) error {
 	cmd.Println(string(payload.Runtime))
 	return nil
 }
+
+func controllerBaseURL(metadata controller.Metadata) string {
+	return strings.TrimSuffix(metadata.ProbeURL, "/internal/controller/identity")
+}
+
+func getLifecycleJSON(ctx context.Context, endpoint string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("GET %s: %s", endpoint, resp.Status)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func waitForLifecycleOperation(ctx context.Context, baseURL, operationID string) (controller.Snapshot, error) {
+	if strings.TrimSpace(operationID) == "" {
+		return controller.Snapshot{}, errors.New("dashboard returned an operation without an ID")
+	}
+	for {
+		var snapshot controller.Snapshot
+		if err := getLifecycleJSON(ctx, baseURL+"/api/controller/operations/"+operationID, &snapshot); err != nil {
+			return controller.Snapshot{}, err
+		}
+		switch snapshot.Phase {
+		case controller.PhaseSucceeded, controller.PhaseFailed, controller.PhaseCancelled:
+			return snapshot, nil
+		}
+		select {
+		case <-ctx.Done():
+			return controller.Snapshot{}, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}

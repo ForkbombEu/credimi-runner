@@ -120,7 +120,7 @@ func TestPillData(t *testing.T) {
 	}
 
 	// One offline
-	snap.Services = append(snap.Services, Service{ID: "caddy", Status: Offline, Expected: true, Critical: true})
+	snap.Services[0].Status = Offline
 	p = h.pillData(snap)
 	if p.OK {
 		t.Error("expected not OK when one service offline")
@@ -244,7 +244,7 @@ printf '%s\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid
 func TestProbeServicesWithFakeDocker(t *testing.T) {
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "docker"), `#!/bin/sh
-printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","Image":"runner:local"}' '{"Service":"caddy","State":"paused","Status":"Paused","Image":"caddy:local"}' '{"Service":"cloudflared","State":"exited","Status":"Exited","Image":"cloudflared:local"}'
+	printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","Image":"runner:local"}'
 `)
 	t.Setenv("PATH", bin)
 
@@ -252,20 +252,14 @@ printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","I
 		"CREDIMI_SERVICE_MODE": "auto",
 	})
 	services := probeServices(context.Background(), t.TempDir(), plan, dashboardruntime.Values{"CREDIMI_SERVICE_MODE": "auto"}, true)
-	if len(services) != 4 {
+	if len(services) != 2 {
 		t.Fatalf("services len = %d", len(services))
 	}
 	if services[0].Status != Online || services[0].Image != "runner:local" || services[0].Uptime != "Up 10 seconds" {
 		t.Fatalf("runner service = %#v", services[0])
 	}
-	if services[1].Status != Degraded {
-		t.Fatalf("caddy service = %#v", services[1])
-	}
-	if services[2].Status != Offline || services[2].ID != "tunnel" {
-		t.Fatalf("tunnel service = %#v", services[2])
-	}
-	if services[3].ID != "temporal" || services[3].Critical {
-		t.Fatalf("temporal service = %#v", services[3])
+	if services[1].ID != "temporal" || services[1].Critical {
+		t.Fatalf("temporal service = %#v", services[1])
 	}
 }
 

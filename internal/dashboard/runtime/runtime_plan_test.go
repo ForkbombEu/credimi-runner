@@ -1,290 +1,146 @@
 package runtime
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestBuildRuntimePlanExpectedServices(t *testing.T) {
-	tests := []struct {
+func TestRuntimePlanUsesOnlyServiceComposeRunner(t *testing.T) {
+	for _, tc := range []struct {
 		name string
-		vals Values
-		want []string
+		goos string
+		mode string
+		want int
 	}{
-		{"container-auto", Values{}, []string{"runner", "caddy", "tunnel", "temporal"}},
-		{"container-managed", Values{"CREDIMI_SERVICE_MODE": "cloudflare-managed"}, []string{"runner", "caddy", "tunnel_named", "temporal"}},
-		{"native-manual", Values{"CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, []string{"temporal"}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			goos := "linux"
-			if tt.name == "native-manual" {
-				goos = "darwin"
+		{name: "linux", goos: "linux", mode: "auto", want: 1},
+		{name: "manual", goos: "linux", mode: "manual", want: 1},
+		{name: "darwin", goos: "darwin", mode: "manual", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := BuildRuntimePlanForOS(t.TempDir(), Values{"CREDIMI_SERVICE_MODE": tc.mode}, tc.goos)
+			if !strings.HasSuffix(plan.ComposePath, "service-compose.yaml") {
+				t.Fatalf("compose path = %q", plan.ComposePath)
 			}
-			normalized, err := NormalizeValues(tt.vals, goos)
-			if err != nil {
-				t.Fatal(err)
+			if len(plan.ComposeServices) != tc.want {
+				t.Fatalf("compose services = %#v", plan.ComposeServices)
 			}
-			plan := BuildRuntimePlanForOS("/tmp/credimi", normalized, goos)
-			var got []string
 			for _, service := range plan.ExpectedServices {
-				got = append(got, service.ID)
-			}
-			if len(got) != len(tt.want) {
-				t.Fatalf("ExpectedServices = %v, want %v", got, tt.want)
-			}
-			for i := range got {
-				if got[i] != tt.want[i] {
-					t.Fatalf("ExpectedServices = %v, want %v", got, tt.want)
+				if service.ID != "runner" && service.Kind == "compose" {
+					t.Fatalf("unexpected compose service = %#v", service)
 				}
 			}
 		})
 	}
 }
 
-func TestBootstrapPlanStartsOnlyRunner(t *testing.T) {
-	values := (BootstrapContext{RunnerImage: "credimi-runner:local", PullPolicy: "never", BeforeSetup: true}).Apply(DefaultValues())
-	plan := BuildRuntimePlanForOS(t.TempDir(), values, "linux")
-	if got := plan.ComposeServices; len(got) != 1 || got[0] != "runner" {
-		t.Fatalf("bootstrap services = %v, want runner only", got)
+func TestRuntimePlanClassifiesPersistentChanges(t *testing.T) {
+	checks := []struct {
+		name  string
+		key   string
+		value string
+		class ApplyClass
+	}{
+		{"saved-only token", "DASHBOARD_TOKEN", "token", ApplySavedOnly},
+		{"runtime", "TEMPORAL_ADDRESS", "temporal:7233", ApplyRuntimeReconcile},
+		{"service", "ANDROID_RUNNER_IMAGE", "runner:test", ApplyServiceRestartRequired},
+		{"Credimi", "RUNNER_PUBLIC_URL", "https://runner.example", ApplyCredimiUpdateRequired},
 	}
-	if plan.ServiceMode != "bootstrap" || plan.PublicMode != "bootstrap" {
-		t.Fatalf("bootstrap modes = %q/%q", plan.ServiceMode, plan.PublicMode)
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			oldValues := Values{}
+			newValues := Values{check.key: check.value}
+			diff := DiffValuesForOS(oldValues, newValues, "linux")
+			if len(diff.Classes) != 1 || diff.Classes[0] != check.class {
+				t.Fatalf("diff = %#v", diff)
+			}
+		})
 	}
-}
-
-func TestDiffValuesCoverageBranches(t *testing.T) {
-	if got := DiffValues(Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Values{"CREDIMI_RUNNER_ID": "acme/runner"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
-		t.Fatalf("saved only diff = %#v", got)
-	}
-	if got := DiffValues(Values{"DASHBOARD_TOKEN": "old"}, Values{"DASHBOARD_TOKEN": "new"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
-		t.Fatalf("dashboard token diff = %#v", got)
-	}
-	if got := DiffValues(Values{"CREDIMI_RUNNER_NAME": "a"}, Values{"CREDIMI_RUNNER_NAME": "b"}); len(got.ChangedKeys) == 0 || !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
-		t.Fatalf("runner name changed diff = %#v", got)
-	}
-	if got := DiffValues(Values{"RUNNER_PORT": "8050"}, Values{"RUNNER_PORT": "8051"}); !containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
-		t.Fatalf("recreate diff = %#v", got)
-	}
-	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/b"}); containsApplyClass(got.Classes, ApplyRestartRequired) || containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
-		t.Fatalf("device inventory diff = %#v", got)
-	}
-	if got := DiffValues(Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a"}, Values{"CREDIMI_DEVICE_1_ID": "acme/runner/a", "CREDIMI_DEVICE_2_ID": "acme/runner/b"}); containsApplyClass(got.Classes, ApplyRestartRequired) || containsApplyClass(got.Classes, ApplyComposeRecreate) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
-		t.Fatalf("added device inventory diff = %#v", got)
-	}
-}
-
-func TestDashboardTokenIsSavedOnlyAndTopologyRequiresServiceRestart(t *testing.T) {
-	token := DiffValuesForOS(Values{"DASHBOARD_TOKEN": "old"}, Values{"DASHBOARD_TOKEN": "new"}, "linux")
-	if len(token.Classes) != 1 || token.Classes[0] != ApplySavedOnly {
-		t.Fatalf("token diff=%#v", token)
-	}
-	topology := DiffValuesForOS(Values{"ANDROID_RUNNER_IMAGE": "runner:a"}, Values{"ANDROID_RUNNER_IMAGE": "runner:b"}, "linux")
-	if !containsApplyClass(topology.Classes, ApplyServiceRestartRequired) {
-		t.Fatalf("service restart class missing: %#v", topology)
-	}
-}
-
-func TestDiffValuesClassifiesOnlyTopologyChangingDeviceEditsAsRecreate(t *testing.T) {
-	base := Values{
-		"CREDIMI_RUNNER_ID":        "acme/runner",
-		"CREDIMI_DEVICE_COUNT":     "1",
-		"CREDIMI_DEVICE_1_ID":      "acme/runner/pixel",
-		"CREDIMI_DEVICE_1_TYPE":    "android_emulator",
-		"CREDIMI_DEVICE_1_MODE":    "emulator",
-		"CREDIMI_DEVICE_1_ENABLED": "true",
-	}
-	description := cloneValues(base)
-	description["CREDIMI_DEVICE_1_DESCRIPTION"] = "lab"
-	if got := DiffValuesForOS(base, description, "linux"); containsApplyClass(got.Classes, ApplyComposeRecreate) {
-		t.Fatalf("metadata-only device edit requested recreate: %#v", got)
-	}
-	usb := cloneValues(base)
-	usb["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
-	usb["CREDIMI_DEVICE_1_MODE"] = "usb"
-	usb["CREDIMI_DEVICE_1_SERIAL"] = "usb-1"
-	if got := DiffValuesForOS(base, usb, "linux"); !containsApplyClass(got.Classes, ApplyComposeRecreate) {
-		t.Fatalf("USB topology change did not request recreate: %#v", got)
-	}
-}
-
-func TestDiffValuesClassifiesKnownHostsMountChangesAsTopology(t *testing.T) {
-	dir := t.TempDir()
-	knownA := filepath.Join(dir, "known-a")
-	knownB := filepath.Join(dir, "known-b")
-	for _, path := range []string{knownA, knownB} {
-		if err := os.WriteFile(path, []byte("host ssh-ed25519 key\n"), 0o600); err != nil {
-			t.Fatal(err)
+	deviceDiff := DiffValuesForOS(Values{}, Values{"CREDIMI_DEVICE_1_ID": "org/runner/device"}, "linux")
+	for _, class := range []ApplyClass{ApplyRuntimeReconcile, ApplyServiceRestartRequired, ApplyCredimiUpdateRequired} {
+		if !hasClass(deviceDiff, class) {
+			t.Fatalf("device diff missing %q: %#v", class, deviceDiff)
 		}
 	}
-	base := redroidTopologyValues(knownA)
+}
 
-	tests := []struct {
-		name string
-		new  Values
-		want bool
-	}{
-		{name: "mount added", new: redroidTopologyValues(knownA), want: true},
-		{name: "mount replaced", new: redroidTopologyValues(knownB), want: true},
+func TestRuntimePlanEnvironmentAndImageHelpers(t *testing.T) {
+	values := Values{"ANDROID_RUNNER_IMAGE": "runner:test", "ANDROID_PULL_POLICY": "never", "RUNNER_PORT": "18050"}
+	image, policy, err := SharedRunnerImage(values, "linux")
+	if err != nil || image != "runner:test" || policy != "never" {
+		t.Fatalf("image helper = %q/%q/%v", image, policy, err)
 	}
-	noMount := cloneValues(base)
-	delete(noMount, "CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET")
-	delete(noMount, "CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH")
-	tests[0].new = base
-	tests = append(tests, struct {
-		name string
-		new  Values
-		want bool
-	}{name: "mount removed", new: noMount, want: true})
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			old := base
-			if tc.name == "mount added" {
-				old = noMount
-			}
-			if got := containsApplyClass(DiffValuesForOS(old, tc.new, "linux").Classes, ApplyComposeRecreate); got != tc.want {
-				t.Fatalf("compose recreate = %v, want %v", got, tc.want)
-			}
-		})
+	plan := BuildRuntimePlanForOS("/tmp/config", values, "linux")
+	environment := ComposeEnvironment(values, plan, "linux")
+	if !containsEnvironment(environment, "RUNNER_PORT=18050") || !containsEnvironment(environment, "COMPOSE_PROGRESS=plain") {
+		t.Fatalf("environment = %#v", environment)
 	}
-
-	unrelated := cloneValues(base)
-	unrelated["CREDIMI_DEVICE_1_WIFI_IP"] = "192.0.2.99"
-	if got := DiffValuesForOS(base, unrelated, "linux"); containsApplyClass(got.Classes, ApplyComposeRecreate) {
-		t.Fatalf("unrelated Redroid edit requested recreate: %#v", got)
+	if !RunnerAPIReachableFromHost(values, "linux") || !RunnerReadinessRequiredBeforeRegistration(values, "linux") {
+		t.Fatal("linux runner should be host reachable")
 	}
-
-	duplicate := cloneValues(base)
-	duplicate["CREDIMI_DEVICE_COUNT"] = "2"
-	duplicate["CREDIMI_DEVICE_2_ID"] = "acme/runner/redroid-two"
-	duplicate["CREDIMI_DEVICE_2_TYPE"] = "redroid"
-	duplicate["CREDIMI_DEVICE_2_MODE"] = "redroid"
-	duplicate["CREDIMI_DEVICE_2_WIFI_IP"] = "192.0.2.20"
-	duplicate["CREDIMI_DEVICE_2_WIFI_PORT"] = "5556"
-	duplicate["CREDIMI_DEVICE_2_AVDCTL_SSH_TARGET"] = "bob@two"
-	duplicate["CREDIMI_DEVICE_2_AVDCTL_SSH_KNOWN_HOSTS_PATH"] = knownA
-	if got := DiffValuesForOS(base, duplicate, "linux"); containsApplyClass(got.Classes, ApplyComposeRecreate) {
-		t.Fatalf("duplicate known-host mount requested recreate: %#v", got)
+	if !DeviceReadinessRequired(Values{"CREDIMI_RUNNER_ID": "org/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "org/runner/device", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb"}, "linux") {
+		t.Fatal("physical Android device should require readiness")
+	}
+	if BuildRuntimePlan("/tmp/config", values).ComposePath == "" || len(DiffValues(Values{}, Values{"DASHBOARD_TOKEN": "token"}).Classes) != 1 {
+		t.Fatal("wrapper helpers returned empty results")
+	}
+	if image, policy, err := SharedRunnerImage(Values{}, "linux"); err != nil || image == "" || policy == "" {
+		t.Fatalf("default image helper = %q/%q/%v", image, policy, err)
+	}
+	if RunnerAPIReachableFromHost(Values{"CREDIMI_RUNNER_TYPE": "ios_simulator"}, "linux") {
+		t.Fatal("unsupported device type reported as reachable")
+	}
+	if DeviceReadinessRequired(Values{"CREDIMI_DEVICE_COUNT": "bad"}, "linux") {
+		t.Fatal("invalid inventory reported as ready")
+	}
+	if DeviceReadinessRequired(Values{"CREDIMI_RUNNER_ID": "org/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "org/runner/device", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "no_device", "CREDIMI_DEVICE_1_ENABLED": "false"}, "linux") {
+		t.Fatal("disabled device reported as requiring readiness")
 	}
 }
 
-func redroidTopologyValues(knownHosts string) Values {
-	return Values{
-		"CREDIMI_RUNNER_ID":                            "acme/runner",
-		"CREDIMI_DEVICE_COUNT":                         "1",
-		"CREDIMI_DEVICE_1_ID":                          "acme/runner/redroid",
-		"CREDIMI_DEVICE_1_TYPE":                        "redroid",
-		"CREDIMI_DEVICE_1_MODE":                        "redroid",
-		"CREDIMI_DEVICE_1_WIFI_IP":                     "192.0.2.10",
-		"CREDIMI_DEVICE_1_WIFI_PORT":                   "5555",
-		"CREDIMI_DEVICE_1_AVDCTL_SSH_TARGET":           "alice@one",
-		"CREDIMI_DEVICE_1_AVDCTL_SSH_KNOWN_HOSTS_PATH": knownHosts,
+func TestRuntimePlanBootstrapAndEnvironmentFallbacks(t *testing.T) {
+	plan := BuildRuntimePlanForOS(t.TempDir(), Values{BootstrapPhaseEnv: "true"}, "linux")
+	if plan.ServiceMode != "bootstrap" || len(plan.ComposeServices) != 1 || len(plan.ExpectedServices) != 1 {
+		t.Fatalf("bootstrap plan = %+v", plan)
+	}
+	if !RunnerAPIReachableFromHost(Values{}, "darwin") || !RunnerReadinessRequiredBeforeRegistration(Values{}, "darwin") {
+		t.Fatal("native runner should be reachable")
+	}
+	invalid := ComposeEnvironment(Values{"RUNNER_PORT": "bad"}, RuntimePlan{}, "linux")
+	if !containsEnvironment(invalid, "CREDIMI_COMPOSE_PROJECT=credimi-runner") || !containsEnvironment(invalid, "CREDIMI_CONFIG_FINGERPRINT=unknown") {
+		t.Fatalf("fallback environment = %#v", invalid)
+	}
+	replaced := replaceEnvironment([]string{"RUNNER_PORT=old", "OTHER=value"}, "RUNNER_PORT=new")
+	if !containsEnvironment(replaced, "RUNNER_PORT=new") || !containsEnvironment(replaced, "OTHER=value") {
+		t.Fatalf("replaced environment = %#v", replaced)
 	}
 }
 
-func TestDiffValuesDoesNotRecreateUnifiedRunnerForAddedEmulator(t *testing.T) {
-	phone := Values{
-		"ANDROID_RUNNER_IMAGE":      "runner:shared",
-		"ANDROID_PULL_POLICY":       "never",
-		"CREDIMI_RUNNER_ID":         "acme/runner",
-		"CREDIMI_DEVICE_COUNT":      "1",
-		"CREDIMI_DEVICE_1_ID":       "acme/runner/phone",
-		"CREDIMI_DEVICE_1_TYPE":     "android_phone",
-		"CREDIMI_DEVICE_1_MODE":     "usb",
-		"CREDIMI_DEVICE_1_SERIAL":   "usb-1",
-		"CREDIMI_DEVICE_1_ENABLED":  "true",
-		"CREDIMI_SERVICE_MODE":      "auto",
-		"ANDROID_STATE_VOLUME":      "state",
-		"ANDROID_TOOL_CACHE_VOLUME": "tools",
-		"ANDROID_SDK_VOLUME":        "sdk",
+func TestRuntimePlanDeviceDiffAndNoop(t *testing.T) {
+	if diff := DiffValuesForOS(Values{"DASHBOARD_TOKEN": "same"}, Values{"DASHBOARD_TOKEN": "same"}, "linux"); len(diff.ChangedKeys) != 0 || len(diff.Classes) != 1 || diff.Classes[0] != ApplySavedOnly {
+		t.Fatalf("no-op diff = %+v", diff)
 	}
-	withEmulator := cloneValues(phone)
-	withEmulator["CREDIMI_DEVICE_COUNT"] = "2"
-	withEmulator["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
-	withEmulator["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
-	withEmulator["CREDIMI_DEVICE_2_MODE"] = "emulator"
-	withEmulator["CREDIMI_DEVICE_2_ENABLED"] = "true"
-
-	diff := DiffValuesForOS(phone, withEmulator, "linux")
-	if containsApplyClass(diff.Classes, ApplyComposeRecreate) {
-		t.Fatalf("adding an emulator recreated the unified runner: %#v", diff)
+	updated := DiffValuesForOS(Values{"CREDIMI_DEVICE_1_ID": "old"}, Values{"CREDIMI_DEVICE_1_ID": "new"}, "linux")
+	if len(updated.ChangedKeys) != 1 || !hasClass(updated, ApplyRuntimeReconcile) {
+		t.Fatalf("updated device diff = %+v", updated)
 	}
-	if !containsApplyClass(diff.Classes, ApplyCredimiUpdateRequired) {
-		t.Fatalf("adding an emulator did not request registration update: %#v", diff)
+	added := DiffValuesForOS(Values{}, Values{"CREDIMI_DEVICE_2_NAME": "new"}, "linux")
+	if len(added.ChangedKeys) != 1 || !hasClass(added, ApplyServiceRestartRequired) {
+		t.Fatalf("added device diff = %+v", added)
 	}
 }
 
-func TestRuntimePlanReadinessUsesIndexedDevices(t *testing.T) {
-	phone := Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/pixel", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb"}
-	if !RunnerAPIReachableFromHost(phone, "linux") || !RunnerReadinessRequiredBeforeRegistration(phone, "linux") || !DeviceReadinessRequired(phone, "linux") {
-		t.Fatalf("phone readiness = api:%t runner:%t device:%t", RunnerAPIReachableFromHost(phone, "linux"), RunnerReadinessRequiredBeforeRegistration(phone, "linux"), DeviceReadinessRequired(phone, "linux"))
-	}
-	managed := cloneValues(phone)
-	managed["CREDIMI_DEVICE_1_MODE"] = "no_device"
-	if DeviceReadinessRequired(managed, "linux") {
-		t.Fatal("managed device should not require an attached ADB target")
-	}
-	host := Values{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/sim", "CREDIMI_DEVICE_1_TYPE": "ios_simulator", "CREDIMI_DEVICE_1_MODE": "no_device"}
-	if !RunnerAPIReachableFromHost(host, "darwin") || !RunnerReadinessRequiredBeforeRegistration(host, "darwin") {
-		t.Fatal("host runner should be reachable before registration")
-	}
-}
-
-func TestBootstrapContextLeavingBootstrapRemovesBootstrapMarkers(t *testing.T) {
-	values := (BootstrapContext{RunnerImage: "runner:local", PullPolicy: "never", HostNetwork: true, BeforeSetup: true}).Apply(Values{})
-	if !strings.EqualFold(values[BootstrapPhaseEnv], "true") || values[BootstrapHostNetworkEnv] != "true" {
-		t.Fatalf("bootstrap values = %#v", values)
-	}
-	values = BootstrapContext{}.Apply(values)
-	if _, ok := values[BootstrapPhaseEnv]; ok {
-		t.Fatalf("bootstrap phase marker survived final topology: %#v", values)
-	}
-	if _, ok := values[BootstrapHostNetworkEnv]; ok {
-		t.Fatalf("bootstrap host-network marker survived final topology: %#v", values)
-	}
-}
-
-func TestBackendSelectionFollowsHostPlatform(t *testing.T) {
-	cases := []struct {
-		name, goos, deviceType, want string
-	}{
-		{"linux android", "linux", "android_phone", DefaultContainerBackend},
-		{"mac android", "darwin", "android_phone", DefaultNativeBackend},
-		{"mac ios", "darwin", "ios_simulator", DefaultNativeBackend},
-		{"mac mixed", "darwin", "android_phone", DefaultNativeBackend},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": tc.deviceType})
-			if tc.name == "mac mixed" {
-				values["CREDIMI_DEVICE_COUNT"] = "2"
-				values["CREDIMI_DEVICE_2_ID"] = "acme/runner/ios"
-				values["CREDIMI_DEVICE_2_TYPE"] = "ios_simulator"
-			}
-			normalized, err := NormalizeValues(values, tc.goos)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := BuildRuntimePlanForOS("", normalized, tc.goos).Backend; got != tc.want {
-				t.Fatalf("backend=%q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestBackendRejectsIOSOnNonMacOS(t *testing.T) {
-	values := indexedComposeValues(Values{"CREDIMI_RUNNER_TYPE": "ios_simulator"})
-	if _, err := NormalizeValues(values, "linux"); err == nil {
-		t.Fatal("Linux iOS inventory must be rejected")
-	}
-}
-
-func containsApplyClass(classes []ApplyClass, want ApplyClass) bool {
-	for _, class := range classes {
+func hasClass(diff ConfigDiff, want ApplyClass) bool {
+	for _, class := range diff.Classes {
 		if class == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsEnvironment(environment []string, want string) bool {
+	for _, value := range environment {
+		if value == want {
 			return true
 		}
 	}

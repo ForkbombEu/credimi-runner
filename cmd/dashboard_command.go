@@ -11,10 +11,6 @@ var dashboardCommand = &cobra.Command{
 }
 
 func init() {
-	// Keep status as a hidden diagnostic subcommand; dashboard itself is the
-	// public command for opening the already-running service UI.
-	lifecycleDashboardStatusCmd.Hidden = true
-	dashboardCommand.AddCommand(lifecycleDashboardStatusCmd)
 	rootCmd.AddCommand(dashboardCommand)
 }
 

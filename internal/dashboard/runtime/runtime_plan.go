@@ -37,8 +37,8 @@ type ApplyClass string
 
 const (
 	ApplySavedOnly              ApplyClass = "saved_only"
-	ApplyRestartRequired        ApplyClass = "restart_required"
-	ApplyComposeRecreate        ApplyClass = "compose_recreate_required"
+	ApplyRuntimeReconcile       ApplyClass = "runtime_reconcile"
+	ApplyRuntimeRestartRequired ApplyClass = "runtime_restart_required"
 	ApplyServiceRestartRequired ApplyClass = "service_restart_required"
 	ApplyCredimiUpdateRequired  ApplyClass = "credimi_update_required"
 )
@@ -49,43 +49,43 @@ type ConfigDiff struct {
 }
 
 type FieldImpact struct {
-	Restart       bool
-	Recreate      bool
-	CredimiUpdate bool
-	Secret        bool
+	Runtime        bool
+	RuntimeRestart bool
+	Service        bool
+	CredimiUpdate  bool
+	Secret         bool
 }
 
 var FieldImpacts = map[string]FieldImpact{
-	"CLOUDFLARE_TUNNEL_TOKEN":     {Restart: true, Recreate: true, Secret: true},
-	"CREDIMI_URL":                 {Restart: true, CredimiUpdate: true},
-	"CREDIMI_INTERNAL_ADMIN_KEY":  {Restart: true, Secret: true},
+	"CLOUDFLARE_TUNNEL_TOKEN":     {Runtime: true, Secret: true},
+	"CREDIMI_URL":                 {Runtime: true, CredimiUpdate: true},
+	"CREDIMI_INTERNAL_ADMIN_KEY":  {Runtime: true, Secret: true},
 	"CREDIMI_RUNNER_DESCRIPTION":  {CredimiUpdate: true},
-	"CREDIMI_RUNNER_ID":           {Restart: true, CredimiUpdate: true},
-	"CREDIMI_RUNNER_NAME":         {Restart: true, CredimiUpdate: true},
-	"CREDIMI_RUNNER_ORGANIZATION": {Restart: true, CredimiUpdate: true},
-	"CREDIMI_RUNNER_PUBLISHED":    {Restart: true, CredimiUpdate: true},
-	"CREDIMI_SERVICE_MODE":        {Recreate: true, CredimiUpdate: true},
-	"CREDIMI_USER_API_KEY":        {Restart: true, Secret: true},
+	"CREDIMI_RUNNER_ID":           {Runtime: true, CredimiUpdate: true},
+	"CREDIMI_RUNNER_NAME":         {Runtime: true, CredimiUpdate: true},
+	"CREDIMI_RUNNER_ORGANIZATION": {Runtime: true, CredimiUpdate: true},
+	"CREDIMI_RUNNER_PUBLISHED":    {Runtime: true, CredimiUpdate: true},
+	"CREDIMI_SERVICE_MODE":        {Runtime: true, CredimiUpdate: true},
+	"CREDIMI_USER_API_KEY":        {Runtime: true, Secret: true},
 	"DASHBOARD_TOKEN":             {Secret: true},
-	"ANDROID_RUNNER_IMAGE":        {Recreate: true},
-	"ANDROID_PULL_POLICY":         {Recreate: true},
-	"ANDROID_NETWORK":             {Recreate: true},
-	"ANDROID_STATE_VOLUME":        {Recreate: true},
-	"ANDROID_TOOL_CACHE_VOLUME":   {Recreate: true},
-	"ANDROID_SDK_VOLUME":          {Recreate: true},
-	"ANDROID_ADB_KEYS_PATH":       {Recreate: true},
-	"OTEL_EXPORTER_OTLP_ENDPOINT": {Restart: true},
-	"OTEL_ENABLED":                {Restart: true},
-	"OTEL_SERVICE_NAME":           {Restart: true},
-	"RUNNER_CADDY_SITE":           {Recreate: true},
+	"ANDROID_RUNNER_IMAGE":        {Service: true},
+	"ANDROID_PULL_POLICY":         {Service: true},
+	"ANDROID_NETWORK":             {Service: true},
+	"ANDROID_STATE_VOLUME":        {Service: true},
+	"ANDROID_TOOL_CACHE_VOLUME":   {Service: true},
+	"ANDROID_SDK_VOLUME":          {Service: true},
+	"ANDROID_ADB_KEYS_PATH":       {Service: true},
+	"OTEL_EXPORTER_OTLP_ENDPOINT": {Runtime: true},
+	"OTEL_ENABLED":                {Runtime: true},
+	"OTEL_SERVICE_NAME":           {Runtime: true},
 	"RUNNER_DOMAIN":               {CredimiUpdate: true},
-	"RUNNER_HOST":                 {Recreate: true},
-	"RUNNER_PORT":                 {Recreate: true, CredimiUpdate: true},
+	"RUNNER_HOST":                 {Service: true},
+	"RUNNER_PORT":                 {Service: true, CredimiUpdate: true},
 	"RUNNER_PUBLIC_PORT":          {CredimiUpdate: true},
 	"RUNNER_PUBLIC_URL":           {CredimiUpdate: true},
-	"TEMPORAL_ADDRESS":            {Restart: true},
-	"CREDIMI_TEMP_DIR":            {Restart: true},
-	"ADB_SCREEN_RECORD_SIZE":      {Restart: true},
+	"TEMPORAL_ADDRESS":            {Runtime: true},
+	"CREDIMI_TEMP_DIR":            {Runtime: true},
+	"ADB_SCREEN_RECORD_SIZE":      {Runtime: true},
 }
 
 func BuildRuntimePlan(configDir string, values Values) RuntimePlan {
@@ -105,7 +105,7 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 	plan := RuntimePlan{
 		ConfigDir:         configDir,
 		EnvPath:           filepathJoin(configDir, "config.toml"),
-		ComposePath:       filepathJoin(configDir, "docker-compose.yaml"),
+		ComposePath:       filepathJoin(configDir, "service-compose.yaml"),
 		ComposeProject:    composeProjectName(canonicalDir),
 		ConfigFingerprint: fingerprint,
 		Backend:           backend,
@@ -127,16 +127,12 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 	switch {
 	case backend == DefaultNativeBackend && serviceMode == "manual":
 		plan.ComposeServices = nil
-	case backend == DefaultNativeBackend && serviceMode == "cloudflare-managed":
-		plan.ComposeServices = []string{"caddy", "tunnel_named"}
 	case backend == DefaultNativeBackend:
-		plan.ComposeServices = []string{"caddy", "tunnel"}
+		plan.ComposeServices = nil
 	case serviceMode == "manual":
 		plan.ComposeServices = []string{"runner"}
-	case serviceMode == "cloudflare-managed":
-		plan.ComposeServices = []string{"runner", "caddy", "tunnel_named"}
 	default:
-		plan.ComposeServices = []string{"runner", "caddy", "tunnel"}
+		plan.ComposeServices = []string{"runner"}
 	}
 
 	plan.ExpectedServices = expectedServices(plan)
@@ -150,15 +146,6 @@ func composeProjectName(configDir string) string {
 	return fmt.Sprintf("credimi-runner-%d-%08x", os.Getuid(), hash.Sum32())
 }
 
-// QuickTunnelMetricsPort returns the loopback-only host port used to expose
-// cloudflared's structured diagnostics to the outer launcher. It is stable for
-// a Compose project without consuming a globally fixed port.
-func QuickTunnelMetricsPort(plan RuntimePlan) int {
-	hash := fnv.New32a()
-	_, _ = hash.Write([]byte(plan.ComposeProject))
-	return 24000 + int(hash.Sum32()%10000)
-}
-
 func configFingerprint(configDir string, values Values) string {
 	hash := fnv.New64a()
 	_, _ = hash.Write([]byte(configDir))
@@ -168,23 +155,12 @@ func configFingerprint(configDir string, values Values) string {
 	return fmt.Sprintf("%016x", hash.Sum64())
 }
 
-func composeArgs(plan RuntimePlan, command ...string) []string {
-	args := []string{"compose", "--project-name", plan.ComposeProject, "--project-directory", plan.ConfigDir, "-f", plan.ComposePath}
-	return append(args, command...)
-}
-
 func expectedServices(plan RuntimePlan) []PlannedService {
 	services := make([]PlannedService, 0, len(plan.ComposeServices)+2)
 	for _, service := range plan.ComposeServices {
 		switch service {
 		case "runner":
 			services = append(services, PlannedService{ID: "runner", Name: "runner", Role: "credimi-runner serve", Critical: true, Kind: "compose"})
-		case "caddy":
-			services = append(services, PlannedService{ID: "caddy", Name: "caddy", Role: "reverse proxy", Critical: plan.ServiceMode != "manual", Kind: "compose"})
-		case "tunnel":
-			services = append(services, PlannedService{ID: "tunnel", Name: "tunnel", Role: "quick tunnel", Critical: true, Kind: "compose"})
-		case "tunnel_named":
-			services = append(services, PlannedService{ID: "tunnel_named", Name: "tunnel_named", Role: "managed tunnel", Critical: true, Kind: "compose"})
 		}
 	}
 	if strings.TrimSpace(plan.ServiceMode) != "" && plan.ServiceMode != "bootstrap" {
@@ -263,7 +239,7 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 
 // DiffValuesForOS classifies persistent configuration changes. Device edits
 // remain registration updates; placement is fixed by the host platform.
-func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
+func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
 	var diff ConfigDiff
 	classSet := map[ApplyClass]struct{}{}
 	for _, key := range SortedKnownKeys() {
@@ -273,13 +249,12 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
 		impact := FieldImpacts[key]
 		switch {
-		case impact.Recreate:
-			classSet[ApplyComposeRecreate] = struct{}{}
-			if goos == "linux" {
-				classSet[ApplyServiceRestartRequired] = struct{}{}
-			}
-		case impact.Restart:
-			classSet[ApplyRestartRequired] = struct{}{}
+		case impact.Service:
+			classSet[ApplyServiceRestartRequired] = struct{}{}
+		case impact.RuntimeRestart:
+			classSet[ApplyRuntimeRestartRequired] = struct{}{}
+		case impact.Runtime:
+			classSet[ApplyRuntimeReconcile] = struct{}{}
 		}
 		if impact.CredimiUpdate {
 			classSet[ApplyCredimiUpdateRequired] = struct{}{}
@@ -296,7 +271,9 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		// Device registration is dynamic. The GoA process and its existing
 		// workers remain alive; the Credimi registration path updates only the
 		// changed inventory.
+		classSet[ApplyRuntimeReconcile] = struct{}{}
 		classSet[ApplyCredimiUpdateRequired] = struct{}{}
+		classSet[ApplyServiceRestartRequired] = struct{}{}
 	}
 	for key := range newValues {
 		if !strings.HasPrefix(key, "CREDIMI_DEVICE_") || strings.HasSuffix(key, "_COUNT") {
@@ -309,14 +286,9 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		// above. It has the same runtime impact as an updated device.
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
 		classSet[ApplyCredimiUpdateRequired] = struct{}{}
+		classSet[ApplyRuntimeReconcile] = struct{}{}
+		classSet[ApplyServiceRestartRequired] = struct{}{}
 	}
-	if runtimeTopologyChanged(oldValues, newValues, goos) {
-		classSet[ApplyComposeRecreate] = struct{}{}
-		if goos == "linux" {
-			classSet[ApplyServiceRestartRequired] = struct{}{}
-		}
-	}
-
 	if len(diff.ChangedKeys) == 0 {
 		diff.Classes = []ApplyClass{ApplySavedOnly}
 		return diff
@@ -325,7 +297,7 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		diff.Classes = []ApplyClass{ApplySavedOnly}
 		return diff
 	}
-	for _, class := range []ApplyClass{ApplyRestartRequired, ApplyComposeRecreate, ApplyServiceRestartRequired, ApplyCredimiUpdateRequired} {
+	for _, class := range []ApplyClass{ApplyRuntimeReconcile, ApplyRuntimeRestartRequired, ApplyServiceRestartRequired, ApplyCredimiUpdateRequired} {
 		if _, ok := classSet[class]; ok {
 			diff.Classes = append(diff.Classes, class)
 		}
@@ -333,59 +305,50 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 	return diff
 }
 
-func runtimeTopologyChanged(oldValues, newValues Values, goos string) bool {
-	oldPlan := BuildRuntimePlanForOS("", oldValues, goos)
-	newPlan := BuildRuntimePlanForOS("", newValues, goos)
-	if len(oldPlan.ComposeServices) != len(newPlan.ComposeServices) {
-		return true
+// SharedRunnerImage exposes the image used by the service manager for the
+// single runner service. Rendering remains exclusively in servicemanager.
+func SharedRunnerImage(values Values, _ string) (image, pullPolicy string, err error) {
+	return defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), nil
+}
+
+// ComposeEnvironment supplies interpolation variables to the read-only
+// service observation path. It does not render or start a service.
+func ComposeEnvironment(values Values, plan RuntimePlan, goos string) []string {
+	normalized, err := NormalizeValues(values, goos)
+	if err != nil {
+		normalized = cloneValues(values)
 	}
-	for index := range oldPlan.ComposeServices {
-		if oldPlan.ComposeServices[index] != newPlan.ComposeServices[index] {
-			return true
+	overrides := []string{
+		"RUNNER_PORT=" + defaultIfEmpty(normalized["RUNNER_PORT"], DefaultRunnerPort),
+		"DASHBOARD_PORT=" + defaultIfEmpty(normalized["DASHBOARD_PORT"], DefaultDashboardPort),
+		"CREDIMI_COMPOSE_PROJECT=" + defaultIfEmpty(plan.ComposeProject, "credimi-runner"),
+		"CREDIMI_CONFIG_FINGERPRINT=" + defaultIfEmpty(plan.ConfigFingerprint, "unknown"),
+		"COMPOSE_PROGRESS=plain",
+		"DOCKER_CLI_HINTS=false",
+	}
+	for _, key := range []string{
+		BootstrapImageEnv, BootstrapPullPolicyEnv, ConfigOwnerUIDEnv,
+		ConfigOwnerGIDEnv, HostHomeEnv, HostAndroidDirEnv, HostGoldenRootEnv,
+		ContainerAndroidDirEnv, ContainerAVDHomeEnv, ContainerGoldenRootEnv,
+		BootstrapHostNetworkEnv, BootstrapPhaseEnv,
+	} {
+		overrides = append(overrides, key+"="+normalized[key])
+	}
+	return replaceEnvironment(os.Environ(), overrides...)
+}
+
+func replaceEnvironment(environment []string, overrides ...string) []string {
+	managed := make(map[string]struct{}, len(overrides))
+	for _, override := range overrides {
+		key, _, _ := strings.Cut(override, "=")
+		managed[key] = struct{}{}
+	}
+	result := make([]string, 0, len(environment)+len(overrides))
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		if _, ok := managed[key]; !ok {
+			result = append(result, entry)
 		}
 	}
-	oldSpec, oldErr := sharedRunnerSpec(oldValues, goos)
-	newSpec, newErr := sharedRunnerSpec(newValues, goos)
-	if oldErr != nil || newErr != nil {
-		return (oldErr == nil) != (newErr == nil)
-	}
-	return topologyProjection(oldSpec) != topologyProjection(newSpec)
-}
-
-// runnerTopologyProjection contains only values rendered into the runner
-// service topology. Device capability flags are deliberately excluded: the
-// unified Linux runner already exposes the stable capability surface needed
-// for a later emulator or device registration.
-type runnerTopology struct {
-	Image            string
-	PullPolicy       string
-	NetworkMode      string
-	UsesHostADB      bool
-	HasKVM           bool
-	StateVolume      string
-	ToolCacheVolume  string
-	SDKVolume        string
-	ADBKeysPath      string
-	HostAndroidDir   string
-	HostGoldenRoot   string
-	ContainerAVDHome string
-	KnownHostsPaths  string
-}
-
-func topologyProjection(spec sharedRunnerRuntime) runnerTopology {
-	return runnerTopology{
-		Image:            spec.Image,
-		PullPolicy:       spec.PullPolicy,
-		NetworkMode:      spec.NetworkMode,
-		UsesHostADB:      spec.UsesHostADB,
-		HasKVM:           spec.HasKVM,
-		StateVolume:      spec.StateVolume,
-		ToolCacheVolume:  spec.ToolCacheVolume,
-		SDKVolume:        spec.SDKVolume,
-		ADBKeysPath:      spec.ADBKeysPath,
-		HostAndroidDir:   spec.HostAndroidDir,
-		HostGoldenRoot:   spec.HostGoldenRoot,
-		ContainerAVDHome: spec.ContainerAVDHome,
-		KnownHostsPaths:  strings.Join(spec.KnownHostsPaths, "\x00"),
-	}
+	return append(result, overrides...)
 }

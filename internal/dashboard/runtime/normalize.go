@@ -21,7 +21,6 @@ const (
 	DefaultAndroidPullPolicy  = "if-not-present"
 	DefaultDashboardHost      = "0.0.0.0"
 	DefaultDashboardPort      = "8051"
-	DefaultRunnerCaddySite    = ":80"
 	DefaultBaseName           = "credimi"
 	DefaultGoldenPath         = "/avd-golden/credimi-golden"
 	DefaultWiFiPort           = runnerconfig.DefaultWiFiPort
@@ -53,7 +52,6 @@ func DefaultValues() Values {
 		"OTEL_ENABLED":                "true",
 		"OTEL_EXPORTER_OTLP_ENDPOINT": DefaultOTLPEndpoint,
 		"OTEL_SERVICE_NAME":           DefaultOTELServiceName,
-		"RUNNER_CADDY_SITE":           DefaultRunnerCaddySite,
 		"RUNNER_HOST":                 DefaultRunnerHost,
 		"RUNNER_PORT":                 DefaultRunnerPort,
 		"SERVER_OPEN_BROWSER":         "true",

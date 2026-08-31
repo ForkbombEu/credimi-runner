@@ -125,7 +125,7 @@ func (h *Hub) poll(ctx context.Context) {
 	runtimeRunning := false
 	if h.statusFn != nil {
 		status := h.statusFn()
-		runtimeRunning = status.RunnerRunning || status.ComposeRunning
+		runtimeRunning = status.RunnerRunning
 	}
 	var services []Service
 	var observation controller.ObservedRuntime

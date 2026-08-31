@@ -59,8 +59,8 @@ func TestComposeObservesConfiguredProjectOnly(t *testing.T) {
 	old := execLookPath
 	execLookPath = func(string) (string, error) { return "docker", nil }
 	t.Cleanup(func() { execLookPath = old })
-	fake := &fakeRunner{output: []byte("{\"Service\":\"runner\",\"State\":\"running\",\"Status\":\"Up\",\"Image\":\"runner:latest\"}\n{\"Service\":\"tunnel\",\"State\":\"running\",\"Status\":\"Up\",\"Image\":\"cloudflare\"}\n")}
-	result := (Compose{Runner: fake}).Observe(context.Background(), Request{ComposeProject: "test", EnvPath: "/tmp/config.toml", ComposeEnv: []string{"RUNNER_PORT=18050"}, ComposePath: "/tmp/docker-compose.yaml", ComposeServices: []ExpectedService{{ID: "runner", Name: "runner", Kind: "compose", Critical: true}, {ID: "tunnel", Name: "tunnel", Kind: "compose", Critical: true}}})
+	fake := &fakeRunner{output: []byte("{\"Service\":\"runner\",\"State\":\"running\",\"Status\":\"Up\",\"Image\":\"runner:latest\"}\n")}
+	result := (Compose{Runner: fake}).Observe(context.Background(), Request{ComposeProject: "test", EnvPath: "/tmp/config.toml", ComposeEnv: []string{"RUNNER_PORT=18050"}, ComposePath: "/tmp/service-compose.yaml", ComposeServices: []ExpectedService{{ID: "runner", Name: "runner", Kind: "compose", Critical: true}}})
 	if result.Error != nil || fake.name != "docker" || len(result.Services) == 0 {
 		t.Fatalf("unexpected result: %#v command=%s", result, fake.name)
 	}

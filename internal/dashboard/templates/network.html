@@ -40,8 +40,6 @@
         <details class="gear-panel">
           <summary>{{icon "gear"}} Show internal listener and edge settings</summary>
           <div class="field-row">{{template "field" .Field "RUNNER_HOST"}}{{template "field" .Field "RUNNER_PORT"}}</div>
-          {{template "field" .Field "RUNNER_CADDY_SITE"}}
-          {{range .Snapshot.Services}}{{if eq .ID "caddy"}}{{template "service_row" .}}{{end}}{{end}}
         </details>
       </div>
     </section>

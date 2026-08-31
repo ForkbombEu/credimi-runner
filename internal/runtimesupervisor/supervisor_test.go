@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -79,6 +80,7 @@ type testWorkers struct {
 	startErr, errorWait  error
 	running              bool
 	block                chan struct{}
+	startHook            func()
 }
 
 func (w *testWorkers) Start(context.Context) error {
@@ -89,6 +91,10 @@ func (w *testWorkers) Start(context.Context) error {
 		return w.startErr
 	}
 	w.running = true
+	hook := w.startHook
+	if hook != nil {
+		hook()
+	}
 	return nil
 }
 func (w *testWorkers) StopAll() { w.mu.Lock(); w.stops++; w.mu.Unlock() }
@@ -212,6 +218,38 @@ func TestSupervisorHeartbeatStatusTracksLoopLifetime(t *testing.T) {
 	}
 	if s.Status().HeartbeatRunning {
 		t.Fatal("heartbeat loop still reported as running")
+	}
+}
+
+func TestSupervisorStopClosesListenerAndStartReopensIt(t *testing.T) {
+	var apis []*testAPI
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI: func(config.Config, context.Context) (API, error) {
+			api := &testAPI{}
+			apis = append(apis, api)
+			return api, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(apis) != 1 || !apis[0].Listening() {
+		t.Fatalf("initial listeners = %d, listening=%t", len(apis), len(apis) == 1 && apis[0].Listening())
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if apis[0].Listening() {
+		t.Fatal("runner API listener remained open after stop")
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(apis) != 2 || !apis[1].Listening() {
+		t.Fatalf("replacement listeners = %d, listening=%t", len(apis), len(apis) == 2 && apis[1].Listening())
 	}
 }
 
@@ -474,6 +512,91 @@ func TestSupervisorObservabilityAndRegistrationHooks(t *testing.T) {
 	}
 	if shutdown != 1 {
 		t.Fatalf("shutdown=%d", shutdown)
+	}
+}
+
+func TestSupervisorRegistersBeforeWorkers(t *testing.T) {
+	var events []string
+	workers := &testWorkers{startHook: func() { events = append(events, "workers") }}
+	api := &testAPI{}
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI:     func(config.Config, context.Context) (API, error) { return api, nil },
+		NewWorkers: func(config.Config) WorkerSet { return workers },
+		Register:   func(context.Context, config.Config, string) error { events = append(events, "register"); return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(events, ","), "register,workers"; got != want {
+		t.Fatalf("activation order = %q, want %q", got, want)
+	}
+	_ = s.Stop(context.Background())
+}
+
+func TestRegistrationAndPublicEndpointVerification(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/readyz" {
+			_, _ = w.Write([]byte(`{"runner_id":"org/runner"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	cfg := validConfig()
+	cfg.Credimi.URL = server.URL
+	cfg.Exposure.PublicURL = server.URL
+	if err := Register(context.Background(), cfg, server.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPublicEndpoint(context.Background(), cfg, server.URL); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) < 2 || paths[0] != "/api/mobile-runner" || paths[len(paths)-1] != "/readyz" {
+		t.Fatalf("registration paths = %#v", paths)
+	}
+	for _, mode := range []string{"manual", "named_tunnel", "quick_tunnel"} {
+		candidate := cfg
+		candidate.Exposure.Mode = mode
+		if mode == "named_tunnel" {
+			candidate.Exposure.Domain = "runner.example"
+		}
+		endpoint, _, err := registrationEndpoint(candidate, server.URL)
+		if err != nil || endpoint == "" {
+			t.Fatalf("registration endpoint mode %q = %q, %v", mode, endpoint, err)
+		}
+	}
+	if err := Register(context.Background(), config.Config{Credimi: config.CredimiConfig{URL: server.URL}}, server.URL); err == nil {
+		t.Fatal("registration without API key succeeded")
+	}
+	for _, tc := range []struct {
+		name string
+		cfg  config.Config
+		url  string
+	}{
+		{"manual URL", config.Config{Exposure: config.ExposureConfig{Mode: "manual"}}, ""},
+		{"managed domain", config.Config{Exposure: config.ExposureConfig{Mode: "named_tunnel"}}, ""},
+		{"quick URL", config.Config{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := registrationEndpoint(tc.cfg, tc.url); err == nil {
+				t.Fatal("missing endpoint data was accepted")
+			}
+		})
+	}
+	wrong := cfg
+	wrong.Runner.ID = "other/runner"
+	if err := VerifyPublicEndpoint(context.Background(), wrong, server.URL); err == nil || !strings.Contains(err.Error(), "belongs to runner") {
+		t.Fatalf("wrong runner endpoint error = %v", err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := VerifyPublicEndpoint(canceled, cfg, "http://[::1"); err == nil {
+		t.Fatal("invalid endpoint unexpectedly verified")
 	}
 }
 

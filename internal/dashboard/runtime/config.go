@@ -120,7 +120,6 @@ func ValuesFromTypedConfig(cfg runnerconfig.Config) Values {
 	values["RUNNER_PUBLIC_URL"] = cfg.Exposure.PublicURL
 	values["RUNNER_PUBLIC_PORT"] = cfg.Exposure.PublicPort
 	values["RUNNER_DOMAIN"] = cfg.Exposure.Domain
-	values["RUNNER_CADDY_SITE"] = cfg.Exposure.CaddySite
 	values["CLOUDFLARE_TUNNEL_TOKEN"] = cfg.Exposure.CloudflareToken
 	values["CREDIMI_DEVICE_COUNT"] = strconv.Itoa(len(cfg.Devices))
 	for i, device := range cfg.Devices {
@@ -239,7 +238,6 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 	cfg.Exposure.PublicURL = values["RUNNER_PUBLIC_URL"]
 	cfg.Exposure.PublicPort = values["RUNNER_PUBLIC_PORT"]
 	cfg.Exposure.Domain = values["RUNNER_DOMAIN"]
-	cfg.Exposure.CaddySite = values["RUNNER_CADDY_SITE"]
 	cfg.Exposure.CloudflareToken = values["CLOUDFLARE_TUNNEL_TOKEN"]
 	runtimeCfg := RunnerRuntimeConfig{}
 	if count := strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]); count != "" && count != "0" {

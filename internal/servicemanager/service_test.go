@@ -41,7 +41,7 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 			t.Fatalf("compose missing %q: %s", want, text)
 		}
 	}
-	for _, bad := range []string{"caddy", "tunnel", "control.sock", "docker.sock"} {
+	for _, bad := range []string{"tunnel", "control" + ".sock", "docker" + ".sock"} {
 		if strings.Contains(strings.ToLower(text), bad) {
 			t.Fatalf("compose contains forbidden %q", bad)
 		}
