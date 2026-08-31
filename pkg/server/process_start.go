@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
@@ -29,7 +30,7 @@ func (s *runnerService) processStart(namespace, oldNamespace string) (*processSt
 
 	proc, exists := s.Store.Get(namespace)
 	if !exists {
-		proc = NewProcess(namespace, s.Deps.WorkerRunnerFactory(namespace))
+		proc = NewProcess(namespace, s.Deps.WorkerFactory(namespace, nil))
 		s.Store.Add(proc)
 	}
 
@@ -37,7 +38,7 @@ func (s *runnerService) processStart(namespace, oldNamespace string) (*processSt
 		return &processStartResult{Status: "already running", Namespace: namespace}, nil
 	}
 
-	if err := proc.Start(); err != nil {
+	if err := proc.Start(context.Background()); err != nil {
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,
 			Domain:  "worker",

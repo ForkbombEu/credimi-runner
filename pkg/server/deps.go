@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"os"
@@ -36,26 +35,18 @@ type CommandRunner interface {
 	Run(name string, args ...string) ([]byte, error)
 }
 
-type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
-type WorkerReadyRunnerFactory func(namespace string) func(ctx context.Context, ready func(error)) error
-type InventoryWorkerRunnerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) func(ctx context.Context) error
-type InventoryWorkerReadyRunnerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) func(ctx context.Context, ready func(error)) error
+type WorkerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) ProcessRunFunc
 type RuntimeConfigLoader func() (dashboardruntime.RunnerRuntimeConfig, error)
-type WorkerStartupCheck func(namespace string) error
 
 type Deps struct {
-	HTTPClient                        HTTPClient
-	FileStore                         FileStore
-	CommandRunner                     CommandRunner
-	WorkerRunnerFactory               WorkerRunnerFactory
-	WorkerReadyRunnerFactory          WorkerReadyRunnerFactory
-	InventoryWorkerRunnerFactory      InventoryWorkerRunnerFactory
-	InventoryWorkerReadyRunnerFactory InventoryWorkerReadyRunnerFactory
-	WorkerStartupCheck                WorkerStartupCheck
-	RuntimeConfig                     *dashboardruntime.RunnerRuntimeConfig
-	RuntimeConfigLoader               RuntimeConfigLoader
-	Sleeper                           func(time.Duration)
-	ManagedWorkflowRoot               string
+	HTTPClient          HTTPClient
+	FileStore           FileStore
+	CommandRunner       CommandRunner
+	WorkerFactory       WorkerFactory
+	RuntimeConfig       *dashboardruntime.RunnerRuntimeConfig
+	RuntimeConfigLoader RuntimeConfigLoader
+	Sleeper             func(time.Duration)
+	ManagedWorkflowRoot string
 }
 
 func (d *Deps) WithDefaults() {
@@ -68,20 +59,13 @@ func (d *Deps) WithDefaults() {
 	if d.CommandRunner == nil {
 		d.CommandRunner = execCommandRunner{}
 	}
-	defaultWorkerRunner := d.WorkerRunnerFactory == nil
-	if defaultWorkerRunner {
-		d.WorkerRunnerFactory = workermanager.RunTemporalWorker
-		d.WorkerReadyRunnerFactory = workermanager.RunTemporalWorkerReady
-	}
-	defaultInventoryWorker := d.InventoryWorkerRunnerFactory == nil
-	if defaultInventoryWorker {
-		d.InventoryWorkerRunnerFactory = workermanager.RunTemporalWorkerWithConfigProvider
-	}
-	if d.InventoryWorkerReadyRunnerFactory == nil && defaultWorkerRunner && defaultInventoryWorker {
-		d.InventoryWorkerReadyRunnerFactory = workermanager.RunTemporalWorkerWithConfigProviderReady
-	}
-	if d.WorkerStartupCheck == nil && defaultWorkerRunner {
-		d.WorkerStartupCheck = workermanager.VerifyTemporalWorker
+	if d.WorkerFactory == nil {
+		d.WorkerFactory = func(namespace string, provider workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			if provider == nil {
+				return workermanager.RunTemporalWorker(namespace)
+			}
+			return workermanager.RunTemporalWorkerWithConfigProvider(namespace, provider)
+		}
 	}
 	if d.Sleeper == nil {
 		d.Sleeper = time.Sleep

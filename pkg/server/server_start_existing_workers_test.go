@@ -113,12 +113,12 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				startedCh <- namespace
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 	srv := NewRunnerServiceWithDeps(store, utils.Instance{
@@ -142,31 +142,6 @@ func TestStartExistingWorkers_Success(t *testing.T) {
 	proc.Stop()
 }
 
-func TestStartExistingWorkersReturnsInitialWorkerReadinessFailure(t *testing.T) {
-	store := NewProcessStore()
-	client := &startWorkersHTTPClient{
-		responder: func(req *http.Request) (*http.Response, error) {
-			require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
-			return httpResp(http.StatusOK, `{"namespaces":["new-ns"]}`), nil
-		},
-	}
-	srv := NewRunnerServiceWithDeps(store, utils.Instance{
-		URL:              "http://example.local",
-		InternalAdminKey: "internal-admin-key",
-	}, Deps{
-		HTTPClient: client,
-		WorkerRunnerFactory: func(string) func(context.Context) error {
-			return func(context.Context) error { return nil }
-		},
-		WorkerStartupCheck: func(string) error { return errors.New("Temporal unavailable") },
-	})
-	err := srv.StartExistingWorkers(context.Background())
-	require.ErrorContains(t, err, "initialize worker for namespace new-ns")
-	if _, found := store.Get("new-ns"); found {
-		t.Fatal("worker was added despite failed initial readiness")
-	}
-}
-
 func TestStartExistingWorkersReturnsActualWorkerStartupFailure(t *testing.T) {
 	store := NewProcessStore()
 	client := &startWorkersHTTPClient{responder: func(req *http.Request) (*http.Response, error) {
@@ -174,12 +149,11 @@ func TestStartExistingWorkersReturnsActualWorkerStartupFailure(t *testing.T) {
 		return httpResp(http.StatusOK, `{"namespaces":["new-ns"]}`), nil
 	}}
 	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local", InternalAdminKey: "internal-admin-key"}, Deps{
-		HTTPClient:          client,
-		WorkerRunnerFactory: func(string) func(context.Context) error { return func(context.Context) error { return nil } },
-		WorkerReadyRunnerFactory: func(string) func(context.Context, func(error)) error {
-			return func(_ context.Context, ready func(error)) error {
+		HTTPClient: client,
+		WorkerFactory: func(string, workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return func(_ context.Context, started func(error)) error {
 				err := errors.New("activity registration failed")
-				ready(err)
+				started(err)
 				return err
 			}
 		},
@@ -202,14 +176,14 @@ func TestStartExistingWorkersGivesEachNamespaceWorkerLiveInventoryProvider(t *te
 	deps := Deps{
 		HTTPClient:    client,
 		RuntimeConfig: &dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/lab"}, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/lab/a", Type: "android_phone"}, {ID: "acme/lab/b", Type: "android_emulator"}}},
-		InventoryWorkerRunnerFactory: func(namespace string, provider workermanager.RuntimeConfigProvider) func(context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, provider workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				inventory, err := provider()
 				require.NoError(t, err)
 				inventories <- inventory
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local"}, deps)
@@ -243,11 +217,11 @@ func TestStartExistingWorkers_RecordsWorkerLifecycleEvents(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 
@@ -279,11 +253,11 @@ func TestStartExistingWorkers_StartsAllAdminNamespaces(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 
@@ -320,11 +294,11 @@ func TestStartExistingWorkers_AppliesStartupDelayBetweenStarts(t *testing.T) {
 		Sleeper: func(d time.Duration) {
 			sleeps = append(sleeps, d)
 		},
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 
@@ -359,11 +333,11 @@ func TestStartExistingWorkers_DefaultStartupDelayBetweenStarts(t *testing.T) {
 		Sleeper: func(d time.Duration) {
 			sleeps = append(sleeps, d)
 		},
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 
@@ -394,11 +368,11 @@ func TestStartExistingWorkers_ReturnsLookupFailures(t *testing.T) {
 
 	deps := Deps{
 		HTTPClient: client,
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 	srv := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{
@@ -425,12 +399,12 @@ func TestStartExistingWorkers_UserAPIKeyStartsOnlyResolvedNamespace(t *testing.T
 
 	deps := Deps{
 		HTTPClient: client,
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				startedCh <- namespace
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 
@@ -470,11 +444,11 @@ func TestStartExistingWorkers_PublishedUserAPIKeyStartsVisibleNamespaces(t *test
 
 	deps := Deps{
 		HTTPClient: client,
-		WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-			return func(ctx context.Context) error {
+		WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			return testProcessRunner(func(ctx context.Context) error {
 				<-ctx.Done()
 				return nil
-			}
+			})
 		},
 	}
 

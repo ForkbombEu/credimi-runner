@@ -56,11 +56,12 @@ type NativeRuntimeSupervisor struct {
 	configDir string
 	root      context.Context
 
-	transitionMu sync.Mutex
-	mu           sync.RWMutex
-	generation   *nativeRuntimeGeneration
-	intent       ExecutionIntent
-	executing    bool
+	transitionMu  sync.Mutex
+	mu            sync.RWMutex
+	generation    *nativeRuntimeGeneration
+	newGeneration func(context.Context, string, dashboardruntime.Values) (*nativeRuntimeGeneration, error)
+	intent        ExecutionIntent
+	executing     bool
 }
 
 type nativeRuntimeGeneration struct {
@@ -138,7 +139,11 @@ func NewNativeRuntimeSupervisorWithContext(root context.Context, configDir strin
 	if root == nil {
 		root = context.Background()
 	}
-	return &NativeRuntimeSupervisor{configDir: configDir, root: root}
+	return &NativeRuntimeSupervisor{
+		configDir:     configDir,
+		root:          root,
+		newGeneration: newNativeRuntimeGeneration,
+	}
 }
 
 func (s *NativeRuntimeSupervisor) Prepare(ctx context.Context) error {
@@ -209,7 +214,7 @@ func (s *NativeRuntimeSupervisor) reconcileLocked(ctx context.Context, values da
 		s.executing = false
 	}
 	s.mu.Unlock()
-	next, err := newNativeRuntimeGeneration(s.root, s.configDir, values)
+	next, err := s.newGeneration(s.root, s.configDir, values)
 	if err != nil {
 		_ = writeNativeFailure(s.configDir, s.executionIntent(), err)
 		return err

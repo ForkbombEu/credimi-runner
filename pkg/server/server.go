@@ -250,12 +250,7 @@ func (s *runnerService) startWorkerIfNeeded(
 			)
 			return startAttempts, nil
 		}
-		if s.Deps.WorkerStartupCheck != nil {
-			if err := s.Deps.WorkerStartupCheck(namespace); err != nil {
-				return startAttempts, fmt.Errorf("initialize worker for namespace %s: %w", namespace, err)
-			}
-		}
-		if err := proc.StartReady(ctx); err != nil {
+		if err := proc.Start(ctx); err != nil {
 			span.RecordError(err)
 			log.Printf("Failed to restart worker for %s: %v", namespace, err)
 			return startAttempts, err
@@ -264,11 +259,6 @@ func (s *runnerService) startWorkerIfNeeded(
 	}
 	if startDelay > 0 && startAttempts > 0 {
 		s.Deps.Sleeper(startDelay)
-	}
-	if s.Deps.WorkerStartupCheck != nil {
-		if err := s.Deps.WorkerStartupCheck(namespace); err != nil {
-			return startAttempts, fmt.Errorf("initialize worker for namespace %s: %w", namespace, err)
-		}
 	}
 	startAttempts++
 	span.AddEvent("worker.start_requested", trace.WithAttributes(attrs...))
@@ -283,36 +273,22 @@ func (s *runnerService) startWorkerIfNeeded(
 		observability.String("organization.name", orgName),
 		observability.String("namespace", namespace),
 	)
-	run := s.Deps.WorkerRunnerFactory(namespace)
-	var readyRun func(context.Context, func(error)) error
-	if s.Deps.WorkerReadyRunnerFactory != nil {
-		readyRun = s.Deps.WorkerReadyRunnerFactory(namespace)
-	}
-	if (s.Deps.RuntimeConfigLoader != nil || s.Deps.RuntimeConfig != nil) && s.Deps.InventoryWorkerRunnerFactory != nil {
+	var provider workermanager.RuntimeConfigProvider
+	if s.Deps.RuntimeConfigLoader != nil || s.Deps.RuntimeConfig != nil {
 		if _, err := s.currentRuntimeConfig(); err == nil {
-			provider := func() (workermanager.RunnerRuntimeConfig, error) {
+			provider = func() (workermanager.RunnerRuntimeConfig, error) {
 				config, err := s.currentRuntimeConfig()
 				if err != nil {
 					return workermanager.RunnerRuntimeConfig{}, err
 				}
 				return workerInventory(config), nil
 			}
-			run = s.Deps.InventoryWorkerRunnerFactory(namespace, provider)
-			readyRun = nil
-			if s.Deps.InventoryWorkerReadyRunnerFactory != nil {
-				readyRun = s.Deps.InventoryWorkerReadyRunnerFactory(namespace, provider)
-			}
 		}
 	}
-	var proc *Process
-	if readyRun != nil {
-		proc = NewReadyProcess(namespace, readyRun)
-	} else {
-		proc = NewProcess(namespace, run)
-	}
+	proc := NewProcess(namespace, s.Deps.WorkerFactory(namespace, provider))
 	s.Store.Add(proc)
 
-	if err := proc.StartReady(ctx); err != nil {
+	if err := proc.Start(ctx); err != nil {
 		span.AddEvent("worker.start_failed", trace.WithAttributes(append(attrs, attribute.String("error", err.Error()))...))
 		span.RecordError(err)
 		log.Printf("Failed to start worker for %s: %v", namespace, err)

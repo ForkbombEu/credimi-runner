@@ -114,31 +114,6 @@ func requireWorkerManagerSpanEvent(t *testing.T, recorder *tracetest.SpanRecorde
 	t.Fatalf("expected event %q on span %q", eventName, spanName)
 }
 
-func TestVerifyTemporalWorkerChecksAndClosesStartupClient(t *testing.T) {
-	setWorkerManagerTestHooks(t)
-	startupClient := &closableTemporalClient{}
-	temporalClientGetter = func(namespace string) (client.Client, error) {
-		if namespace != "namespace-a" {
-			t.Fatalf("namespace = %q", namespace)
-		}
-		return startupClient, nil
-	}
-	if err := VerifyTemporalWorker("namespace-a"); err != nil {
-		t.Fatal(err)
-	}
-	if startupClient.closed != 1 {
-		t.Fatalf("startup client close count = %d", startupClient.closed)
-	}
-	temporalClientGetter = func(string) (client.Client, error) { return nil, errors.New("dial failed") }
-	if err := VerifyTemporalWorker("namespace-a"); err == nil || err.Error() != "dial failed" {
-		t.Fatalf("startup error = %v", err)
-	}
-	temporalClientGetter = func(string) (client.Client, error) { return nil, nil }
-	if err := VerifyTemporalWorker("namespace-a"); err == nil || err.Error() != "Temporal client is unavailable" {
-		t.Fatalf("nil startup client error = %v", err)
-	}
-}
-
 func TestRunTemporalWorker_RetriesInitErrorUntilCanceled(t *testing.T) {
 	setWorkerManagerTestHooks(t)
 	recorder := installWorkerManagerTracer(t)
@@ -161,7 +136,7 @@ func TestRunTemporalWorker_RetriesInitErrorUntilCanceled(t *testing.T) {
 	}
 
 	run := RunTemporalWorker("namespace-a")
-	err := run(ctx)
+	err := run(ctx, nil)
 	require.NoError(t, err)
 	require.Equal(t, []time.Duration{time.Second}, sleeps)
 	requireWorkerManagerSpanEvent(t, recorder, "temporal_worker.run", "temporal_worker.init_failed")
@@ -169,7 +144,7 @@ func TestRunTemporalWorker_RetriesInitErrorUntilCanceled(t *testing.T) {
 	requireWorkerManagerSpanEvent(t, recorder, "temporal_worker.run", "temporal_worker.stopped")
 }
 
-func TestRunTemporalWorkerReadyUnblocksWhenStartupRetryIsCanceled(t *testing.T) {
+func TestRunTemporalWorkerUnblocksReadinessWhenStartupRetryIsCanceled(t *testing.T) {
 	setWorkerManagerTestHooks(t)
 	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -182,7 +157,7 @@ func TestRunTemporalWorkerReadyUnblocksWhenStartupRetryIsCanceled(t *testing.T) 
 		return false
 	}
 	ready := make(chan error, 1)
-	err := RunTemporalWorkerReady("namespace-ready-retry")(ctx, func(err error) { ready <- err })
+	err := RunTemporalWorker("namespace-ready-retry")(ctx, func(err error) { ready <- err })
 	require.NoError(t, err)
 	select {
 	case readyErr := <-ready:
@@ -211,7 +186,7 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	}
 
 	run := RunTemporalWorker("namespace-b")
-	err := run(context.Background())
+	err := run(context.Background(), nil)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "bad worker config")
 	require.Equal(t, 15, fake.activityRegistrations)
@@ -236,7 +211,7 @@ func TestRunTemporalWorkerStartFailureClosesClientSynchronously(t *testing.T) {
 		return fake
 	}
 
-	err := RunTemporalWorker("namespace-start-failure")(context.Background())
+	err := RunTemporalWorker("namespace-start-failure")(context.Background(), nil)
 	require.ErrorContains(t, err, "worker startup failed")
 	require.Equal(t, 1, startupClient.closed)
 	require.Zero(t, fake.stops)
@@ -258,7 +233,7 @@ func TestRunTemporalWorkerWaitsForWorkerStopBeforeClosingClient(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- RunTemporalWorker("namespace-stop-order")(ctx) }()
+	go func() { done <- RunTemporalWorker("namespace-stop-order")(ctx, nil) }()
 	<-stopStarted
 	select {
 	case <-done:
@@ -289,7 +264,7 @@ func TestRunTemporalWorkerClosesItsGenerationClient(t *testing.T) {
 		return &fakeTemporalWorker{startHook: cancel}
 	}
 
-	if err := RunTemporalWorker("namespace-close")(ctx); err != nil {
+	if err := RunTemporalWorker("namespace-close")(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if temporalClient.closed != 1 {
@@ -325,7 +300,7 @@ func TestRunTemporalWorker_RetryableRunErrorThenSuccess(t *testing.T) {
 	}
 
 	run := RunTemporalWorker("namespace-c")
-	err := run(ctx)
+	err := run(ctx, nil)
 	require.NoError(t, err)
 	require.Equal(t, 2, workerIdx)
 	require.Equal(t, []time.Duration{time.Second}, sleeps)
@@ -346,7 +321,7 @@ func TestRunTemporalWorker_NonRetryableInitErrorReturnsError(t *testing.T) {
 	}
 
 	run := RunTemporalWorker("namespace-d")
-	err := run(context.Background())
+	err := run(context.Background(), nil)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "bad namespace")
 }
@@ -356,7 +331,7 @@ func TestRunTemporalWorkerWithConfigProviderUsesLiveConfigurationBoundary(t *tes
 	invalid := RunTemporalWorkerWithConfigProvider("namespace", func() (RunnerRuntimeConfig, error) {
 		return RunnerRuntimeConfig{}, errors.New("config not ready")
 	})
-	if err := invalid(context.Background()); err == nil || err.Error() != "load runner device inventory: config not ready" {
+	if err := invalid(context.Background(), nil); err == nil || err.Error() != "load runner device inventory: config not ready" {
 		t.Fatalf("invalid provider error = %v", err)
 	}
 
@@ -379,7 +354,7 @@ func TestRunTemporalWorkerWithConfigProviderUsesLiveConfigurationBoundary(t *tes
 			{ID: "acme/runner/two", Enabled: true},
 		}}, nil
 	}
-	if err := RunTemporalWorkerWithConfigProvider("namespace", provider)(ctx); err != nil {
+	if err := RunTemporalWorkerWithConfigProvider("namespace", provider)(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 	if providerCalls != 1 || fake.activityRegistrations == 0 {

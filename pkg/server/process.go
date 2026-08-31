@@ -12,6 +12,10 @@ type ProcessStore struct {
 	processes map[string]*Process
 }
 
+// ProcessRunFunc starts a worker and reports its initial readiness exactly
+// once. Returning from the function means the worker has fully terminated.
+type ProcessRunFunc func(ctx context.Context, started func(error)) error
+
 func NewProcessStore() *ProcessStore {
 	return &ProcessStore{
 		processes: map[string]*Process{},
@@ -88,38 +92,24 @@ func (s *ProcessStore) WaitAll(ctx context.Context) error {
 }
 
 type Process struct {
-	mu           sync.Mutex
-	Name         string
-	Running      bool
-	CancelFunc   context.CancelFunc
-	RunFunc      func(ctx context.Context) error
-	ReadyRunFunc func(ctx context.Context, ready func(error)) error
-	generation   uint64
-	done         chan struct{}
+	mu         sync.Mutex
+	Name       string
+	Running    bool
+	CancelFunc context.CancelFunc
+	RunFunc    ProcessRunFunc
+	generation uint64
+	done       chan struct{}
 }
 
-func NewReadyProcess(name string, runFunc func(ctx context.Context, ready func(error)) error) *Process {
-	return &Process{Name: name, ReadyRunFunc: runFunc}
-}
-
-func NewProcess(name string, runFunc func(ctx context.Context) error) *Process {
+func NewProcess(name string, runFunc ProcessRunFunc) *Process {
 	return &Process{
 		Name:    name,
 		RunFunc: runFunc,
 	}
 }
 
-func (p *Process) Start() error {
-	return p.start(context.Background(), false)
-}
-
-// StartReady waits until a readiness-aware worker has completed its real
-// initialization. Legacy workers retain Start's asynchronous semantics.
-func (p *Process) StartReady(ctx context.Context) error {
-	return p.start(ctx, true)
-}
-
-func (p *Process) start(waitCtx context.Context, waitReady bool) error {
+// Start waits until the runner reports that its actual worker is initialized.
+func (p *Process) Start(waitCtx context.Context) error {
 	if waitCtx == nil {
 		waitCtx = context.Background()
 	}
@@ -146,7 +136,6 @@ func (p *Process) start(waitCtx context.Context, waitReady bool) error {
 	done := make(chan struct{})
 	p.done = done
 	run := p.RunFunc
-	readyRun := p.ReadyRunFunc
 	p.mu.Unlock()
 	ready := make(chan error, 1)
 	var readyOnce sync.Once
@@ -164,35 +153,29 @@ func (p *Process) start(waitCtx context.Context, waitReady bool) error {
 			p.mu.Unlock()
 		}()
 
-		if readyRun != nil {
-			if err := readyRun(ctx, signalReady); err != nil {
+		if run != nil {
+			if err := run(ctx, signalReady); err != nil {
 				signalReady(err)
 				log.Printf("Process %s stopped with error: %v", p.Name, err)
 			} else {
+				signalReady(nil)
 				log.Printf("Process %s stopped", p.Name)
 			}
-		} else if run != nil {
+		} else {
 			signalReady(nil)
-			if err := run(ctx); err != nil {
-				log.Printf("Process %s stopped with error: %v", p.Name, err)
-			} else {
-				log.Printf("Process %s stopped", p.Name)
-			}
 		}
 	}()
 
 	log.Printf("Worker started for namespace %s", p.Name)
-	if waitReady && readyRun != nil {
-		select {
-		case err := <-ready:
-			if err != nil {
-				p.Stop()
-				return err
-			}
-		case <-waitCtx.Done():
+	select {
+	case err := <-ready:
+		if err != nil {
 			p.Stop()
-			return waitCtx.Err()
+			return err
 		}
+	case <-waitCtx.Done():
+		p.Stop()
+		return waitCtx.Err()
 	}
 	return nil
 }

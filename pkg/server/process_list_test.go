@@ -28,7 +28,7 @@ func TestProcessStoreStopAllStopsRegisteredWorkers(t *testing.T) {
 		process.CancelFunc = func() { stopped++ }
 		store.Add(process)
 	}
-	store.Add(NewProcess("idle", func(context.Context) error { return nil }))
+	store.Add(NewProcess("idle", testProcessRunner(func(context.Context) error { return nil })))
 	store.StopAll()
 	if stopped != 2 {
 		t.Fatalf("stop calls = %d, want 2", stopped)

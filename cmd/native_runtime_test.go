@@ -92,6 +92,23 @@ func TestNativeSupervisorFullLifecycleHasOneActiveGeneration(t *testing.T) {
 	if err := supervisor.StartExecution(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	replacementEdge := &nativeEdgeFake{}
+	replacement := testNativeGeneration(t, replacementEdge)
+	replacement.edgeStarted = false
+	replacement.lifecycle = &nativeLifecycleFake{}
+	replacement.service = &nativeServiceFake{}
+	supervisor.newGeneration = func(context.Context, string, dashboardruntime.Values) (*nativeRuntimeGeneration, error) {
+		return replacement, nil
+	}
+	if err := supervisor.reconcileLocked(context.Background(), dashboardruntime.Values{}, true); err != nil {
+		t.Fatal(err)
+	}
+	if supervisor.generation != replacement {
+		t.Fatal("running reconcile did not install the replacement generation")
+	}
+	if err := supervisor.StartExecution(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if err := supervisor.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +118,84 @@ func TestNativeSupervisorFullLifecycleHasOneActiveGeneration(t *testing.T) {
 	if supervisor.generation != nil || supervisor.ExecutionRunning() {
 		t.Fatal("full lifecycle left an active generation or running intent")
 	}
-	if edge.starts != 2 || edge.stops != 2 {
-		t.Fatalf("edge starts=%d stops=%d, want two complete transitions", edge.starts, edge.stops)
+	if edge.starts != 2 || edge.stops != 3 {
+		t.Fatalf("original edge starts=%d stops=%d", edge.starts, edge.stops)
 	}
-	if lifecycle.resumes != 2 || lifecycle.heartbeats != 2 {
-		t.Fatalf("resumes=%d heartbeats=%d", lifecycle.resumes, lifecycle.heartbeats)
+	if replacementEdge.starts != 1 || replacementEdge.stops != 1 {
+		t.Fatalf("replacement edge starts=%d stops=%d", replacementEdge.starts, replacementEdge.stops)
+	}
+	replacementLifecycle := replacement.lifecycle.(*nativeLifecycleFake)
+	if lifecycle.resumes != 2 || lifecycle.heartbeats != 2 || replacementLifecycle.resumes != 1 || replacementLifecycle.heartbeats != 1 {
+		t.Fatalf("original resumes=%d heartbeats=%d replacement resumes=%d heartbeats=%d", lifecycle.resumes, lifecycle.heartbeats, replacementLifecycle.resumes, replacementLifecycle.heartbeats)
+	}
+}
+
+func TestNativeSupervisorRunningReconcileWaitsForOldWorkersAndRebindsListener(t *testing.T) {
+	dir := t.TempDir()
+	oldEdge := &nativeEdgeFake{}
+	oldGeneration := testNativeGeneration(t, oldEdge)
+	oldAddress := oldGeneration.listener.Addr().String()
+	releaseWorker := make(chan struct{})
+	workerCanceled := make(chan struct{})
+	worker := server.NewProcess("old-worker", func(ctx context.Context, started func(error)) error {
+		started(nil)
+		<-ctx.Done()
+		close(workerCanceled)
+		<-releaseWorker
+		return nil
+	})
+	if err := worker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldGeneration.store.Add(worker)
+
+	newEdge := &nativeEdgeFake{}
+	newGeneration := testNativeGeneration(t, newEdge)
+	newGeneration.edgeStarted = false
+	newGeneration.lifecycle = &nativeLifecycleFake{}
+	newGeneration.service = &nativeServiceFake{}
+	newAddress := newGeneration.listener.Addr().String()
+	supervisor := NewNativeRuntimeSupervisor(dir)
+	supervisor.generation = oldGeneration
+	supervisor.intent = ExecutionRunning
+	supervisor.executing = true
+	supervisor.newGeneration = func(context.Context, string, dashboardruntime.Values) (*nativeRuntimeGeneration, error) {
+		return newGeneration, nil
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- supervisor.reconcileLocked(context.Background(), dashboardruntime.Values{}, true) }()
+	<-workerCanceled
+	select {
+	case err := <-done:
+		t.Fatalf("reconcile completed while old worker was alive: %v", err)
+	default:
+	}
+	if supervisor.generation != oldGeneration {
+		t.Fatal("old generation was released before its worker exited")
+	}
+	dialNativeRuntime(t, oldAddress, true)
+
+	close(releaseWorker)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if supervisor.generation != newGeneration {
+		t.Fatal("replacement generation was not installed")
+	}
+	dialNativeRuntime(t, oldAddress, false)
+	dialNativeRuntime(t, newAddress, true)
+	if err := supervisor.StartExecution(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !supervisor.ExecutionRunning() || !supervisor.Status(context.Background()).RunnerRunning {
+		t.Fatal("replacement generation did not activate")
+	}
+	if err := supervisor.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -230,11 +320,12 @@ func TestNativeSupervisorRetainsGenerationWhileWorkerShutdownIsIncomplete(t *tes
 	dir := t.TempDir()
 	release := make(chan struct{})
 	generation := testNativeGeneration(t, &nativeEdgeFake{})
-	worker := server.NewProcess("slow-worker", func(context.Context) error {
+	worker := server.NewProcess("slow-worker", func(_ context.Context, started func(error)) error {
+		started(nil)
 		<-release
 		return nil
 	})
-	if err := worker.Start(); err != nil {
+	if err := worker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	generation.store.Add(worker)

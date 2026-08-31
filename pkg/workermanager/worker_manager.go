@@ -83,48 +83,20 @@ func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute
 	return attrs
 }
 
-// RunTemporalWorker returns a function suitable for Process.RunFunc
-func RunTemporalWorker(namespace string) func(ctx context.Context) error {
-	return runTemporalWorker(namespace, nil, nil)
-}
-
-// RunTemporalWorkerReady reports readiness from the actual worker after its
-// client, registrations, and long-running run path have been prepared.
-func RunTemporalWorkerReady(namespace string) func(ctx context.Context, ready func(error)) error {
-	return func(ctx context.Context, ready func(error)) error {
-		return runTemporalWorker(namespace, nil, ready)(ctx)
-	}
+// RunTemporalWorker returns a process runner. It reports readiness only after
+// the Temporal worker's synchronous Start call succeeds.
+func RunTemporalWorker(namespace string) func(context.Context, func(error)) error {
+	return runTemporalWorker(namespace, nil)
 }
 
 // RunTemporalWorkerWithConfigProvider starts a namespace worker whose mobile
 // activities resolve the latest typed device inventory at activity start.
-func RunTemporalWorkerWithConfigProvider(namespace string, provider RuntimeConfigProvider) func(ctx context.Context) error {
-	return runTemporalWorker(namespace, provider, nil)
+func RunTemporalWorkerWithConfigProvider(namespace string, provider RuntimeConfigProvider) func(context.Context, func(error)) error {
+	return runTemporalWorker(namespace, provider)
 }
 
-func RunTemporalWorkerWithConfigProviderReady(namespace string, provider RuntimeConfigProvider) func(ctx context.Context, ready func(error)) error {
+func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(context.Context, func(error)) error {
 	return func(ctx context.Context, ready func(error)) error {
-		return runTemporalWorker(namespace, provider, ready)(ctx)
-	}
-}
-
-// VerifyTemporalWorker performs the connection step required before a worker
-// can enter its long-running loop. The caller closes the short-lived client;
-// the worker creates and owns its own client afterwards.
-func VerifyTemporalWorker(namespace string) error {
-	client, err := temporalClientGetter(namespace)
-	if err != nil {
-		return err
-	}
-	if client == nil {
-		return errors.New("Temporal client is unavailable")
-	}
-	client.Close()
-	return nil
-}
-
-func runTemporalWorker(namespace string, provider RuntimeConfigProvider, ready func(error)) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
 		var readyOnce sync.Once
 		signalReady := func(err error) {
 			if ready != nil {

@@ -33,7 +33,7 @@ func TestRunTemporalWorker_MissingRunnerIDReturnsError(t *testing.T) {
 	require.NoError(t, os.Unsetenv("CREDIMI_RUNNER_ID"))
 
 	run := RunTemporalWorker("namespace-a")
-	require.ErrorContains(t, run(context.Background()), "runner ID is required")
+	require.ErrorContains(t, run(context.Background(), nil), "runner ID is required")
 }
 
 func TestRunTemporalWorker_ReturnsOnCanceledContext(t *testing.T) {
@@ -47,7 +47,7 @@ func TestRunTemporalWorker_ReturnsOnCanceledContext(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx)
+		done <- run(ctx, nil)
 	}()
 
 	select {

@@ -9,11 +9,20 @@ import (
 	"time"
 )
 
+func testProcessRunner(run func(context.Context) error) ProcessRunFunc {
+	return func(ctx context.Context, started func(error)) error {
+		started(nil)
+		return run(ctx)
+	}
+}
+
 func TestReadyProcessPropagatesActualStartupFailure(t *testing.T) {
-	process := NewReadyProcess("namespace", func(context.Context, func(error)) error {
-		return errors.New("worker registration failed")
+	process := NewProcess("namespace", func(_ context.Context, started func(error)) error {
+		err := errors.New("worker registration failed")
+		started(err)
+		return err
 	})
-	err := process.StartReady(context.Background())
+	err := process.Start(context.Background())
 	if err == nil || err.Error() != "worker registration failed" {
 		t.Fatalf("startup error = %v", err)
 	}
@@ -31,7 +40,7 @@ func TestProcessCannotRestartUntilOldWorkerExits(t *testing.T) {
 	firstExited := make(chan struct{})
 	releaseFirst := make(chan struct{})
 	var starts atomic.Int32
-	process := NewProcess("namespace", func(ctx context.Context) error {
+	process := NewProcess("namespace", testProcessRunner(func(ctx context.Context) error {
 		if starts.Add(1) == 1 {
 			close(firstStarted)
 			<-ctx.Done()
@@ -42,15 +51,15 @@ func TestProcessCannotRestartUntilOldWorkerExits(t *testing.T) {
 		}
 		<-ctx.Done()
 		return nil
-	})
+	}))
 
-	if err := process.Start(); err != nil {
+	if err := process.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	<-firstStarted
 	process.Stop()
 	<-firstCancelled
-	if err := process.Start(); err == nil || err.Error() != "worker is still stopping" {
+	if err := process.Start(context.Background()); err == nil || err.Error() != "worker is still stopping" {
 		t.Fatalf("restart while stopping error = %v", err)
 	}
 	close(releaseFirst)
@@ -58,7 +67,7 @@ func TestProcessCannotRestartUntilOldWorkerExits(t *testing.T) {
 	if err := process.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := process.Start(); err != nil {
+	if err := process.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !process.IsRunning() {
@@ -72,12 +81,12 @@ func TestProcessCannotRestartUntilOldWorkerExits(t *testing.T) {
 
 func TestProcessStopAndWaitWaitsForRunner(t *testing.T) {
 	started := make(chan struct{})
-	process := NewProcess("namespace", func(ctx context.Context) error {
+	process := NewProcess("namespace", testProcessRunner(func(ctx context.Context) error {
 		close(started)
 		<-ctx.Done()
 		return nil
-	})
-	if err := process.Start(); err != nil {
+	}))
+	if err := process.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	<-started
@@ -91,8 +100,10 @@ func TestProcessStopAndWaitWaitsForRunner(t *testing.T) {
 
 func TestProcessStopIsIdempotent(t *testing.T) {
 	var cancels atomic.Int32
-	process := NewProcess("namespace", func(ctx context.Context) error { <-ctx.Done(); return nil })
-	process.Start()
+	process := NewProcess("namespace", testProcessRunner(func(ctx context.Context) error { <-ctx.Done(); return nil }))
+	if err := process.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	process.mu.Lock()
 	original := process.CancelFunc
 	process.CancelFunc = func() { cancels.Add(1); original() }
@@ -109,8 +120,8 @@ func TestProcessStopIsIdempotent(t *testing.T) {
 
 func TestProcessWaitHonorsContextDeadline(t *testing.T) {
 	release := make(chan struct{})
-	process := NewProcess("namespace", func(context.Context) error { <-release; return nil })
-	if err := process.Start(); err != nil {
+	process := NewProcess("namespace", testProcessRunner(func(context.Context) error { <-release; return nil }))
+	if err := process.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	process.Stop()
@@ -131,13 +142,13 @@ func TestProcessStoreStopAllAndWaitCancelsAllBeforeWaiting(t *testing.T) {
 	canceled.Add(2)
 	release := make(chan struct{})
 	for _, name := range []string{"one", "two"} {
-		process := NewProcess(name, func(ctx context.Context) error {
+		process := NewProcess(name, testProcessRunner(func(ctx context.Context) error {
 			<-ctx.Done()
 			canceled.Done()
 			<-release
 			return nil
-		})
-		if err := process.Start(); err != nil {
+		}))
+		if err := process.Start(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		store.Add(process)
