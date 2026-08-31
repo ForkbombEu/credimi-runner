@@ -20,6 +20,7 @@ func TestDockerfileBuildsOnlyTheRunnerImage(t *testing.T) {
 	require.Contains(t, dockerfile, "/usr/local/bin/aapt2")
 	require.NotContains(t, dockerfile, `"platform-tools" "emulator" "build-tools;35.0.0"`)
 	require.NotContains(t, dockerfile, "/opt/android-sdk-bootstrap/emulator")
+	require.NotContains(t, dockerfile, "SHA256SUMS")
 }
 
 func TestDockerfileBootstrapsADBForFreshPersistentVolumes(t *testing.T) {

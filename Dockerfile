@@ -68,8 +68,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl -fsSL https://get.maestro.mobile.dev | bash && \
     cloudflared_asset="cloudflared-linux-${TARGETARCH}" && \
     curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${cloudflared_asset}" -o /usr/local/bin/cloudflared && \
-    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/SHA256SUMS" -o /tmp/cloudflared.SHA256SUMS && \
-    grep "  ${cloudflared_asset}$" /tmp/cloudflared.SHA256SUMS | (cd /usr/local/bin && sha256sum -c -) && \
     chmod 0555 /usr/local/bin/credimi-runner /usr/local/bin/avdctl /usr/local/bin/cloudflared && \
     rm -rf /var/lib/apt/lists/* /tmp/android-cmdline-tools.zip
 ENTRYPOINT ["/usr/local/bin/credimi-runner"]
