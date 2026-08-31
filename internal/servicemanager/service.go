@@ -9,6 +9,15 @@ type LogOptions struct {
 	Follow bool
 	Lines  int
 }
+
+// BootstrapOptions overrides the image used while the first service
+// configuration is being prepared. It is intentionally owned by the service
+// manager because only that manager renders and starts the service.
+type BootstrapOptions struct {
+	Image      string
+	PullPolicy string
+}
+
 type Status struct {
 	Running                bool
 	ServiceRestartRequired bool

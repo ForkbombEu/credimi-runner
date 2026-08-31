@@ -21,7 +21,9 @@ var bootstrapPullPolicy string
 
 var rootCmd = &cobra.Command{Use: "credimi-runner", Short: "Credimi mobile runner", Version: buildinfo.String(), SilenceErrors: true, SilenceUsage: true, RunE: runRoot}
 
-var serviceManagerFactory = func(configDir string) servicemanager.Manager { return servicemanager.ForCurrentPlatform(configDir) }
+var serviceManagerFactory = func(configDir string, bootstrap servicemanager.BootstrapOptions) servicemanager.Manager {
+	return servicemanager.ForCurrentPlatformWithBootstrap(configDir, bootstrap)
+}
 
 var waitForDashboardFunc = func(ctx context.Context, manager servicemanager.Manager) (string, error) {
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -43,7 +45,7 @@ var waitForDashboardFunc = func(ctx context.Context, manager servicemanager.Mana
 }
 
 func runRoot(cmd *cobra.Command, _ []string) error {
-	manager := serviceManagerFactory(effectiveConfigDir())
+	manager := serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy})
 	status, err := manager.Status(cmd.Context())
 	if err != nil || !status.Running {
 		if err := manager.Start(cmd.Context()); err != nil {

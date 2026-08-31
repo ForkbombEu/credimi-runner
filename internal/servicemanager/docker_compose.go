@@ -45,7 +45,9 @@ func WriteServiceCompose(dir string, cfg runnerconfig.Config) error {
 	}
 	pull := cfg.Android.PullPolicy
 	if pull == "" {
-		pull = "if-not-present"
+		pull = "missing"
+	} else if pull == "if-not-present" {
+		pull = "missing"
 	}
 	port := cfg.Server.DashboardListen
 	if port == "" {
@@ -119,7 +121,9 @@ func WriteServiceSpecFingerprint(dir string, cfg runnerconfig.Config) (string, e
 	}
 	pull := cfg.Android.PullPolicy
 	if pull == "" {
-		pull = "if-not-present"
+		pull = "missing"
+	} else if pull == "if-not-present" {
+		pull = "missing"
 	}
 	network := cfg.Android.Network
 	if strings.TrimSpace(network) == "" {

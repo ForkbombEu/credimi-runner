@@ -36,7 +36,7 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"runner:", "restart: unless-stopped", "internal-service", "CREDIMI_RUNNER_CONFIG_DIR"} {
+	for _, want := range []string{"runner:", "restart: unless-stopped", "internal-service", "CREDIMI_RUNNER_CONFIG_DIR", "pull_policy: never"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("compose missing %q: %s", want, text)
 		}
@@ -45,6 +45,47 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 		if strings.Contains(strings.ToLower(text), bad) {
 			t.Fatalf("compose contains forbidden %q", bad)
 		}
+	}
+}
+
+func TestWriteServiceComposeUsesComposePullPolicyNames(t *testing.T) {
+	cfg := config.Bootstrap()
+	dir := t.TempDir()
+	if err := WriteServiceCompose(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "pull_policy: if-not-present") || !strings.Contains(string(raw), "pull_policy: missing") {
+		t.Fatalf("invalid Compose pull policy: %s", raw)
+	}
+}
+
+func TestDockerManagerAppliesBootstrapOptionsBeforeConfigExists(t *testing.T) {
+	dir := t.TempDir()
+	runner := &fakeCommandRunner{}
+	m := NewDockerManagerWithBootstrap(dir, "", BootstrapOptions{Image: "credimi-runner:local", PullPolicy: "never"})
+	m.Runner = runner
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "image: credimi-runner:local") || !strings.Contains(text, "pull_policy: never") {
+		t.Fatalf("bootstrap compose = %s", text)
+	}
+}
+
+func TestDockerManagerRejectsInvalidBootstrapPullPolicy(t *testing.T) {
+	m := NewDockerManagerWithBootstrap(t.TempDir(), "", BootstrapOptions{PullPolicy: "later"})
+	m.Runner = &fakeCommandRunner{}
+	if err := m.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "invalid bootstrap pull policy") {
+		t.Fatalf("invalid bootstrap policy error = %v", err)
 	}
 }
 func TestDockerManagerCommands(t *testing.T) {

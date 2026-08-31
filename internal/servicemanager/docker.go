@@ -37,12 +37,17 @@ func (execRunner) Output(ctx context.Context, name string, args []string, env []
 type DockerManager struct {
 	ConfigDir  string
 	BinaryPath string
+	Bootstrap  BootstrapOptions
 	Runner     CommandRunner
 	LoadConfig func() (runnerconfig.Config, error)
 }
 
 func NewDockerManager(dir, binary string) *DockerManager {
-	return &DockerManager{ConfigDir: dir, BinaryPath: binary, Runner: execRunner{}}
+	return NewDockerManagerWithBootstrap(dir, binary, BootstrapOptions{})
+}
+
+func NewDockerManagerWithBootstrap(dir, binary string, bootstrap BootstrapOptions) *DockerManager {
+	return &DockerManager{ConfigDir: dir, BinaryPath: binary, Bootstrap: bootstrap, Runner: execRunner{}}
 }
 func (m *DockerManager) config() (runnerconfig.Config, error) {
 	if m.LoadConfig != nil {
@@ -54,6 +59,17 @@ func (m *DockerManager) Start(ctx context.Context) error {
 	cfg, err := m.config()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		if image := strings.TrimSpace(m.Bootstrap.Image); image != "" {
+			cfg.Android.RunnerImage = image
+		}
+		if policy := strings.TrimSpace(m.Bootstrap.PullPolicy); policy != "" {
+			if policy != "always" && policy != "if-not-present" && policy != "never" {
+				return fmt.Errorf("invalid bootstrap pull policy %q: use always, if-not-present, or never", policy)
+			}
+			cfg.Android.PullPolicy = policy
+		}
 	}
 	if err := WriteServiceCompose(m.ConfigDir, cfg); err != nil {
 		return err
