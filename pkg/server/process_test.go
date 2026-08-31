@@ -2,9 +2,28 @@ package server
 
 import (
 	"context"
+	"errors"
+	"runtime"
 	"sync/atomic"
 	"testing"
 )
+
+func TestReadyProcessPropagatesActualStartupFailure(t *testing.T) {
+	process := NewReadyProcess("namespace", func(context.Context, func(error)) error {
+		return errors.New("worker registration failed")
+	})
+	err := process.StartReady(context.Background())
+	if err == nil || err.Error() != "worker registration failed" {
+		t.Fatalf("startup error = %v", err)
+	}
+	for i := 0; i < 100 && process.IsRunning(); i++ {
+		// The worker goroutine clears its own state after signalling failure.
+		runtime.Gosched()
+	}
+	if process.IsRunning() {
+		t.Fatal("failed startup left process running")
+	}
+}
 
 func TestProcessRestartKeepsNewWorkerRunningWhileOldWorkerExits(t *testing.T) {
 	firstStarted := make(chan struct{})

@@ -4,13 +4,143 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/pkg/server"
 )
+
+type nativeEdgeFake struct {
+	stopErrs []error
+	stops    int
+}
+
+func (*nativeEdgeFake) Start(context.Context) error { return nil }
+func (f *nativeEdgeFake) Stop(context.Context) error {
+	f.stops++
+	if len(f.stopErrs) == 0 {
+		return nil
+	}
+	err := f.stopErrs[0]
+	f.stopErrs = f.stopErrs[1:]
+	return err
+}
+func (*nativeEdgeFake) Close() error                                   { return nil }
+func (*nativeEdgeFake) QuickTunnelURL(context.Context) (string, error) { return "", nil }
+func (*nativeEdgeFake) VerifyPublicURL(context.Context, string) error  { return nil }
+func (*nativeEdgeFake) Status(context.Context) dashboardruntime.RuntimeStatus {
+	return dashboardruntime.RuntimeStatus{}
+}
+
+type nativeLifecycleFake struct{ pauses int }
+
+func (f *nativeLifecycleFake) Pause(context.Context, string) error     { f.pauses++; return nil }
+func (*nativeLifecycleFake) Resume(context.Context, string) error      { return nil }
+func (*nativeLifecycleFake) Heartbeat(context.Context) error           { return nil }
+func (*nativeLifecycleFake) StartHeartbeatLoop(context.Context) func() { return noopCancel }
+
+func testNativeGeneration(t *testing.T, edge nativeEdge) *nativeRuntimeGeneration {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	generation := &nativeRuntimeGeneration{
+		ctx: ctx, cancel: cancel, listener: listener, http: &http.Server{},
+		store: server.NewProcessStore(), lifecycle: &nativeLifecycleFake{}, edge: edge,
+		stopBeat: noopCancel, shutdownOTEL: func(context.Context) error { return nil }, edgeStarted: true,
+	}
+	return generation
+}
+
+func TestNativeGenerationRetriesFailedEdgeStop(t *testing.T) {
+	edge := &nativeEdgeFake{stopErrs: []error{errors.New("edge still running"), nil}}
+	generation := testNativeGeneration(t, edge)
+	if err := generation.stopEdge(context.Background()); err == nil {
+		t.Fatal("first edge stop unexpectedly succeeded")
+	}
+	if !generation.edgeStarted {
+		t.Fatal("failed edge stop released ownership")
+	}
+	if err := generation.stopEdge(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if generation.edgeStarted || edge.stops != 2 {
+		t.Fatalf("edge ownership=%t stops=%d", generation.edgeStarted, edge.stops)
+	}
+}
+
+func TestNativeSupervisorStopRetriesEdgeAndKeepsTruthfulState(t *testing.T) {
+	dir := t.TempDir()
+	edge := &nativeEdgeFake{stopErrs: []error{errors.New("edge still running"), nil}}
+	generation := testNativeGeneration(t, edge)
+	supervisor := NewNativeRuntimeSupervisor(dir)
+	supervisor.generation = generation
+	supervisor.executing = true
+	supervisor.intent = ExecutionRunning
+	if err := supervisor.Stop(context.Background()); err == nil {
+		t.Fatal("stop unexpectedly succeeded")
+	}
+	state, err := os.ReadFile(filepath.Join(dir, "runtime-state"))
+	if err != nil || !strings.HasPrefix(string(state), "failed:stopped:") {
+		t.Fatalf("runtime state=%q err=%v", state, err)
+	}
+	if !generation.edgeStarted {
+		t.Fatal("failed stop released edge ownership")
+	}
+	if err := supervisor.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err = os.ReadFile(filepath.Join(dir, "runtime-state"))
+	if err != nil || strings.TrimSpace(string(state)) != "stopped" {
+		t.Fatalf("runtime state=%q err=%v", state, err)
+	}
+}
+
+func TestNativeSupervisorCloseRetriesFailedGenerationCleanup(t *testing.T) {
+	dir := t.TempDir()
+	edge := &nativeEdgeFake{stopErrs: []error{errors.New("edge still running"), nil}}
+	generation := testNativeGeneration(t, edge)
+	supervisor := NewNativeRuntimeSupervisor(dir)
+	supervisor.generation = generation
+	if err := supervisor.Close(context.Background()); err == nil {
+		t.Fatal("close unexpectedly succeeded")
+	}
+	if supervisor.generation != generation {
+		t.Fatal("supervisor discarded generation after failed cleanup")
+	}
+	if err := supervisor.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if supervisor.generation != nil || edge.stops != 2 {
+		t.Fatalf("generation=%#v stops=%d", supervisor.generation, edge.stops)
+	}
+}
+
+func TestNativeRuntimeFailedStatePreservesRequestedIntent(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeNativeFailure(dir, ExecutionRunning, errors.New("registration failed")); err != nil {
+		t.Fatal(err)
+	}
+	if !nativeRuntimeShouldRun(dir) {
+		t.Fatal("failed running state lost execution intent")
+	}
+	if err := writeNativeFailure(dir, ExecutionStopped, errors.New("listener cleanup failed")); err != nil {
+		t.Fatal(err)
+	}
+	if nativeRuntimeShouldRun(dir) {
+		t.Fatal("failed stopped state incorrectly requests execution")
+	}
+}
 
 func TestNativeRuntimeSupervisorRebindsRunnerListener(t *testing.T) {
 	dir := t.TempDir()

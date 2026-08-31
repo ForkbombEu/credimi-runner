@@ -227,6 +227,20 @@ func TestRendererConfigGroupsTemporalWithCredimiPlatform(t *testing.T) {
 	}
 }
 
+func TestRendererConfigIncludesDashboardToken(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := renderer.Page("config", PageData{Active: "config", Title: "API & Config", Runner: &Config{values: Defaults}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, `name="DASHBOARD_TOKEN"`) || !strings.Contains(html, `type="password"`) {
+		t.Fatalf("config page does not render dashboard token as a secret: %s", html)
+	}
+}
+
 func TestRuntimeStatusOmitsInternalRunnerAPIAddress(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
@@ -610,6 +624,26 @@ func TestStaticDashboardRequestsPreserveQueryToken(t *testing.T) {
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("dashboard token preservation missing %q", want)
+		}
+	}
+}
+
+func TestStaticBusyPollingIsSequential(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	if strings.Contains(content, "setInterval(") {
+		t.Fatal("dashboard network polling must schedule the next request only after the current request completes")
+	}
+	for _, want := range []string{
+		"setTimeout(pollBusyLogs, 1500)",
+		"setTimeout(pollBusyControllerOperation, 500)",
+		"setTimeout(pollBusyStartupStatus, 1500)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("sequential busy polling missing %q", want)
 		}
 	}
 }

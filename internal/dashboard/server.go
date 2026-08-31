@@ -2053,6 +2053,9 @@ func (s *Server) applyRuntimeOwnedRegistration(values map[string]string) error {
 }
 
 func (s *Server) applyRuntimeOwnedConfig(diff dashboardruntime.ConfigDiff, values map[string]string) error {
+	if diffIsSavedOnly(diff) {
+		return nil
+	}
 	if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
 		handle, err := launcher.RequestReconcileAsync(context.Background(), s.launcherSocket)
 		if err != nil {
@@ -2081,6 +2084,9 @@ func (s *Server) applyRuntimeOwnedConfig(diff dashboardruntime.ConfigDiff, value
 }
 
 func (s *Server) applyRuntimeOwnedConfigInOperation(ctx context.Context, diff dashboardruntime.ConfigDiff, values map[string]string) error {
+	if diffIsSavedOnly(diff) {
+		return nil
+	}
 	if s.launcherSocket != "" && (hasApplyClass(diff, dashboardruntime.ApplyComposeRecreate) || hasApplyClass(diff, dashboardruntime.ApplyRestartRequired)) {
 		handle, err := launcher.RequestReconcileAsync(ctx, s.launcherSocket)
 		if err != nil {
@@ -2105,6 +2111,10 @@ func (s *Server) applyRuntimeOwnedConfigInOperation(ctx context.Context, diff da
 		return nil
 	}
 	return s.registerCurrent(ctx, values)
+}
+
+func diffIsSavedOnly(diff dashboardruntime.ConfigDiff) bool {
+	return len(diff.Classes) == 1 && diff.Classes[0] == dashboardruntime.ApplySavedOnly
 }
 
 func (s *Server) activateNativeRuntime(ctx context.Context, values map[string]string) error {

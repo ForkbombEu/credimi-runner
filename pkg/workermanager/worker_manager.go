@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
@@ -85,13 +86,27 @@ func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute
 
 // RunTemporalWorker returns a function suitable for Process.RunFunc
 func RunTemporalWorker(namespace string) func(ctx context.Context) error {
-	return runTemporalWorker(namespace, nil)
+	return runTemporalWorker(namespace, nil, nil)
+}
+
+// RunTemporalWorkerReady reports readiness from the actual worker after its
+// client, registrations, and long-running run path have been prepared.
+func RunTemporalWorkerReady(namespace string) func(ctx context.Context, ready func(error)) error {
+	return func(ctx context.Context, ready func(error)) error {
+		return runTemporalWorker(namespace, nil, ready)(ctx)
+	}
 }
 
 // RunTemporalWorkerWithConfigProvider starts a namespace worker whose mobile
 // activities resolve the latest typed device inventory at activity start.
 func RunTemporalWorkerWithConfigProvider(namespace string, provider RuntimeConfigProvider) func(ctx context.Context) error {
-	return runTemporalWorker(namespace, provider)
+	return runTemporalWorker(namespace, provider, nil)
+}
+
+func RunTemporalWorkerWithConfigProviderReady(namespace string, provider RuntimeConfigProvider) func(ctx context.Context, ready func(error)) error {
+	return func(ctx context.Context, ready func(error)) error {
+		return runTemporalWorker(namespace, provider, ready)(ctx)
+	}
 }
 
 // VerifyTemporalWorker performs the connection step required before a worker
@@ -109,24 +124,36 @@ func VerifyTemporalWorker(namespace string) error {
 	return nil
 }
 
-func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ctx context.Context) error {
+func runTemporalWorker(namespace string, provider RuntimeConfigProvider, ready func(error)) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
+		var readyOnce sync.Once
+		signalReady := func(err error) {
+			if ready != nil {
+				readyOnce.Do(func() { ready(err) })
+			}
+		}
 		temporalInterceptor, err := observability.NewTemporalInterceptor()
 		if err != nil {
-			return fmt.Errorf("unable to create temporal tracing interceptor: %w", err)
+			err = fmt.Errorf("unable to create temporal tracing interceptor: %w", err)
+			signalReady(err)
+			return err
 		}
 		runnerID := ""
 		if provider != nil {
 			config, err := provider()
 			if err != nil {
-				return fmt.Errorf("load runner device inventory: %w", err)
+				err = fmt.Errorf("load runner device inventory: %w", err)
+				signalReady(err)
+				return err
 			}
 			runnerID = strings.TrimLeft(strings.TrimSpace(config.RunnerID), "/")
 		} else {
 			runnerID = strings.TrimLeft(strings.TrimSpace(utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "")), "/")
 		}
 		if runnerID == "" {
-			return errors.New("runner ID is required")
+			err := errors.New("runner ID is required")
+			signalReady(err)
+			return err
 		}
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
 		ctx, span := observability.Tracer("credimi-runner.temporal").Start(ctx, "temporal_worker.run", trace.WithAttributes(temporalWorkerTraceAttrs(namespace, taskqueue, runnerID)...))
@@ -136,6 +163,7 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 
 		for {
 			if ctx.Err() != nil {
+				signalReady(ctx.Err())
 				span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "context_canceled")))
 				log.Printf("Temporal worker stopped for namespace %s", namespace)
 				return nil
@@ -145,6 +173,7 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 			if err != nil {
 				span.AddEvent("temporal_worker.init_failed", trace.WithAttributes(attribute.String("backoff", backoff.String()), attribute.String("error", err.Error())))
 				if !shouldRetryTemporalWorker(err) {
+					signalReady(err)
 					span.RecordError(err)
 					span.SetStatus(codes.Error, "temporal worker initialization failed")
 					return err
@@ -174,6 +203,7 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(ct
 			for _, item := range registeredActivities() {
 				w.RegisterActivityWithOptions(registeredActivityExecutor(item, provider), activity.RegisterOptions{Name: item.Activity.Name()})
 			}
+			signalReady(nil)
 
 			// The forwarding goroutine is attempt-scoped. A retryable Run error
 			// must release it before the next attempt starts.

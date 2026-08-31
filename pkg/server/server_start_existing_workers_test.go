@@ -167,6 +167,31 @@ func TestStartExistingWorkersReturnsInitialWorkerReadinessFailure(t *testing.T) 
 	}
 }
 
+func TestStartExistingWorkersReturnsActualWorkerStartupFailure(t *testing.T) {
+	store := NewProcessStore()
+	client := &startWorkersHTTPClient{responder: func(req *http.Request) (*http.Response, error) {
+		require.Equal(t, "/api/organizations/namespaces", req.URL.Path)
+		return httpResp(http.StatusOK, `{"namespaces":["new-ns"]}`), nil
+	}}
+	srv := NewRunnerServiceWithDeps(store, utils.Instance{URL: "http://example.local", InternalAdminKey: "internal-admin-key"}, Deps{
+		HTTPClient:          client,
+		WorkerRunnerFactory: func(string) func(context.Context) error { return func(context.Context) error { return nil } },
+		WorkerReadyRunnerFactory: func(string) func(context.Context, func(error)) error {
+			return func(_ context.Context, ready func(error)) error {
+				err := errors.New("activity registration failed")
+				ready(err)
+				return err
+			}
+		},
+	})
+	err := srv.StartExistingWorkers(context.Background())
+	require.ErrorContains(t, err, "activity registration failed")
+	process, found := store.Get("new-ns")
+	if !found || process.IsRunning() {
+		t.Fatal("failed actual startup left a running worker")
+	}
+}
+
 func TestStartExistingWorkersGivesEachNamespaceWorkerLiveInventoryProvider(t *testing.T) {
 	store := NewProcessStore()
 	client := &startWorkersHTTPClient{responder: func(req *http.Request) (*http.Response, error) {

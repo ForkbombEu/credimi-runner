@@ -99,6 +99,15 @@
     const detail = event.detail || {};
     if (typeof detail.path === 'string' && detail.path.startsWith('/')) detail.path = dashboardURL(detail.path);
   });
+  document.body.addEventListener('htmx:afterRequest', (event) => {
+    const detail = event.detail || {};
+    if (!detail.successful) return;
+    const path = detail.path || (detail.requestConfig && detail.requestConfig.path) || '';
+    if (!String(path).startsWith('/config')) return;
+    const form = event.target && event.target.closest && event.target.closest('[data-config-form]');
+    const token = form && form.querySelector('[name="DASHBOARD_TOKEN"]');
+    if (token) setDashboardToken(token.value);
+  });
   document.body.addEventListener('htmx:afterSwap', (event) => preserveDashboardToken(event.target || document));
   preserveDashboardToken();
 	function refreshOverview(path = '/', tokenOverride) {
@@ -123,6 +132,7 @@
     toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
   }
   function startRuntimeRecovery(operation) {
+    operation._recovering = true;
     clearTimeout(runtimeOperationTimer);
     runtimeOperationTimer = null;
     const deadline = Date.now() + runtimeRecoveryMaxDuration;
@@ -230,7 +240,7 @@
     const poll = async () => {
       if (!runtimeOperationActive) return;
       await pollRuntimeOperation(operation);
-      if (runtimeOperationActive) runtimeOperationTimer = setTimeout(poll, 500);
+      if (runtimeOperationActive && !operation._recovering) runtimeOperationTimer = setTimeout(poll, 500);
     };
     void poll();
   });
@@ -261,58 +271,63 @@
   async function pollBusyLogs() {
     try {
       const res = await fetch(dashboardURL('/runtime/logs'), { headers: { Accept: 'application/json' } });
-      if (!res.ok) return;
-      const data = await res.json();
-      (data.lines || []).slice(-24).forEach(appendBusyLog);
+      if (res.ok) {
+        const data = await res.json();
+        (data.lines || []).slice(-24).forEach(appendBusyLog);
+      }
     } catch (_) {}
+    if (busyLogTimer !== null && !busyOverlay()?.hidden) busyLogTimer = setTimeout(pollBusyLogs, 1500);
   }
 	async function pollBusyControllerOperation() {
 		try {
 			const res = await fetch(dashboardURL('/api/controller/operations/current'), { headers: { Accept: 'application/json' } });
-			if (!res.ok) return;
-			const snapshot = await res.json();
-			const phase = String(snapshot.phase || snapshot.Phase || '');
-			const message = String(snapshot.message || snapshot.Message || '').trim();
-			if (phase !== 'queued' && phase !== 'running') return;
-			if (message) {
-				const overlay = busyOverlay();
-				const messageNode = overlay && $('[data-busy-message]', overlay);
-				if (messageNode) messageNode.textContent = message;
-				appendBusyLog(message);
+			if (res.ok) {
+				const snapshot = await res.json();
+				const phase = String(snapshot.phase || snapshot.Phase || '');
+				const message = String(snapshot.message || snapshot.Message || '').trim();
+				if ((phase === 'queued' || phase === 'running') && message) {
+					const overlay = busyOverlay();
+					const messageNode = overlay && $('[data-busy-message]', overlay);
+					if (messageNode) messageNode.textContent = message;
+					appendBusyLog(message);
+				}
 			}
 		} catch (_) {}
+		if (busyControllerTimer !== null && !busyOverlay()?.hidden) busyControllerTimer = setTimeout(pollBusyControllerOperation, 500);
 	}
   async function pollBusyStartupStatus() {
+    let terminal = false;
     try {
       const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
       const res = await fetch(dashboardURL(url), { headers: { Accept: 'application/json' } });
-      if (!res.ok) return;
-      const data = await res.json();
-      const phase = String(data.phase || '');
-      const message = String(data.message || '');
-      (data.lines || []).forEach(appendBusyLog);
-      if (Number.isFinite(Number(data.next_id))) busyStartupNextID = Number(data.next_id);
-      if (message) {
-        const overlay = busyOverlay();
-        const messageNode = overlay && $('[data-busy-message]', overlay);
-        if (messageNode) messageNode.textContent = message;
-        appendBusyLog(message);
-      }
-      if (phase === 'idle' && sessionStorage.getItem(setupBusyKey)) {
-        appendBusyLog('Waiting for setup job to start.');
-        return;
-      }
-      if (!startupBusyPhases.has(phase)) {
-        sessionStorage.removeItem(setupBusyKey);
-        if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
-        if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
-        clearInterval(busyStartupTimer);
-        busyStartupTimer = null;
-        const delay = phase === 'needs_attention' ? 2500 : 1000;
-        const destination = phase === 'needs_attention' ? '/setup' : '/';
-        setTimeout(() => { window.location.assign(dashboardURL(destination)); }, delay);
+      if (res.ok) {
+        const data = await res.json();
+        const phase = String(data.phase || '');
+        const message = String(data.message || '');
+        (data.lines || []).forEach(appendBusyLog);
+        if (Number.isFinite(Number(data.next_id))) busyStartupNextID = Number(data.next_id);
+        if (message) {
+          const overlay = busyOverlay();
+          const messageNode = overlay && $('[data-busy-message]', overlay);
+          if (messageNode) messageNode.textContent = message;
+          appendBusyLog(message);
+        }
+        if (phase === 'idle' && sessionStorage.getItem(setupBusyKey)) {
+          appendBusyLog('Waiting for setup job to start.');
+        } else if (!startupBusyPhases.has(phase)) {
+          terminal = true;
+          sessionStorage.removeItem(setupBusyKey);
+          if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
+          if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
+          clearTimeout(busyStartupTimer);
+          busyStartupTimer = null;
+          const delay = phase === 'needs_attention' ? 2500 : 1000;
+          const destination = phase === 'needs_attention' ? '/setup' : '/';
+          setTimeout(() => { window.location.assign(dashboardURL(destination)); }, delay);
+        }
       }
     } catch (_) {}
+    if (!terminal && busyStartupTimer !== null && !busyOverlay()?.hidden) busyStartupTimer = setTimeout(pollBusyStartupStatus, 1500);
   }
   function showBusy(message, options = {}) {
     const overlay = busyOverlay();
@@ -331,15 +346,17 @@
 			appendBusyLog('Writing configuration and preparing Docker services.');
 			appendBusyLog('Large runner images can take several minutes the first time.');
 		}
-    clearInterval(busyLogTimer);
-		clearInterval(busyControllerTimer);
+    clearTimeout(busyLogTimer);
+		clearTimeout(busyControllerTimer);
+    busyLogTimer = null;
+		busyControllerTimer = null;
     if (options.runtimeLogs !== false) {
+      busyLogTimer = 0;
       pollBusyLogs();
-      busyLogTimer = setInterval(pollBusyLogs, 1500);
     }
 		if (options.controllerProgress) {
+			busyControllerTimer = 0;
 			pollBusyControllerOperation();
-			busyControllerTimer = setInterval(pollBusyControllerOperation, 500);
 		}
     overlay.hidden = false;
     document.body.classList.add('busy-lock');
@@ -347,9 +364,9 @@
   function hideBusy() {
     const overlay = busyOverlay();
     if (!overlay) return;
-    clearInterval(busyLogTimer);
-		clearInterval(busyControllerTimer);
-    clearInterval(busyStartupTimer);
+    clearTimeout(busyLogTimer);
+		clearTimeout(busyControllerTimer);
+    clearTimeout(busyStartupTimer);
     busyLogTimer = null;
 		busyControllerTimer = null;
     busyStartupTimer = null;
@@ -358,9 +375,10 @@
   }
   function showSetupBusy(message) {
     showBusy(message || 'Writing runner config and starting services. You may close this page safely.', { runtimeLogs: false });
-    clearInterval(busyStartupTimer);
+    clearTimeout(busyStartupTimer);
+    busyStartupTimer = null;
+    busyStartupTimer = 0;
     pollBusyStartupStatus();
-    busyStartupTimer = setInterval(pollBusyStartupStatus, 1500);
   }
   function resumeSetupBusyIfNeeded() {
     const overlay = busyOverlay();
@@ -435,23 +453,24 @@
     try {
       const url = dashboardURL(upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status');
       const response = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (!response.ok) return;
-      if (upgradeDisconnected) {
-        window.location.reload();
-        return;
-      }
-      const data = await response.json();
-      (data.lines || []).forEach(appendUpgradeLog);
-      upgradeNextID = Number(data.next_id || upgradeNextID);
-      const message = $('[data-upgrade-message]');
-      if (message && data.message) message.textContent = data.message;
-      if (!data.running) {
-        clearInterval(upgradeTimer);
-        upgradeTimer = null;
-        const modal = $('#runner-upgrade-modal');
-        if (modal) modal.dataset.upgradeRunning = '0';
-        const close = $('[data-upgrade-close]');
-        if (close) close.disabled = false;
+      if (response.ok) {
+        if (upgradeDisconnected) {
+          window.location.reload();
+          return;
+        }
+        const data = await response.json();
+        (data.lines || []).forEach(appendUpgradeLog);
+        upgradeNextID = Number(data.next_id || upgradeNextID);
+        const message = $('[data-upgrade-message]');
+        if (message && data.message) message.textContent = data.message;
+        if (!data.running) {
+          clearTimeout(upgradeTimer);
+          upgradeTimer = null;
+          const modal = $('#runner-upgrade-modal');
+          if (modal) modal.dataset.upgradeRunning = '0';
+          const close = $('[data-upgrade-close]');
+          if (close) close.disabled = false;
+        }
       }
     } catch (_) {
       const modal = $('#runner-upgrade-modal');
@@ -460,6 +479,7 @@
         appendUpgradeLog('Dashboard is restarting. Waiting to reconnect.');
       }
     }
+    if (upgradeTimer !== null && !upgradeDisconnected) upgradeTimer = setTimeout(pollUpgrade, 1000);
   }
   document.addEventListener('click', async (e) => {
     const check = e.target.closest('[data-maintenance-check]');
@@ -498,9 +518,9 @@
         });
         clearTimeout(requestTimeout);
         if (!response.ok) throw new Error(await response.text());
+        clearTimeout(upgradeTimer);
+        upgradeTimer = 0;
         await pollUpgrade();
-        clearInterval(upgradeTimer);
-        upgradeTimer = setInterval(pollUpgrade, 1000);
       } catch (error) {
         clearTimeout(requestTimeout);
         const reason = error && error.name === 'AbortError'
@@ -806,12 +826,16 @@
           b.classList.toggle('done', i < current);
         });
         if (connectedAndroidTimer) {
-          clearInterval(connectedAndroidTimer);
+          clearTimeout(connectedAndroidTimer);
           connectedAndroidTimer = null;
         }
         if (panels[current] && panels[current].dataset.step === 'devices') {
-          refreshConnectedAndroidDevices(form);
-          connectedAndroidTimer = setInterval(() => refreshConnectedAndroidDevices(form), 2500);
+          const pollConnectedAndroid = async () => {
+            await refreshConnectedAndroidDevices(form);
+            if (connectedAndroidTimer !== null && panels[current] && panels[current].dataset.step === 'devices') connectedAndroidTimer = setTimeout(pollConnectedAndroid, 2500);
+          };
+          connectedAndroidTimer = 0;
+          pollConnectedAndroid();
         }
         if (prev) prev.disabled = current === 0;
         if (next) next.hidden = current === panels.length - 1;
@@ -1208,9 +1232,15 @@
   }
   function initSystemMonitor(root = document) {
     const monitor = $('[data-system-monitor]', root); if (!monitor) return;
-    clearInterval(systemMonitorTimer); refreshSystemMonitor(monitor);
+    clearTimeout(systemMonitorTimer); systemMonitorTimer = null;
     monitor.addEventListener('click', event => { const tab = event.target.closest('[data-system-range]'); if (!tab) return; $$('[data-system-range]', monitor).forEach(button => button.classList.toggle('on', button === tab)); refreshSystemMonitor(monitor, tab.dataset.systemRange); });
-    systemMonitorTimer = setInterval(() => { if (monitor.dataset.systemRange !== 'hourly') refreshSystemMonitor(monitor); }, 2000);
+    const pollSystemMonitor = async () => {
+      if (!monitor.isConnected) return;
+      if (monitor.dataset.systemRange !== 'hourly') await refreshSystemMonitor(monitor);
+      if (systemMonitorTimer !== null) systemMonitorTimer = setTimeout(pollSystemMonitor, 2000);
+    };
+    systemMonitorTimer = 0;
+    pollSystemMonitor();
   }
   initSystemMonitor();
 

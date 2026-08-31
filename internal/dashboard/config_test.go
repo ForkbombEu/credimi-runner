@@ -226,8 +226,8 @@ func TestRegistryFieldsHaveExplicitRuntimeImpact(t *testing.T) {
 			t.Errorf("registry field %s has no runtime impact classification", field.Key)
 		}
 	}
-	if impact := dashboardruntime.FieldImpacts["DASHBOARD_TOKEN"]; !impact.Restart && !impact.Recreate {
-		t.Fatal("dashboard token must replace the running dashboard")
+	if impact := dashboardruntime.FieldImpacts["DASHBOARD_TOKEN"]; impact.Restart || impact.Recreate || impact.CredimiUpdate || !impact.Secret {
+		t.Fatalf("dashboard token impact = %#v, want saved-only secret", impact)
 	}
 }
 

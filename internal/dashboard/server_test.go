@@ -1027,6 +1027,20 @@ type nativeRuntimeControlFake struct {
 	prepareErr error
 }
 
+func TestSavedOnlyDashboardTokenDoesNotApplyRuntimeLifecycle(t *testing.T) {
+	s := newTestServer(t)
+	s.runtimeOwned = true
+	native := &nativeRuntimeControlFake{running: true}
+	s.nativeRuntime = native
+	diff := dashboardruntime.DiffValues(dashboardruntime.Values{"DASHBOARD_TOKEN": "old"}, dashboardruntime.Values{"DASHBOARD_TOKEN": "new"})
+	if err := s.applyRuntimeOwnedConfigInOperation(context.Background(), diff, map[string]string{"DASHBOARD_TOKEN": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	if native.prepared != 0 || native.stopped != 0 || native.execution != 0 {
+		t.Fatalf("token-only save touched native runtime: %#v", native)
+	}
+}
+
 func (f *nativeRuntimeControlFake) Prepare(context.Context) error { f.prepared++; return f.prepareErr }
 func (f *nativeRuntimeControlFake) Reconcile(context.Context, bool) error {
 	f.reconciled++

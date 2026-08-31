@@ -59,6 +59,9 @@ func TestDiffValuesCoverageBranches(t *testing.T) {
 	if got := DiffValues(Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Values{"CREDIMI_RUNNER_ID": "acme/runner"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
 		t.Fatalf("saved only diff = %#v", got)
 	}
+	if got := DiffValues(Values{"DASHBOARD_TOKEN": "old"}, Values{"DASHBOARD_TOKEN": "new"}); len(got.Classes) != 1 || got.Classes[0] != ApplySavedOnly {
+		t.Fatalf("dashboard token diff = %#v", got)
+	}
 	if got := DiffValues(Values{"CREDIMI_RUNNER_NAME": "a"}, Values{"CREDIMI_RUNNER_NAME": "b"}); len(got.ChangedKeys) == 0 || !containsApplyClass(got.Classes, ApplyRestartRequired) || !containsApplyClass(got.Classes, ApplyCredimiUpdateRequired) {
 		t.Fatalf("runner name changed diff = %#v", got)
 	}

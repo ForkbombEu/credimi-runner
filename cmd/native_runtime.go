@@ -34,6 +34,22 @@ const (
 
 func noopCancel() {}
 
+type nativeEdge interface {
+	Start(context.Context) error
+	Stop(context.Context) error
+	Close() error
+	QuickTunnelURL(context.Context) (string, error)
+	VerifyPublicURL(context.Context, string) error
+	Status(context.Context) dashboardruntime.RuntimeStatus
+}
+
+type nativeLifecycle interface {
+	Pause(context.Context, string) error
+	Resume(context.Context, string) error
+	Heartbeat(context.Context) error
+	StartHeartbeatLoop(context.Context) func()
+}
+
 // NativeRuntimeSupervisor owns the only macOS execution generation. The
 // Dashboard outlives generations and asks this owner to replace them.
 type NativeRuntimeSupervisor struct {
@@ -48,20 +64,26 @@ type NativeRuntimeSupervisor struct {
 }
 
 type nativeRuntimeGeneration struct {
-	values       dashboardruntime.Values
-	ctx          context.Context
-	cancel       context.CancelFunc
-	listener     net.Listener
-	http         *http.Server
-	store        *server.ProcessStore
-	service      interface{ StartExistingWorkers(context.Context) error }
-	lifecycle    *server.RunnerLifecycleClient
-	edge         *dashboardruntime.LifecycleManager
-	stopBeat     func()
-	shutdownOTEL func(context.Context) error
-	stopOnce     sync.Once
-	edgeMu       sync.Mutex
-	edgeStarted  bool
+	values          dashboardruntime.Values
+	ctx             context.Context
+	cancel          context.CancelFunc
+	listener        net.Listener
+	http            *http.Server
+	store           *server.ProcessStore
+	service         interface{ StartExistingWorkers(context.Context) error }
+	lifecycle       nativeLifecycle
+	edge            nativeEdge
+	stopBeat        func()
+	shutdownOTEL    func(context.Context) error
+	closeMu         sync.Mutex
+	paused          bool
+	edgeClosed      bool
+	httpClosed      bool
+	listenerClosed  bool
+	otelClosed      bool
+	contextCanceled bool
+	edgeMu          sync.Mutex
+	edgeStarted     bool
 }
 
 func NewNativeRuntimeSupervisor(configDir string) *NativeRuntimeSupervisor {
@@ -97,7 +119,18 @@ func runNativeApplicationRuntime(cmd *cobra.Command, args []string) error {
 
 func nativeRuntimeShouldRun(configDir string) bool {
 	state, err := os.ReadFile(filepath.Join(configDir, "runtime-state"))
-	return err != nil || strings.TrimSpace(string(state)) != "stopped"
+	if err != nil {
+		return true
+	}
+	return !strings.HasPrefix(strings.TrimSpace(string(state)), "stopped") && !strings.HasPrefix(strings.TrimSpace(string(state)), "failed:stopped:")
+}
+
+func writeNativeFailure(configDir string, intent ExecutionIntent, cause error) error {
+	desired := "stopped"
+	if intent == ExecutionRunning {
+		desired = "running"
+	}
+	return writeRuntimeState(configDir, "failed:"+desired+": "+cause.Error())
 }
 
 func NewNativeRuntimeSupervisorWithContext(root context.Context, configDir string) *NativeRuntimeSupervisor {
@@ -164,13 +197,13 @@ func (s *NativeRuntimeSupervisor) reconcileLocked(ctx context.Context, values da
 	s.mu.Unlock()
 	next, err := newNativeRuntimeGeneration(s.root, s.configDir, values)
 	if err != nil {
-		_ = writeRuntimeState(s.configDir, "failed: "+err.Error())
+		_ = writeNativeFailure(s.configDir, s.executionIntent(), err)
 		return err
 	}
 	if running {
 		if err := next.ensureEdgeStarted(ctx); err != nil {
 			_ = next.close(ctx, false)
-			_ = writeRuntimeState(s.configDir, "failed: "+err.Error())
+			_ = writeNativeFailure(s.configDir, s.executionIntent(), err)
 			return err
 		}
 	}
@@ -228,9 +261,11 @@ func (s *NativeRuntimeSupervisor) rollbackActivation(ctx context.Context, genera
 	}
 	s.mu.Lock()
 	s.executing = false
-	s.intent = ExecutionStopped
+	// A failed activation does not revoke the requested execution intent. This
+	// lets restart recovery and the live supervisor agree that the runner was
+	// meant to be running, even though it is currently unhealthy.
 	s.mu.Unlock()
-	if err := writeRuntimeState(s.configDir, "failed: "+cause.Error()); err != nil {
+	if err := writeNativeFailure(s.configDir, s.executionIntent(), cause); err != nil {
 		errs = append(errs, fmt.Errorf("mark failed native runtime: %w", err))
 	}
 	return errors.Join(append([]error{cause}, errs...)...)
@@ -253,10 +288,15 @@ func (s *NativeRuntimeSupervisor) Stop(ctx context.Context) error {
 	if err := generation.lifecycle.Pause(ctx, "dashboard_stop"); err != nil {
 		errs = append(errs, fmt.Errorf("pause runner lifecycle: %w", err))
 	}
-	if err := generation.stopEdge(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("stop native edge: %w", err))
+	edgeErr := generation.stopEdge(ctx)
+	if edgeErr != nil {
+		errs = append(errs, fmt.Errorf("stop native edge: %w", edgeErr))
 	}
-	if err := writeRuntimeState(s.configDir, "stopped"); err != nil {
+	state := "stopped"
+	if edgeErr != nil {
+		state = "failed:stopped: " + edgeErr.Error()
+	}
+	if err := writeRuntimeState(s.configDir, state); err != nil {
 		errs = append(errs, fmt.Errorf("mark native runtime stopped: %w", err))
 	}
 	return errors.Join(errs...)
@@ -323,9 +363,13 @@ func (s *NativeRuntimeSupervisor) Close(ctx context.Context) error {
 }
 
 func (s *NativeRuntimeSupervisor) ExecutionRunning() bool {
+	return s.executionIntent() == ExecutionRunning
+}
+
+func (s *NativeRuntimeSupervisor) executionIntent() ExecutionIntent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.intent == ExecutionRunning
+	return s.intent
 }
 
 func newNativeRuntimeGeneration(parent context.Context, configDir string, values dashboardruntime.Values) (*nativeRuntimeGeneration, error) {
@@ -413,8 +457,11 @@ func (g *nativeRuntimeGeneration) stopEdge(ctx context.Context) error {
 	if !g.edgeStarted {
 		return nil
 	}
+	if err := g.edge.Stop(ctx); err != nil {
+		return err
+	}
 	g.edgeStarted = false
-	return g.edge.Stop(ctx)
+	return nil
 }
 
 func (g *nativeRuntimeGeneration) stopHeartbeat() {
@@ -423,37 +470,56 @@ func (g *nativeRuntimeGeneration) stopHeartbeat() {
 }
 
 func (g *nativeRuntimeGeneration) close(ctx context.Context, pause bool) error {
+	g.closeMu.Lock()
+	defer g.closeMu.Unlock()
 	var errs []error
-	g.stopOnce.Do(func() {
-		g.store.StopAll()
-		g.stopHeartbeat()
-		if pause {
-			if err := g.lifecycle.Pause(ctx, "generation_replaced"); err != nil {
-				errs = append(errs, fmt.Errorf("pause generation lifecycle: %w", err))
-			}
+	g.store.StopAll()
+	g.stopHeartbeat()
+	if pause && !g.paused {
+		if err := g.lifecycle.Pause(ctx, "generation_replaced"); err != nil {
+			errs = append(errs, fmt.Errorf("pause generation lifecycle: %w", err))
+		} else {
+			g.paused = true
 		}
-		if err := g.stopEdge(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("stop generation edge: %w", err))
-		}
+	}
+	if err := g.stopEdge(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("stop generation edge: %w", err))
+	}
+	if !g.edgeStarted && !g.edgeClosed {
 		if err := g.edge.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close generation edge: %w", err))
+		} else {
+			g.edgeClosed = true
 		}
+	}
+	if !g.contextCanceled {
 		g.cancel()
+		g.contextCanceled = true
+	}
+	if !g.httpClosed {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
 		if err := g.http.Shutdown(shutdownCtx); err != nil {
 			errs = append(errs, fmt.Errorf("shutdown generation HTTP server: %w", err))
+		} else {
+			g.httpClosed = true
 		}
+		cancel()
+	}
+	if !g.listenerClosed {
 		if err := g.listener.Close(); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 			errs = append(errs, fmt.Errorf("close generation listener: %w", err))
+		} else {
+			g.listenerClosed = true
 		}
-		if g.shutdownOTEL != nil {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer shutdownCancel()
-			if err := g.shutdownOTEL(shutdownCtx); err != nil {
-				errs = append(errs, fmt.Errorf("shutdown generation observability: %w", err))
-			}
+	}
+	if g.shutdownOTEL != nil && !g.otelClosed {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := g.shutdownOTEL(shutdownCtx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown generation observability: %w", err))
+		} else {
+			g.otelClosed = true
 		}
-	})
+		shutdownCancel()
+	}
 	return errors.Join(errs...)
 }

@@ -63,7 +63,7 @@ var Registry = []Field{
 	{Key: "RUNNER_PUBLIC_URL", Label: "Manual public URL", Group: "Network", Type: TypeText, Hint: "Required when service mode is manual."},
 	{Key: "RUNNER_PUBLIC_PORT", Label: "Manual public port", Group: "Network", Type: TypeText, Hint: "Optional public port for manual registration."},
 	{Key: "CLOUDFLARE_TUNNEL_TOKEN", Label: "Tunnel token", Group: "Network", Type: TypeText, Secret: true},
-	{Key: "DASHBOARD_TOKEN", Label: "Dashboard token", Group: "Network", Type: TypeText, Secret: true, Hint: "Optional. When empty, the dashboard is reachable without authentication."},
+	{Key: "DASHBOARD_TOKEN", Label: "Dashboard token", Group: "Authentication", Type: TypeText, Secret: true, Hint: "Optional. When empty, the dashboard is reachable without authentication."},
 	// Observability
 	{Key: "OTEL_ENABLED", Label: "Export telemetry", Group: "Observability", Type: TypeBool},
 	{Key: "OTEL_EXPORTER_OTLP_ENDPOINT", Label: "OTLP endpoint", Group: "Observability", Type: TypeText},

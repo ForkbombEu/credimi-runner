@@ -65,7 +65,7 @@ var FieldImpacts = map[string]FieldImpact{
 	"CREDIMI_RUNNER_PUBLISHED":    {Restart: true, CredimiUpdate: true},
 	"CREDIMI_SERVICE_MODE":        {Recreate: true, CredimiUpdate: true},
 	"CREDIMI_USER_API_KEY":        {Restart: true, Secret: true},
-	"DASHBOARD_TOKEN":             {Restart: true, Recreate: true, Secret: true},
+	"DASHBOARD_TOKEN":             {Secret: true},
 	"ANDROID_RUNNER_IMAGE":        {Recreate: true},
 	"ANDROID_PULL_POLICY":         {Recreate: true},
 	"ANDROID_NETWORK":             {Recreate: true},

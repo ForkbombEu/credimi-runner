@@ -50,12 +50,17 @@ func (s *ProcessStore) StopAll() {
 }
 
 type Process struct {
-	mu         sync.Mutex
-	Name       string
-	Running    bool
-	CancelFunc context.CancelFunc
-	RunFunc    func(ctx context.Context) error
-	generation uint64
+	mu           sync.Mutex
+	Name         string
+	Running      bool
+	CancelFunc   context.CancelFunc
+	RunFunc      func(ctx context.Context) error
+	ReadyRunFunc func(ctx context.Context, ready func(error)) error
+	generation   uint64
+}
+
+func NewReadyProcess(name string, runFunc func(ctx context.Context, ready func(error)) error) *Process {
+	return &Process{Name: name, ReadyRunFunc: runFunc}
 }
 
 func NewProcess(name string, runFunc func(ctx context.Context) error) *Process {
@@ -66,6 +71,16 @@ func NewProcess(name string, runFunc func(ctx context.Context) error) *Process {
 }
 
 func (p *Process) Start() error {
+	return p.start(context.Background(), false)
+}
+
+// StartReady waits until a readiness-aware worker has completed its real
+// initialization. Legacy workers retain Start's asynchronous semantics.
+func (p *Process) StartReady(ctx context.Context) error {
+	return p.start(ctx, true)
+}
+
+func (p *Process) start(waitCtx context.Context, waitReady bool) error {
 	p.mu.Lock()
 	if p.Running {
 		p.mu.Unlock()
@@ -79,7 +94,11 @@ func (p *Process) Start() error {
 	p.generation++
 	generation := p.generation
 	run := p.RunFunc
+	readyRun := p.ReadyRunFunc
 	p.mu.Unlock()
+	ready := make(chan error, 1)
+	var readyOnce sync.Once
+	signalReady := func(err error) { readyOnce.Do(func() { ready <- err }) }
 
 	go func() {
 		defer func() {
@@ -92,7 +111,15 @@ func (p *Process) Start() error {
 			}
 		}()
 
-		if run != nil {
+		if readyRun != nil {
+			if err := readyRun(ctx, signalReady); err != nil {
+				signalReady(err)
+				log.Printf("Process %s stopped with error: %v", p.Name, err)
+			} else {
+				log.Printf("Process %s stopped", p.Name)
+			}
+		} else if run != nil {
+			signalReady(nil)
 			if err := run(ctx); err != nil {
 				log.Printf("Process %s stopped with error: %v", p.Name, err)
 			} else {
@@ -102,6 +129,18 @@ func (p *Process) Start() error {
 	}()
 
 	log.Printf("Worker started for namespace %s", p.Name)
+	if waitReady && readyRun != nil {
+		select {
+		case err := <-ready:
+			if err != nil {
+				p.Stop()
+				return err
+			}
+		case <-waitCtx.Done():
+			p.Stop()
+			return waitCtx.Err()
+		}
+	}
 	return nil
 }
 

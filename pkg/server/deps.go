@@ -37,21 +37,25 @@ type CommandRunner interface {
 }
 
 type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
+type WorkerReadyRunnerFactory func(namespace string) func(ctx context.Context, ready func(error)) error
 type InventoryWorkerRunnerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) func(ctx context.Context) error
+type InventoryWorkerReadyRunnerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) func(ctx context.Context, ready func(error)) error
 type RuntimeConfigLoader func() (dashboardruntime.RunnerRuntimeConfig, error)
 type WorkerStartupCheck func(namespace string) error
 
 type Deps struct {
-	HTTPClient                   HTTPClient
-	FileStore                    FileStore
-	CommandRunner                CommandRunner
-	WorkerRunnerFactory          WorkerRunnerFactory
-	InventoryWorkerRunnerFactory InventoryWorkerRunnerFactory
-	WorkerStartupCheck           WorkerStartupCheck
-	RuntimeConfig                *dashboardruntime.RunnerRuntimeConfig
-	RuntimeConfigLoader          RuntimeConfigLoader
-	Sleeper                      func(time.Duration)
-	ManagedWorkflowRoot          string
+	HTTPClient                        HTTPClient
+	FileStore                         FileStore
+	CommandRunner                     CommandRunner
+	WorkerRunnerFactory               WorkerRunnerFactory
+	WorkerReadyRunnerFactory          WorkerReadyRunnerFactory
+	InventoryWorkerRunnerFactory      InventoryWorkerRunnerFactory
+	InventoryWorkerReadyRunnerFactory InventoryWorkerReadyRunnerFactory
+	WorkerStartupCheck                WorkerStartupCheck
+	RuntimeConfig                     *dashboardruntime.RunnerRuntimeConfig
+	RuntimeConfigLoader               RuntimeConfigLoader
+	Sleeper                           func(time.Duration)
+	ManagedWorkflowRoot               string
 }
 
 func (d *Deps) WithDefaults() {
@@ -67,9 +71,14 @@ func (d *Deps) WithDefaults() {
 	defaultWorkerRunner := d.WorkerRunnerFactory == nil
 	if defaultWorkerRunner {
 		d.WorkerRunnerFactory = workermanager.RunTemporalWorker
+		d.WorkerReadyRunnerFactory = workermanager.RunTemporalWorkerReady
 	}
-	if d.InventoryWorkerRunnerFactory == nil {
+	defaultInventoryWorker := d.InventoryWorkerRunnerFactory == nil
+	if defaultInventoryWorker {
 		d.InventoryWorkerRunnerFactory = workermanager.RunTemporalWorkerWithConfigProvider
+	}
+	if d.InventoryWorkerReadyRunnerFactory == nil && defaultWorkerRunner && defaultInventoryWorker {
+		d.InventoryWorkerReadyRunnerFactory = workermanager.RunTemporalWorkerWithConfigProviderReady
 	}
 	if d.WorkerStartupCheck == nil && defaultWorkerRunner {
 		d.WorkerStartupCheck = workermanager.VerifyTemporalWorker
