@@ -45,6 +45,8 @@ RUN --mount=type=secret,id=credimi_extra_pat,required=true \
 FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
 
 FROM ubuntu:24.04
+ARG TARGETARCH
+ARG CLOUDFLARED_VERSION=2026.8.2
 COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
 COPY --from=avdctl /usr/local/bin/avdctl /usr/local/bin/avdctl
 ENV DEBIAN_FRONTEND=noninteractive \
