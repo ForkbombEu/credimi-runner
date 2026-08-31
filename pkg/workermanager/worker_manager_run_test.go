@@ -14,31 +14,31 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
-	"go.temporal.io/sdk/workflow"
 )
 
 type fakeTemporalWorker struct {
-	workflowRegistrations int
 	activityRegistrations int
-	workflowNames         []string
 	activityNames         []string
 	startErr              error
 	fatalErr              error
 	startHook             func()
 	options               worker.Options
 	stops                 int
+	stopStarted           chan struct{}
+	stopRelease           chan struct{}
 }
 
 type closableTemporalClient struct {
 	client.Client
-	closed int
+	closed    int
+	closeHook func()
 }
 
-func (c *closableTemporalClient) Close() { c.closed++ }
-
-func (f *fakeTemporalWorker) RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions) {
-	f.workflowRegistrations++
-	f.workflowNames = append(f.workflowNames, options.Name)
+func (c *closableTemporalClient) Close() {
+	c.closed++
+	if c.closeHook != nil {
+		c.closeHook()
+	}
 }
 
 func (f *fakeTemporalWorker) RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions) {
@@ -61,6 +61,12 @@ func (f *fakeTemporalWorker) Start() error {
 
 func (f *fakeTemporalWorker) Stop() {
 	f.stops++
+	if f.stopStarted != nil {
+		close(f.stopStarted)
+	}
+	if f.stopRelease != nil {
+		<-f.stopRelease
+	}
 }
 
 func setWorkerManagerTestHooks(t *testing.T) {
@@ -163,6 +169,29 @@ func TestRunTemporalWorker_RetriesInitErrorUntilCanceled(t *testing.T) {
 	requireWorkerManagerSpanEvent(t, recorder, "temporal_worker.run", "temporal_worker.stopped")
 }
 
+func TestRunTemporalWorkerReadyUnblocksWhenStartupRetryIsCanceled(t *testing.T) {
+	setWorkerManagerTestHooks(t)
+	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	temporalClientGetter = func(string) (client.Client, error) {
+		return nil, errors.New("dial failed")
+	}
+	sleepWithContextFn = func(context.Context, time.Duration) bool {
+		cancel()
+		return false
+	}
+	ready := make(chan error, 1)
+	err := RunTemporalWorkerReady("namespace-ready-retry")(ctx, func(err error) { ready <- err })
+	require.NoError(t, err)
+	select {
+	case readyErr := <-ready:
+		require.ErrorIs(t, readyErr, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("startup readiness was not released after cancellation")
+	}
+}
+
 func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	setWorkerManagerTestHooks(t)
 	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
@@ -185,7 +214,6 @@ func TestRunTemporalWorker_NonRetryableRunErrorReturnsError(t *testing.T) {
 	err := run(context.Background())
 	require.Error(t, err)
 	require.ErrorContains(t, err, "bad worker config")
-	require.Equal(t, 0, fake.workflowRegistrations)
 	require.Equal(t, 15, fake.activityRegistrations)
 	require.Contains(t, fake.activityNames, "Run APK post-install checks")
 	require.Contains(t, fake.activityNames, "Setup iOS simulator")
@@ -212,6 +240,43 @@ func TestRunTemporalWorkerStartFailureClosesClientSynchronously(t *testing.T) {
 	require.ErrorContains(t, err, "worker startup failed")
 	require.Equal(t, 1, startupClient.closed)
 	require.Zero(t, fake.stops)
+}
+
+func TestRunTemporalWorkerWaitsForWorkerStopBeforeClosingClient(t *testing.T) {
+	setWorkerManagerTestHooks(t)
+	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	stopStarted := make(chan struct{})
+	stopRelease := make(chan struct{})
+	clientClosed := make(chan struct{})
+	startupClient := &closableTemporalClient{closeHook: func() { close(clientClosed) }}
+	fake := &fakeTemporalWorker{startHook: cancel, stopStarted: stopStarted, stopRelease: stopRelease}
+	temporalClientGetter = func(string) (client.Client, error) { return startupClient, nil }
+	temporalWorkerFactory = func(_ client.Client, _ string, options worker.Options) temporalWorker {
+		fake.options = options
+		return fake
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- RunTemporalWorker("namespace-stop-order")(ctx) }()
+	<-stopStarted
+	select {
+	case <-done:
+		t.Fatal("worker returned before Stop completed")
+	default:
+	}
+	select {
+	case <-clientClosed:
+		t.Fatal("client closed before worker Stop completed")
+	default:
+	}
+	close(stopRelease)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if fake.stops != 1 || startupClient.closed != 1 {
+		t.Fatalf("worker stops=%d client closes=%d", fake.stops, startupClient.closed)
+	}
 }
 
 func TestRunTemporalWorkerClosesItsGenerationClient(t *testing.T) {

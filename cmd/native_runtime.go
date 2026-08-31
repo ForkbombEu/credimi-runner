@@ -77,6 +77,7 @@ type nativeRuntimeGeneration struct {
 	shutdownOTEL    func(context.Context) error
 	closeMu         sync.Mutex
 	paused          bool
+	workersClosed   bool
 	edgeClosed      bool
 	httpClosed      bool
 	listenerClosed  bool
@@ -265,7 +266,11 @@ func (s *NativeRuntimeSupervisor) StartExecution(ctx context.Context) error {
 func (s *NativeRuntimeSupervisor) rollbackActivation(ctx context.Context, generation *nativeRuntimeGeneration, cause error) error {
 	generation.store.StopAll()
 	generation.stopHeartbeat()
+	workersErr := generation.store.WaitAll(ctx)
 	var errs []error
+	if workersErr != nil {
+		errs = append(errs, fmt.Errorf("stop workers after failed startup: %w", workersErr))
+	}
 	if err := generation.lifecycle.Pause(ctx, "startup_failed"); err != nil {
 		errs = append(errs, fmt.Errorf("pause runner lifecycle after failed startup: %w", err))
 	}
@@ -305,9 +310,14 @@ func (s *NativeRuntimeSupervisor) Stop(ctx context.Context) error {
 	if edgeErr != nil {
 		errs = append(errs, fmt.Errorf("stop native edge: %w", edgeErr))
 	}
+	workersErr := generation.store.WaitAll(ctx)
+	if workersErr != nil {
+		errs = append(errs, fmt.Errorf("stop native workers: %w", workersErr))
+	}
 	state := "stopped"
-	if edgeErr != nil {
-		state = "failed:stopped: " + edgeErr.Error()
+	if edgeErr != nil || workersErr != nil {
+		cause := errors.Join(edgeErr, workersErr)
+		state = "failed:stopped: " + cause.Error()
 	}
 	if err := writeRuntimeState(s.configDir, state); err != nil {
 		errs = append(errs, fmt.Errorf("mark native runtime stopped: %w", err))
@@ -505,6 +515,15 @@ func (g *nativeRuntimeGeneration) close(ctx context.Context, pause bool) error {
 			g.edgeClosed = true
 		}
 	}
+	workersErr := error(nil)
+	if !g.workersClosed {
+		workersErr = g.store.WaitAll(ctx)
+		if workersErr != nil {
+			errs = append(errs, fmt.Errorf("stop generation workers: %w", workersErr))
+		} else {
+			g.workersClosed = true
+		}
+	}
 	if !g.contextCanceled {
 		g.cancel()
 		g.contextCanceled = true
@@ -543,5 +562,5 @@ func (g *nativeRuntimeGeneration) localResourcesClosed() bool {
 	g.edgeMu.Lock()
 	edgeStopped := !g.edgeStarted && g.edgeClosed
 	g.edgeMu.Unlock()
-	return edgeStopped && g.httpClosed && g.listenerClosed && g.otelClosed && g.contextCanceled
+	return edgeStopped && g.workersClosed && g.httpClosed && g.listenerClosed && g.otelClosed && g.contextCanceled
 }

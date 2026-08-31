@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 )
@@ -49,6 +50,43 @@ func (s *ProcessStore) StopAll() {
 	}
 }
 
+// StopAllAndWait cancels every process before waiting for any of them. This
+// lets a generation shut down all workers concurrently while still providing
+// a deterministic completion boundary.
+func (s *ProcessStore) StopAllAndWait(ctx context.Context) error {
+	s.StopAll()
+	return s.WaitAll(ctx)
+}
+
+// WaitAll waits for every registered process to finish. Callers that need to
+// sequence other shutdown work between cancellation and waiting can use this
+// after StopAll.
+func (s *ProcessStore) WaitAll(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	processes := s.List()
+	var group sync.WaitGroup
+	errs := make(chan error, len(processes))
+	for _, process := range processes {
+		process := process
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if err := process.Wait(ctx); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	group.Wait()
+	close(errs)
+	var joined []error
+	for err := range errs {
+		joined = append(joined, err)
+	}
+	return errors.Join(joined...)
+}
+
 type Process struct {
 	mu           sync.Mutex
 	Name         string
@@ -57,6 +95,7 @@ type Process struct {
 	RunFunc      func(ctx context.Context) error
 	ReadyRunFunc func(ctx context.Context, ready func(error)) error
 	generation   uint64
+	done         chan struct{}
 }
 
 func NewReadyProcess(name string, runFunc func(ctx context.Context, ready func(error)) error) *Process {
@@ -81,11 +120,22 @@ func (p *Process) StartReady(ctx context.Context) error {
 }
 
 func (p *Process) start(waitCtx context.Context, waitReady bool) error {
+	if waitCtx == nil {
+		waitCtx = context.Background()
+	}
 	p.mu.Lock()
 	if p.Running {
 		p.mu.Unlock()
 		log.Printf("Worker for namespace %s already running", p.Name)
 		return nil
+	}
+	if p.done != nil {
+		select {
+		case <-p.done:
+		default:
+			p.mu.Unlock()
+			return errors.New("worker is still stopping")
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,6 +143,8 @@ func (p *Process) start(waitCtx context.Context, waitReady bool) error {
 	p.Running = true
 	p.generation++
 	generation := p.generation
+	done := make(chan struct{})
+	p.done = done
 	run := p.RunFunc
 	readyRun := p.ReadyRunFunc
 	p.mu.Unlock()
@@ -103,12 +155,13 @@ func (p *Process) start(waitCtx context.Context, waitReady bool) error {
 	go func() {
 		defer func() {
 			p.mu.Lock()
-			defer p.mu.Unlock()
 			// A stop/start may have already begun a new worker. The old
 			// goroutine must not mark that replacement as stopped.
 			if p.generation == generation {
 				p.Running = false
 			}
+			close(done)
+			p.mu.Unlock()
 		}()
 
 		if readyRun != nil {
@@ -157,6 +210,33 @@ func (p *Process) Stop() {
 		cancel()
 	}
 	log.Printf("Worker stopped for namespace %s", p.Name)
+}
+
+// Wait blocks until the current process goroutine has returned. A process
+// that has never started is already complete.
+func (p *Process) Wait(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.mu.Lock()
+	done := p.done
+	p.mu.Unlock()
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// StopAndWait requests cancellation and waits for the worker goroutine to
+// finish all owned cleanup.
+func (p *Process) StopAndWait(ctx context.Context) error {
+	p.Stop()
+	return p.Wait(ctx)
 }
 
 func (p *Process) IsRunning() bool {

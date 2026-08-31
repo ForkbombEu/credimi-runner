@@ -22,13 +22,11 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
-	"go.temporal.io/sdk/workflow"
 )
 
 const defaultTemporalAddress = "temporal.credimi.io:7233"
 
 type temporalWorker interface {
-	RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions)
 	RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions)
 	Start() error
 	Stop()
@@ -190,6 +188,7 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider, ready f
 				log.Printf("Temporal worker failed to initialize for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
 					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "retry_canceled")))
+					signalReady(ctx.Err())
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
@@ -221,6 +220,7 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider, ready f
 					return wStartErr
 				}
 				if !sleepWithContextFn(ctx, backoff) {
+					signalReady(ctx.Err())
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
@@ -278,6 +278,7 @@ func runTemporalWorker(namespace string, provider RuntimeConfigProvider, ready f
 				log.Printf("Temporal worker stopped with retryable error for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
 					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "retry_canceled")))
+					signalReady(ctx.Err())
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)

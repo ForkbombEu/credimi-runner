@@ -20,10 +20,11 @@ import (
 
 type nativeEdgeFake struct {
 	stopErrs []error
+	starts   int
 	stops    int
 }
 
-func (*nativeEdgeFake) Start(context.Context) error { return nil }
+func (f *nativeEdgeFake) Start(context.Context) error { f.starts++; return nil }
 func (f *nativeEdgeFake) Stop(context.Context) error {
 	f.stops++
 	if len(f.stopErrs) == 0 {
@@ -41,13 +42,15 @@ func (*nativeEdgeFake) Status(context.Context) dashboardruntime.RuntimeStatus {
 }
 
 type nativeLifecycleFake struct {
-	pauses   int
-	pauseErr error
+	pauses     int
+	pauseErr   error
+	resumes    int
+	heartbeats int
 }
 
 func (f *nativeLifecycleFake) Pause(context.Context, string) error     { f.pauses++; return f.pauseErr }
-func (*nativeLifecycleFake) Resume(context.Context, string) error      { return nil }
-func (*nativeLifecycleFake) Heartbeat(context.Context) error           { return nil }
+func (f *nativeLifecycleFake) Resume(context.Context, string) error    { f.resumes++; return nil }
+func (f *nativeLifecycleFake) Heartbeat(context.Context) error         { f.heartbeats++; return nil }
 func (*nativeLifecycleFake) StartHeartbeatLoop(context.Context) func() { return noopCancel }
 
 func testNativeGeneration(t *testing.T, edge nativeEdge) *nativeRuntimeGeneration {
@@ -63,6 +66,47 @@ func testNativeGeneration(t *testing.T, edge nativeEdge) *nativeRuntimeGeneratio
 		stopBeat: noopCancel, shutdownOTEL: func(context.Context) error { return nil }, edgeStarted: true,
 	}
 	return generation
+}
+
+type nativeServiceFake struct{ starts int }
+
+func (f *nativeServiceFake) StartExistingWorkers(context.Context) error { f.starts++; return nil }
+
+func TestNativeSupervisorFullLifecycleHasOneActiveGeneration(t *testing.T) {
+	dir := t.TempDir()
+	edge := &nativeEdgeFake{}
+	lifecycle := &nativeLifecycleFake{}
+	generation := testNativeGeneration(t, edge)
+	generation.edgeStarted = false
+	generation.lifecycle = lifecycle
+	generation.service = &nativeServiceFake{}
+	supervisor := NewNativeRuntimeSupervisor(dir)
+	supervisor.generation = generation
+
+	if err := supervisor.StartExecution(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.StartExecution(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := supervisor.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if supervisor.generation != nil || supervisor.ExecutionRunning() {
+		t.Fatal("full lifecycle left an active generation or running intent")
+	}
+	if edge.starts != 2 || edge.stops != 2 {
+		t.Fatalf("edge starts=%d stops=%d, want two complete transitions", edge.starts, edge.stops)
+	}
+	if lifecycle.resumes != 2 || lifecycle.heartbeats != 2 {
+		t.Fatalf("resumes=%d heartbeats=%d", lifecycle.resumes, lifecycle.heartbeats)
+	}
 }
 
 func TestNativeGenerationRetriesFailedEdgeStop(t *testing.T) {
@@ -179,6 +223,38 @@ func TestNativeSupervisorReconcileReleasesLocallyClosedGenerationAfterPauseFailu
 	state, readErr := os.ReadFile(filepath.Join(dir, "runtime-state"))
 	if readErr != nil || !strings.HasPrefix(string(state), "failed:running:") {
 		t.Fatalf("runtime state=%q err=%v", state, readErr)
+	}
+}
+
+func TestNativeSupervisorRetainsGenerationWhileWorkerShutdownIsIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	release := make(chan struct{})
+	generation := testNativeGeneration(t, &nativeEdgeFake{})
+	worker := server.NewProcess("slow-worker", func(context.Context) error {
+		<-release
+		return nil
+	})
+	if err := worker.Start(); err != nil {
+		t.Fatal(err)
+	}
+	generation.store.Add(worker)
+	supervisor := NewNativeRuntimeSupervisor(dir)
+	supervisor.generation = generation
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := supervisor.Close(ctx); err == nil {
+		t.Fatal("close unexpectedly succeeded while worker was still unwinding")
+	}
+	if supervisor.generation != generation || generation.localResourcesClosed() {
+		t.Fatal("supervisor released an incompletely closed generation")
+	}
+	close(release)
+	if err := supervisor.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if supervisor.generation != nil {
+		t.Fatal("supervisor retained a fully closed generation")
 	}
 }
 
