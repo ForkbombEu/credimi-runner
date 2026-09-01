@@ -290,9 +290,6 @@ func TestDashboardConfigAndViewHelperBranches(t *testing.T) {
 	if (PageData{Snapshot: Snapshot{Services: []Service{{Expected: true, Critical: true, Status: Offline}}}}.ServicesAllUp()) {
 		t.Fatal("offline critical service reported healthy")
 	}
-	if err := s.provisionRuntimeCapabilities(context.Background()); err == nil {
-		t.Fatal("missing typed config unexpectedly provisioned")
-	}
 	recorder := httptest.NewRecorder()
 	s.queueRuntimeAction(recorder, "overview", controller.OperationRuntimeStart, func(context.Context) error { return nil }, "done")
 	if recorder.Code != http.StatusAccepted {
@@ -518,6 +515,88 @@ func TestRuntimeOnlySaveReconcilesWhenRunning(t *testing.T) {
 	}
 	if len(s.pendingDiff.Classes) != 0 {
 		t.Fatalf("pending diff = %+v", s.pendingDiff)
+	}
+}
+
+func TestDarwinDashboardListenerSaveStaysPending(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "")
+	loaded, path := testSavedConfig(t)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.runtime = fake
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["DASHBOARD_PORT"] = "9051"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	starts, stops, restarts, reconciles := fake.counts()
+	if starts != 0 || stops != 0 || restarts != 0 || reconciles != 0 {
+		t.Fatalf("Dashboard listener save activated runtime: %d/%d/%d/%d", starts, stops, restarts, reconciles)
+	}
+	if !s.serviceRestartRequired() || !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
+		t.Fatalf("pending service restart lost: service=%t pending=%+v", s.serviceRestartRequired(), s.pendingDiff)
+	}
+	if !s.pageData("overview", nil).RuntimeStatus().PendingServiceRestart {
+		t.Fatal("page status did not report pending service restart")
+	}
+	if got := s.cfg.Snapshot()["DASHBOARD_PORT"]; got != "9051" {
+		t.Fatalf("saved Dashboard port = %q", got)
+	}
+}
+
+func TestDarwinMixedDashboardAndRuntimeSaveWaitsForServiceRestart(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "")
+	loaded, path := testSavedConfig(t)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.runtime = fake
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["DASHBOARD_PORT"] = "9051"
+	newValues["TEMPORAL_ADDRESS"] = "temporal-new:7233"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, reconciles := fake.counts()
+	if reconciles != 0 {
+		t.Fatalf("mixed save partially reconciled runtime: %d", reconciles)
+	}
+	if !s.serviceRestartRequired() || !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile) {
+		t.Fatalf("mixed save state: service=%t pending=%+v", s.serviceRestartRequired(), s.pendingDiff)
+	}
+}
+
+func TestDarwinRunnerPortSaveReconcilesRuntime(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "")
+	loaded, path := testSavedConfig(t)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.runtime = fake
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["RUNNER_PORT"] = "9050"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	starts, stops, restarts, reconciles := fake.counts()
+	if starts != 0 || stops != 0 || restarts != 0 || reconciles != 1 {
+		t.Fatalf("runner port save calls: %d/%d/%d/%d", starts, stops, restarts, reconciles)
+	}
+	if s.serviceRestartRequired() {
+		t.Fatal("runner port save incorrectly required service restart")
 	}
 }
 

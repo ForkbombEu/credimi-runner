@@ -21,6 +21,7 @@ type testAPI struct {
 	mu                 sync.Mutex
 	started, closed    bool
 	startErr, closeErr error
+	startHook          func()
 }
 
 func (a *testAPI) Start() error {
@@ -30,6 +31,9 @@ func (a *testAPI) Start() error {
 		return a.startErr
 	}
 	a.started = true
+	if a.startHook != nil {
+		a.startHook()
+	}
 	return nil
 }
 func (a *testAPI) Shutdown(context.Context) error {
@@ -46,6 +50,7 @@ type testEdge struct {
 	starts, stops               int
 	startErr, stopErr, closeErr error
 	running                     bool
+	startHook                   func()
 }
 
 func (e *testEdge) Start(context.Context, string) (string, error) {
@@ -56,6 +61,9 @@ func (e *testEdge) Start(context.Context, string) (string, error) {
 		return "", e.startErr
 	}
 	e.running = true
+	if e.startHook != nil {
+		e.startHook()
+	}
 	return "https://runner.example", nil
 }
 func (e *testEdge) Stop(context.Context) error {
@@ -123,6 +131,8 @@ type testLife struct {
 	mu                               sync.Mutex
 	pauses, resumes, beats, loops    int
 	pauseErr, errorResume, errorBeat error
+	resumeHook, heartbeatHook        func()
+	loopHook                         func()
 }
 
 func (l *testLife) Pause(context.Context, string) error {
@@ -136,6 +146,9 @@ func (l *testLife) Resume(context.Context, string) error {
 	l.mu.Lock()
 	l.resumes++
 	e := l.errorResume
+	if l.resumeHook != nil {
+		l.resumeHook()
+	}
 	l.mu.Unlock()
 	return e
 }
@@ -143,12 +156,18 @@ func (l *testLife) Heartbeat(context.Context) error {
 	l.mu.Lock()
 	l.beats++
 	e := l.errorBeat
+	if l.heartbeatHook != nil {
+		l.heartbeatHook()
+	}
 	l.mu.Unlock()
 	return e
 }
 func (l *testLife) StartHeartbeatLoop(context.Context) func() {
 	l.mu.Lock()
 	l.loops++
+	if l.loopHook != nil {
+		l.loopHook()
+	}
 	l.mu.Unlock()
 	return func() {}
 }
@@ -588,6 +607,86 @@ func TestSupervisorRegistersBeforeWorkers(t *testing.T) {
 		t.Fatalf("activation order = %q, want %q", got, want)
 	}
 	_ = s.Stop(context.Background())
+}
+
+func TestSupervisorValidatesCapabilitiesBeforeActivationCompletes(t *testing.T) {
+	var events []string
+	api := &testAPI{startHook: func() { events = append(events, "api-start") }}
+	edgeImpl := &testEdge{startHook: func() { events = append(events, "edge-start") }}
+	workers := &testWorkers{startHook: func() { events = append(events, "workers-start") }}
+	life := &testLife{
+		resumeHook:    func() { events = append(events, "resume") },
+		heartbeatHook: func() { events = append(events, "heartbeat") },
+		loopHook:      func() { events = append(events, "heartbeat-loop") },
+	}
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		VerifyPublicEndpoint: func(context.Context, config.Config, string) error {
+			events = append(events, "verify")
+			return nil
+		},
+		ValidateRuntimeCapabilities: func(context.Context, config.Config) error {
+			events = append(events, "runtime-capabilities")
+			return nil
+		},
+		Register: func(context.Context, config.Config, string) error {
+			events = append(events, "register")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "api-start,edge-start,verify,runtime-capabilities,register,workers-start,resume,heartbeat,heartbeat-loop"
+	if got := strings.Join(events, ","); got != want {
+		t.Fatalf("activation order = %q, want %q", got, want)
+	}
+	_ = s.Stop(context.Background())
+}
+
+func TestSupervisorCapabilityFailureRollsBackBeforeWorkers(t *testing.T) {
+	api := &testAPI{}
+	edgeImpl := &testEdge{}
+	workers := &testWorkers{}
+	life := &testLife{}
+	capabilityErr := errors.New("/dev/kvm is required")
+	validations := 0
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		ValidateRuntimeCapabilities: func(context.Context, config.Config) error {
+			validations++
+			return capabilityErr
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.Start(context.Background())
+	if !errors.Is(err, capabilityErr) || !strings.Contains(err.Error(), "/dev/kvm") {
+		t.Fatalf("start error = %v", err)
+	}
+	if validations != 1 {
+		t.Fatalf("capability validations = %d", validations)
+	}
+	if workers.starts != 0 || life.resumes != 0 || life.beats != 0 || life.loops != 0 {
+		t.Fatalf("activation continued: workers=%d resume=%d heartbeat=%d loop=%d", workers.starts, life.resumes, life.beats, life.loops)
+	}
+	status := s.Status()
+	if status.Desired != DesiredRunning || status.Actual != ActualFailed || s.currentGeneration() != nil {
+		t.Fatalf("status=%+v generation=%v", status, s.currentGeneration())
+	}
+	if !api.closed || edgeImpl.stops == 0 {
+		t.Fatalf("rollback incomplete: api closed=%t edge stops=%d", api.closed, edgeImpl.stops)
+	}
 }
 
 func TestRegistrationAndPublicEndpointVerification(t *testing.T) {

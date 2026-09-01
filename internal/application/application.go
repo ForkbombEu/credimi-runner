@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
@@ -89,6 +90,9 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 			applyEnvironment(cfg)
 			loader := runtimeConfigLoader(cfg)
 			return server.NewRunnerLifecycleClient(server.LoadRunnerLifecycleConfig(utils.LoadInstance(), loader), http.DefaultClient, store, loader)
+		},
+		ValidateRuntimeCapabilities: func(ctx context.Context, cfg runnerconfig.Config) error {
+			return androidtools.EnsureEmulatorReady(ctx, cfg, runtime.GOOS, nil)
 		},
 		Register:             runtimesupervisor.Register,
 		VerifyPublicEndpoint: runtimesupervisor.VerifyPublicEndpoint,

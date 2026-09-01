@@ -46,17 +46,18 @@ type API interface {
 }
 
 type Dependencies struct {
-	NewEdge              func(config.Config) (edge.Edge, error)
-	NewAPI               func(config.Config, context.Context) (API, error)
-	NewAPIWithStore      func(config.Config, context.Context, *server.ProcessStore) (API, error)
-	NewWorkers           func(config.Config) WorkerSet
-	NewWorkersWithStore  func(config.Config, *server.ProcessStore) WorkerSet
-	NewLifecycleClient   func(config.Config, *server.ProcessStore) LifecycleClient
-	InitObservability    func(context.Context, config.Config) (func(context.Context) error, error)
-	Register             func(context.Context, config.Config, string) error
-	VerifyPublicEndpoint func(context.Context, config.Config, string) error
-	StartWorkers         func(context.Context, config.Config, *server.ProcessStore) error
-	NewProcessStore      func() *server.ProcessStore
+	NewEdge                     func(config.Config) (edge.Edge, error)
+	NewAPI                      func(config.Config, context.Context) (API, error)
+	NewAPIWithStore             func(config.Config, context.Context, *server.ProcessStore) (API, error)
+	NewWorkers                  func(config.Config) WorkerSet
+	NewWorkersWithStore         func(config.Config, *server.ProcessStore) WorkerSet
+	NewLifecycleClient          func(config.Config, *server.ProcessStore) LifecycleClient
+	InitObservability           func(context.Context, config.Config) (func(context.Context) error, error)
+	ValidateRuntimeCapabilities func(context.Context, config.Config) error
+	Register                    func(context.Context, config.Config, string) error
+	VerifyPublicEndpoint        func(context.Context, config.Config, string) error
+	StartWorkers                func(context.Context, config.Config, *server.ProcessStore) error
+	NewProcessStore             func() *server.ProcessStore
 }
 
 type Supervisor struct {
@@ -289,6 +290,11 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 	if s.deps.VerifyPublicEndpoint != nil {
 		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, g.publicURL); err != nil {
 			return fmt.Errorf("verify public endpoint: %w", err)
+		}
+	}
+	if s.deps.ValidateRuntimeCapabilities != nil {
+		if err := s.deps.ValidateRuntimeCapabilities(ctx, cfg); err != nil {
+			return fmt.Errorf("validate runtime capabilities: %w", err)
 		}
 	}
 	if s.deps.Register != nil {

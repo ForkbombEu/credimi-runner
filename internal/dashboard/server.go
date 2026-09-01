@@ -448,14 +448,6 @@ func loadConfigSnapshot(store *dashboardruntime.Store, current *Config) *Config 
 	return current
 }
 
-func (s *Server) provisionRuntimeCapabilities(ctx context.Context) error {
-	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
-	if err != nil {
-		return fmt.Errorf("load typed runtime configuration: %w", err)
-	}
-	return androidtools.EnsureEmulatorReady(ctx, cfg, runtime.GOOS, s.appendStartupLog)
-}
-
 // provisionCandidateCapabilities validates and provisions an in-memory
 // inventory before it can replace the active TOML. The temporary TOML is
 // private scratch state; the active configuration is untouched on failure.
@@ -1150,6 +1142,13 @@ func withoutServiceClass(diff dashboardruntime.ConfigDiff) dashboardruntime.Conf
 	return filtered
 }
 
+func pendingDiffForPlatform(diff dashboardruntime.ConfigDiff, goos string) dashboardruntime.ConfigDiff {
+	if goos == "darwin" {
+		return diff
+	}
+	return withoutServiceClass(diff)
+}
+
 func mergeConfigDiff(left, right dashboardruntime.ConfigDiff) dashboardruntime.ConfigDiff {
 	merged := dashboardruntime.ConfigDiff{}
 	for _, diff := range []dashboardruntime.ConfigDiff{left, right} {
@@ -1177,6 +1176,13 @@ func containsString(values []string, want string) bool {
 }
 
 func (s *Server) serviceRestartRequired() bool {
+	return s.serviceRestartRequiredFor(s.currentPendingDiff())
+}
+
+func (s *Server) serviceRestartRequiredFor(pending dashboardruntime.ConfigDiff) bool {
+	if runtimeGOOS() == "darwin" {
+		return hasApplyClass(pending, dashboardruntime.ApplyServiceRestartRequired)
+	}
 	return dashboardruntime.ServiceRestartRequired(dashboardruntime.Values(s.cfg.Snapshot()), s.cfg.Exists())
 }
 
@@ -1200,8 +1206,8 @@ func (s *Server) setPendingDiff(diff dashboardruntime.ConfigDiff) {
 }
 
 func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff) error {
-	pending := mergeConfigDiff(s.currentPendingDiff(), withoutServiceClass(diff))
-	if s.serviceRestartRequired() {
+	pending := mergeConfigDiff(s.currentPendingDiff(), pendingDiffForPlatform(diff, runtimeGOOS()))
+	if s.serviceRestartRequiredFor(pending) {
 		s.setPendingDiff(pending)
 		return nil
 	}
@@ -1250,6 +1256,7 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 		return err
 	}
 	incoming := formValuesMap(r.PostForm)
+	oldValues := dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
 	// Setup resolves the runner and every device through Credimi before it can
 	// persist the inventory. Do not let an unavailable Credimi endpoint leave
 	// the wizard's request open forever while its startup status stays idle.
@@ -1293,8 +1300,10 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	if err != nil {
 		return fmt.Errorf("load saved typed configuration: %w", err)
 	}
-	if s.serviceRestartRequired() {
-		s.setPendingDiff(dashboardruntime.ConfigDiff{})
+	newValues := dashboardruntime.Values(s.cfg.Snapshot())
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
+	if s.serviceRestartRequiredFor(diff) {
+		s.setPendingDiff(pendingDiffForPlatform(diff, runtimeGOOS()))
 		s.setStartupState(StartupNeedsAttention, "Setup saved. Restart the Credimi Runner service to activate it: credimi-runner service restart")
 		return nil
 	}
@@ -2474,5 +2483,8 @@ func cloneStringMap(values map[string]string) map[string]string {
 }
 
 func runtimeGOOS() string {
-	return strings.ToLower(strings.TrimSpace(os.Getenv("GOOS_OVERRIDE")))
+	if override := strings.ToLower(strings.TrimSpace(os.Getenv("GOOS_OVERRIDE"))); override != "" {
+		return override
+	}
+	return runtime.GOOS
 }
