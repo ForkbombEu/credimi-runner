@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 type fakeCommandRunner struct{ calls [][]string }
@@ -28,6 +30,7 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 	cfg := config.Bootstrap()
 	cfg.Android.RunnerImage = "runner:test"
 	cfg.Android.PullPolicy = "never"
+	cfg.Android.Network = "credimi-runner"
 	if err := WriteServiceCompose(dir, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +108,12 @@ func TestDockerManagerCommands(t *testing.T) {
 	}
 	if len(f.calls) != 4 {
 		t.Fatalf("calls=%v", f.calls)
+	}
+	wantProject := ProjectName(dir, m.host.UID)
+	for _, call := range f.calls {
+		if !containsArgs(call, "--project-name") || !containsArgs(call, wantProject) {
+			t.Fatalf("compose call does not use canonical project %q: %v", wantProject, call)
+		}
 	}
 	if _, err := m.Status(context.Background()); err != nil {
 		t.Fatal(err)
@@ -188,11 +197,319 @@ func TestLaunchAgentIsUnsupportedOutsideDarwin(t *testing.T) {
 }
 
 func TestServiceSpecFingerprintIsOrderIndependent(t *testing.T) {
-	a := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []string{"b", "a"}, Devices: []string{"2", "1"}}
-	b := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []string{"a", "b"}, Devices: []string{"1", "2"}}
+	a := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []NamedVolume{{Name: "b", Target: "/b"}, {Name: "a", Target: "/a"}}, Devices: []DeviceMapping{{Source: "2", Target: "2"}, {Source: "1", Target: "1"}}}
+	b := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []NamedVolume{{Name: "a", Target: "/a"}, {Name: "b", Target: "/b"}}, Devices: []DeviceMapping{{Source: "1", Target: "1"}, {Source: "2", Target: "2"}}}
 	if a.Fingerprint() != b.Fingerprint() {
 		t.Fatal("fingerprint depends on set ordering")
 	}
+}
+
+func TestBuildServiceSpecRestoresEmulatorHostCapabilities(t *testing.T) {
+	host := testHost("/home/alice")
+	cfg := configForDevices(config.DeviceConfig{
+		ID: "org/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true,
+		AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden"},
+	})
+	spec, err := BuildServiceSpec(cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBind(t, spec, "/home/alice/.android", ContainerAndroidDir, false)
+	assertBind(t, spec, "/home/alice/avd-golden", ContainerGoldenRoot, false)
+	assertDevice(t, spec, "/dev/kvm", "/dev/kvm")
+	for key, want := range map[string]string{
+		ContainerAndroidEnv: ContainerAndroidDir,
+		ContainerAVDHomeEnv: ContainerAVDHome,
+		ContainerGoldenEnv:  ContainerGoldenRoot,
+		ConfigOwnerUIDEnv:   "1000",
+		ConfigOwnerGIDEnv:   "1000",
+	} {
+		if spec.Environment[key] != want {
+			t.Fatalf("environment %s=%q, want %q", key, spec.Environment[key], want)
+		}
+	}
+	assertNoDuplicateBindTargets(t, spec)
+}
+
+func TestBuildServiceSpecPreservesEmulatorAssetPathContract(t *testing.T) {
+	home := t.TempDir()
+	host := testHost(home)
+	host.AndroidDir = filepath.Join(home, ".android")
+	host.AVDHome = filepath.Join(host.AndroidDir, "avd")
+	host.GoldenRoot = filepath.Join(home, "avd-golden")
+	for _, path := range []string{
+		filepath.Join(host.AVDHome, "credimi.avd"),
+		filepath.Join(host.AVDHome, "credimi.ini"),
+		filepath.Join(host.GoldenRoot, "credimi-golden"),
+	} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := configForDevices(config.DeviceConfig{
+		ID: "org/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true,
+		AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden"},
+	})
+	spec, err := BuildServiceSpec(cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertBind(t, spec, filepath.Join(home, ".android"), ContainerAndroidDir, false)
+	assertBind(t, spec, filepath.Join(home, "avd-golden"), ContainerGoldenRoot, false)
+	if spec.Environment[AndroidAVDHomeEnv] != ContainerAVDHome {
+		t.Fatalf("ANDROID_AVD_HOME=%q, want %q", spec.Environment[AndroidAVDHomeEnv], ContainerAVDHome)
+	}
+}
+
+func TestBuildServiceSpecRestoresPhysicalUSBHostADBContract(t *testing.T) {
+	// Before the persistent-service refactor, USB runners reused the host ADB
+	// daemon through host networking and ADB_SERVER_SOCKET. Keep that behavior
+	// so adb devices inside the runner sees the host's authorized devices.
+	host := testHost("/home/alice")
+	cfg := configForDevices(config.DeviceConfig{
+		ID: "org/runner/phone", Name: "Phone", Type: config.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "SERIAL"},
+	})
+	spec, err := BuildServiceSpec(cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.NetworkMode != "host" || spec.Environment[ADBServerSocketEnv] != ADBServerSocket {
+		t.Fatalf("USB ADB topology = mode %q env %#v", spec.NetworkMode, spec.Environment)
+	}
+	assertDevice(t, spec, "/dev/bus/usb", "/dev/bus/usb")
+	assertBind(t, spec, "/home/alice/.android", ContainerAndroidDir, false)
+	if spec.Environment[ConfigOwnerUIDEnv] != "1000" || spec.Environment[ConfigOwnerGIDEnv] != "1000" {
+		t.Fatalf("host ownership environment = %#v", spec.Environment)
+	}
+}
+
+func TestBuildServiceSpecUnionsAndDeduplicatesMultiDeviceCapabilities(t *testing.T) {
+	home := t.TempDir()
+	knownHosts := filepath.Join(home, ".ssh", "known_hosts")
+	if err := os.MkdirAll(filepath.Dir(knownHosts), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(knownHosts, []byte("known"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := testHost(home)
+	cfg := configForDevices(
+		config.DeviceConfig{ID: "org/runner/phone", Name: "Phone", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "phone"}},
+		config.DeviceConfig{ID: "org/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden"}},
+		config.DeviceConfig{ID: "org/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: knownHosts}},
+	)
+	spec, err := BuildServiceSpec(cfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.NetworkMode != "host" || spec.Environment[ADBServerSocketEnv] != ADBServerSocket {
+		t.Fatalf("multi-device network/ADB topology = %q/%q", spec.NetworkMode, spec.Environment[ADBServerSocketEnv])
+	}
+	assertBind(t, spec, filepath.Join(home, ".android"), ContainerAndroidDir, false)
+	assertBind(t, spec, filepath.Join(home, "avd-golden"), ContainerGoldenRoot, false)
+	assertBind(t, spec, knownHosts, knownHosts, true)
+	assertDevice(t, spec, "/dev/kvm", "/dev/kvm")
+	assertDevice(t, spec, "/dev/bus/usb", "/dev/bus/usb")
+	assertNoDuplicateBindTargets(t, spec)
+	if len(spec.Devices) != 2 || len(spec.Volumes) != 3 {
+		t.Fatalf("multi-device deduplication = %d devices, %d volumes", len(spec.Devices), len(spec.Volumes))
+	}
+}
+
+func TestBuildServiceSpecPreservesRedroidKnownHostsResolution(t *testing.T) {
+	home := t.TempDir()
+	knownHosts := filepath.Join(home, ".ssh", "known_hosts")
+	if err := os.MkdirAll(filepath.Dir(knownHosts), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(knownHosts, []byte("known"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := testHost(home)
+	for _, tc := range []struct {
+		name, configured, want string
+	}{
+		{name: "explicit", configured: knownHosts, want: knownHosts},
+		{name: "host default", want: knownHosts},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := configForDevices(config.DeviceConfig{ID: "org/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: tc.configured}})
+			spec, err := BuildServiceSpec(cfg, host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertBind(t, spec, tc.want, tc.want, true)
+		})
+	}
+}
+
+func TestServiceSpecFingerprintIncludesCapabilityFields(t *testing.T) {
+	home := t.TempDir()
+	knownHostsPath := filepath.Join(home, ".ssh", "known_hosts")
+	otherKnownHostsPath := filepath.Join(home, ".ssh", "other_known_hosts")
+	if err := os.MkdirAll(filepath.Dir(knownHostsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{knownHostsPath, otherKnownHostsPath} {
+		if err := os.WriteFile(path, []byte("known"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host := testHost(home)
+	base := configForDevices(config.DeviceConfig{ID: "org/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden"}})
+	spec, err := BuildServiceSpec(base, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedHost := host
+	changedHost.GoldenRoot = "/home/bob/avd-golden"
+	changed, _ := BuildServiceSpec(base, changedHost)
+	if spec.Fingerprint() == changed.Fingerprint() {
+		t.Fatal("golden root did not affect fingerprint")
+	}
+	changedHost = host
+	changedHost.HasKVM = false
+	changed, _ = BuildServiceSpec(base, changedHost)
+	if spec.Fingerprint() == changed.Fingerprint() {
+		t.Fatal("KVM capability did not affect fingerprint")
+	}
+	phone := configForDevices(config.DeviceConfig{ID: "org/runner/phone", Name: "Phone", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "phone"}})
+	phoneSpec, _ := BuildServiceSpec(phone, host)
+	if spec.Fingerprint() == phoneSpec.Fingerprint() {
+		t.Fatal("USB capability did not affect fingerprint")
+	}
+	knownHosts := configForDevices(config.DeviceConfig{ID: "org/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: knownHostsPath}})
+	knownSpec, _ := BuildServiceSpec(knownHosts, host)
+	knownHosts.Devices[0].Redroid.AVDCTLSSHKnownHostsPath = otherKnownHostsPath
+	otherKnownSpec, _ := BuildServiceSpec(knownHosts, host)
+	if knownSpec.Fingerprint() == otherKnownSpec.Fingerprint() {
+		t.Fatal("known-hosts path did not affect fingerprint")
+	}
+	originalPhoneSpec, _ := BuildServiceSpec(phone, host)
+	phoneSpec.Environment[ADBServerSocketEnv] = "tcp:127.0.0.1:5038"
+	if phoneSpec.Fingerprint() == originalPhoneSpec.Fingerprint() {
+		t.Fatal("ADB socket did not affect fingerprint")
+	}
+}
+
+func TestRenderServiceComposeDeclaresNamedVolumes(t *testing.T) {
+	spec := ServiceSpec{Image: "runner:test", PullPolicy: "never", NetworkMode: "bridge", RestartPolicy: "unless-stopped", Command: []string{"internal-service"}, Environment: map[string]string{}, Volumes: []NamedVolume{{Name: "state", Target: "/state"}, {Name: "tools", Target: "/tools"}}}
+	content := RenderServiceCompose(spec)
+	var document struct {
+		Services map[string]struct {
+			Volumes []string `yaml:"volumes"`
+		} `yaml:"services"`
+		Volumes map[string]any `yaml:"volumes"`
+	}
+	if err := yaml.Unmarshal([]byte(content), &document); err != nil {
+		t.Fatalf("rendered Compose is not YAML: %v\n%s", err, content)
+	}
+	for _, mount := range document.Services["runner"].Volumes {
+		name := strings.SplitN(mount, ":", 2)[0]
+		if _, ok := document.Volumes[name]; ok {
+			continue
+		}
+		if name == "state" || name == "tools" {
+			t.Fatalf("named volume %q is not declared: %s", name, content)
+		}
+	}
+}
+
+func TestRepresentativeServiceComposePassesDockerConfig(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is unavailable")
+	}
+	home := t.TempDir()
+	knownHosts := filepath.Join(home, ".ssh", "known_hosts")
+	if err := os.MkdirAll(filepath.Dir(knownHosts), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(knownHosts, []byte("known"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := testHost(home)
+	cases := []struct {
+		name string
+		cfg  config.Config
+	}{
+		{name: "emulator", cfg: configForDevices(config.DeviceConfig{ID: "org/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden"}})},
+		{name: "physical phone", cfg: configForDevices(config.DeviceConfig{ID: "org/runner/phone", Name: "Phone", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "phone"}})},
+		{name: "redroid", cfg: configForDevices(config.DeviceConfig{ID: "org/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: knownHosts}})},
+		{name: "multi-device", cfg: configForDevices(
+			config.DeviceConfig{ID: "org/runner/phone", Name: "Phone", Type: config.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "phone"}},
+			config.DeviceConfig{ID: "org/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden"}},
+			config.DeviceConfig{ID: "org/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: knownHosts}},
+		)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := WriteServiceComposeWithHost(dir, tc.cfg, host); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command("docker", "compose", "-f", filepath.Join(dir, "service-compose.yaml"), "config", "--quiet")
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("docker compose config: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+func configForDevices(devices ...config.DeviceConfig) config.Config {
+	cfg := config.Bootstrap()
+	cfg.Android.RunnerImage = "runner:test"
+	cfg.Android.PullPolicy = "never"
+	cfg.Android.Network = "credimi-runner"
+	cfg.Android.StateVolume = "state"
+	cfg.Android.ToolCacheVolume = "tools"
+	cfg.Android.SDKVolume = "sdk"
+	cfg.Devices = devices
+	return cfg
+}
+
+func testHost(configDir string) HostContext {
+	return HostContext{ConfigDir: configDir, HomeDir: configDir, UID: 1000, GID: 1000, AndroidDir: filepath.Join(configDir, ".android"), AVDHome: filepath.Join(configDir, ".android", "avd"), GoldenRoot: filepath.Join(configDir, "avd-golden"), HasKVM: true, OS: "linux"}
+}
+
+func assertBind(t *testing.T, spec ServiceSpec, source, target string, readOnly bool) {
+	t.Helper()
+	for _, mount := range spec.BindMounts {
+		if mount.Source == source && mount.Target == target && mount.ReadOnly == readOnly {
+			return
+		}
+	}
+	t.Fatalf("bind mount %s -> %s (ro=%t) missing: %#v", source, target, readOnly, spec.BindMounts)
+}
+
+func assertDevice(t *testing.T, spec ServiceSpec, source, target string) {
+	t.Helper()
+	for _, device := range spec.Devices {
+		if device.Source == source && device.Target == target {
+			return
+		}
+	}
+	t.Fatalf("device %s -> %s missing: %#v", source, target, spec.Devices)
+}
+
+func assertNoDuplicateBindTargets(t *testing.T, spec ServiceSpec) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, mount := range spec.BindMounts {
+		if seen[mount.Target] {
+			t.Fatalf("duplicate bind target %q: %#v", mount.Target, spec.BindMounts)
+		}
+		seen[mount.Target] = true
+	}
+}
+
+func containsArgs(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 func TestExecRunnerCommands(t *testing.T) {
 	r := execRunner{}

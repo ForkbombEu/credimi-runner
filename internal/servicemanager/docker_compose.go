@@ -5,152 +5,538 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
 
-type ServiceSpec struct {
-	Image       string
-	PullPolicy  string
-	NetworkMode string
-	Volumes     []string
-	Devices     []string
+const (
+	defaultServiceImage = "ghcr.io/forkbombeu/credimi-runner:latest"
+	defaultPullPolicy   = "missing"
+
+	ContainerConfigDir  = "/etc/credimi-runner"
+	ContainerAndroidDir = "/root/.android"
+	ContainerAVDHome    = "/root/.android/avd"
+	ContainerGoldenRoot = "/avd-golden"
+	ContainerStateDir   = "/var/lib/credimi-runner"
+	ContainerToolsDir   = "/opt/credimi-tools"
+	ContainerSDKDir     = "/opt/android-sdk"
+	ADBServerSocket     = "tcp:127.0.0.1:5037"
+	ConfigOwnerUIDEnv   = "CREDIMI_CONFIG_OWNER_UID"
+	ConfigOwnerGIDEnv   = "CREDIMI_CONFIG_OWNER_GID"
+	HostHomeEnv         = "CREDIMI_HOST_HOME"
+	HostAndroidDirEnv   = "CREDIMI_HOST_ANDROID_DIR"
+	HostGoldenRootEnv   = "CREDIMI_HOST_GOLDEN_ROOT"
+	ContainerAndroidEnv = "CREDIMI_CONTAINER_ANDROID_DIR"
+	ContainerAVDHomeEnv = "CREDIMI_CONTAINER_AVD_HOME"
+	ContainerGoldenEnv  = "CREDIMI_CONTAINER_GOLDEN_ROOT"
+	AndroidAVDHomeEnv   = "ANDROID_AVD_HOME"
+	ADBServerSocketEnv  = "ADB_SERVER_SOCKET"
+	serviceFingerprint  = "io.credimi.runner.service-fingerprint"
+	serviceManagedLabel = "io.credimi.runner.managed"
+	serviceProjectLabel = "io.credimi.runner.project"
+)
+
+type HostContext struct {
+	ConfigDir       string
+	HomeDir         string
+	UID             int
+	GID             int
+	AndroidDir      string
+	AVDHome         string
+	GoldenRoot      string
+	ADBServerSocket string
+	HasKVM          bool
+	OS              string
 }
 
+type BindMount struct {
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
+type NamedVolume struct {
+	Name   string
+	Target string
+}
+
+type DeviceMapping struct {
+	Source string
+	Target string
+}
+
+type PortMapping struct {
+	HostIP        string
+	HostPort      string
+	ContainerPort string
+}
+
+type ServiceSpec struct {
+	Image         string
+	PullPolicy    string
+	NetworkMode   string
+	Networks      []string
+	Environment   map[string]string
+	BindMounts    []BindMount
+	Volumes       []NamedVolume
+	Devices       []DeviceMapping
+	Ports         []PortMapping
+	RestartPolicy string
+	Command       []string
+	Labels        map[string]string
+	ExtraHosts    []string
+}
+
+// Fingerprint hashes every field that can change the service container's
+// capabilities. Slice order is normalized so equivalent specs remain stable.
 func (s ServiceSpec) Fingerprint() string {
-	volumes, devices := append([]string(nil), s.Volumes...), append([]string(nil), s.Devices...)
-	sort.Strings(volumes)
-	sort.Strings(devices)
-	payload, _ := json.Marshal(struct {
-		Image, PullPolicy, NetworkMode string
-		Volumes, Devices               []string
-	}{s.Image, s.PullPolicy, s.NetworkMode, volumes, devices})
+	canonical := s
+	canonical.Command = append([]string(nil), s.Command...)
+	canonical.BindMounts = append([]BindMount(nil), s.BindMounts...)
+	canonical.Volumes = append([]NamedVolume(nil), s.Volumes...)
+	canonical.Devices = append([]DeviceMapping(nil), s.Devices...)
+	canonical.Ports = append([]PortMapping(nil), s.Ports...)
+	canonical.ExtraHosts = append([]string(nil), s.ExtraHosts...)
+	canonical.Networks = append([]string(nil), s.Networks...)
+	canonical.Environment = cloneStringMap(s.Environment)
+	canonical.Labels = cloneStringMap(s.Labels)
+	sort.Slice(canonical.BindMounts, func(i, j int) bool {
+		return bindMountKey(canonical.BindMounts[i]) < bindMountKey(canonical.BindMounts[j])
+	})
+	sort.Slice(canonical.Volumes, func(i, j int) bool {
+		return namedVolumeKey(canonical.Volumes[i]) < namedVolumeKey(canonical.Volumes[j])
+	})
+	sort.Slice(canonical.Devices, func(i, j int) bool { return deviceKey(canonical.Devices[i]) < deviceKey(canonical.Devices[j]) })
+	sort.Slice(canonical.Ports, func(i, j int) bool { return portKey(canonical.Ports[i]) < portKey(canonical.Ports[j]) })
+	sort.Strings(canonical.ExtraHosts)
+	sort.Strings(canonical.Networks)
+	payload, _ := json.Marshal(canonical)
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }
-func WriteServiceCompose(dir string, cfg runnerconfig.Config) error {
-	if dir == "" {
-		return fmt.Errorf("service config directory is empty")
+
+func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, error) {
+	if host.OS == "" {
+		host.OS = runtime.GOOS
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if host.ConfigDir == "" {
+		host.ConfigDir = "."
+	}
+	if host.HomeDir == "" {
+		return ServiceSpec{}, fmt.Errorf("host home directory is empty")
+	}
+	if host.AndroidDir == "" {
+		host.AndroidDir = filepath.Join(host.HomeDir, ".android")
+	}
+	if host.AVDHome == "" {
+		host.AVDHome = filepath.Join(host.AndroidDir, "avd")
+	}
+	if host.GoldenRoot == "" {
+		host.GoldenRoot = filepath.Join(host.HomeDir, "avd-golden")
+	}
+
+	spec := ServiceSpec{
+		Image:         defaultIfEmpty(cfg.Android.RunnerImage, defaultServiceImage),
+		PullPolicy:    composePullPolicy(cfg.Android.PullPolicy),
+		NetworkMode:   "bridge",
+		Environment:   map[string]string{},
+		RestartPolicy: "unless-stopped",
+		Command:       []string{"internal-service"},
+		Labels: map[string]string{
+			serviceManagedLabel: "true",
+			serviceProjectLabel: ProjectName(host.ConfigDir, host.UID),
+		},
+	}
+	configuredNetwork := strings.TrimSpace(cfg.Android.Network)
+	if strings.EqualFold(configuredNetwork, "host") {
+		spec.NetworkMode = "host"
+	} else if configuredNetwork != "" && !strings.EqualFold(configuredNetwork, "bridge") {
+		spec.Networks = []string{configuredNetwork}
+	}
+
+	setEnv := func(key, value string) { spec.Environment[key] = value }
+	setEnv("CREDIMI_RUNNER_CONFIG_DIR", ContainerConfigDir)
+	setEnv(ConfigOwnerUIDEnv, strconv.Itoa(host.UID))
+	setEnv(ConfigOwnerGIDEnv, strconv.Itoa(host.GID))
+	setEnv(HostHomeEnv, host.HomeDir)
+	setEnv(HostAndroidDirEnv, host.AndroidDir)
+	setEnv(HostGoldenRootEnv, host.GoldenRoot)
+	setEnv(ContainerAndroidEnv, ContainerAndroidDir)
+	setEnv(ContainerAVDHomeEnv, ContainerAVDHome)
+	setEnv(ContainerGoldenEnv, ContainerGoldenRoot)
+
+	needsAndroid, needsEmulator, needsUSB, usesHostADB := false, false, false, false
+	knownHosts := map[string]struct{}{}
+	for index, device := range cfg.Devices {
+		if !device.Enabled {
+			continue
+		}
+		switch device.Type {
+		case runnerconfig.DeviceAndroidPhysical:
+			if device.AndroidPhysical == nil || device.AndroidPhysical.Transport == "no_device" {
+				continue
+			}
+			needsAndroid = true
+			usesHostADB = true
+			if device.AndroidPhysical.Transport == "usb" {
+				needsUSB = true
+			}
+		case runnerconfig.DeviceAndroidEmulator:
+			if device.AndroidEmulator == nil {
+				return ServiceSpec{}, fmt.Errorf("device %q has no Android emulator configuration", device.ID)
+			}
+			needsAndroid, needsEmulator = true, true
+		case runnerconfig.DeviceRedroid:
+			if device.Redroid == nil {
+				return ServiceSpec{}, fmt.Errorf("device %q has no Redroid configuration", device.ID)
+			}
+			path := strings.TrimSpace(device.Redroid.AVDCTLSSHKnownHostsPath)
+			if path == "" && strings.TrimSpace(device.Redroid.AVDCTLSSHTarget) != "" {
+				path = filepath.Join(host.HomeDir, ".ssh", "known_hosts")
+			}
+			if path != "" {
+				if err := validateKnownHostsPath(path); err != nil {
+					return ServiceSpec{}, fmt.Errorf("device %q known-hosts file %q is not available: %w", device.ID, path, err)
+				}
+				if _, exists := knownHosts[path]; !exists {
+					knownHosts[path] = struct{}{}
+					spec.BindMounts = appendBindMount(spec.BindMounts, BindMount{Source: path, Target: path, ReadOnly: true})
+				}
+			}
+		default:
+			return ServiceSpec{}, fmt.Errorf("device %d has unsupported service type %q", index, device.Type)
+		}
+	}
+
+	// Keep the old host-backed Android state contract. The mounts are present
+	// even during first-run setup, when no device is typed yet, so the
+	// Dashboard can discover and download assets into the host-backed paths.
+	if host.OS == "linux" {
+		androidSource := host.AndroidDir
+		readOnly := false
+		if cfg.Android.ADBKeysPath != "" && !needsEmulator && needsAndroid {
+			androidSource, readOnly = cfg.Android.ADBKeysPath, true
+		}
+		spec.BindMounts = appendBindMount(spec.BindMounts, BindMount{Source: androidSource, Target: ContainerAndroidDir, ReadOnly: readOnly})
+		spec.BindMounts = appendBindMount(spec.BindMounts, BindMount{Source: host.GoldenRoot, Target: ContainerGoldenRoot})
+	}
+	if host.OS == "linux" && needsEmulator {
+		spec.BindMounts = appendBindMount(spec.BindMounts, BindMount{Source: host.GoldenRoot, Target: ContainerGoldenRoot})
+		if host.HasKVM {
+			spec.Devices = appendDevice(spec.Devices, DeviceMapping{Source: "/dev/kvm", Target: "/dev/kvm"})
+		}
+	}
+	if host.OS == "linux" && needsUSB {
+		spec.NetworkMode = "host"
+		spec.Devices = appendDevice(spec.Devices, DeviceMapping{Source: "/dev/bus/usb", Target: "/dev/bus/usb"})
+	}
+	if usesHostADB {
+		adbSocket := strings.TrimSpace(host.ADBServerSocket)
+		if adbSocket == "" {
+			adbSocket = ADBServerSocket
+			if spec.NetworkMode != "host" {
+				adbSocket = "tcp:host.docker.internal:5037"
+				spec.ExtraHosts = append(spec.ExtraHosts, "host.docker.internal:host-gateway")
+			}
+		}
+		setEnv(ADBServerSocketEnv, adbSocket)
+	}
+
+	if host.OS == "linux" {
+		setEnv(AndroidAVDHomeEnv, ContainerAVDHome)
+	}
+	if spec.NetworkMode != "host" {
+		if hostPort, containerPort := listenPort(cfg.Server.DashboardListen, "8051"); containerPort != "" {
+			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: "127.0.0.1", HostPort: hostPort, ContainerPort: containerPort})
+		}
+		if hostPort, containerPort := listenPort(cfg.Server.APIListen, "8050"); containerPort != "" && containerPort != "0" {
+			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: "127.0.0.1", HostPort: hostPort, ContainerPort: containerPort})
+		}
+	}
+
+	spec.BindMounts = appendBindMount(spec.BindMounts, BindMount{Source: host.ConfigDir, Target: ContainerConfigDir})
+	for _, volume := range []NamedVolume{
+		{Name: defaultIfEmpty(cfg.Android.StateVolume, "credimi-runner-state"), Target: ContainerStateDir},
+		{Name: defaultIfEmpty(cfg.Android.ToolCacheVolume, "credimi-runner-tools"), Target: ContainerToolsDir},
+		{Name: defaultIfEmpty(cfg.Android.SDKVolume, "credimi-runner-sdk"), Target: ContainerSDKDir},
+	} {
+		spec.Volumes = appendNamedVolume(spec.Volumes, volume)
+	}
+	return spec, nil
+}
+
+func WriteServiceCompose(dir string, cfg runnerconfig.Config) error {
+	host, err := ResolveHostContext(dir)
+	if err != nil {
 		return err
 	}
-	image := cfg.Android.RunnerImage
-	if image == "" {
-		image = "ghcr.io/forkbombeu/credimi-runner:latest"
+	return WriteServiceComposeWithHost(dir, cfg, host)
+}
+
+func WriteServiceComposeWithHost(dir string, cfg runnerconfig.Config, host HostContext) error {
+	if strings.TrimSpace(dir) == "" {
+		return fmt.Errorf("service config directory is empty")
 	}
-	pull := cfg.Android.PullPolicy
-	if pull == "" {
-		pull = "missing"
-	} else if pull == "if-not-present" {
-		pull = "missing"
+	host.ConfigDir = dir
+	spec, err := BuildServiceSpec(cfg, host)
+	if err != nil {
+		return err
 	}
-	port := cfg.Server.DashboardListen
-	if port == "" {
-		port = "127.0.0.1:8051"
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
-	network := cfg.Android.Network
-	if strings.TrimSpace(network) == "" {
-		network = "bridge"
-	}
-	volumes := []string{dir + ":/etc/credimi-runner"}
-	for _, volume := range []struct{ source, target string }{
-		{cfg.Android.StateVolume, "/var/lib/credimi-runner"},
-		{cfg.Android.ToolCacheVolume, "/opt/credimi-tools"},
-		{cfg.Android.SDKVolume, "/opt/android-sdk"},
-	} {
-		if strings.TrimSpace(volume.source) != "" {
-			volumes = append(volumes, volume.source+":"+volume.target)
-		}
-	}
-	devices := make([]string, 0)
-	for _, d := range cfg.Devices {
-		if d.Enabled && d.Type == runnerconfig.DeviceAndroidPhysical && d.AndroidPhysical != nil && d.AndroidPhysical.Transport == "usb" {
-			devices = append(devices, "/dev/bus/usb")
-		}
-	}
-	if len(devices) > 0 {
-		network = "host"
-	}
-	spec := ServiceSpec{Image: image, PullPolicy: pull, NetworkMode: network, Volumes: volumes, Devices: devices}
-	var b strings.Builder
-	fmt.Fprintf(&b, "services:\n  runner:\n    image: %s\n    pull_policy: %s\n    restart: unless-stopped\n    command:\n      - internal-service\n    environment:\n      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner\n    volumes:\n", image, pull)
-	for _, volume := range volumes {
-		fmt.Fprintf(&b, "      - %s\n", volume)
-	}
-	if network == "host" {
-		b.WriteString("    network_mode: host\n")
-	} else {
-		b.WriteString("    ports:\n")
-		fmt.Fprintf(&b, "      - \"127.0.0.1:%s:8051\"\n", portPort(port))
-		apiPort := portPort(cfg.Server.APIListen)
-		if apiPort != "" && apiPort != "0" {
-			bind := "127.0.0.1"
-			if cfg.Exposure.Mode == "manual" {
-				bind = "0.0.0.0"
-			}
-			fmt.Fprintf(&b, "      - \"%s:%s:%s\"\n", bind, apiPort, apiPort)
-		}
-	}
-	if len(devices) > 0 {
-		b.WriteString("    devices:\n")
-		for _, device := range devices {
-			fmt.Fprintf(&b, "      - %s:%s\n", device, device)
-		}
-	}
-	fmt.Fprintf(&b, "    labels:\n      io.credimi.runner.service-fingerprint: %s\n", spec.Fingerprint())
-	content := b.String()
+	content := RenderServiceCompose(spec)
 	tmp := filepath.Join(dir, ".service-compose.yaml.tmp")
-	if err := os.WriteFile(tmp, []byte(content), 0600); err != nil {
+	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, "service-compose.yaml"))
 }
 
-// WriteServiceSpecFingerprint projects only topology-affecting configuration.
-// It is kept separate from rendering so status can compare the desired spec
-// without mutating the service definition.
 func WriteServiceSpecFingerprint(dir string, cfg runnerconfig.Config) (string, error) {
-	image := cfg.Android.RunnerImage
-	if image == "" {
-		image = "ghcr.io/forkbombeu/credimi-runner:latest"
+	host, err := ResolveHostContext(dir)
+	if err != nil {
+		return "", err
 	}
-	pull := cfg.Android.PullPolicy
-	if pull == "" {
-		pull = "missing"
-	} else if pull == "if-not-present" {
-		pull = "missing"
+	spec, err := BuildServiceSpec(cfg, host)
+	if err != nil {
+		return "", err
 	}
-	network := cfg.Android.Network
-	if strings.TrimSpace(network) == "" {
-		network = "bridge"
-	}
-	volumes := []string{dir + ":/etc/credimi-runner"}
-	for _, volume := range []struct{ source, target string }{{cfg.Android.StateVolume, "/var/lib/credimi-runner"}, {cfg.Android.ToolCacheVolume, "/opt/credimi-tools"}, {cfg.Android.SDKVolume, "/opt/android-sdk"}} {
-		if strings.TrimSpace(volume.source) != "" {
-			volumes = append(volumes, volume.source+":"+volume.target)
-		}
-	}
-	devices := make([]string, 0)
-	for _, d := range cfg.Devices {
-		if d.Enabled && d.Type == runnerconfig.DeviceAndroidPhysical && d.AndroidPhysical != nil && d.AndroidPhysical.Transport == "usb" {
-			devices = append(devices, "/dev/bus/usb")
-		}
-	}
-	if len(devices) > 0 {
-		network = "host"
-	}
-	return (ServiceSpec{Image: image, PullPolicy: pull, NetworkMode: network, Volumes: volumes, Devices: devices}).Fingerprint(), nil
+	return spec.Fingerprint(), nil
 }
-func portPort(address string) string {
-	for i := len(address) - 1; i >= 0; i-- {
-		if address[i] == ':' {
-			return address[i+1:]
+
+func RenderServiceCompose(spec ServiceSpec) string {
+	var b strings.Builder
+	fingerprint := spec.Fingerprint()
+	fmt.Fprintf(&b, "services:\n  runner:\n    image: %s\n    pull_policy: %s\n    restart: %s\n    command:\n", spec.Image, spec.PullPolicy, spec.RestartPolicy)
+	for _, command := range spec.Command {
+		fmt.Fprintf(&b, "      - %s\n", yamlQuote(command))
+	}
+	b.WriteString("    environment:\n")
+	for _, key := range sortedKeys(spec.Environment) {
+		fmt.Fprintf(&b, "      %s: %s\n", key, yamlQuote(spec.Environment[key]))
+	}
+	if spec.NetworkMode != "" && (spec.NetworkMode != "bridge" || len(spec.Networks) == 0) {
+		fmt.Fprintf(&b, "    network_mode: %s\n", yamlQuote(spec.NetworkMode))
+	}
+	if len(spec.Ports) > 0 {
+		b.WriteString("    ports:\n")
+		for _, port := range sortedPorts(spec.Ports) {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(portString(port)))
 		}
 	}
-	return "8051"
+	if len(spec.ExtraHosts) > 0 {
+		b.WriteString("    extra_hosts:\n")
+		for _, host := range sortedStrings(spec.ExtraHosts) {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(host))
+		}
+	}
+	if len(spec.BindMounts)+len(spec.Volumes) > 0 {
+		b.WriteString("    volumes:\n")
+		for _, mount := range sortedBinds(spec.BindMounts) {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(bindString(mount)))
+		}
+		for _, volume := range sortedVolumes(spec.Volumes) {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(volume.Name+":"+volume.Target))
+		}
+	}
+	if len(spec.Devices) > 0 {
+		b.WriteString("    devices:\n")
+		for _, device := range sortedDevices(spec.Devices) {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(device.Source+":"+device.Target))
+		}
+	}
+	if spec.NetworkMode != "host" && len(spec.Networks) > 0 {
+		b.WriteString("    networks:\n")
+		for _, network := range sortedStrings(spec.Networks) {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(network))
+		}
+	}
+	b.WriteString("    labels:\n")
+	labels := cloneStringMap(spec.Labels)
+	labels[serviceFingerprint] = fingerprint
+	for _, key := range sortedKeys(labels) {
+		fmt.Fprintf(&b, "      %s: %s\n", key, yamlQuote(labels[key]))
+	}
+	b.WriteString("volumes:\n")
+	for _, volume := range sortedVolumes(spec.Volumes) {
+		fmt.Fprintf(&b, "  %s: {}\n", volume.Name)
+	}
+	if spec.NetworkMode != "host" && len(spec.Networks) > 0 {
+		b.WriteString("networks:\n")
+		for _, network := range sortedStrings(spec.Networks) {
+			fmt.Fprintf(&b, "  %s: {}\n", network)
+		}
+	}
+	return b.String()
+}
+
+func ResolveHostContext(configDir string) (HostContext, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return HostContext{}, fmt.Errorf("resolve host home directory: %w", err)
+	}
+	uid, gid, err := currentHostIDs()
+	if err != nil {
+		return HostContext{}, err
+	}
+	return HostContext{ConfigDir: configDir, HomeDir: home, UID: uid, GID: gid, AndroidDir: filepath.Join(home, ".android"), AVDHome: filepath.Join(home, ".android", "avd"), GoldenRoot: filepath.Join(home, "avd-golden"), HasKVM: fileExists("/dev/kvm"), OS: runtime.GOOS}, nil
+}
+
+func listenPort(address, fallback string) (string, string) {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return fallback, fallback
+	}
+	_, port, err := net.SplitHostPort(address)
+	if err != nil || port == "" {
+		return fallback, fallback
+	}
+	return port, port
+}
+
+func composePullPolicy(policy string) string {
+	if strings.TrimSpace(policy) == "" || policy == "if-not-present" {
+		return defaultPullPolicy
+	}
+	return policy
+}
+
+func defaultIfEmpty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func validateKnownHostsPath(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("path is not a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
+func yamlQuote(value string) string { return strconv.Quote(value) }
+
+func bindString(mount BindMount) string {
+	value := mount.Source + ":" + mount.Target
+	if mount.ReadOnly {
+		value += ":ro"
+	}
+	return value
+}
+
+func portString(port PortMapping) string {
+	if port.HostIP == "" {
+		return port.HostPort + ":" + port.ContainerPort
+	}
+	return port.HostIP + ":" + port.HostPort + ":" + port.ContainerPort
+}
+
+func bindMountKey(m BindMount) string     { return bindString(m) }
+func namedVolumeKey(v NamedVolume) string { return v.Name + "\x00" + v.Target }
+func deviceKey(d DeviceMapping) string    { return d.Source + "\x00" + d.Target }
+func portKey(p PortMapping) string        { return p.HostIP + "\x00" + p.HostPort + "\x00" + p.ContainerPort }
+
+func appendBindMount(mounts []BindMount, candidate BindMount) []BindMount {
+	for _, mount := range mounts {
+		if mount.Target == candidate.Target {
+			return mounts
+		}
+	}
+	return append(mounts, candidate)
+}
+
+func appendNamedVolume(volumes []NamedVolume, candidate NamedVolume) []NamedVolume {
+	for _, volume := range volumes {
+		if volume.Target == candidate.Target {
+			return volumes
+		}
+	}
+	return append(volumes, candidate)
+}
+
+func appendDevice(devices []DeviceMapping, candidate DeviceMapping) []DeviceMapping {
+	for _, device := range devices {
+		if device.Source == candidate.Source && device.Target == candidate.Target {
+			return devices
+		}
+	}
+	return append(devices, candidate)
+}
+
+func appendPort(ports []PortMapping, candidate PortMapping) []PortMapping {
+	for _, port := range ports {
+		if portKey(port) == portKey(candidate) {
+			return ports
+		}
+	}
+	return append(ports, candidate)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
+func sortedKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedStrings(values []string) []string {
+	copyValues := append([]string(nil), values...)
+	sort.Strings(copyValues)
+	return copyValues
+}
+
+func sortedBinds(values []BindMount) []BindMount {
+	copyValues := append([]BindMount(nil), values...)
+	sort.Slice(copyValues, func(i, j int) bool { return bindMountKey(copyValues[i]) < bindMountKey(copyValues[j]) })
+	return copyValues
+}
+
+func sortedVolumes(values []NamedVolume) []NamedVolume {
+	copyValues := append([]NamedVolume(nil), values...)
+	sort.Slice(copyValues, func(i, j int) bool { return namedVolumeKey(copyValues[i]) < namedVolumeKey(copyValues[j]) })
+	return copyValues
+}
+
+func sortedDevices(values []DeviceMapping) []DeviceMapping {
+	copyValues := append([]DeviceMapping(nil), values...)
+	sort.Slice(copyValues, func(i, j int) bool { return deviceKey(copyValues[i]) < deviceKey(copyValues[j]) })
+	return copyValues
+}
+
+func sortedPorts(values []PortMapping) []PortMapping {
+	copyValues := append([]PortMapping(nil), values...)
+	sort.Slice(copyValues, func(i, j int) bool { return portKey(copyValues[i]) < portKey(copyValues[j]) })
+	return copyValues
 }

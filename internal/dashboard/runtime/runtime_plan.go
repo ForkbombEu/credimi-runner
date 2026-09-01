@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 
 	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
 type RuntimePlan struct {
@@ -141,9 +143,11 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 }
 
 func composeProjectName(configDir string) string {
-	hash := fnv.New32a()
-	_, _ = hash.Write([]byte(configDir))
-	return fmt.Sprintf("credimi-runner-%d-%08x", os.Getuid(), hash.Sum32())
+	uid := os.Getuid()
+	if configured, err := strconv.Atoi(strings.TrimSpace(os.Getenv(ConfigOwnerUIDEnv))); err == nil && configured >= 0 {
+		uid = configured
+	}
+	return servicemanager.ProjectName(configDir, uid)
 }
 
 func configFingerprint(configDir string, values Values) string {

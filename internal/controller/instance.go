@@ -7,11 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
 )
 
 var ErrAlreadyRunning = errors.New("credimi runner dashboard is already running")
@@ -58,6 +61,10 @@ func Acquire(configDir string) (*Lease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open controller lock: %w", err)
 	}
+	if err := atomicfile.RepairOwnership(path, atomicfile.FromEnvironment()); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("set controller lock owner: %w", err)
+	}
 	if err := lockFile(file); err != nil {
 		_ = file.Close()
 		if errors.Is(err, errLockBusy) {
@@ -83,15 +90,12 @@ func (l *Lease) Publish(metadata Metadata) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	tmp := l.metadata + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("write controller metadata: %w", err)
-	}
-	if err := os.Rename(tmp, l.metadata); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("publish controller metadata: %w", err)
-	}
-	return nil
+	return atomicfile.WriteAtomic(l.metadata, 0o600, atomicfile.FromEnvironment(), func(writer io.Writer) error {
+		if _, err := writer.Write(raw); err != nil {
+			return fmt.Errorf("write controller metadata: %w", err)
+		}
+		return nil
+	})
 }
 
 func ReadMetadata(configDir string) (Metadata, error) {

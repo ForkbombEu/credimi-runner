@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
 )
 
 type StateStore struct{ Path string }
@@ -57,37 +59,10 @@ func (s StateStore) Save(state PersistentState) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create runtime state directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".runtime-state-*")
-	if err != nil {
-		return fmt.Errorf("create runtime state temporary file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	encErr := json.NewEncoder(tmp).Encode(state)
-	if encErr == nil {
-		encErr = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); encErr == nil {
-		encErr = closeErr
-	}
-	if encErr != nil {
-		return fmt.Errorf("write runtime state: %w", encErr)
-	}
-	if err := os.Rename(tmpPath, s.Path); err != nil {
-		return fmt.Errorf("replace runtime state: %w", err)
-	}
-	if dirFile, err := os.Open(dir); err == nil {
-		if err := dirFile.Sync(); err != nil {
-			_ = dirFile.Close()
-			return fmt.Errorf("sync runtime state directory: %w", err)
+	return atomicfile.WriteAtomic(s.Path, 0o600, atomicfile.FromEnvironment(), func(writer io.Writer) error {
+		if err := json.NewEncoder(writer).Encode(state); err != nil {
+			return fmt.Errorf("write runtime state: %w", err)
 		}
-		if err := dirFile.Close(); err != nil {
-			return fmt.Errorf("close runtime state directory: %w", err)
-		}
-	}
-	return nil
+		return nil
+	})
 }

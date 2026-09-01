@@ -40,6 +40,8 @@ type DockerManager struct {
 	Bootstrap  BootstrapOptions
 	Runner     CommandRunner
 	LoadConfig func() (runnerconfig.Config, error)
+	host       HostContext
+	hostErr    error
 }
 
 func NewDockerManager(dir, binary string) *DockerManager {
@@ -47,7 +49,8 @@ func NewDockerManager(dir, binary string) *DockerManager {
 }
 
 func NewDockerManagerWithBootstrap(dir, binary string, bootstrap BootstrapOptions) *DockerManager {
-	return &DockerManager{ConfigDir: dir, BinaryPath: binary, Bootstrap: bootstrap, Runner: execRunner{}}
+	host, err := ResolveHostContext(dir)
+	return &DockerManager{ConfigDir: dir, BinaryPath: binary, Bootstrap: bootstrap, Runner: execRunner{}, host: host, hostErr: err}
 }
 func (m *DockerManager) config() (runnerconfig.Config, error) {
 	if m.LoadConfig != nil {
@@ -56,6 +59,9 @@ func (m *DockerManager) config() (runnerconfig.Config, error) {
 	return runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml"))
 }
 func (m *DockerManager) Start(ctx context.Context) error {
+	if m.hostErr != nil {
+		return m.hostErr
+	}
 	cfg, err := m.config()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -71,7 +77,7 @@ func (m *DockerManager) Start(ctx context.Context) error {
 			cfg.Android.PullPolicy = policy
 		}
 	}
-	if err := WriteServiceCompose(m.ConfigDir, cfg); err != nil {
+	if err := WriteServiceComposeWithHost(m.ConfigDir, cfg, m.host); err != nil {
 		return err
 	}
 	return m.compose(ctx, "up", "-d", "runner")
@@ -90,7 +96,8 @@ func (m *DockerManager) compose(ctx context.Context, args ...string) error {
 		m.Runner = execRunner{}
 	}
 	env := os.Environ()
-	if err := m.Runner.Run(ctx, "docker", append([]string{"compose", "-f", filepath.Join(m.ConfigDir, "service-compose.yaml")}, args...), env); err != nil {
+	composeArgs := []string{"compose", "--project-name", ProjectName(m.ConfigDir, m.host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml")}
+	if err := m.Runner.Run(ctx, "docker", append(composeArgs, args...), env); err != nil {
 		return fmt.Errorf("docker compose %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
@@ -99,13 +106,15 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	if m.Runner == nil {
 		m.Runner = execRunner{}
 	}
-	out, err := m.Runner.Output(ctx, "docker", []string{"compose", "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "ps", "-q", "runner"}, os.Environ())
+	composeArgs := []string{"compose", "--project-name", ProjectName(m.ConfigDir, m.host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "ps", "-q", "runner"}
+	out, err := m.Runner.Output(ctx, "docker", composeArgs, os.Environ())
 	if err != nil {
 		return Status{}, err
 	}
 	status := Status{Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
 	if cfg, cfgErr := m.config(); cfgErr == nil {
-		if desired, desiredErr := WriteServiceSpecFingerprint(m.ConfigDir, cfg); desiredErr == nil {
+		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
+			desired := desiredSpec.Fingerprint()
 			if running, runErr := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{ index .Config.Labels \"io.credimi.runner.service-fingerprint\" }}", strings.TrimSpace(string(out))}, os.Environ()); runErr == nil {
 				status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desired
 			}
@@ -128,7 +137,7 @@ func (m *DockerManager) Logs(ctx context.Context, opts LogOptions) error {
 	if lines <= 0 {
 		lines = 200
 	}
-	args := []string{"compose", "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "logs", "--tail", fmt.Sprint(lines)}
+	args := []string{"compose", "--project-name", ProjectName(m.ConfigDir, m.host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "logs", "--tail", fmt.Sprint(lines)}
 	if opts.Follow {
 		args = append(args, "-f")
 	}

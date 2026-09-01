@@ -2,12 +2,14 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -32,43 +34,14 @@ func WriteFile(path string, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("encode TOML config: %w", err)
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".config.toml-*")
-	if err != nil {
-		return fmt.Errorf("create temporary config: %w", err)
+	var owner *atomicfile.Ownership
+	if uid, gid, ok := configuredOwner(); ok {
+		owner = &atomicfile.Ownership{UID: uid, GID: gid}
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
+	return atomicfile.WriteAtomic(path, 0o600, owner, func(writer io.Writer) error {
+		_, err := writer.Write(content)
 		return err
-	}
-	if uid, gid, ok := configuredOwner(); ok && os.Geteuid() == 0 {
-		if err := temporary.Chown(uid, gid); err != nil {
-			temporary.Close()
-			return fmt.Errorf("set config owner: %w", err)
-		}
-	}
-	if _, err := temporary.Write(content); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return fmt.Errorf("replace config atomically: %w", err)
-	}
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		if runtime.GOOS != "windows" {
-			_ = dir.Sync()
-		}
-		_ = dir.Close()
-	}
-	return nil
+	})
 }
 
 func configuredOwner() (uid, gid int, ok bool) {
