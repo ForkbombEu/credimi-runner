@@ -284,6 +284,79 @@ func TestBuildServiceSpecRestoresPhysicalUSBHostADBContract(t *testing.T) {
 	}
 }
 
+func TestBuildServiceSpecBootstrapCanDiscoverHostADBDevices(t *testing.T) {
+	// The Dashboard discovers phones before setup persists a device entry, so
+	// bootstrap must retain the old host-ADB topology with an empty config.
+	host := testHost("/home/alice")
+	host.BeforeSetup = true
+	spec, err := BuildServiceSpec(configForDevices(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.NetworkMode != "host" {
+		t.Fatalf("bootstrap network mode = %q, want host", spec.NetworkMode)
+	}
+	if got := spec.Environment[ADBServerSocketEnv]; got != ADBServerSocket {
+		t.Fatalf("bootstrap ADB socket = %q, want %q", got, ADBServerSocket)
+	}
+	assertBind(t, spec, "/home/alice/.android", ContainerAndroidDir, false)
+	assertBind(t, spec, "/home/alice/avd-golden", ContainerGoldenRoot, false)
+	for _, device := range spec.Devices {
+		if device.Source == "/dev/bus/usb" {
+			t.Fatal("bootstrap unexpectedly requires USB device mapping")
+		}
+	}
+}
+
+func TestBuildServiceSpecExportsCanonicalComposeProject(t *testing.T) {
+	host := testHost("/home/alice/.config/credimi-runner")
+	spec, err := BuildServiceSpec(configForDevices(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ProjectName(host.ConfigDir, host.UID)
+	if spec.Environment[ComposeProjectEnv] != want {
+		t.Fatalf("compose project = %q, want %q", spec.Environment[ComposeProjectEnv], want)
+	}
+}
+
+func TestBuildServiceSpecPreservesExposurePortBindings(t *testing.T) {
+	for _, tc := range []struct {
+		mode, wantAPI string
+	}{
+		{mode: "manual", wantAPI: "0.0.0.0"},
+		{mode: "quick_tunnel", wantAPI: "127.0.0.1"},
+		{mode: "named_tunnel", wantAPI: "127.0.0.1"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			cfg := configForDevices()
+			cfg.Exposure.Mode = tc.mode
+			cfg.Server.DashboardListen = "127.0.0.1:18051"
+			cfg.Server.APIListen = "0.0.0.0:18050"
+			spec, err := BuildServiceSpec(cfg, testHost("/home/alice"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var dashboard, api *PortMapping
+			for index := range spec.Ports {
+				port := &spec.Ports[index]
+				switch port.ContainerPort {
+				case "18051":
+					dashboard = port
+				case "18050":
+					api = port
+				}
+			}
+			if dashboard == nil || dashboard.HostIP != "127.0.0.1" {
+				t.Fatalf("dashboard binding = %#v", dashboard)
+			}
+			if api == nil || api.HostIP != tc.wantAPI {
+				t.Fatalf("API binding = %#v, want host IP %q", api, tc.wantAPI)
+			}
+		})
+	}
+}
+
 func TestBuildServiceSpecUnionsAndDeduplicatesMultiDeviceCapabilities(t *testing.T) {
 	home := t.TempDir()
 	knownHosts := filepath.Join(home, ".ssh", "known_hosts")

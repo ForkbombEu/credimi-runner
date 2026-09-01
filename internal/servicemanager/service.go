@@ -14,6 +14,8 @@ type LogOptions struct {
 	Lines  int
 }
 
+const ComposeProjectEnv = "CREDIMI_COMPOSE_PROJECT"
+
 // BootstrapOptions overrides the image used while the first service
 // configuration is being prepared. It is intentionally owned by the service
 // manager because only that manager renders and starts the service.

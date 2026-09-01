@@ -54,6 +54,7 @@ type HostContext struct {
 	ADBServerSocket string
 	HasKVM          bool
 	OS              string
+	BeforeSetup     bool
 }
 
 type BindMount struct {
@@ -160,11 +161,17 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 	} else if configuredNetwork != "" && !strings.EqualFold(configuredNetwork, "bridge") {
 		spec.Networks = []string{configuredNetwork}
 	}
+	if host.OS == "linux" && host.BeforeSetup {
+		// Bootstrap must be able to discover host phones before setup has
+		// persisted any device configuration.
+		spec.NetworkMode = "host"
+	}
 
 	setEnv := func(key, value string) { spec.Environment[key] = value }
 	setEnv("CREDIMI_RUNNER_CONFIG_DIR", ContainerConfigDir)
 	setEnv(ConfigOwnerUIDEnv, strconv.Itoa(host.UID))
 	setEnv(ConfigOwnerGIDEnv, strconv.Itoa(host.GID))
+	setEnv(ComposeProjectEnv, ProjectName(host.ConfigDir, host.UID))
 	setEnv(HostHomeEnv, host.HomeDir)
 	setEnv(HostAndroidDirEnv, host.AndroidDir)
 	setEnv(HostGoldenRootEnv, host.GoldenRoot)
@@ -172,7 +179,7 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 	setEnv(ContainerAVDHomeEnv, ContainerAVDHome)
 	setEnv(ContainerGoldenEnv, ContainerGoldenRoot)
 
-	needsAndroid, needsEmulator, needsUSB, usesHostADB := false, false, false, false
+	needsAndroid, needsEmulator, needsUSB, usesHostADB := false, false, false, host.BeforeSetup
 	knownHosts := map[string]struct{}{}
 	for index, device := range cfg.Devices {
 		if !device.Enabled {
@@ -257,7 +264,11 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: "127.0.0.1", HostPort: hostPort, ContainerPort: containerPort})
 		}
 		if hostPort, containerPort := listenPort(cfg.Server.APIListen, "8050"); containerPort != "" && containerPort != "0" {
-			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: "127.0.0.1", HostPort: hostPort, ContainerPort: containerPort})
+			apiHostIP := "127.0.0.1"
+			if cfg.Exposure.Mode == "manual" {
+				apiHostIP = "0.0.0.0"
+			}
+			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: apiHostIP, HostPort: hostPort, ContainerPort: containerPort})
 		}
 	}
 
@@ -387,7 +398,7 @@ func ResolveHostContext(configDir string) (HostContext, error) {
 	if err != nil {
 		return HostContext{}, err
 	}
-	return HostContext{ConfigDir: configDir, HomeDir: home, UID: uid, GID: gid, AndroidDir: filepath.Join(home, ".android"), AVDHome: filepath.Join(home, ".android", "avd"), GoldenRoot: filepath.Join(home, "avd-golden"), HasKVM: fileExists("/dev/kvm"), OS: runtime.GOOS}, nil
+	return HostContext{ConfigDir: configDir, HomeDir: home, UID: uid, GID: gid, AndroidDir: filepath.Join(home, ".android"), AVDHome: filepath.Join(home, ".android", "avd"), GoldenRoot: filepath.Join(home, "avd-golden"), HasKVM: fileExists("/dev/kvm"), OS: runtime.GOOS, BeforeSetup: !fileExists(filepath.Join(configDir, "config.toml"))}, nil
 }
 
 func listenPort(address, fallback string) (string, string) {

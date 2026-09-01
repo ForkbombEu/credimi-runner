@@ -143,6 +143,9 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 }
 
 func composeProjectName(configDir string) string {
+	if explicit := strings.TrimSpace(os.Getenv(servicemanager.ComposeProjectEnv)); explicit != "" {
+		return explicit
+	}
 	uid := os.Getuid()
 	if configured, err := strconv.Atoi(strings.TrimSpace(os.Getenv(ConfigOwnerUIDEnv))); err == nil && configured >= 0 {
 		uid = configured
@@ -325,7 +328,7 @@ func ComposeEnvironment(values Values, plan RuntimePlan, goos string) []string {
 	overrides := []string{
 		"RUNNER_PORT=" + defaultIfEmpty(normalized["RUNNER_PORT"], DefaultRunnerPort),
 		"DASHBOARD_PORT=" + defaultIfEmpty(normalized["DASHBOARD_PORT"], DefaultDashboardPort),
-		"CREDIMI_COMPOSE_PROJECT=" + defaultIfEmpty(plan.ComposeProject, "credimi-runner"),
+		servicemanager.ComposeProjectEnv + "=" + defaultIfEmpty(plan.ComposeProject, "credimi-runner"),
 		"CREDIMI_CONFIG_FINGERPRINT=" + defaultIfEmpty(plan.ConfigFingerprint, "unknown"),
 		"COMPOSE_PROGRESS=plain",
 		"DOCKER_CLI_HINTS=false",

@@ -1,6 +1,7 @@
 package atomicfile
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -43,5 +44,71 @@ func TestFromEnvironment(t *testing.T) {
 	t.Setenv(OwnerGIDEnv, "invalid")
 	if FromEnvironment() != nil {
 		t.Fatal("invalid owner environment accepted")
+	}
+}
+
+func TestWriteAtomicWriterFailureLeavesDestinationAndRemovesTemporary(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shared.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteAtomicWithChown(path, 0o600, nil, func(io.Writer) error {
+		return os.ErrInvalid
+	}, func(string, int, int) error { return nil })
+	if !errors.Is(err, os.ErrInvalid) {
+		t.Fatalf("writer error = %v", err)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != "old" {
+		t.Fatalf("destination after writer failure = %q/%v", got, readErr)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "shared.json" {
+		t.Fatalf("temporary files remain: %v", entries)
+	}
+}
+
+func TestWriteAtomicChownFailureLeavesDestination(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shared.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := WriteAtomicWithChown(path, 0o600, &Ownership{UID: 1000, GID: 1000}, func(writer io.Writer) error {
+		_, writeErr := writer.Write([]byte("new"))
+		return writeErr
+	}, func(string, int, int) error { return os.ErrPermission })
+	if !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("chown error = %v", err)
+	}
+	if got, readErr := os.ReadFile(path); readErr != nil || string(got) != "old" {
+		t.Fatalf("destination after chown failure = %q/%v", got, readErr)
+	}
+}
+
+func TestWriteAtomicNilOwnerOverwritesWithMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shared.json")
+	chownCalls := 0
+	err := WriteAtomicWithChown(path, 0o600, nil, func(writer io.Writer) error {
+		_, writeErr := writer.Write([]byte("new"))
+		return writeErr
+	}, func(string, int, int) error {
+		chownCalls++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chownCalls != 0 {
+		t.Fatalf("nil owner caused %d chown calls", chownCalls)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "new" {
+		t.Fatalf("destination = %q/%v", got, err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v", err)
 	}
 }

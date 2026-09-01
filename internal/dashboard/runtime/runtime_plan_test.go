@@ -1,9 +1,25 @@
 package runtime
 
 import (
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
+
+func TestComposeProjectNameUsesHostIdentityAcrossContainerPaths(t *testing.T) {
+	hostPath := "/home/alice/.config/credimi-runner"
+	project := servicemanager.ProjectName(hostPath, 1000)
+	t.Setenv(servicemanager.ComposeProjectEnv, project)
+	t.Setenv(ConfigOwnerUIDEnv, "1000")
+	if got := composeProjectName("/etc/credimi-runner"); got != project {
+		t.Fatalf("container project = %q, want host project %q", got, project)
+	}
+	if got := os.Getenv(servicemanager.ComposeProjectEnv); got != project {
+		t.Fatalf("project environment = %q, want %q", got, project)
+	}
+}
 
 func TestRuntimePlanUsesOnlyServiceComposeRunner(t *testing.T) {
 	for _, tc := range []struct {

@@ -59,6 +59,12 @@ func (m *DockerManager) config() (runnerconfig.Config, error) {
 	return runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml"))
 }
 func (m *DockerManager) Start(ctx context.Context) error {
+	if host, err := ResolveHostContext(m.ConfigDir); err != nil {
+		return err
+	} else {
+		m.host = host
+		m.hostErr = nil
+	}
 	if m.hostErr != nil {
 		return m.hostErr
 	}

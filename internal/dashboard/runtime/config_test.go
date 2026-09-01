@@ -83,6 +83,33 @@ func TestAndroidScreenRecordSizeRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRedroidRuntimeSemanticsSurviveAdapterRoundTrip(t *testing.T) {
+	knownHosts := "/home/alice/.ssh/known_hosts"
+	original := testTOMLConfig(t.TempDir())
+	original.Devices = []config.DeviceConfig{{
+		ID: "acme/runner/redroid", Name: "Redroid", Type: config.DeviceRedroid, Enabled: true,
+		Redroid: &config.RedroidConfig{
+			Host: "redroid.example", Image: "redroid:custom",
+			DataDir: "/srv/redroid/data", DataArchive: "/srv/redroid/data.tar",
+			ADBPort: 5566, AVDCTLSSHTarget: "alice@redroid.example",
+			AVDCTLSSHPassword: "ssh-password", AVDCTLSSHKnownHostsPath: knownHosts,
+			AVDCTLSudo: true, AVDCTLSudoPassword: "sudo-password",
+		},
+	}}
+	values := ValuesFromTypedConfig(original)
+	converted, err := TypedConfigFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := converted.Devices[0]
+	if got.Type != config.DeviceRedroid || got.Redroid == nil {
+		t.Fatalf("converted Redroid device = %#v", got)
+	}
+	if !reflect.DeepEqual(got.Redroid, original.Devices[0].Redroid) {
+		t.Fatalf("Redroid runtime semantics changed: got %#v, want %#v", got.Redroid, original.Devices[0].Redroid)
+	}
+}
+
 func TestDefaultEmulatorABIFollowsNativeHostArchitecture(t *testing.T) {
 	for _, test := range []struct {
 		goos, goarch, want string
