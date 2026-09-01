@@ -164,14 +164,20 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	defer cancel()
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
-	return s.startLocked(ctx)
+	return s.startLocked(ctx, true)
 }
 
-func (s *Supervisor) startLocked(ctx context.Context) error {
+func (s *Supervisor) startLocked(ctx context.Context, restoreOnPersistenceFailure bool) error {
 	previousState := s.stateSnapshot()
 	if err := s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredRunning, ActualStarting, "" }); err != nil {
-		s.restoreState(previousState)
-		return err
+		if restoreOnPersistenceFailure {
+			s.restoreState(previousState)
+			return err
+		}
+		stateErr := s.updateState(func(st *PersistentState) {
+			st.Desired, st.Actual, st.LastError = DesiredRunning, ActualFailed, err.Error()
+		})
+		return errors.Join(err, stateErr)
 	}
 	if g := s.currentGeneration(); g != nil && g.isExecuting() {
 		return s.updateState(func(st *PersistentState) { st.Actual = ActualRunning })
@@ -491,7 +497,7 @@ func (s *Supervisor) Restart(ctx context.Context) error {
 		}
 		s.setGeneration(nil)
 	}
-	return s.startLocked(ctx)
+	return s.startLocked(ctx, false)
 }
 
 func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
@@ -847,13 +853,30 @@ func (a *HTTPAPI) Shutdown(ctx context.Context) error {
 	if a.shutdownTimeout > 0 {
 		shutdownCtx, cancel = boundedContext(ctx, a.shutdownTimeout)
 	}
-	err := a.Server.Shutdown(shutdownCtx)
-	cancel()
+	defer cancel()
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- a.Server.Shutdown(shutdownCtx) }()
+	var err error
+	select {
+	case err = <-shutdownDone:
+	case <-shutdownCtx.Done():
+		err = shutdownCtx.Err()
+	}
 	select {
 	case <-a.done:
 		return err
-	case <-ctx.Done():
-		return errors.Join(err, ctx.Err())
+	default:
+	}
+	select {
+	case <-a.done:
+		return err
+	case <-shutdownCtx.Done():
+		select {
+		case <-a.done:
+			return err
+		default:
+			return errors.Join(err, shutdownCtx.Err())
+		}
 	}
 }
 func (a *HTTPAPI) Listening() bool {

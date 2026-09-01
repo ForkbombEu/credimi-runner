@@ -109,10 +109,7 @@ func (e *Cloudflared) Start(ctx context.Context, origin string) (string, error) 
 		return "", err
 	}
 	cmd := exec.Command(e.Binary, args...)
-	cmd.Env = os.Environ()
-	if named {
-		cmd.Env = append(cmd.Env, "TUNNEL_TOKEN="+e.Token)
-	}
+	cmd.Env = cloudflaredEnv(named, e.Token)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		e.mu.Unlock()
@@ -144,8 +141,7 @@ func (e *Cloudflared) Start(ctx context.Context, origin string) (string, error) 
 		case <-p.done:
 			return "", e.startExitError(p, "cloudflared named tunnel exited during startup")
 		case <-ctx.Done():
-			_ = e.Stop(context.Background())
-			return "", ctx.Err()
+			return "", e.startupCancellationError(ctx)
 		case <-timer.C:
 		}
 		e.mu.Lock()
@@ -176,9 +172,26 @@ func (e *Cloudflared) Start(ctx context.Context, origin string) (string, error) 
 	case <-p.done:
 		return "", e.startExitError(p, "cloudflared exited before publishing quick tunnel URL")
 	case <-ctx.Done():
-		_ = e.Stop(context.Background())
-		return "", ctx.Err()
+		return "", e.startupCancellationError(ctx)
 	}
+}
+
+func cloudflaredEnv(named bool, token string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if key != "TUNNEL_TOKEN" {
+			env = append(env, entry)
+		}
+	}
+	if named {
+		env = append(env, "TUNNEL_TOKEN="+token)
+	}
+	return env
+}
+
+func (e *Cloudflared) startupCancellationError(ctx context.Context) error {
+	return errors.Join(ctx.Err(), e.Stop(ctx))
 }
 
 func (e *Cloudflared) consumeOutput(reader io.ReadCloser, stream string, urls chan<- string) {

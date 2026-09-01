@@ -723,6 +723,36 @@ func TestSupervisorStartStatePersistenceFailureAllocatesNoResources(t *testing.T
 	}
 }
 
+func TestSupervisorRestartStatePersistenceFailureAfterTeardownIsFailed(t *testing.T) {
+	life := &testLife{}
+	edgeImpl := &testEdge{}
+	workers := &testWorkers{}
+	s, api := newTestSupervisor(t, life, edgeImpl, workers)
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	persistErr := errors.New("restart state write failed")
+	s.saveState = func(state PersistentState) error {
+		if state.Actual == ActualStarting {
+			return persistErr
+		}
+		return nil
+	}
+	if err := s.Restart(context.Background()); !errors.Is(err, persistErr) {
+		t.Fatalf("error=%v", err)
+	}
+	status := s.Status()
+	if api.Listening() || edgeImpl.Running() || workers.Running() || s.currentGeneration() != nil {
+		t.Fatal("old generation resources remain active")
+	}
+	if status.Desired != DesiredRunning || status.Actual != ActualFailed {
+		t.Fatalf("status=%+v", status)
+	}
+	if status.Actual == ActualStopping || status.Actual == ActualStarting || !strings.Contains(status.LastError, persistErr.Error()) {
+		t.Fatalf("untruthful restart failure status=%+v", status)
+	}
+}
+
 func TestSupervisorStopStatePersistenceFailureStillCleansUp(t *testing.T) {
 	life := &testLife{}
 	edgeImpl := &testEdge{}
@@ -1189,6 +1219,22 @@ type supervisorAddr string
 func (a supervisorAddr) Network() string { return "tcp" }
 func (a supervisorAddr) String() string  { return string(a) }
 
+type shutdownStuckListener struct {
+	release chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func (l *shutdownStuckListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { close(l.entered) })
+	<-l.release
+	return nil, net.ErrClosed
+}
+func (*shutdownStuckListener) Close() error { return nil }
+func (*shutdownStuckListener) Addr() net.Addr {
+	return supervisorAddr("127.0.0.1:8050")
+}
+
 func TestHTTPAPIStartShutdownAndListenFailure(t *testing.T) {
 	old := listenTCP
 	t.Cleanup(func() { listenTCP = old })
@@ -1254,6 +1300,37 @@ func TestHTTPAPIRealShutdownUsesConfiguredTimeout(t *testing.T) {
 	case failure := <-a.Failures():
 		t.Fatalf("normal shutdown reported failure: %v", failure)
 	default:
+	}
+}
+
+func TestHTTPAPIShutdownTimeoutBoundsServeWait(t *testing.T) {
+	old := listenTCP
+	t.Cleanup(func() { listenTCP = old })
+	listener := &shutdownStuckListener{release: make(chan struct{}), entered: make(chan struct{})}
+	listenTCP = func(string, string) (net.Listener, error) { return listener, nil }
+	cfg := validConfig()
+	cfg.Server.ShutdownTimeout = config.Duration(20 * time.Millisecond)
+	a, err := NewHTTPAPI(cfg, http.NewServeMux())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-listener.entered:
+	case <-time.After(time.Second):
+		t.Fatal("serve goroutine did not enter Accept")
+	}
+	err = a.Shutdown(context.Background())
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error=%v", err)
+	}
+	close(listener.release)
+	select {
+	case <-a.done:
+	case <-time.After(time.Second):
+		t.Fatal("serve goroutine did not finish after listener release")
 	}
 }
 
