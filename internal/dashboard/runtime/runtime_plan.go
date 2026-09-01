@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -53,7 +54,6 @@ type ConfigDiff struct {
 type FieldImpact struct {
 	Runtime        bool
 	RuntimeRestart bool
-	Service        bool
 	CredimiUpdate  bool
 	Secret         bool
 }
@@ -70,19 +70,19 @@ var FieldImpacts = map[string]FieldImpact{
 	"CREDIMI_SERVICE_MODE":        {Runtime: true, CredimiUpdate: true},
 	"CREDIMI_USER_API_KEY":        {Runtime: true, Secret: true},
 	"DASHBOARD_TOKEN":             {Secret: true},
-	"ANDROID_RUNNER_IMAGE":        {Service: true},
-	"ANDROID_PULL_POLICY":         {Service: true},
-	"ANDROID_NETWORK":             {Service: true},
-	"ANDROID_STATE_VOLUME":        {Service: true},
-	"ANDROID_TOOL_CACHE_VOLUME":   {Service: true},
-	"ANDROID_SDK_VOLUME":          {Service: true},
-	"ANDROID_ADB_KEYS_PATH":       {Service: true},
+	"ANDROID_RUNNER_IMAGE":        {},
+	"ANDROID_PULL_POLICY":         {},
+	"ANDROID_NETWORK":             {},
+	"ANDROID_STATE_VOLUME":        {},
+	"ANDROID_TOOL_CACHE_VOLUME":   {},
+	"ANDROID_SDK_VOLUME":          {},
+	"ANDROID_ADB_KEYS_PATH":       {},
 	"OTEL_EXPORTER_OTLP_ENDPOINT": {Runtime: true},
 	"OTEL_ENABLED":                {Runtime: true},
 	"OTEL_SERVICE_NAME":           {Runtime: true},
 	"RUNNER_DOMAIN":               {CredimiUpdate: true},
-	"RUNNER_HOST":                 {Service: true},
-	"RUNNER_PORT":                 {Service: true, CredimiUpdate: true},
+	"RUNNER_HOST":                 {},
+	"RUNNER_PORT":                 {CredimiUpdate: true},
 	"RUNNER_PUBLIC_PORT":          {CredimiUpdate: true},
 	"RUNNER_PUBLIC_URL":           {CredimiUpdate: true},
 	"TEMPORAL_ADDRESS":            {Runtime: true},
@@ -151,6 +151,21 @@ func composeProjectName(configDir string) string {
 		uid = configured
 	}
 	return servicemanager.ProjectName(configDir, uid)
+}
+
+// ServiceRestartRequired compares desired typed configuration with the
+// fingerprint exported by the persistent service container. Native execution
+// has no applied container fingerprint and therefore never needs this guard.
+func ServiceRestartRequired(values Values, configured bool) bool {
+	applied := strings.TrimSpace(os.Getenv(servicemanager.AppliedServiceConfigFingerprintEnv))
+	if applied == "" {
+		return false
+	}
+	cfg, err := TypedConfigFromValues(values)
+	if err != nil {
+		return true
+	}
+	return applied != servicemanager.ServiceConfigFingerprint(cfg, configured)
 }
 
 func configFingerprint(configDir string, values Values) string {
@@ -244,8 +259,9 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 	return DiffValuesForOS(oldValues, newValues, goruntime.GOOS)
 }
 
-// DiffValuesForOS classifies persistent configuration changes. Device edits
-// remain registration updates; placement is fixed by the host platform.
+// DiffValuesForOS classifies persistent configuration changes. Service
+// topology is derived from the typed service projection, not from individual
+// compatibility keys or every device field.
 func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
 	var diff ConfigDiff
 	classSet := map[ApplyClass]struct{}{}
@@ -256,8 +272,6 @@ func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
 		impact := FieldImpacts[key]
 		switch {
-		case impact.Service:
-			classSet[ApplyServiceRestartRequired] = struct{}{}
 		case impact.RuntimeRestart:
 			classSet[ApplyRuntimeRestartRequired] = struct{}{}
 		case impact.Runtime:
@@ -267,33 +281,34 @@ func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
 			classSet[ApplyCredimiUpdateRequired] = struct{}{}
 		}
 	}
-	for key, oldValue := range oldValues {
-		if !strings.HasPrefix(key, "CREDIMI_DEVICE_") || strings.HasSuffix(key, "_COUNT") {
-			continue
+	deviceKeys := make([]string, 0)
+	for key := range oldValues {
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") && !strings.HasSuffix(key, "_COUNT") && oldValues[key] != newValues[key] {
+			deviceKeys = append(deviceKeys, key)
 		}
-		if oldValue == newValues[key] {
-			continue
-		}
-		diff.ChangedKeys = append(diff.ChangedKeys, key)
-		// Device registration is dynamic. The GoA process and its existing
-		// workers remain alive; the Credimi registration path updates only the
-		// changed inventory.
-		classSet[ApplyRuntimeReconcile] = struct{}{}
-		classSet[ApplyCredimiUpdateRequired] = struct{}{}
-		classSet[ApplyServiceRestartRequired] = struct{}{}
 	}
 	for key := range newValues {
-		if !strings.HasPrefix(key, "CREDIMI_DEVICE_") || strings.HasSuffix(key, "_COUNT") {
-			continue
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") && !strings.HasSuffix(key, "_COUNT") && oldValues[key] != newValues[key] {
+			if !containsStringValue(deviceKeys, key) {
+				deviceKeys = append(deviceKeys, key)
+			}
 		}
-		if _, existed := oldValues[key]; existed {
-			continue
-		}
-		// A newly added device has no old indexed keys to visit in the loop
-		// above. It has the same runtime impact as an updated device.
+	}
+	sort.Strings(deviceKeys)
+	for _, key := range deviceKeys {
 		diff.ChangedKeys = append(diff.ChangedKeys, key)
-		classSet[ApplyCredimiUpdateRequired] = struct{}{}
 		classSet[ApplyRuntimeReconcile] = struct{}{}
+		classSet[ApplyCredimiUpdateRequired] = struct{}{}
+	}
+	if oldCfg, oldErr := TypedConfigFromValues(oldValues); oldErr == nil {
+		if newCfg, newErr := TypedConfigFromValues(newValues); newErr == nil {
+			if servicemanager.ServiceConfigFingerprint(oldCfg, true) != servicemanager.ServiceConfigFingerprint(newCfg, true) {
+				classSet[ApplyServiceRestartRequired] = struct{}{}
+			}
+		} else if serviceFallbackChanged(diff.ChangedKeys) {
+			classSet[ApplyServiceRestartRequired] = struct{}{}
+		}
+	} else if serviceFallbackChanged(diff.ChangedKeys) {
 		classSet[ApplyServiceRestartRequired] = struct{}{}
 	}
 	if len(diff.ChangedKeys) == 0 {
@@ -304,12 +319,30 @@ func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
 		diff.Classes = []ApplyClass{ApplySavedOnly}
 		return diff
 	}
-	for _, class := range []ApplyClass{ApplyRuntimeReconcile, ApplyRuntimeRestartRequired, ApplyServiceRestartRequired, ApplyCredimiUpdateRequired} {
+	for _, class := range []ApplyClass{ApplyServiceRestartRequired, ApplyRuntimeRestartRequired, ApplyRuntimeReconcile, ApplyCredimiUpdateRequired} {
 		if _, ok := classSet[class]; ok {
 			diff.Classes = append(diff.Classes, class)
 		}
 	}
 	return diff
+}
+
+func containsStringValue(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceFallbackChanged(keys []string) bool {
+	for _, key := range keys {
+		if key == "ANDROID_RUNNER_IMAGE" || key == "ANDROID_PULL_POLICY" || key == "ANDROID_NETWORK" || key == "ANDROID_STATE_VOLUME" || key == "ANDROID_TOOL_CACHE_VOLUME" || key == "ANDROID_SDK_VOLUME" || key == "ANDROID_ADB_KEYS_PATH" || key == "RUNNER_HOST" || key == "RUNNER_PORT" || key == "DASHBOARD_HOST" || key == "DASHBOARD_PORT" || key == "CREDIMI_SERVICE_MODE" || strings.HasPrefix(key, "CREDIMI_DEVICE_") {
+			return true
+		}
+	}
+	return false
 }
 
 // SharedRunnerImage exposes the image used by the service manager for the

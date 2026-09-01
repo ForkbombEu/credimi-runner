@@ -172,6 +172,7 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 	setEnv(ConfigOwnerUIDEnv, strconv.Itoa(host.UID))
 	setEnv(ConfigOwnerGIDEnv, strconv.Itoa(host.GID))
 	setEnv(ComposeProjectEnv, ProjectName(host.ConfigDir, host.UID))
+	setEnv(AppliedServiceConfigFingerprintEnv, ServiceConfigFingerprint(cfg, !host.BeforeSetup))
 	setEnv(HostHomeEnv, host.HomeDir)
 	setEnv(HostAndroidDirEnv, host.AndroidDir)
 	setEnv(HostGoldenRootEnv, host.GoldenRoot)

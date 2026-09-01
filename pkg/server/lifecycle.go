@@ -84,7 +84,7 @@ type RunnerLifecycleClient struct {
 	retryDelay func(int) time.Duration
 }
 
-func LoadRunnerLifecycleConfig(instance utils.Instance) RunnerLifecycleConfig {
+func LoadRunnerLifecycleConfig(instance utils.Instance, loaders ...func() (dashboardruntime.RunnerRuntimeConfig, error)) RunnerLifecycleConfig {
 	cfg := RunnerLifecycleConfig{
 		Enabled:           loadLifecycleEnabled(),
 		RunnerID:          strings.TrimSpace(utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")),
@@ -98,7 +98,14 @@ func LoadRunnerLifecycleConfig(instance utils.Instance) RunnerLifecycleConfig {
 	} else {
 		cfg.APIKey = strings.TrimSpace(instance.InternalAdminKey)
 	}
-	if inventory, err := dashboardruntime.RuntimeConfigFromEnvironment(); err == nil {
+	var inventory dashboardruntime.RunnerRuntimeConfig
+	var err error
+	if len(loaders) > 0 && loaders[0] != nil {
+		inventory, err = loaders[0]()
+	} else {
+		inventory, err = dashboardruntime.RuntimeConfigFromEnvironment()
+	}
+	if err == nil {
 		for _, device := range inventory.Devices {
 			cfg.Devices = append(cfg.Devices, LifecycleDevice{DeviceID: device.ID, Online: device.Enabled})
 		}
@@ -107,12 +114,12 @@ func LoadRunnerLifecycleConfig(instance utils.Instance) RunnerLifecycleConfig {
 	return cfg
 }
 
-func NewRunnerLifecycleClient(cfg RunnerLifecycleConfig, httpClient HTTPClient, store *ProcessStore) *RunnerLifecycleClient {
+func NewRunnerLifecycleClient(cfg RunnerLifecycleConfig, httpClient HTTPClient, store *ProcessStore, loaders ...func() (dashboardruntime.RunnerRuntimeConfig, error)) *RunnerLifecycleClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 
-	return &RunnerLifecycleClient{
+	client := &RunnerLifecycleClient{
 		cfg:        cfg,
 		httpClient: httpClient,
 		store:      store,
@@ -129,6 +136,24 @@ func NewRunnerLifecycleClient(cfg RunnerLifecycleConfig, httpClient HTTPClient, 
 			return time.Duration(attempt) * 250 * time.Millisecond
 		},
 	}
+	if len(loaders) > 0 && loaders[0] != nil {
+		loader := loaders[0]
+		client.inventory = func() ([]LifecycleDevice, bool) {
+			inventory, err := loader()
+			if err != nil {
+				return nil, false
+			}
+			devices := make([]LifecycleDevice, 0, len(inventory.Devices))
+			for _, device := range inventory.Devices {
+				devices = append(devices, LifecycleDevice{DeviceID: device.ID, Online: device.Enabled})
+			}
+			return devices, true
+		}
+		readiness := NewReadinessService()
+		readiness.RuntimeConfig = loader
+		client.readiness = func() Readiness { return readiness.Check() }
+	}
+	return client
 }
 
 func (c *RunnerLifecycleClient) Resume(ctx context.Context, reason string) error {
@@ -152,15 +177,14 @@ func (c *RunnerLifecycleClient) Heartbeat(ctx context.Context) error {
 	})
 }
 
-// currentDevices refreshes heartbeat state for every configured device. A
-// disabled or unavailable device stays in the inventory but is explicitly
-// reported offline, so it never hides healthy siblings behind a host pause.
+// currentDevices refreshes heartbeat state for every device in the configured
+// inventory. A disabled or unavailable device stays in the inventory but is
+// explicitly reported offline, so it never hides healthy siblings behind a
+// host pause.
 func (c *RunnerLifecycleClient) currentDevices() []LifecycleDevice {
 	devices := append([]LifecycleDevice(nil), c.devices...)
-	// The runner container stays alive while Dashboard mutations change the
-	// typed TOML inventory. Reload it for every lifecycle request so a newly
-	// added device is included in the next heartbeat instead of remaining
-	// registered-but-offline until the container is restarted.
+	// Production supplies a generation-scoped loader here. Standalone callers
+	// may retain the legacy environment-backed fallback configured above.
 	if c.inventory != nil {
 		if current, ok := c.inventory(); ok {
 			devices = current

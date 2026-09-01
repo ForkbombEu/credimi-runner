@@ -75,19 +75,34 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 		},
 		NewAPIWithStore: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (runtimesupervisor.API, error) {
 			applyEnvironment(cfg)
-			svc := server.NewRunnerService(store, utils.LoadInstance())
-			return runtimesupervisor.NewHTTPAPI(cfg, server.NewHTTPHandler(ctx, svc, false))
+			loader := runtimeConfigLoader(cfg)
+			svc := server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: loader})
+			readiness := server.NewReadinessService()
+			readiness.RuntimeConfig = loader
+			return runtimesupervisor.NewHTTPAPI(cfg, server.NewHTTPHandlerWithReadiness(ctx, svc, false, readiness))
 		},
 		NewWorkersWithStore: func(cfg runnerconfig.Config, store *server.ProcessStore) runtimesupervisor.WorkerSet {
 			applyEnvironment(cfg)
-			return &workerSet{service: server.NewRunnerService(store, utils.LoadInstance()), store: store}
+			return &workerSet{service: server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: runtimeConfigLoader(cfg)}), store: store}
 		},
 		NewLifecycleClient: func(cfg runnerconfig.Config, store *server.ProcessStore) runtimesupervisor.LifecycleClient {
 			applyEnvironment(cfg)
-			return server.NewRunnerLifecycleClient(server.LoadRunnerLifecycleConfig(utils.LoadInstance()), http.DefaultClient, store)
+			loader := runtimeConfigLoader(cfg)
+			return server.NewRunnerLifecycleClient(server.LoadRunnerLifecycleConfig(utils.LoadInstance(), loader), http.DefaultClient, store, loader)
 		},
 		Register:             runtimesupervisor.Register,
 		VerifyPublicEndpoint: runtimesupervisor.VerifyPublicEndpoint,
+	}
+}
+
+func runtimeConfigLoader(cfg runnerconfig.Config) server.RuntimeConfigLoader {
+	values := dashboardruntime.ValuesFromTypedConfig(cfg)
+	return func() (dashboardruntime.RunnerRuntimeConfig, error) {
+		snapshot := make(dashboardruntime.Values, len(values))
+		for key, value := range values {
+			snapshot[key] = value
+		}
+		return dashboardruntime.ParseRuntimeConfig(snapshot)
 	}
 }
 
@@ -171,7 +186,8 @@ func (a *Application) Run(ctx context.Context) error {
 	a.dashboardServer = &http.Server{Handler: handler, ReadHeaderTimeout: 60 * time.Second}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- a.dashboardServer.Serve(listener) }()
-	if cfg.Exists() && a.supervisor.Status().Desired == runtimesupervisor.DesiredRunning {
+	serviceRestartRequired := dashboardruntime.ServiceRestartRequired(values, cfg.Exists())
+	if cfg.Exists() && a.supervisor.Status().Desired == runtimesupervisor.DesiredRunning && !serviceRestartRequired {
 		go func() {
 			if err := a.supervisor.Start(ctx); err != nil { /* dashboard remains available */
 			}

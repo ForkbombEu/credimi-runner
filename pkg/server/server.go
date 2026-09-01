@@ -37,7 +37,7 @@ func NewRunnerServiceWithDeps(store *ProcessStore, instance utils.Instance, deps
 	deps.WithDefaults()
 	// Typed inventory belongs to the managed runner. Do not implicitly load a
 	// developer's ~/.config file for a direct server or test process.
-	if deps.RuntimeConfig == nil && strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")) != "" {
+	if deps.RuntimeConfig == nil && deps.RuntimeConfigLoader == nil && strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")) != "" {
 		deps.RuntimeConfigLoader = func() (dashboardruntime.RunnerRuntimeConfig, error) {
 			return dashboardruntime.RuntimeConfigFromEnvironment()
 		}

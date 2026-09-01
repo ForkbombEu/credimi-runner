@@ -175,7 +175,7 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 		return s.fail(DesiredRunning, err)
 	}
 	s.setGeneration(g)
-	if err := s.activate(ctx, cfg, g); err != nil {
+	if err := s.activate(ctx, g); err != nil {
 		return s.rollback(err)
 	}
 	return s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredRunning, ActualRunning, "" })
@@ -186,7 +186,7 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (*
 	// transition context. The latter is canceled as soon as Start/Reconcile
 	// returns and must never tear down a successfully activated generation.
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &generation{ctx: ctx, cancel: cancel, workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
+	g := &generation{cfg: cfg, ctx: ctx, cancel: cancel, workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
 	created := false
 	defer func() {
 		if created {
@@ -263,7 +263,8 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (*
 	return g, nil
 }
 
-func (s *Supervisor) activate(ctx context.Context, cfg config.Config, g *generation) error {
+func (s *Supervisor) activate(ctx context.Context, g *generation) error {
+	cfg := g.cfg
 	if err := g.api.Start(); err != nil {
 		return fmt.Errorf("start execution API: %w", err)
 	}
@@ -400,6 +401,19 @@ func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
 	desired := func() DesiredState { s.mu.RLock(); defer s.mu.RUnlock(); return s.state.Desired }()
+	if desired == DesiredStopped {
+		if g := s.currentGeneration(); g != nil {
+			remoteErr, localErr := s.teardownGeneration(ctx, g, "config_reconcile", false)
+			if localErr != nil || !g.localResourcesClosed() {
+				if localErr == nil {
+					localErr = errors.New("generation teardown incomplete")
+				}
+				return s.fail(desired, errors.Join(remoteErr, localErr))
+			}
+			s.setGeneration(nil)
+		}
+		return s.updateState(func(st *PersistentState) { st.Actual, st.LastError = ActualStopped, "" })
+	}
 	if g := s.currentGeneration(); g != nil {
 		remoteErr, localErr := s.teardownGeneration(ctx, g, "config_reconcile", desired == DesiredRunning)
 		if localErr != nil {
@@ -420,7 +434,7 @@ func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 	}
 	s.setGeneration(g)
 	if desired == DesiredRunning {
-		if err := s.activate(ctx, cfg, g); err != nil {
+		if err := s.activate(ctx, g); err != nil {
 			return s.rollback(err)
 		}
 		return s.updateState(func(st *PersistentState) { st.Actual = ActualRunning })
@@ -520,6 +534,7 @@ func (s *Supervisor) teardownGeneration(ctx context.Context, g *generation, reas
 
 type generation struct {
 	mu                                                              sync.RWMutex
+	cfg                                                             config.Config
 	ctx                                                             context.Context
 	cancel                                                          context.CancelFunc
 	api                                                             API

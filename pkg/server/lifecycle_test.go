@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -164,6 +165,19 @@ func TestLoadRunnerLifecycleConfigIgnoresBackendPolicyEnvs(t *testing.T) {
 
 	require.Equal(t, defaultHeartbeatInterval, cfg.HeartbeatInterval)
 	require.Equal(t, defaultLifecycleRequestTimeout, cfg.RequestTimeout)
+}
+
+func TestRunnerLifecycleUsesExplicitRuntimeSnapshotLoader(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_ID", "org/runner")
+	snapshot := dashboardruntime.RunnerRuntimeConfig{Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "org/runner/device-a", Enabled: true}}}
+	loader := func() (dashboardruntime.RunnerRuntimeConfig, error) { return snapshot, nil }
+	cfg := LoadRunnerLifecycleConfig(utils.Instance{URL: "https://credimi.example"}, loader)
+	require.Equal(t, []LifecycleDevice{{DeviceID: "org/runner/device-a", Online: true}}, cfg.Devices)
+
+	client := NewRunnerLifecycleClient(cfg, nil, NewProcessStore(), loader)
+	devices, ok := client.inventory()
+	require.True(t, ok)
+	require.Equal(t, cfg.Devices, devices)
 }
 
 func TestRunnerLifecycleResumePostsExpectedPayload(t *testing.T) {

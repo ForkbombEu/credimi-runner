@@ -442,7 +442,7 @@ func TestSupervisorRestartAndClosePreserveDesired(t *testing.T) {
 	}
 }
 
-func TestSupervisorStoppedReconcileBuildsGeneration(t *testing.T) {
+func TestSupervisorStoppedReconcileDoesNotBuildGeneration(t *testing.T) {
 	life := &testLife{}
 	e := &testEdge{}
 	w := &testWorkers{}
@@ -453,8 +453,34 @@ func TestSupervisorStoppedReconcileBuildsGeneration(t *testing.T) {
 	if s.ExecutionRunning() || s.Status().Actual != ActualStopped {
 		t.Fatalf("state=%+v", s.Status())
 	}
-	if e.Running() || w.Running() {
-		t.Fatal("stopped reconcile activated resources")
+	if s.currentGeneration() != nil || e.Running() || w.Running() {
+		t.Fatal("stopped reconcile constructed resources")
+	}
+}
+
+func TestSupervisorStoppedReconcileTearsDownExistingGenerationWithoutReplacement(t *testing.T) {
+	life := &testLife{}
+	e := &testEdge{}
+	w := &testWorkers{}
+	s, _ := newTestSupervisor(t, life, e, w)
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	old := s.currentGeneration()
+	if old == nil {
+		t.Fatal("missing running generation")
+	}
+	if err := s.updateState(func(st *PersistentState) { st.Desired = DesiredStopped }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(context.Background(), validConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if s.currentGeneration() != nil || s.Status().Actual != ActualStopped {
+		t.Fatalf("stopped reconcile state=%+v", s.Status())
+	}
+	if e.Running() || w.Running() || !old.localResourcesClosed() {
+		t.Fatal("old generation was not fully torn down")
 	}
 }
 

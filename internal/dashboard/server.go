@@ -374,7 +374,7 @@ func (s *Server) setDeviceEnabledSync(r *http.Request, enabled bool, progress fu
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
-	if err := s.reconcileAndRecord(r.Context(), diff); err != nil {
+	if err := s.applySavedConfig(r.Context(), diff); err != nil {
 		return fmt.Errorf("device state was saved, but runtime reconciliation failed: %w", err)
 	}
 	return nil
@@ -432,7 +432,7 @@ func (s *Server) deviceRemoveSync(r *http.Request, progress func(string)) error 
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
-	if err := s.reconcileAndRecord(r.Context(), diff); err != nil {
+	if err := s.applySavedConfig(r.Context(), diff); err != nil {
 		return fmt.Errorf("device removal was saved, but runtime reconciliation failed: %w", err)
 	}
 	return nil
@@ -562,10 +562,10 @@ func (s *Server) controllerIdentity(w http.ResponseWriter, r *http.Request) {
 func (s *Server) pageData(active string, payload any) PageData {
 	snap := s.hub.CurrentSnapshot()
 	runtimeStatus := dashboardRuntimeStatus(s.cfg, s.runtime.Status())
+	runtimeStatus.PendingServiceRestart = s.serviceRestartRequired()
 	s.mu.RLock()
 	runtimeStatus.PendingRestart = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeRestartRequired)
 	runtimeStatus.PendingReconcile = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile)
-	runtimeStatus.PendingServiceRestart = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired)
 	runtimeStatus.PendingCredimiUpdate = hasApplyClass(s.pendingDiff, dashboardruntime.ApplyCredimiUpdateRequired)
 	maintenanceStatus := s.maintenance
 	s.mu.RUnlock()
@@ -959,7 +959,7 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
-	return s.reconcileAndRecord(r.Context(), diff)
+	return s.applySavedConfig(r.Context(), diff)
 }
 
 // applyDeviceDefaults keeps the dashboard form concise while making every
@@ -1077,19 +1077,10 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	s.mutationMu.Unlock()
 	newSnapshot := s.cfg.Snapshot()
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(oldSnapshot), dashboardruntime.Values(newSnapshot), runtimeGOOS())
-	reconciled, err := s.reconcileSavedConfig(r.Context(), diff)
-	if err != nil {
-		s.mu.Lock()
-		s.pendingDiff = diff
-		s.mu.Unlock()
+	if err := s.applySavedConfig(r.Context(), diff); err != nil {
 		return fmt.Errorf("configuration was saved but reconciliation failed: %w", err)
 	}
 	s.mu.Lock()
-	if reconciled || len(diff.ChangedKeys) == 0 {
-		s.pendingDiff = dashboardruntime.ConfigDiff{}
-	} else {
-		s.pendingDiff = diff
-	}
 	s.lastRegistrationStatus = ""
 	s.mu.Unlock()
 	return nil
@@ -1112,7 +1103,7 @@ func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(current), normalized, runtimeGOOS())
-	confirmRequired := diffNeedsRuntime(diff)
+	confirmRequired := diffNeedsConfirmation(diff)
 	writeJSON(w, map[string]any{
 		"classes":          diff.Classes,
 		"confirm_required": confirmRequired,
@@ -1134,39 +1125,105 @@ func (s *Server) normalizeConfigPreview(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]any{"values": normalized})
 }
 
-func diffNeedsRuntime(diff dashboardruntime.ConfigDiff) bool {
+func diffNeedsRuntimeApply(diff dashboardruntime.ConfigDiff) bool {
 	return hasApplyClass(diff, dashboardruntime.ApplyRuntimeReconcile) ||
 		hasApplyClass(diff, dashboardruntime.ApplyRuntimeRestartRequired) ||
 		hasApplyClass(diff, dashboardruntime.ApplyCredimiUpdateRequired)
 }
 
-// reconcileSavedConfig is the only configuration-to-runtime bridge. Service
-// topology remains a service-manager concern; runtime configuration is passed
-// to the shared supervisor even when its desired state is stopped.
-func (s *Server) reconcileSavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff) (bool, error) {
-	if !diffNeedsRuntime(diff) {
-		return false, nil
+func diffNeedsConfirmation(diff dashboardruntime.ConfigDiff) bool {
+	for _, class := range diff.Classes {
+		if class != dashboardruntime.ApplySavedOnly {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutServiceClass(diff dashboardruntime.ConfigDiff) dashboardruntime.ConfigDiff {
+	filtered := dashboardruntime.ConfigDiff{ChangedKeys: append([]string(nil), diff.ChangedKeys...)}
+	for _, class := range diff.Classes {
+		if class != dashboardruntime.ApplyServiceRestartRequired {
+			filtered.Classes = append(filtered.Classes, class)
+		}
+	}
+	return filtered
+}
+
+func mergeConfigDiff(left, right dashboardruntime.ConfigDiff) dashboardruntime.ConfigDiff {
+	merged := dashboardruntime.ConfigDiff{}
+	for _, diff := range []dashboardruntime.ConfigDiff{left, right} {
+		for _, key := range diff.ChangedKeys {
+			if !containsString(merged.ChangedKeys, key) {
+				merged.ChangedKeys = append(merged.ChangedKeys, key)
+			}
+		}
+		for _, class := range diff.Classes {
+			if !hasApplyClass(merged, class) {
+				merged.Classes = append(merged.Classes, class)
+			}
+		}
+	}
+	return merged
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) serviceRestartRequired() bool {
+	return dashboardruntime.ServiceRestartRequired(dashboardruntime.Values(s.cfg.Snapshot()), s.cfg.Exists())
+}
+
+func (s *Server) requireCurrentServiceConfig() error {
+	if !s.serviceRestartRequired() {
+		return nil
+	}
+	return errors.New("the persistent Credimi Runner service must be restarted before the saved configuration can be activated; run: credimi-runner service restart")
+}
+
+func (s *Server) currentPendingDiff() dashboardruntime.ConfigDiff {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingDiff
+}
+
+func (s *Server) setPendingDiff(diff dashboardruntime.ConfigDiff) {
+	s.mu.Lock()
+	s.pendingDiff = diff
+	s.mu.Unlock()
+}
+
+func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.ConfigDiff) error {
+	pending := mergeConfigDiff(s.currentPendingDiff(), withoutServiceClass(diff))
+	if s.serviceRestartRequired() {
+		s.setPendingDiff(pending)
+		return nil
+	}
+	if !diffNeedsRuntimeApply(pending) {
+		s.setPendingDiff(dashboardruntime.ConfigDiff{})
+		return nil
+	}
+	if s.runtime.Status().Desired != runtimesupervisor.DesiredRunning {
+		s.setPendingDiff(pending)
+		return nil
 	}
 	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
 	if err != nil {
-		return false, fmt.Errorf("load typed configuration: %w", err)
+		s.setPendingDiff(pending)
+		return fmt.Errorf("load typed configuration: %w", err)
 	}
 	if err := s.runtime.Reconcile(ctx, cfg); err != nil {
-		return false, err
+		s.setPendingDiff(pending)
+		return err
 	}
-	return true, nil
-}
-
-func (s *Server) reconcileAndRecord(ctx context.Context, diff dashboardruntime.ConfigDiff) error {
-	reconciled, err := s.reconcileSavedConfig(ctx, diff)
-	s.mu.Lock()
-	if reconciled && err == nil {
-		s.pendingDiff = dashboardruntime.ConfigDiff{}
-	} else {
-		s.pendingDiff = diff
-	}
-	s.mu.Unlock()
-	return err
+	s.setPendingDiff(dashboardruntime.ConfigDiff{})
+	return nil
 }
 
 func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
@@ -1235,6 +1292,11 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
 	if err != nil {
 		return fmt.Errorf("load saved typed configuration: %w", err)
+	}
+	if s.serviceRestartRequired() {
+		s.setPendingDiff(dashboardruntime.ConfigDiff{})
+		s.setStartupState(StartupNeedsAttention, "Setup saved. Restart the Credimi Runner service to activate it: credimi-runner service restart")
+		return nil
 	}
 	if deferStart {
 		if err := s.runtime.Start(r.Context()); err != nil {
@@ -1654,7 +1716,18 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 		s.operations = controller.NewCoordinator(s.ctx)
 	}
 	return s.operations.Submit(kind, func(ctx context.Context, _ func(controller.Progress)) error {
-		return operation(ctx)
+		if action != "stop" {
+			if err := s.requireCurrentServiceConfig(); err != nil {
+				return err
+			}
+		}
+		if err := operation(ctx); err != nil {
+			return err
+		}
+		if action != "stop" {
+			s.setPendingDiff(dashboardruntime.ConfigDiff{})
+		}
+		return nil
 	})
 }
 

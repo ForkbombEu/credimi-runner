@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
@@ -72,10 +73,13 @@ func TestRuntimePlanClassifiesPersistentChanges(t *testing.T) {
 		})
 	}
 	deviceDiff := DiffValuesForOS(Values{}, Values{"CREDIMI_DEVICE_1_ID": "org/runner/device"}, "linux")
-	for _, class := range []ApplyClass{ApplyRuntimeReconcile, ApplyServiceRestartRequired, ApplyCredimiUpdateRequired} {
+	for _, class := range []ApplyClass{ApplyRuntimeReconcile, ApplyCredimiUpdateRequired} {
 		if !hasClass(deviceDiff, class) {
 			t.Fatalf("device diff missing %q: %#v", class, deviceDiff)
 		}
+	}
+	if hasClass(deviceDiff, ApplyServiceRestartRequired) {
+		t.Fatal("device identity change unexpectedly requires service restart")
 	}
 }
 
@@ -140,8 +144,101 @@ func TestRuntimePlanDeviceDiffAndNoop(t *testing.T) {
 		t.Fatalf("updated device diff = %+v", updated)
 	}
 	added := DiffValuesForOS(Values{}, Values{"CREDIMI_DEVICE_2_NAME": "new"}, "linux")
-	if len(added.ChangedKeys) != 1 || !hasClass(added, ApplyServiceRestartRequired) {
+	if len(added.ChangedKeys) != 1 || hasClass(added, ApplyServiceRestartRequired) {
 		t.Fatalf("added device diff = %+v", added)
+	}
+}
+
+func TestServiceConfigFingerprintProjectsOnlyServiceTopology(t *testing.T) {
+	base := runnerconfig.Bootstrap()
+	base.Server.APIListen = "127.0.0.1:8050"
+	base.Server.DashboardListen = "127.0.0.1:8051"
+	base.Exposure.Mode = "quick_tunnel"
+	base.Devices = []runnerconfig.DeviceConfig{{
+		ID: "org/runner/phone", Name: "Phone", Description: "old", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "A"},
+	}}
+	fingerprint := func(cfg runnerconfig.Config, configured bool) string {
+		return servicemanager.ServiceConfigFingerprint(cfg, configured)
+	}
+	unchanged := []struct {
+		name   string
+		mutate func(*runnerconfig.Config)
+	}{
+		{"Temporal address", func(cfg *runnerconfig.Config) { cfg.Temporal.Address = "other:7233" }},
+		{"runner description", func(cfg *runnerconfig.Config) { cfg.Runner.Description = "new" }},
+		{"device description", func(cfg *runnerconfig.Config) { cfg.Devices[0].Description = "new" }},
+		{"USB serial", func(cfg *runnerconfig.Config) { cfg.Devices[0].AndroidPhysical.Serial = "B" }},
+		{"quick to named", func(cfg *runnerconfig.Config) { cfg.Exposure.Mode = "named_tunnel" }},
+	}
+	baseFingerprint := fingerprint(base, true)
+	for _, tc := range unchanged {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := base
+			candidate.Devices = append([]runnerconfig.DeviceConfig(nil), base.Devices...)
+			physical := *base.Devices[0].AndroidPhysical
+			candidate.Devices[0].AndroidPhysical = &physical
+			tc.mutate(&candidate)
+			if got := fingerprint(candidate, true); got != baseFingerprint {
+				t.Fatalf("fingerprint changed: %q != %q", got, baseFingerprint)
+			}
+		})
+	}
+	changed := []struct {
+		name   string
+		mutate func(*runnerconfig.Config)
+	}{
+		{"manual exposure", func(cfg *runnerconfig.Config) { cfg.Exposure.Mode = "manual" }},
+		{"API port", func(cfg *runnerconfig.Config) { cfg.Server.APIListen = "127.0.0.1:8052" }},
+		{"Dashboard port", func(cfg *runnerconfig.Config) { cfg.Server.DashboardListen = "127.0.0.1:8052" }},
+		{"runner image", func(cfg *runnerconfig.Config) { cfg.Android.RunnerImage = "runner:other" }},
+		{"network", func(cfg *runnerconfig.Config) { cfg.Android.Network = "other-network" }},
+		{"Wi-Fi to USB", func(cfg *runnerconfig.Config) { cfg.Devices[0].AndroidPhysical.Transport = "wifi" }},
+		{"emulator enabled", func(cfg *runnerconfig.Config) {
+			cfg.Devices = append(cfg.Devices, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidEmulator, Enabled: true})
+		}},
+	}
+	for _, tc := range changed {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := base
+			candidate.Devices = append([]runnerconfig.DeviceConfig(nil), base.Devices...)
+			physical := *base.Devices[0].AndroidPhysical
+			candidate.Devices[0].AndroidPhysical = &physical
+			tc.mutate(&candidate)
+			if got := fingerprint(candidate, true); got == baseFingerprint {
+				t.Fatal("topology change did not change fingerprint")
+			}
+		})
+	}
+	redroid := base
+	redroid.Devices = []runnerconfig.DeviceConfig{{Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{AVDCTLSSHKnownHostsPath: "/home/alice/.ssh/known_hosts"}}}
+	otherRedroid := redroid
+	otherRedroid.Devices = []runnerconfig.DeviceConfig{{Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{AVDCTLSSHKnownHostsPath: "/home/alice/.ssh/other_known_hosts"}}}
+	if fingerprint(redroid, true) == fingerprint(otherRedroid, true) {
+		t.Fatal("Redroid known-hosts change did not change fingerprint")
+	}
+	if fingerprint(base, false) == baseFingerprint {
+		t.Fatal("bootstrap/configured state did not change fingerprint")
+	}
+}
+
+func TestServiceRestartRequiredUsesAppliedFingerprint(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	values := ValuesFromTypedConfig(cfg)
+	if ServiceRestartRequired(values, true) {
+		t.Fatal("native execution unexpectedly requires service restart")
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(cfg, true))
+	if ServiceRestartRequired(values, true) {
+		t.Fatal("matching applied service fingerprint reported stale")
+	}
+	changed := ValuesFromTypedConfig(cfg)
+	changed["ANDROID_RUNNER_IMAGE"] = "runner:changed"
+	if !ServiceRestartRequired(changed, true) {
+		t.Fatal("changed service configuration was not reported stale")
+	}
+	if !ServiceRestartRequired(values, false) {
+		t.Fatal("bootstrap/configured mismatch was not reported stale")
 	}
 }
 

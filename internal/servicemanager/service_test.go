@@ -289,7 +289,8 @@ func TestBuildServiceSpecBootstrapCanDiscoverHostADBDevices(t *testing.T) {
 	// bootstrap must retain the old host-ADB topology with an empty config.
 	host := testHost("/home/alice")
 	host.BeforeSetup = true
-	spec, err := BuildServiceSpec(configForDevices(), host)
+	cfg := config.Bootstrap()
+	spec, err := BuildServiceSpec(cfg, host)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,13 +311,18 @@ func TestBuildServiceSpecBootstrapCanDiscoverHostADBDevices(t *testing.T) {
 
 func TestBuildServiceSpecExportsCanonicalComposeProject(t *testing.T) {
 	host := testHost("/home/alice/.config/credimi-runner")
-	spec, err := BuildServiceSpec(configForDevices(), host)
+	cfg := configForDevices()
+	spec, err := BuildServiceSpec(cfg, host)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := ProjectName(host.ConfigDir, host.UID)
 	if spec.Environment[ComposeProjectEnv] != want {
 		t.Fatalf("compose project = %q, want %q", spec.Environment[ComposeProjectEnv], want)
+	}
+	wantFingerprint := ServiceConfigFingerprint(cfg, true)
+	if spec.Environment[AppliedServiceConfigFingerprintEnv] != wantFingerprint {
+		t.Fatalf("applied service fingerprint = %q, want %q", spec.Environment[AppliedServiceConfigFingerprintEnv], wantFingerprint)
 	}
 }
 

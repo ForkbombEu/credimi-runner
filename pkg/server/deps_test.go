@@ -87,3 +87,26 @@ func TestNewRunnerServiceWithDepsReportsMissingConfiguredRuntimeOnLoad(t *testin
 	_, err := service.Deps.RuntimeConfigLoader()
 	require.Error(t, err)
 }
+
+func TestNewRunnerServiceWithDepsPrefersExplicitSnapshotLoader(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", dir)
+	fileConfig := runnerconfig.Bootstrap()
+	fileConfig.SchemaVersion = runnerconfig.SchemaVersion
+	fileConfig.Runner = runnerconfig.RunnerConfig{ID: "org/file-config", Name: "file-config", Organization: "org"}
+	fileConfig.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	fileConfig.Temporal.Address = "temporal:7233"
+	fileConfig.Devices = []runnerconfig.DeviceConfig{{ID: "org/file-config/device", Name: "File", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"}}}
+	require.NoError(t, runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), fileConfig))
+
+	want := dashboardruntime.RunnerRuntimeConfig{
+		Host:    dashboardruntime.Values{"CREDIMI_RUNNER_ID": "org/snapshot-config"},
+		Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "org/snapshot-device", Name: "Snapshot", Type: "android_phone", Enabled: true}},
+	}
+	service := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, Deps{
+		RuntimeConfigLoader: func() (dashboardruntime.RunnerRuntimeConfig, error) { return want, nil },
+	})
+	got, err := service.currentRuntimeConfig()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}

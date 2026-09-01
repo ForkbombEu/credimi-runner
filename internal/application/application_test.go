@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 )
 
@@ -73,6 +75,55 @@ func TestRuntimeDependenciesCreateCloudflaredEdge(t *testing.T) {
 	}
 	if e == nil || !strings.Contains(fmt.Sprintf("%T", e), "Cloudflared") {
 		t.Fatalf("edge=%T", e)
+	}
+}
+
+func TestRuntimeConfigLoaderKeepsGenerationSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	cfgA := runnerconfig.Bootstrap()
+	cfgA.SchemaVersion = runnerconfig.SchemaVersion
+	cfgA.Runner.ID = "org/runner"
+	cfgA.Runner.Name = "runner"
+	cfgA.Runner.Organization = "org"
+	cfgA.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfgA.Temporal.Address = "temporal:7233"
+	cfgA.Devices = []runnerconfig.DeviceConfig{{
+		ID: "org/runner/device-a", Name: "A", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "A"},
+	}}
+	loaderA := runtimeConfigLoader(cfgA)
+	first, err := loaderA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Devices) != 1 || first.Devices[0].ID != "org/runner/device-a" {
+		t.Fatalf("generation A inventory = %+v", first.Devices)
+	}
+
+	cfgB := cfgA
+	cfgB.Devices = []runnerconfig.DeviceConfig{{
+		ID: "org/runner/device-b", Name: "B", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10", WiFiPort: "5555"},
+	}}
+	configPath := filepath.Join(dir, "config.toml")
+	if err := runnerconfig.WriteFile(configPath, cfgB); err != nil {
+		t.Fatal(err)
+	}
+	second, err := loaderA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Devices) != 1 || second.Devices[0].ID != "org/runner/device-a" {
+		t.Fatalf("generation A changed after desired config write: %+v", second.Devices)
+	}
+
+	loaderB := runtimeConfigLoader(cfgB)
+	generationB, err := loaderB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(generationB.Devices) != 1 || generationB.Devices[0].ID != "org/runner/device-b" {
+		t.Fatalf("generation B inventory = %+v", generationB.Devices)
 	}
 }
 
@@ -176,6 +227,77 @@ func TestApplicationRunStartsDashboardAndShutsDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- a.Run(ctx) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("application did not shut down")
+	}
+}
+
+type countingApplicationAPI struct{ starts int }
+
+func (a *countingApplicationAPI) Start() error {
+	a.starts++
+	return nil
+}
+func (*countingApplicationAPI) Shutdown(context.Context) error { return nil }
+func (*countingApplicationAPI) Listening() bool                { return false }
+
+func TestApplicationDoesNotAutoStartStaleServiceConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	cfgA := runnerconfig.Bootstrap()
+	cfgA.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	cfgA.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfgA.Temporal.Address = "temporal:7233"
+	cfgA.Devices = []runnerconfig.DeviceConfig{{
+		ID: "org/runner/device", Name: "Device", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"},
+	}}
+	cfgA.Android.RunnerImage = "runner:a"
+	cfgB := cfgA
+	cfgB.Android.RunnerImage = "runner:b"
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfgB); err != nil {
+		t.Fatal(err)
+	}
+	if err := (runtimesupervisor.StateStore{Path: filepath.Join(dir, "runtime-state.json")}).Save(runtimesupervisor.PersistentState{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualStopped}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(cfgA, true))
+	api := &countingApplicationAPI{}
+	s, err := runtimesupervisor.New(dir, nil, runtimesupervisor.Dependencies{
+		NewAPI: func(runnerconfig.Config, context.Context) (runtimesupervisor.API, error) { return api, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listenerReady := make(chan struct{})
+	a := &Application{configDir: dir, supervisor: s, listen: func(string, string) (net.Listener, error) {
+		close(listenerReady)
+		return newTestListener(), nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	select {
+	case <-listenerReady:
+	case <-time.After(time.Second):
+		select {
+		case err := <-done:
+			t.Fatalf("application exited before dashboard listen: %v", err)
+		default:
+			t.Fatal("dashboard did not start listening")
+		}
+	}
+	if api.starts != 0 {
+		t.Fatalf("stale service auto-started runtime %d time(s)", api.starts)
+	}
+	if got := s.Status(); got.Desired != runtimesupervisor.DesiredRunning || got.Actual != runtimesupervisor.ActualStopped {
+		t.Fatalf("stale service changed runtime state: %+v", got)
+	}
 	cancel()
 	select {
 	case err := <-done:
