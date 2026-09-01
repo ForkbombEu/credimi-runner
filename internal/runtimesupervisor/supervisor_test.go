@@ -22,6 +22,7 @@ type testAPI struct {
 	started, closed    bool
 	startErr, closeErr error
 	startHook          func()
+	failures           chan error
 }
 
 func (a *testAPI) Start() error {
@@ -43,7 +44,8 @@ func (a *testAPI) Shutdown(context.Context) error {
 	a.mu.Unlock()
 	return err
 }
-func (a *testAPI) Listening() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.started && !a.closed }
+func (a *testAPI) Listening() bool        { a.mu.Lock(); defer a.mu.Unlock(); return a.started && !a.closed }
+func (a *testAPI) Failures() <-chan error { return a.failures }
 
 type testEdge struct {
 	mu                          sync.Mutex
@@ -51,12 +53,15 @@ type testEdge struct {
 	startErr, stopErr, closeErr error
 	running                     bool
 	startHook                   func()
+	failures                    chan error
+	origins                     []string
 }
 
-func (e *testEdge) Start(context.Context, string) (string, error) {
+func (e *testEdge) Start(_ context.Context, origin string) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.starts++
+	e.origins = append(e.origins, origin)
 	if e.startErr != nil {
 		return "", e.startErr
 	}
@@ -81,7 +86,8 @@ func (e *testEdge) Close() error {
 	defer e.mu.Unlock()
 	return e.closeErr
 }
-func (e *testEdge) Running() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.running }
+func (e *testEdge) Running() bool          { e.mu.Lock(); defer e.mu.Unlock(); return e.running }
+func (e *testEdge) Failures() <-chan error { return e.failures }
 
 type testWorkers struct {
 	mu                   sync.Mutex
@@ -265,6 +271,150 @@ func TestSupervisorHeartbeatStatusTracksLoopLifetime(t *testing.T) {
 	}
 	if s.Status().HeartbeatRunning {
 		t.Fatal("heartbeat loop still reported as running")
+	}
+}
+
+func TestSupervisorAPIFailureTearsDownGeneration(t *testing.T) {
+	api := &testAPI{failures: make(chan error, 1)}
+	edgeImpl := &testEdge{failures: make(chan error, 1)}
+	workers := &testWorkers{}
+	life := &testLife{}
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := make(chan struct{})
+	s.saveState = func(state PersistentState) error {
+		if state.Actual == ActualFailed {
+			select {
+			case <-failed:
+			default:
+				close(failed)
+			}
+		}
+		return nil
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	api.failures <- errors.New("execution API died")
+	select {
+	case <-failed:
+	case <-time.After(time.Second):
+		t.Fatal("API failure was not handled")
+	}
+	status := s.Status()
+	if status.Desired != DesiredRunning || status.Actual != ActualFailed || s.currentGeneration() != nil {
+		t.Fatalf("status=%+v generation=%v", status, s.currentGeneration())
+	}
+	if !strings.Contains(status.LastError, "execution API died") || workers.stops == 0 || workers.waits == 0 || edgeImpl.stops == 0 {
+		t.Fatalf("failure cleanup status=%+v workers=%+v edge=%+v", status, workers, edgeImpl)
+	}
+}
+
+func TestSupervisorEdgeFailureTearsDownGeneration(t *testing.T) {
+	api := &testAPI{}
+	edgeImpl := &testEdge{failures: make(chan error, 1)}
+	workers := &testWorkers{}
+	life := &testLife{}
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := make(chan struct{})
+	s.saveState = func(state PersistentState) error {
+		if state.Actual == ActualFailed {
+			select {
+			case <-failed:
+			default:
+				close(failed)
+			}
+		}
+		return nil
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	edgeImpl.failures <- errors.New("cloudflared died")
+	select {
+	case <-failed:
+	case <-time.After(time.Second):
+		t.Fatal("edge failure was not handled")
+	}
+	status := s.Status()
+	if status.Desired != DesiredRunning || status.Actual != ActualFailed || s.currentGeneration() != nil {
+		t.Fatalf("status=%+v generation=%v", status, s.currentGeneration())
+	}
+	if !strings.Contains(status.LastError, "cloudflared died") {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestSupervisorExpectedStopDoesNotBecomeFatal(t *testing.T) {
+	api := &testAPI{failures: make(chan error, 1)}
+	edgeImpl := &testEdge{failures: make(chan error, 1)}
+	s, _ := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI:  func(config.Config, context.Context) (API, error) { return api, nil },
+		NewEdge: func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+	})
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	api.failures <- errors.New("late API failure")
+	edgeImpl.failures <- errors.New("late edge failure")
+	if status := s.Status(); status.Desired != DesiredStopped || status.Actual != ActualStopped {
+		t.Fatalf("status=%+v", status)
+	}
+}
+
+func TestSupervisorIgnoresFailureFromReplacedGeneration(t *testing.T) {
+	var apis []*testAPI
+	var edges []*testEdge
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI: func(config.Config, context.Context) (API, error) {
+			api := &testAPI{failures: make(chan error, 1)}
+			apis = append(apis, api)
+			return api, nil
+		},
+		NewEdge: func(config.Config) (edge.Edge, error) {
+			edgeImpl := &testEdge{}
+			edges = append(edges, edgeImpl)
+			return edgeImpl, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	old := s.currentGeneration()
+	if err := s.Reconcile(context.Background(), validConfig()); err != nil {
+		t.Fatal(err)
+	}
+	current := s.currentGeneration()
+	if current == nil || current == old || len(apis) != 2 || len(edges) != 2 {
+		t.Fatal("replacement generation was not installed")
+	}
+	old.fatal <- errors.New("stale generation failure")
+	if status := s.Status(); status.Actual != ActualRunning || s.currentGeneration() != current {
+		t.Fatalf("stale failure changed current runtime: status=%+v", status)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -558,6 +708,87 @@ func TestSupervisorActivationFailures(t *testing.T) {
 	}
 }
 
+func TestSupervisorStartStatePersistenceFailureAllocatesNoResources(t *testing.T) {
+	life := &testLife{}
+	edgeImpl := &testEdge{}
+	workers := &testWorkers{}
+	s, api := newTestSupervisor(t, life, edgeImpl, workers)
+	persistErr := errors.New("state write failed")
+	s.saveState = func(PersistentState) error { return persistErr }
+	if err := s.Start(context.Background()); !errors.Is(err, persistErr) {
+		t.Fatalf("error=%v", err)
+	}
+	if api.started || edgeImpl.starts != 0 || workers.starts != 0 || s.currentGeneration() != nil {
+		t.Fatalf("resources allocated: api=%v edge=%d workers=%d generation=%v", api.started, edgeImpl.starts, workers.starts, s.currentGeneration())
+	}
+}
+
+func TestSupervisorStopStatePersistenceFailureStillCleansUp(t *testing.T) {
+	life := &testLife{}
+	edgeImpl := &testEdge{}
+	workers := &testWorkers{}
+	s, api := newTestSupervisor(t, life, edgeImpl, workers)
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	persistErr := errors.New("stop state write failed")
+	s.saveState = func(PersistentState) error { return persistErr }
+	if err := s.Stop(context.Background()); !errors.Is(err, persistErr) {
+		t.Fatalf("error=%v", err)
+	}
+	if api.Listening() || edgeImpl.Running() || workers.Running() || s.currentGeneration() != nil {
+		t.Fatal("stop left local resources active")
+	}
+	if status := s.Status(); status.Desired != DesiredStopped || status.Actual != ActualStopped {
+		t.Fatalf("in-memory status=%+v", status)
+	}
+}
+
+func TestSupervisorRollbackJoinsStatePersistenceFailure(t *testing.T) {
+	verifyErr := errors.New("endpoint verification failed")
+	persistErr := errors.New("failed state write")
+	s, _ := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI: func(config.Config, context.Context) (API, error) { return &testAPI{}, nil },
+		VerifyPublicEndpoint: func(context.Context, config.Config, string) error {
+			return verifyErr
+		},
+	})
+	s.saveState = func(state PersistentState) error {
+		if state.Actual == ActualFailed {
+			return persistErr
+		}
+		return nil
+	}
+	err := s.Start(context.Background())
+	if !errors.Is(err, verifyErr) || !errors.Is(err, persistErr) {
+		t.Fatalf("error=%v", err)
+	}
+	if s.currentGeneration() != nil || s.Status().Actual != ActualFailed {
+		t.Fatalf("rollback state=%+v generation=%v", s.Status(), s.currentGeneration())
+	}
+}
+
+func TestSupervisorCloseStatePersistenceFailureCleansUp(t *testing.T) {
+	life := &testLife{}
+	edgeImpl := &testEdge{}
+	workers := &testWorkers{}
+	s, api := newTestSupervisor(t, life, edgeImpl, workers)
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	persistErr := errors.New("close state write failed")
+	s.saveState = func(PersistentState) error { return persistErr }
+	if err := s.Close(context.Background()); !errors.Is(err, persistErr) {
+		t.Fatalf("error=%v", err)
+	}
+	if api.Listening() || edgeImpl.Running() || workers.Running() || s.currentGeneration() != nil {
+		t.Fatal("close left local resources active")
+	}
+	if status := s.Status(); status.Actual != ActualStopped || status.Desired != DesiredRunning {
+		t.Fatalf("in-memory status=%+v", status)
+	}
+}
+
 func TestSupervisorObservabilityAndRegistrationHooks(t *testing.T) {
 	life := &testLife{}
 	e := &testEdge{}
@@ -767,7 +998,9 @@ func TestSupervisorCloseAndStateFailures(t *testing.T) {
 	if s.Status().Actual != ActualStopped {
 		t.Fatal("nil close not stopped")
 	}
-	_ = s.updateState(func(st *PersistentState) { st.Desired = DesiredRunning })
+	if err := s.updateState(func(st *PersistentState) { st.Desired = DesiredRunning }); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -985,5 +1218,104 @@ func TestHTTPAPIStartShutdownAndListenFailure(t *testing.T) {
 	listenTCP = func(string, string) (net.Listener, error) { return nil, errors.New("bind") }
 	if _, err := NewHTTPAPI(validConfig(), http.NewServeMux()); err == nil {
 		t.Fatal("expected bind failure")
+	}
+}
+
+func TestHTTPAPIRealShutdownUsesConfiguredTimeout(t *testing.T) {
+	cfg := validConfig()
+	cfg.Server.APIListen = "127.0.0.1:0"
+	cfg.Server.ReadHeaderTimeout = config.Duration(17 * time.Second)
+	cfg.Server.ShutdownTimeout = config.Duration(23 * time.Second)
+	a, err := NewHTTPAPI(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Server.ReadHeaderTimeout != 17*time.Second || a.shutdownTimeout != 23*time.Second {
+		t.Fatalf("timeouts=%s/%s", a.Server.ReadHeaderTimeout, a.shutdownTimeout)
+	}
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.Get("http://" + a.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a.Listening() {
+		t.Fatal("API still listening after shutdown")
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case failure := <-a.Failures():
+		t.Fatalf("normal shutdown reported failure: %v", failure)
+	default:
+	}
+}
+
+type failingListener struct{}
+
+func (failingListener) Accept() (net.Conn, error) { return nil, errors.New("accept failed") }
+func (failingListener) Close() error              { return nil }
+func (failingListener) Addr() net.Addr            { return supervisorAddr("127.0.0.1:8050") }
+
+func TestHTTPAPIUnexpectedServeFailureReportsFailure(t *testing.T) {
+	old := listenTCP
+	t.Cleanup(func() { listenTCP = old })
+	listenTCP = func(string, string) (net.Listener, error) { return failingListener{}, nil }
+	a, err := NewHTTPAPI(validConfig(), http.NewServeMux())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case failure := <-a.Failures():
+		if failure == nil || !strings.Contains(failure.Error(), "accept failed") {
+			t.Fatalf("failure=%v", failure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serve failure was not reported")
+	}
+	if a.Listening() {
+		t.Fatal("failed API still reports listening")
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPAPIShutdownBeforeStartAndClosedStart(t *testing.T) {
+	old := listenTCP
+	t.Cleanup(func() { listenTCP = old })
+	listener := &supervisorListener{done: make(chan struct{})}
+	listenTCP = func(string, string) (net.Listener, error) { return listener, nil }
+	a, err := NewHTTPAPI(validConfig(), http.NewServeMux())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a.Listening() {
+		t.Fatal("never-started API reports listening")
+	}
+	if err := a.Start(); err == nil {
+		t.Fatal("expected closed API start error")
+	}
+}
+
+func TestHTTPAPINilShutdownIsSafe(t *testing.T) {
+	var api *HTTPAPI
+	if err := api.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if api.Listening() {
+		t.Fatal("nil API reports listening")
 	}
 }

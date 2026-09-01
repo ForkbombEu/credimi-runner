@@ -85,7 +85,7 @@ func registrationEndpoint(cfg config.Config, publicURL string) (string, string, 
 			return "", "", errors.New("manual exposure requires public URL")
 		}
 		return strings.TrimSpace(cfg.Exposure.PublicURL), strings.TrimSpace(cfg.Exposure.PublicPort), nil
-	case "named_tunnel", "cloudflare-managed":
+	case "named_tunnel":
 		if strings.TrimSpace(cfg.Exposure.Domain) == "" {
 			return "", "", errors.New("managed tunnel exposure requires domain")
 		}

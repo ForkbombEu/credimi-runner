@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -45,6 +46,10 @@ type API interface {
 	Listening() bool
 }
 
+type failureSource interface {
+	Failures() <-chan error
+}
+
 type Dependencies struct {
 	NewEdge                     func(config.Config) (edge.Edge, error)
 	NewAPI                      func(config.Config, context.Context) (API, error)
@@ -67,6 +72,7 @@ type Supervisor struct {
 	stateStore   StateStore
 	loadConfig   func() (config.Config, error)
 	deps         Dependencies
+	saveState    func(PersistentState) error
 	generation   *generation
 	state        PersistentState
 }
@@ -90,7 +96,7 @@ func New(configDir string, load func() (config.Config, error), deps Dependencies
 	// persisted running state cannot prove that this new process owns a live
 	// generation after an internal-service restart.
 	state.Actual = ActualStopped
-	return &Supervisor{configDir: configDir, stateStore: stateStore, loadConfig: load, deps: deps, state: state}, nil
+	return &Supervisor{configDir: configDir, stateStore: stateStore, loadConfig: load, deps: deps, saveState: stateStore.Save, state: state}, nil
 }
 
 // NewSupervisor is the descriptive constructor used by application wiring.
@@ -128,14 +134,23 @@ func (s *Supervisor) updateState(fn func(*PersistentState)) error {
 	s.mu.Lock()
 	next := s.state
 	fn(&next)
-	s.mu.Unlock()
-	if err := s.stateStore.Save(next); err != nil {
-		return err
-	}
-	s.mu.Lock()
 	s.state = next
 	s.mu.Unlock()
-	return nil
+	save := s.saveState
+	if save == nil {
+		save = s.stateStore.Save
+	}
+	return save(next)
+}
+func (s *Supervisor) stateSnapshot() PersistentState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
+}
+func (s *Supervisor) restoreState(state PersistentState) {
+	s.mu.Lock()
+	s.state = state
+	s.mu.Unlock()
 }
 func (s *Supervisor) setGeneration(g *generation) { s.mu.Lock(); s.generation = g; s.mu.Unlock() }
 func (s *Supervisor) currentGeneration() *generation {
@@ -153,7 +168,9 @@ func (s *Supervisor) Start(ctx context.Context) error {
 }
 
 func (s *Supervisor) startLocked(ctx context.Context) error {
+	previousState := s.stateSnapshot()
 	if err := s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredRunning, ActualStarting, "" }); err != nil {
+		s.restoreState(previousState)
 		return err
 	}
 	if g := s.currentGeneration(); g != nil && g.isExecuting() {
@@ -183,23 +200,28 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 	if err := s.activate(ctx, g); err != nil {
 		return s.rollback(err)
 	}
-	return s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredRunning, ActualRunning, "" })
+	if err := s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredRunning, ActualRunning, "" }); err != nil {
+		return s.rollback(err)
+	}
+	s.monitorGeneration(g)
+	return nil
 }
 
-func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (*generation, error) {
+func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (result *generation, resultErr error) {
 	// Generation lifetime is owned by the supervisor, not by the bounded
 	// transition context. The latter is canceled as soon as Start/Reconcile
 	// returns and must never tear down a successfully activated generation.
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &generation{cfg: cfg, ctx: ctx, cancel: cancel, workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
+	g := &generation{cfg: cfg, ctx: ctx, cancel: cancel, fatal: make(chan error, 1), workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
 	created := false
 	defer func() {
 		if created {
 			return
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
-		_, _ = s.teardownGeneration(cleanupCtx, g, "generation_create_failed", false)
+		remoteErr, localErr := s.teardownGeneration(cleanupCtx, g, "generation_create_failed", false)
 		cleanupCancel()
+		resultErr = errors.Join(resultErr, remoteErr, localErr)
 	}()
 	if s.deps.NewProcessStore != nil {
 		g.store = s.deps.NewProcessStore()
@@ -264,6 +286,8 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (*
 		g.edge = e
 		g.setEdgeClosed(false)
 	}
+	g.watchFailureSource(g.api)
+	g.watchFailureSource(g.edge)
 	created = true
 	return g, nil
 }
@@ -273,8 +297,14 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 	if err := g.api.Start(); err != nil {
 		return fmt.Errorf("start execution API: %w", err)
 	}
+	if err := g.fatalError(); err != nil {
+		return err
+	}
 	if g.edge != nil {
-		origin := cfg.Server.APIListen
+		origin, err := localOriginURL(cfg.Server.APIListen)
+		if err != nil {
+			return fmt.Errorf("build edge origin: %w", err)
+		}
 		if err := func() error {
 			edgeCtx, cancel := boundedContext(ctx, edgeStartTimeout)
 			defer cancel()
@@ -285,6 +315,9 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 			return err
 		}(); err != nil {
 			return fmt.Errorf("start edge: %w", err)
+		}
+		if err := g.fatalError(); err != nil {
+			return err
 		}
 	}
 	if s.deps.VerifyPublicEndpoint != nil {
@@ -297,10 +330,16 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 			return fmt.Errorf("validate runtime capabilities: %w", err)
 		}
 	}
+	if err := g.fatalError(); err != nil {
+		return err
+	}
 	if s.deps.Register != nil {
 		if err := s.deps.Register(ctx, cfg, g.publicURL); err != nil {
 			return fmt.Errorf("register runtime: %w", err)
 		}
+	}
+	if err := g.fatalError(); err != nil {
+		return err
 	}
 	if g.workers != nil || s.deps.StartWorkers != nil {
 		g.setWorkersClosed(false)
@@ -310,11 +349,17 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		g.setWorkersClosed(false)
 	}
 	if g.lifecycle != nil {
+		if err := g.fatalError(); err != nil {
+			return err
+		}
 		if err := g.lifecycle.Resume(ctx, "runtime_start"); err != nil {
 			return fmt.Errorf("resume lifecycle: %w", err)
 		}
 		if err := g.lifecycle.Heartbeat(ctx); err != nil {
 			return fmt.Errorf("initial heartbeat: %w", err)
+		}
+		if err := g.fatalError(); err != nil {
+			return err
 		}
 		stop := g.lifecycle.StartHeartbeatLoop(g.ctx)
 		var stopOnce sync.Once
@@ -330,12 +375,18 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		g.heartbeatActive = true
 		g.mu.Unlock()
 	}
+	if err := g.fatalError(); err != nil {
+		return err
+	}
 	g.setExecuting(true)
 	return nil
 }
 
 func (s *Supervisor) rollback(startErr error) error {
 	g := s.currentGeneration()
+	if g == nil {
+		return s.fail(DesiredRunning, startErr)
+	}
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 	remoteErr, localErr := s.teardownGeneration(cleanupCtx, g, "start_failed", true)
@@ -343,15 +394,53 @@ func (s *Supervisor) rollback(startErr error) error {
 		s.setGeneration(nil)
 	}
 	combined := errors.Join(startErr, remoteErr, localErr)
-	_ = s.updateState(func(st *PersistentState) {
+	stateErr := s.updateState(func(st *PersistentState) {
 		st.Desired, st.Actual, st.LastError = DesiredRunning, ActualFailed, combined.Error()
 	})
-	return combined
+	return errors.Join(combined, stateErr)
 }
 
 func (s *Supervisor) fail(desired DesiredState, err error) error {
-	_ = s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = desired, ActualFailed, err.Error() })
-	return err
+	stateErr := s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = desired, ActualFailed, err.Error() })
+	return errors.Join(err, stateErr)
+}
+
+func (s *Supervisor) monitorGeneration(g *generation) {
+	if g == nil || g.fatal == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-g.ctx.Done():
+			return
+		case err := <-g.fatal:
+			if err == nil {
+				return
+			}
+			s.handleGenerationFailure(g, err)
+		}
+	}()
+}
+
+func (s *Supervisor) handleGenerationFailure(g *generation, componentErr error) {
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	if s.currentGeneration() != g || !g.isExecuting() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	remoteErr, localErr := s.teardownGeneration(ctx, g, "component_failed", true)
+	cancel()
+	combined := errors.Join(componentErr, remoteErr, localErr)
+	if localErr == nil && g.localResourcesClosed() {
+		s.setGeneration(nil)
+	}
+	stateErr := s.updateState(func(st *PersistentState) {
+		st.Desired, st.Actual, st.LastError = DesiredRunning, ActualFailed, combined.Error()
+	})
+	if stateErr != nil {
+		log.Printf("persist runtime failure state: %v", stateErr)
+	}
 }
 
 func (s *Supervisor) Stop(ctx context.Context) error {
@@ -359,28 +448,27 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	defer cancel()
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
-	_ = s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredStopped, ActualStopping, "" })
+	stateErr := s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredStopped, ActualStopping, "" })
 	g := s.currentGeneration()
 	if g == nil {
-		_ = s.updateState(func(st *PersistentState) { st.Actual = ActualStopped })
-		return nil
+		return errors.Join(stateErr, s.updateState(func(st *PersistentState) { st.Actual = ActualStopped }))
 	}
 	remoteErr, localErr := s.teardownGeneration(ctx, g, "runtime_stop", true)
 	if localErr == nil && g.localResourcesClosed() {
 		s.setGeneration(nil)
-		_ = s.updateState(func(st *PersistentState) {
+		finalErr := s.updateState(func(st *PersistentState) {
 			st.Desired, st.Actual, st.LastError = DesiredStopped, ActualStopped, ""
 			if remoteErr != nil {
 				st.LastError = remoteErr.Error()
 			}
 		})
-		return remoteErr
+		return errors.Join(stateErr, remoteErr, finalErr)
 	}
 	combined := errors.Join(remoteErr, localErr)
-	_ = s.updateState(func(st *PersistentState) {
+	finalErr := s.updateState(func(st *PersistentState) {
 		st.Desired, st.Actual, st.LastError = DesiredStopped, ActualFailed, combined.Error()
 	})
-	return combined
+	return errors.Join(stateErr, combined, finalErr)
 }
 
 func (s *Supervisor) Restart(ctx context.Context) error {
@@ -388,7 +476,11 @@ func (s *Supervisor) Restart(ctx context.Context) error {
 	defer cancel()
 	s.transitionMu.Lock()
 	defer s.transitionMu.Unlock()
-	_ = s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredRunning, ActualStopping, "" })
+	previousState := s.stateSnapshot()
+	if err := s.updateState(func(st *PersistentState) { st.Desired, st.Actual, st.LastError = DesiredRunning, ActualStopping, "" }); err != nil {
+		s.restoreState(previousState)
+		return err
+	}
 	if g := s.currentGeneration(); g != nil {
 		remoteErr, localErr := s.teardownGeneration(ctx, g, "runtime_restart", true)
 		if localErr != nil {
@@ -398,9 +490,6 @@ func (s *Supervisor) Restart(ctx context.Context) error {
 			return s.fail(DesiredRunning, errors.New("previous generation is not closed"))
 		}
 		s.setGeneration(nil)
-		if remoteErr != nil {
-			_ = s.updateState(func(st *PersistentState) { st.LastError = remoteErr.Error() })
-		}
 	}
 	return s.startLocked(ctx)
 }
@@ -437,7 +526,9 @@ func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 			return s.fail(desired, remoteErr)
 		}
 	}
-	_ = s.updateState(func(st *PersistentState) { st.Actual = ActualStopped; st.LastError = "" })
+	if err := s.updateState(func(st *PersistentState) { st.Actual = ActualStopped; st.LastError = "" }); err != nil {
+		return s.fail(desired, err)
+	}
 	g, err := s.newGeneration(ctx, cfg)
 	if err != nil {
 		return s.fail(desired, err)
@@ -447,7 +538,11 @@ func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 		if err := s.activate(ctx, g); err != nil {
 			return s.rollback(err)
 		}
-		return s.updateState(func(st *PersistentState) { st.Actual = ActualRunning })
+		if err := s.updateState(func(st *PersistentState) { st.Actual = ActualRunning }); err != nil {
+			return s.rollback(err)
+		}
+		s.monitorGeneration(g)
+		return nil
 	}
 	if _, err := s.teardownGeneration(ctx, g, "config_reconcile", false); err != nil {
 		return s.fail(desired, err)
@@ -472,19 +567,19 @@ func (s *Supervisor) Close(ctx context.Context) error {
 	remoteErr, localErr := s.teardownGeneration(ctx, g, "service_shutdown", true)
 	if localErr == nil && g.localResourcesClosed() {
 		s.setGeneration(nil)
-		_ = s.updateState(func(st *PersistentState) {
+		finalErr := s.updateState(func(st *PersistentState) {
 			st.Desired, st.Actual, st.LastError = desired, ActualStopped, ""
 			if remoteErr != nil {
 				st.LastError = remoteErr.Error()
 			}
 		})
-		return remoteErr
+		return errors.Join(remoteErr, finalErr)
 	}
 	combined := errors.Join(remoteErr, localErr)
-	_ = s.updateState(func(st *PersistentState) {
+	finalErr := s.updateState(func(st *PersistentState) {
 		st.Desired, st.Actual, st.LastError = desired, ActualFailed, combined.Error()
 	})
-	return combined
+	return errors.Join(combined, finalErr)
 }
 
 func (s *Supervisor) teardownGeneration(ctx context.Context, g *generation, reason string, pause bool) (remoteErr, localErr error) {
@@ -553,10 +648,46 @@ type generation struct {
 	lifecycle                                                       LifecycleClient
 	edge                                                            edge.Edge
 	publicURL                                                       string
+	fatal                                                           chan error
 	stopHeartbeat                                                   func()
 	shutdownObservability                                           func(context.Context) error
 	executing, heartbeatActive                                      bool
 	workersClosed, apiClosed, edgeClosed, otelClosed, contextClosed bool
+}
+
+func (g *generation) watchFailureSource(component any) {
+	source, ok := component.(failureSource)
+	if !ok {
+		return
+	}
+	failures := source.Failures()
+	if failures == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-g.ctx.Done():
+		case err, ok := <-failures:
+			if ok && err != nil {
+				select {
+				case g.fatal <- err:
+				default:
+				}
+			}
+		}
+	}()
+}
+
+func (g *generation) fatalError() error {
+	if g == nil || g.fatal == nil {
+		return nil
+	}
+	select {
+	case err := <-g.fatal:
+		return err
+	default:
+		return nil
+	}
 }
 
 func (g *generation) localResourcesClosed() bool {
@@ -632,12 +763,16 @@ func (*noopAPI) Shutdown(context.Context) error { return nil }
 func (*noopAPI) Listening() bool                { return false }
 
 type HTTPAPI struct {
-	Listener net.Listener
-	Server   *http.Server
-	done     chan struct{}
-	mu       sync.Mutex
-	closed   bool
-	started  bool
+	Listener        net.Listener
+	Server          *http.Server
+	shutdownTimeout time.Duration
+	done            chan struct{}
+	failures        chan error
+	mu              sync.Mutex
+	closed          bool
+	started         bool
+	serving         bool
+	expectedClose   bool
 }
 
 var listenTCP = net.Listen
@@ -647,7 +782,13 @@ func NewHTTPAPI(cfg config.Config, handler http.Handler) (*HTTPAPI, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &HTTPAPI{Listener: l, Server: &http.Server{Handler: handler}, done: make(chan struct{})}, nil
+	return &HTTPAPI{
+		Listener:        l,
+		Server:          &http.Server{Handler: handler, ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout)},
+		shutdownTimeout: time.Duration(cfg.Server.ShutdownTimeout),
+		done:            make(chan struct{}),
+		failures:        make(chan error, 1),
+	}, nil
 }
 func (a *HTTPAPI) Start() error {
 	a.mu.Lock()
@@ -655,12 +796,26 @@ func (a *HTTPAPI) Start() error {
 		a.mu.Unlock()
 		return nil
 	}
+	if a.closed {
+		a.mu.Unlock()
+		return errors.New("execution API is closed")
+	}
 	a.started = true
+	a.serving = true
 	a.mu.Unlock()
 	go func() {
-		defer close(a.done)
 		err := a.Server.Serve(a.Listener)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+		a.mu.Lock()
+		expected := a.expectedClose
+		a.serving = false
+		a.closed = true
+		a.mu.Unlock()
+		close(a.done)
+		if !expected {
+			if err == nil {
+				err = errors.New("execution API exited unexpectedly")
+			}
+			a.reportFailure(fmt.Errorf("execution API serve failed: %s", err.Error()))
 		}
 	}()
 	return nil
@@ -675,25 +830,31 @@ func (a *HTTPAPI) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	if !a.started {
+		a.expectedClose = true
 		a.closed = true
 		close(a.done)
+		listener := a.Listener
 		a.mu.Unlock()
-		return a.Listener.Close()
+		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return err
+		}
+		return nil
 	}
+	a.expectedClose = true
 	a.mu.Unlock()
-	err := a.Server.Shutdown(ctx)
-	if closeErr := a.Listener.Close(); err == nil {
-		err = closeErr
+	shutdownCtx := ctx
+	cancel := func() {}
+	if a.shutdownTimeout > 0 {
+		shutdownCtx, cancel = boundedContext(ctx, a.shutdownTimeout)
 	}
+	err := a.Server.Shutdown(shutdownCtx)
+	cancel()
 	select {
 	case <-a.done:
+		return err
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(err, ctx.Err())
 	}
-	a.mu.Lock()
-	a.closed = true
-	a.mu.Unlock()
-	return err
 }
 func (a *HTTPAPI) Listening() bool {
 	if a == nil {
@@ -701,5 +862,14 @@ func (a *HTTPAPI) Listening() bool {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.Listener != nil && !a.closed
+	return a.serving
 }
+
+func (a *HTTPAPI) reportFailure(err error) {
+	select {
+	case a.failures <- err:
+	default:
+	}
+}
+
+func (a *HTTPAPI) Failures() <-chan error { return a.failures }

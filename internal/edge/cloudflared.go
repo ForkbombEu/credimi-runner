@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -15,166 +17,352 @@ import (
 	"time"
 )
 
+const (
+	namedStartupGrace = 500 * time.Millisecond
+	killWait          = 5 * time.Second
+)
+
+type cloudflaredProcess struct {
+	cmd          *exec.Cmd
+	done         chan struct{}
+	exitErr      error
+	exited       bool
+	expectedStop bool
+	started      bool
+}
+
 type Cloudflared struct {
 	mu        sync.Mutex
 	Binary    string
 	Mode      string
 	Token     string
 	Domain    string
-	cmd       *exec.Cmd
-	done      chan error
+	process   *cloudflaredProcess
 	publicURL string
+	failures  chan error
+	logf      func(string, ...any)
 }
 
 const Version = "2026.8.2"
 
 func NewCloudflared(binary, mode, token, domain string) *Cloudflared {
-	return &Cloudflared{Binary: binary, Mode: mode, Token: token, Domain: domain}
+	return &Cloudflared{
+		Binary:   binary,
+		Mode:     mode,
+		Token:    token,
+		Domain:   domain,
+		failures: make(chan error, 1),
+		logf:     log.Printf,
+	}
 }
 
 var quickURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+\.trycloudflare\.com`)
 
+func normalizePublicURL(domain string) (string, error) {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return "", errors.New("cloudflared domain is empty")
+	}
+	if !strings.Contains(domain, "://") {
+		domain = "https://" + domain
+	}
+	u, err := url.Parse(domain)
+	if err != nil {
+		return "", fmt.Errorf("parse cloudflared domain: %w", err)
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("invalid cloudflared domain %q", domain)
+	}
+	return u.String(), nil
+}
+
 func (e *Cloudflared) Start(ctx context.Context, origin string) (string, error) {
 	e.mu.Lock()
-	if e.cmd != nil {
-		url := e.publicURL
+	if e.process != nil && !e.process.exited {
+		publicURL := e.publicURL
 		e.mu.Unlock()
-		return url, nil
+		return publicURL, nil
 	}
-	args := []string{"tunnel", "--no-autoupdate"}
-	if e.Mode == "named_tunnel" || e.Mode == "cloudflare-managed" || e.Domain != "" {
-		args = append(args, "run")
-	} else {
-		args = append(args, "--url", origin)
+
+	var args []string
+	var named bool
+	var namedURL string
+	switch e.Mode {
+	case "quick_tunnel":
+		args = []string{"tunnel", "--no-autoupdate", "--url", origin}
+	case "named_tunnel":
+		args = []string{"tunnel", "--no-autoupdate", "run"}
+		named = true
+		var err error
+		namedURL, err = normalizePublicURL(e.Domain)
+		if err != nil {
+			e.mu.Unlock()
+			return "", err
+		}
+	default:
+		mode := e.Mode
+		e.mu.Unlock()
+		return "", fmt.Errorf("unsupported cloudflared mode %q", mode)
 	}
-	// The startup context only bounds process creation and URL discovery. Once
-	// cloudflared is running, its lifetime is owned by this Edge and is ended
-	// explicitly by Stop; binding it to CommandContext would kill a healthy
-	// tunnel when the supervisor's short startup context is canceled.
 	if err := ctx.Err(); err != nil {
 		e.mu.Unlock()
 		return "", err
 	}
 	cmd := exec.Command(e.Binary, args...)
 	cmd.Env = os.Environ()
-	if e.Mode == "named_tunnel" || e.Mode == "cloudflare-managed" || e.Domain != "" {
+	if named {
 		cmd.Env = append(cmd.Env, "TUNNEL_TOKEN="+e.Token)
 	}
-	named := e.Mode == "named_tunnel" || e.Mode == "cloudflare-managed" || e.Domain != ""
-	var stdout, stderr io.ReadCloser
-	var err error
-	if named {
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-	} else {
-		stdout, err = cmd.StdoutPipe()
-		if err != nil {
-			e.mu.Unlock()
-			return "", err
-		}
-		stderr, err = cmd.StderrPipe()
-		if err != nil {
-			e.mu.Unlock()
-			return "", err
-		}
-	}
-	if err := cmd.Start(); err != nil {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
 		e.mu.Unlock()
 		return "", err
 	}
-	done := make(chan error, 1)
-	e.cmd, e.done = cmd, done
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		e.mu.Unlock()
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		e.mu.Unlock()
+		return "", redactError(err, e.Token)
+	}
+	p := &cloudflaredProcess{cmd: cmd, done: make(chan struct{})}
+	e.process = p
+	e.publicURL = ""
 	e.mu.Unlock()
+
+	urlCh := make(chan string, 1)
+	go e.consumeOutput(stdout, "stdout", urlCh)
+	go e.consumeOutput(stderr, "stderr", urlCh)
+	go e.waitProcess(p)
+
 	if named {
-		go func() { done <- cmd.Wait() }()
-		return "https://" + strings.TrimPrefix(strings.TrimSpace(e.Domain), "https://"), nil
-	}
-	go func() {
-		_, _ = io.Copy(io.Discard, stderr)
-	}()
-	lines := make(chan string, 8)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			lines <- scanner.Text()
-		}
-		close(lines)
-	}()
-	go func() { done <- cmd.Wait() }()
-	for {
+		timer := time.NewTimer(namedStartupGrace)
+		defer timer.Stop()
 		select {
-		case line, ok := <-lines:
-			if !ok {
-				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				_ = e.Stop(cleanupCtx)
-				cleanupCancel()
-				return "", errors.New("cloudflared exited before publishing a quick tunnel URL")
-			}
-			if match := quickURL.FindString(line); match != "" {
-				e.mu.Lock()
-				e.publicURL = match
-				e.mu.Unlock()
-				return match, nil
-			}
+		case <-p.done:
+			return "", e.startExitError(p, "cloudflared named tunnel exited during startup")
 		case <-ctx.Done():
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = e.Stop(cleanupCtx)
-			cleanupCancel()
+			_ = e.Stop(context.Background())
 			return "", ctx.Err()
+		case <-timer.C:
+		}
+		e.mu.Lock()
+		if p.exited {
+			err := p.exitErr
+			token := e.Token
+			e.mu.Unlock()
+			return "", formatExitError("cloudflared named tunnel exited during startup", err, token)
+		}
+		p.started = true
+		e.publicURL = namedURL
+		e.mu.Unlock()
+		return namedURL, nil
+	}
+
+	select {
+	case publicURL := <-urlCh:
+		e.mu.Lock()
+		if p.exited {
+			err := p.exitErr
+			e.mu.Unlock()
+			return "", fmt.Errorf("cloudflared exited before publishing quick tunnel URL: %s", redactErrorText(err, e.Token))
+		}
+		p.started = true
+		e.publicURL = publicURL
+		e.mu.Unlock()
+		return publicURL, nil
+	case <-p.done:
+		return "", e.startExitError(p, "cloudflared exited before publishing quick tunnel URL")
+	case <-ctx.Done():
+		_ = e.Stop(context.Background())
+		return "", ctx.Err()
+	}
+}
+
+func (e *Cloudflared) consumeOutput(reader io.ReadCloser, stream string, urls chan<- string) {
+	defer reader.Close()
+	scanner := bufio.NewScanner(reader)
+	for scanner.Scan() {
+		line := e.redact(scanner.Text())
+		e.mu.Lock()
+		logf := e.logf
+		e.mu.Unlock()
+		if logf == nil {
+			logf = log.Printf
+		}
+		logf("cloudflared %s: %s", stream, line)
+		if match := quickURL.FindString(line); match != "" {
+			select {
+			case urls <- match:
+			default:
+			}
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		e.mu.Lock()
+		logf := e.logf
+		e.mu.Unlock()
+		if logf == nil {
+			logf = log.Printf
+		}
+		logf("cloudflared %s: %s", stream, e.redact(err.Error()))
+	}
+}
+
+func (e *Cloudflared) waitProcess(p *cloudflaredProcess) {
+	err := p.cmd.Wait()
+	e.mu.Lock()
+	p.exitErr = err
+	p.exited = true
+	current := e.process == p
+	started := p.started
+	expected := p.expectedStop
+	if current {
+		e.process = nil
+		e.publicURL = ""
+	}
+	token := e.Token
+	e.mu.Unlock()
+	if started && !expected {
+		if err == nil {
+			e.reportFailure(errors.New("cloudflared exited unexpectedly"))
+		} else {
+			e.reportFailure(fmt.Errorf("cloudflared exited unexpectedly: %s", redactErrorText(err, token)))
+		}
+	}
+	close(p.done)
+}
+
+func (e *Cloudflared) startExitError(p *cloudflaredProcess, prefix string) error {
+	e.mu.Lock()
+	err := p.exitErr
+	token := e.Token
+	e.mu.Unlock()
+	return formatExitError(prefix, err, token)
+}
+
+func formatExitError(prefix string, err error, token string) error {
+	if err == nil {
+		return errors.New(prefix)
+	}
+	return fmt.Errorf("%s: %s", prefix, redactErrorText(err, token))
+}
+
+func (e *Cloudflared) reportFailure(err error) {
+	if err == nil {
+		return
+	}
+	e.mu.Lock()
+	if e.failures == nil {
+		e.failures = make(chan error, 1)
+	}
+	failures := e.failures
+	e.mu.Unlock()
+	select {
+	case failures <- err:
+	default:
+	}
+}
+
+func (e *Cloudflared) redact(value string) string {
+	e.mu.Lock()
+	token := e.Token
+	e.mu.Unlock()
+	if token == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, token, "[REDACTED]")
+}
+
+func redactErrorText(err error, token string) string {
+	if err == nil {
+		return ""
+	}
+	value := err.Error()
+	if token != "" {
+		value = strings.ReplaceAll(value, token, "[REDACTED]")
+	}
+	return value
+}
+
+func redactError(err error, token string) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(redactErrorText(err, token))
 }
 
 func (e *Cloudflared) Stop(ctx context.Context) error {
 	e.mu.Lock()
-	cmd, done := e.cmd, e.done
-	e.mu.Unlock()
-	if cmd == nil {
+	p := e.process
+	if p == nil || p.exited {
+		e.mu.Unlock()
 		return nil
 	}
+	p.expectedStop = true
+	cmd := p.cmd
+	token := e.Token
+	e.mu.Unlock()
+
 	if cmd.Process != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+			if !errors.Is(err, os.ErrProcessDone) {
+				select {
+				case <-p.done:
+					return nil
+				default:
+				}
+				return fmt.Errorf("terminate cloudflared: %s", redactErrorText(err, token))
+			}
+		}
 	}
 	select {
-	case err := <-done:
-		e.clearProcess(cmd)
-		if err != nil {
-			return normalizeExit(err)
-		}
+	case <-p.done:
 		return nil
 	case <-ctx.Done():
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+	}
+
+	if cmd.Process != nil {
+		if err := cmd.Process.Kill(); err != nil {
+			if !errors.Is(err, os.ErrProcessDone) {
+				select {
+				case <-p.done:
+					return nil
+				default:
+				}
+				return fmt.Errorf("kill cloudflared: %s", redactErrorText(err, token))
+			}
 		}
-		timer := time.NewTimer(5 * time.Second)
-		defer timer.Stop()
-		select {
-		case <-done:
-			e.clearProcess(cmd)
-			return ctx.Err()
-		case <-timer.C:
-			return fmt.Errorf("cloudflared did not exit after termination: %w", ctx.Err())
-		}
+	}
+	timer := time.NewTimer(killWait)
+	defer timer.Stop()
+	select {
+	case <-p.done:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("cloudflared did not exit after termination: %w", ctx.Err())
 	}
 }
 
-func (e *Cloudflared) clearProcess(cmd *exec.Cmd) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.cmd == cmd {
-		e.cmd, e.done, e.publicURL = nil, nil, ""
-	}
-}
-func normalizeExit(err error) error {
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ProcessState != nil {
-		return nil
-	}
-	return err
-}
 func (e *Cloudflared) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return e.Stop(ctx)
 }
-func (e *Cloudflared) Running() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.cmd != nil }
+
+func (e *Cloudflared) Running() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.process != nil && !e.process.exited
+}
+
+func (e *Cloudflared) Failures() <-chan error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.failures == nil {
+		e.failures = make(chan error, 1)
+	}
+	return e.failures
+}
