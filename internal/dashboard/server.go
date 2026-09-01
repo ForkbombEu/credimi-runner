@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -82,6 +83,7 @@ type Server struct {
 	controllerID            string
 	controllerIdentityToken string
 	controllerFingerprint   string
+	appliedDashboardListen  string
 	runtime                 RuntimeController
 	operations              *controller.Coordinator
 	lookupPath              func(string) (string, error)
@@ -171,6 +173,7 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 		controllerID:            controllerID,
 		controllerIdentityToken: identityToken,
 		controllerFingerprint:   fingerprint,
+		appliedDashboardListen:  dashboardListen(dashboardruntime.Values(normalized)),
 		runtime:                 runtime,
 		operations:              operations,
 		lookupPath:              lookupPath,
@@ -1181,9 +1184,28 @@ func (s *Server) serviceRestartRequired() bool {
 
 func (s *Server) serviceRestartRequiredFor(pending dashboardruntime.ConfigDiff) bool {
 	if runtimeGOOS() == "darwin" {
-		return hasApplyClass(pending, dashboardruntime.ApplyServiceRestartRequired)
+		return s.desiredDashboardListen() != s.appliedDashboardListen
 	}
 	return dashboardruntime.ServiceRestartRequired(dashboardruntime.Values(s.cfg.Snapshot()), s.cfg.Exists())
+}
+
+func dashboardListen(values dashboardruntime.Values) string {
+	cfg, err := dashboardruntime.TypedConfigFromValues(values)
+	if err != nil {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(cfg.Server.DashboardListen)
+	if err != nil {
+		return strings.TrimSpace(cfg.Server.DashboardListen)
+	}
+	if host == "" || host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func (s *Server) desiredDashboardListen() string {
+	return dashboardListen(dashboardruntime.Values(s.cfg.Snapshot()))
 }
 
 func (s *Server) requireCurrentServiceConfig() error {
@@ -1210,6 +1232,9 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 	if s.serviceRestartRequiredFor(pending) {
 		s.setPendingDiff(pending)
 		return nil
+	}
+	if runtimeGOOS() == "darwin" {
+		pending = withoutServiceClass(pending)
 	}
 	if !diffNeedsRuntimeApply(pending) {
 		s.setPendingDiff(dashboardruntime.ConfigDiff{})

@@ -113,8 +113,9 @@ func newTestServer(t *testing.T) *Server {
 	return &Server{
 		cfg: cfg, hub: hub, render: render, composeDir: t.TempDir(), ctx: context.Background(),
 		runtime: fake, operations: controller.NewCoordinator(context.Background()),
-		lookupPath: func(string) (string, error) { return "/tmp/fake-bin", nil },
-		statPath:   func(string) (os.FileInfo, error) { return nil, nil },
+		appliedDashboardListen: dashboardListen(dashboardruntime.Values(cfg.Snapshot())),
+		lookupPath:             func(string) (string, error) { return "/tmp/fake-bin", nil },
+		statPath:               func(string) (os.FileInfo, error) { return nil, nil },
 	}
 }
 
@@ -544,8 +545,46 @@ func TestDarwinDashboardListenerSaveStaysPending(t *testing.T) {
 	if !s.pageData("overview", nil).RuntimeStatus().PendingServiceRestart {
 		t.Fatal("page status did not report pending service restart")
 	}
+	for _, action := range []string{"start", "restart"} {
+		snapshot, err := s.submitRuntimeAction(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if completed.Phase != controller.PhaseFailed {
+			t.Fatalf("%s was not blocked: %#v", action, completed)
+		}
+	}
 	if got := s.cfg.Snapshot()["DASHBOARD_PORT"]; got != "9051" {
 		t.Fatalf("saved Dashboard port = %q", got)
+	}
+
+	s.cfg = persistDashboardValues(t, path, oldValues)
+	revert := dashboardruntime.DiffValuesForOS(newValues, oldValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), revert); err != nil {
+		t.Fatal(err)
+	}
+	if s.serviceRestartRequired() || hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
+		t.Fatalf("reverted listener remained pending: service=%t pending=%+v applied=%q desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedDashboardListen, s.desiredDashboardListen())
+	}
+	for _, action := range []string{"start", "restart"} {
+		snapshot, err := s.submitRuntimeAction(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if completed.Phase != controller.PhaseSucceeded {
+			t.Fatalf("%s remained blocked after revert: %#v", action, completed)
+		}
+	}
+	if starts, _, restarts, _ := fake.counts(); starts != 1 || restarts != 1 {
+		t.Fatalf("runtime calls after revert: start=%d restart=%d", starts, restarts)
 	}
 }
 
@@ -572,6 +611,23 @@ func TestDarwinMixedDashboardAndRuntimeSaveWaitsForServiceRestart(t *testing.T) 
 	}
 	if !s.serviceRestartRequired() || !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile) {
 		t.Fatalf("mixed save state: service=%t pending=%+v", s.serviceRestartRequired(), s.pendingDiff)
+	}
+
+	reverted := dashboardruntime.Values(cloneStringMap(map[string]string(newValues)))
+	reverted["DASHBOARD_PORT"] = oldValues["DASHBOARD_PORT"]
+	s.cfg = persistDashboardValues(t, path, reverted)
+	second := dashboardruntime.DiffValuesForOS(newValues, reverted, "darwin")
+	if err := s.applySavedConfig(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if s.serviceRestartRequired() || hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
+		t.Fatalf("reverted mixed listener remained pending: service=%t pending=%+v applied=%q desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedDashboardListen, s.desiredDashboardListen())
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 1 {
+		t.Fatalf("runtime reconcile calls after revert = %d", reconciles)
+	}
+	if len(s.pendingDiff.Classes) != 0 {
+		t.Fatalf("pending diff after revert = %+v", s.pendingDiff)
 	}
 }
 
