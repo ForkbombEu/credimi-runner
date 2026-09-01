@@ -53,7 +53,7 @@ var (
 	terminateDashboardAfter = func(delay time.Duration, pid int) {
 		time.AfterFunc(delay, func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
 	}
-	ensureCandidateEmulatorReady = androidtools.EnsureEmulatorReady
+	ensureCandidateEmulatorReady = androidtools.PrepareEmulatorReady
 	// beforeCandidateCommit is a deterministic test seam for the optimistic
 	// concurrency window; production leaves it nil.
 	beforeCandidateCommit func()
@@ -1529,11 +1529,10 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 				return fmt.Errorf("device %q is not connected", device.ID)
 			}
 		case "android_emulator":
+			// KVM belongs to the active service topology. Candidate assets may be
+			// prepared before that topology is recreated with /dev/kvm.
 			if plan.Backend != dashboardruntime.DefaultContainerBackend {
 				continue
-			}
-			if _, err := s.statPath("/dev/kvm"); err != nil {
-				return errors.New("/dev/kvm is required for Android emulator containers")
 			}
 		}
 	}

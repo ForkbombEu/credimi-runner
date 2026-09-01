@@ -37,10 +37,10 @@ func EnsureRuntimeCapabilities(ctx context.Context, cfg runnerconfig.Config, goo
 }
 
 func EnsureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer) error {
-	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, ensure, true)
+	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, ensure, true, true)
 }
 
-func ensureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer, ensureAVD bool) error {
+func ensureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, ensure CapabilityEnsurer, ensureAVD, verifyRuntime bool) error {
 	useDefaultEnsurer := ensure == nil
 	if ensure == nil {
 		ensure = EnsureCapabilities
@@ -73,7 +73,7 @@ func ensureRuntimeCapabilitiesAtWith(ctx context.Context, cfg runnerconfig.Confi
 	if err := ConfigureStableEnvironmentWithAVD(sdkRoot, avdHome); err != nil {
 		return err
 	}
-	if useDefaultEnsurer {
+	if useDefaultEnsurer && verifyRuntime {
 		if needsAndroid && !platformToolsAvailable(sdkRoot) {
 			return errors.New("Android platform-tools are unavailable in the persistent SDK after provisioning")
 		}
@@ -179,6 +179,21 @@ func emulatorAvailable(sdkRoot string) bool {
 }
 
 func verifyRuntimeCapabilities(sdkRoot, goos string, needsEmulator bool, systemImage string) error {
+	if err := verifyPreparedCapabilities(sdkRoot, needsEmulator, systemImage); err != nil {
+		return err
+	}
+	if !needsEmulator {
+		return nil
+	}
+	if goos == "linux" {
+		if _, err := os.Stat("/dev/kvm"); err != nil {
+			return fmt.Errorf("/dev/kvm is required for Android emulator targets: %w", err)
+		}
+	}
+	return nil
+}
+
+func verifyPreparedCapabilities(sdkRoot string, needsEmulator bool, systemImage string) error {
 	if !needsEmulator {
 		return nil
 	}
@@ -196,11 +211,6 @@ func verifyRuntimeCapabilities(sdkRoot, goos string, needsEmulator bool, systemI
 	}
 	if !sdkLicensesAvailable(sdkRoot) {
 		return errors.New("Android SDK licenses are unavailable")
-	}
-	if goos == "linux" {
-		if _, err := os.Stat("/dev/kvm"); err != nil {
-			return fmt.Errorf("/dev/kvm is required for Android emulator targets: %w", err)
-		}
 	}
 	return nil
 }

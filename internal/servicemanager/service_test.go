@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -393,6 +394,32 @@ func TestBuildServiceSpecUnionsAndDeduplicatesMultiDeviceCapabilities(t *testing
 	assertNoDuplicateBindTargets(t, spec)
 	if len(spec.Devices) != 2 || len(spec.Volumes) != 3 {
 		t.Fatalf("multi-device deduplication = %d devices, %d volumes", len(spec.Devices), len(spec.Volumes))
+	}
+}
+
+func TestServiceFingerprintAndSpecShareCapabilityProjection(t *testing.T) {
+	host := testHost("/home/alice")
+	emulator := config.DeviceConfig{ID: "org/runner/emulator-a", Type: config.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "a", GoldenSource: "/avd-golden/a-golden"}}
+	second := emulator
+	second.ID = "org/runner/emulator-b"
+	second.AndroidEmulator = &config.AndroidEmulatorConfig{BaseName: "b", GoldenSource: "/avd-golden/b-golden"}
+	firstCfg := configForDevices(emulator)
+	secondCfg := configForDevices(emulator, second)
+	if ServiceConfigFingerprint(firstCfg, true) != ServiceConfigFingerprint(secondCfg, true) {
+		t.Fatal("logical second emulator changed the capability fingerprint")
+	}
+	firstSpec, err := BuildServiceSpec(firstCfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSpec, err := BuildServiceSpec(secondCfg, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(firstSpec.Environment, AppliedServiceConfigFingerprintEnv)
+	delete(secondSpec.Environment, AppliedServiceConfigFingerprintEnv)
+	if !reflect.DeepEqual(firstSpec, secondSpec) {
+		t.Fatalf("same service capability projection produced different specs:\nfirst=%+v\nsecond=%+v", firstSpec, secondSpec)
 	}
 }
 

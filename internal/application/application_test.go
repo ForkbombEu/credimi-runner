@@ -238,10 +238,16 @@ func TestApplicationRunStartsDashboardAndShutsDown(t *testing.T) {
 	}
 }
 
-type countingApplicationAPI struct{ starts int }
+type countingApplicationAPI struct {
+	starts  int
+	started chan struct{}
+}
 
 func (a *countingApplicationAPI) Start() error {
 	a.starts++
+	if a.started != nil {
+		close(a.started)
+	}
 	return nil
 }
 func (*countingApplicationAPI) Shutdown(context.Context) error { return nil }
@@ -263,7 +269,7 @@ func TestApplicationDoesNotAutoStartStaleServiceConfiguration(t *testing.T) {
 	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfgB); err != nil {
 		t.Fatal(err)
 	}
-	if err := (runtimesupervisor.StateStore{Path: filepath.Join(dir, "runtime-state.json")}).Save(runtimesupervisor.PersistentState{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualStopped}); err != nil {
+	if err := (runtimesupervisor.StateStore{Path: filepath.Join(dir, "runtime-state.json")}).Save(runtimesupervisor.PersistentState{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualRunning}); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(cfgA, true))
@@ -297,6 +303,53 @@ func TestApplicationDoesNotAutoStartStaleServiceConfiguration(t *testing.T) {
 	}
 	if got := s.Status(); got.Desired != runtimesupervisor.DesiredRunning || got.Actual != runtimesupervisor.ActualStopped {
 		t.Fatalf("stale service changed runtime state: %+v", got)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("application did not shut down")
+	}
+}
+
+func TestApplicationAutoStartsMatchingServiceAfterProcessRestart(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal:7233"
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "org/runner/device", Name: "Device", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"},
+	}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := (runtimesupervisor.StateStore{Path: filepath.Join(dir, "runtime-state.json")}).Save(runtimesupervisor.PersistentState{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualRunning}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(cfg, true))
+	api := &countingApplicationAPI{started: make(chan struct{})}
+	s, err := runtimesupervisor.New(dir, nil, runtimesupervisor.Dependencies{
+		NewAPI: func(runnerconfig.Config, context.Context) (runtimesupervisor.API, error) { return api, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Application{configDir: dir, supervisor: s, listen: func(string, string) (net.Listener, error) { return newTestListener(), nil }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	select {
+	case <-api.started:
+	case <-time.After(time.Second):
+		t.Fatal("matching service did not auto-start the runtime")
+	}
+	if api.starts != 1 {
+		t.Fatalf("auto-start calls=%d", api.starts)
 	}
 	cancel()
 	select {

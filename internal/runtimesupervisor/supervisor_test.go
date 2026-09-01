@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -167,6 +168,33 @@ func validConfig() config.Config {
 	c.Android = config.AndroidConfig{RunnerImage: "runner", PullPolicy: "never", Network: "runner", StateVolume: "state", ToolCacheVolume: "tools", SDKVolume: "sdk"}
 	c.Storage.TempDir = "/tmp/runner"
 	return c
+}
+
+func TestNewNormalizesPersistedActualWithoutGeneration(t *testing.T) {
+	dir := t.TempDir()
+	cfg := validConfig()
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "runtime-state.json")
+	for _, actual := range []ActualState{ActualRunning, ActualStarting, ActualStopping} {
+		t.Run(string(actual), func(t *testing.T) {
+			if err := (StateStore{Path: statePath}).Save(PersistentState{Desired: DesiredRunning, Actual: actual}); err != nil {
+				t.Fatal(err)
+			}
+			s, err := New(dir, func() (config.Config, error) { return cfg, nil }, Dependencies{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := s.Status()
+			if status.Desired != DesiredRunning || status.Actual != ActualStopped {
+				t.Fatalf("status = %+v, want desired running and actual stopped", status)
+			}
+			if s.currentGeneration() != nil {
+				t.Fatal("new Supervisor unexpectedly owns a generation")
+			}
+		})
+	}
 }
 func newTestSupervisor(t *testing.T, life *testLife, edgeImpl *testEdge, workers *testWorkers) (*Supervisor, *testAPI) {
 	t.Helper()

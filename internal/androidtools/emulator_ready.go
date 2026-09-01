@@ -15,15 +15,30 @@ type EmulatorProgress func(string)
 
 // EnsureEmulatorReady is the single activation gate for configured Android
 // emulators. It is idempotent and returns only after the executable, SDK
-// packages, AVD, and Credimi golden assets are all usable.
+// packages, AVD, golden assets, and active runtime capabilities are usable.
 func EnsureEmulatorReady(ctx context.Context, cfg runnerconfig.Config, goos string, progress EmulatorProgress) error {
-	return EnsureEmulatorReadyAt(ctx, cfg, goos, effectiveSDKRoot(cfg, goos), progress)
+	return ensureEmulatorReadyAt(ctx, cfg, goos, effectiveSDKRoot(cfg, goos), progress, true)
 }
 
 // EnsureEmulatorReadyAt is the explicit-SDK-root form used by the runner
 // entrypoint. The persistent SDK volume must be the same one used later by
 // avdctl and the emulator process.
 func EnsureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, progress EmulatorProgress) error {
+	return ensureEmulatorReadyAt(ctx, cfg, goos, sdkRoot, progress, true)
+}
+
+// PrepareEmulatorReady provisions candidate assets without requiring active
+// runtime capabilities from the current service. The service may need to be
+// recreated with /dev/kvm before the candidate can actually run.
+func PrepareEmulatorReady(ctx context.Context, cfg runnerconfig.Config, goos string, progress EmulatorProgress) error {
+	return prepareEmulatorReadyAt(ctx, cfg, goos, effectiveSDKRoot(cfg, goos), progress)
+}
+
+func prepareEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, progress EmulatorProgress) error {
+	return ensureEmulatorReadyAt(ctx, cfg, goos, sdkRoot, progress, false)
+}
+
+func ensureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string, progress EmulatorProgress, requireRuntime bool) error {
 	sdkRoot = strings.TrimSpace(sdkRoot)
 	if sdkRoot == "" {
 		sdkRoot = effectiveSDKRoot(cfg, goos)
@@ -79,11 +94,14 @@ func EnsureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, s
 		return fmt.Errorf("Credimi golden assets %q are not present under %s", goldenLeaf, goldenRoot)
 	}
 	progressStage(progress, "Verifying emulator runtime")
-	return verifyRuntimeCapabilities(sdkRoot, goos, true, baseSystemImage)
+	if requireRuntime {
+		return verifyRuntimeCapabilities(sdkRoot, goos, true, baseSystemImage)
+	}
+	return verifyPreparedCapabilities(sdkRoot, true, baseSystemImage)
 }
 
 func ensureRuntimeCapabilitiesWithoutAVDAt(ctx context.Context, cfg runnerconfig.Config, goos, sdkRoot string) error {
-	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, nil, false)
+	return ensureRuntimeCapabilitiesAtWith(ctx, cfg, goos, sdkRoot, nil, false, false)
 }
 
 func hasEnabledEmulator(cfg runnerconfig.Config) bool {

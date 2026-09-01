@@ -1512,8 +1512,8 @@ func TestServerValidateRuntimeRequirements(t *testing.T) {
 		}
 		return nil, nil
 	}
-	if err := s.validateRuntimeRequirements(emulator); err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
-		t.Fatalf("emulator requirements = %v", err)
+	if err := s.validateRuntimeRequirements(emulator); err != nil {
+		t.Fatalf("emulator candidate requirements = %v", err)
 	}
 }
 func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {

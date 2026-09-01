@@ -262,7 +262,10 @@ func DiffValues(oldValues, newValues Values) ConfigDiff {
 // DiffValuesForOS classifies persistent configuration changes. Service
 // topology is derived from the typed service projection, not from individual
 // compatibility keys or every device field.
-func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
+func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
+	if strings.TrimSpace(goos) == "" {
+		goos = goruntime.GOOS
+	}
 	var diff ConfigDiff
 	classSet := map[ApplyClass]struct{}{}
 	for _, key := range SortedKnownKeys() {
@@ -279,6 +282,18 @@ func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
 		}
 		if impact.CredimiUpdate {
 			classSet[ApplyCredimiUpdateRequired] = struct{}{}
+		}
+		if goos == "darwin" {
+			switch key {
+			case "RUNNER_HOST", "RUNNER_PORT":
+				// Native execution owns the runner listener directly; there is no
+				// Docker service topology to recreate on Darwin.
+				classSet[ApplyRuntimeReconcile] = struct{}{}
+			case "DASHBOARD_HOST", "DASHBOARD_PORT":
+				// The Dashboard listener belongs to the persistent native service
+				// process, not to a runtime generation.
+				classSet[ApplyServiceRestartRequired] = struct{}{}
+			}
 		}
 	}
 	deviceKeys := make([]string, 0)
@@ -300,16 +315,18 @@ func DiffValuesForOS(oldValues, newValues Values, _ string) ConfigDiff {
 		classSet[ApplyRuntimeReconcile] = struct{}{}
 		classSet[ApplyCredimiUpdateRequired] = struct{}{}
 	}
-	if oldCfg, oldErr := TypedConfigFromValues(oldValues); oldErr == nil {
-		if newCfg, newErr := TypedConfigFromValues(newValues); newErr == nil {
-			if servicemanager.ServiceConfigFingerprint(oldCfg, true) != servicemanager.ServiceConfigFingerprint(newCfg, true) {
+	if goos != "darwin" {
+		if oldCfg, oldErr := TypedConfigFromValues(oldValues); oldErr == nil {
+			if newCfg, newErr := TypedConfigFromValues(newValues); newErr == nil {
+				if servicemanager.ServiceConfigFingerprint(oldCfg, true) != servicemanager.ServiceConfigFingerprint(newCfg, true) {
+					classSet[ApplyServiceRestartRequired] = struct{}{}
+				}
+			} else if serviceFallbackChanged(diff.ChangedKeys) {
 				classSet[ApplyServiceRestartRequired] = struct{}{}
 			}
 		} else if serviceFallbackChanged(diff.ChangedKeys) {
 			classSet[ApplyServiceRestartRequired] = struct{}{}
 		}
-	} else if serviceFallbackChanged(diff.ChangedKeys) {
-		classSet[ApplyServiceRestartRequired] = struct{}{}
 	}
 	if len(diff.ChangedKeys) == 0 {
 		diff.Classes = []ApplyClass{ApplySavedOnly}

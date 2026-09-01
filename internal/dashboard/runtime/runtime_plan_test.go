@@ -222,6 +222,83 @@ func TestServiceConfigFingerprintProjectsOnlyServiceTopology(t *testing.T) {
 	}
 }
 
+func TestServiceConfigFingerprintUsesCapabilityUnion(t *testing.T) {
+	base := runnerconfig.Bootstrap()
+	base.Server.APIListen = "127.0.0.1:8050"
+	base.Server.DashboardListen = "127.0.0.1:8051"
+	base.Android.Network = "credimi-runner"
+	emulator := runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidEmulator, Enabled: true}
+	usb := runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "one"}}
+	wifi := runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10", WiFiPort: "5555"}}
+
+	withDevices := func(devices ...runnerconfig.DeviceConfig) runnerconfig.Config {
+		cfg := base
+		cfg.Devices = append([]runnerconfig.DeviceConfig(nil), devices...)
+		return cfg
+	}
+	fingerprint := func(cfg runnerconfig.Config) string {
+		return servicemanager.ServiceConfigFingerprint(cfg, true)
+	}
+
+	if fingerprint(withDevices(emulator)) != fingerprint(withDevices(emulator, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidEmulator, Enabled: true})) {
+		t.Fatal("second enabled emulator changed an already-satisfied capability")
+	}
+	if fingerprint(withDevices(usb)) != fingerprint(withDevices(usb, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "two"}})) {
+		t.Fatal("second USB phone changed an already-satisfied capability")
+	}
+	if fingerprint(withDevices(wifi)) != fingerprint(withDevices(wifi, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.11", WiFiPort: "5555"}})) {
+		t.Fatal("second Wi-Fi phone changed an already-satisfied capability")
+	}
+	disabled := runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidEmulator, Enabled: false, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "disabled"}}
+	if fingerprint(withDevices()) != fingerprint(withDevices(disabled)) {
+		t.Fatal("disabled emulator changed the service capability projection")
+	}
+	firstEnabledEmulator := withDevices(runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidEmulator, Enabled: true})
+	if fingerprint(withDevices(disabled)) == fingerprint(firstEnabledEmulator) {
+		t.Fatal("enabling the first emulator did not change the service capability projection")
+	}
+	if fingerprint(withDevices(emulator)) != fingerprint(withDevices(emulator, disabled)) {
+		t.Fatal("disabled second emulator changed the service capability projection")
+	}
+	if fingerprint(withDevices()) != fingerprint(withDevices(runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"}})) {
+		t.Fatal("no_device phone unexpectedly added a service capability")
+	}
+
+	redroid := runnerconfig.DeviceConfig{Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{AVDCTLSSHTarget: "root@redroid-a"}}
+	otherTarget := redroid
+	otherTarget.Redroid = &runnerconfig.RedroidConfig{AVDCTLSSHTarget: "root@redroid-b"}
+	if fingerprint(withDevices(redroid)) != fingerprint(withDevices(otherTarget)) {
+		t.Fatal("Redroid SSH target changed the default known-hosts capability")
+	}
+	knownHosts := "/home/alice/.ssh/known_hosts"
+	explicit := redroid
+	explicit.Redroid = &runnerconfig.RedroidConfig{AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: knownHosts}
+	otherKnownHosts := explicit
+	otherKnownHosts.Redroid = &runnerconfig.RedroidConfig{AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: "/home/alice/.ssh/other_known_hosts"}
+	if fingerprint(withDevices(explicit)) == fingerprint(withDevices(otherKnownHosts)) {
+		t.Fatal("Redroid known-hosts path change was ignored")
+	}
+	duplicate := runnerconfig.DeviceConfig{Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{AVDCTLSSHTarget: "root@other", AVDCTLSSHKnownHostsPath: knownHosts}}
+	if fingerprint(withDevices(explicit)) != fingerprint(withDevices(explicit, duplicate)) {
+		t.Fatal("duplicate Redroid known-hosts capability was not deduplicated")
+	}
+}
+
+func TestDiffValuesForOSClassifiesNativeRuntimeSettings(t *testing.T) {
+	runnerDiff := DiffValuesForOS(Values{"RUNNER_HOST": "127.0.0.1", "RUNNER_PORT": "8050"}, Values{"RUNNER_HOST": "0.0.0.0", "RUNNER_PORT": "9050"}, "darwin")
+	if !hasClass(runnerDiff, ApplyRuntimeReconcile) || hasClass(runnerDiff, ApplyServiceRestartRequired) {
+		t.Fatalf("native runner listener change was misclassified: %+v", runnerDiff)
+	}
+	dashboardDiff := DiffValuesForOS(Values{"DASHBOARD_HOST": "127.0.0.1", "DASHBOARD_PORT": "8051"}, Values{"DASHBOARD_HOST": "0.0.0.0", "DASHBOARD_PORT": "9051"}, "darwin")
+	if !hasClass(dashboardDiff, ApplyServiceRestartRequired) || hasClass(dashboardDiff, ApplyRuntimeReconcile) {
+		t.Fatalf("native dashboard listener change was misclassified: %+v", dashboardDiff)
+	}
+	androidDiff := DiffValuesForOS(Values{"ANDROID_RUNNER_IMAGE": "a"}, Values{"ANDROID_RUNNER_IMAGE": "b"}, "darwin")
+	if hasClass(androidDiff, ApplyServiceRestartRequired) {
+		t.Fatal("Docker-only Android image change leaked into native service classification")
+	}
+}
+
 func TestServiceRestartRequiredUsesAppliedFingerprint(t *testing.T) {
 	cfg := runnerconfig.Bootstrap()
 	values := ValuesFromTypedConfig(cfg)

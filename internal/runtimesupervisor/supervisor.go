@@ -85,6 +85,10 @@ func New(configDir string, load func() (config.Config, error), deps Dependencies
 	if err != nil {
 		return nil, err
 	}
+	// Actual state describes resources owned by this Supervisor process. A
+	// persisted running state cannot prove that this new process owns a live
+	// generation after an internal-service restart.
+	state.Actual = ActualStopped
 	return &Supervisor{configDir: configDir, stateStore: stateStore, loadConfig: load, deps: deps, state: state}, nil
 }
 

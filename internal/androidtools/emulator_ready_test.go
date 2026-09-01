@@ -69,6 +69,35 @@ func TestEnsureEmulatorReadyReusesMountedAssetsAndEmptySerial(t *testing.T) {
 	}
 }
 
+func TestPrepareEmulatorReadyDoesNotRequireCurrentKVM(t *testing.T) {
+	root, avdHome, goldenRoot, cfg := emulatorReadyFixture(t)
+	for _, path := range []string{
+		filepath.Join(root, "cmdline-tools", "latest", "bin", "sdkmanager"),
+		filepath.Join(root, "cmdline-tools", "latest", "bin", "avdmanager"),
+	} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(avdHome, "credimi.avd"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.avd", "config.ini"), []byte("image.sysdir.1=system-images/android-35/google_apis/x86_64/\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(avdHome, "credimi.ini"), []byte("path=credimi.avd\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(goldenRoot, "credimi-golden"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANDROID_SDK_ROOT", root)
+	t.Setenv("ANDROID_AVD_HOME", avdHome)
+	if err := PrepareEmulatorReady(context.Background(), cfg, "linux", nil); err != nil {
+		t.Fatalf("candidate preparation unexpectedly required active KVM: %v", err)
+	}
+}
+
 func TestEnsureEmulatorReadyWithoutAndroidTargetsIsNoop(t *testing.T) {
 	cfg := runnerconfig.Bootstrap()
 	cfg.Storage.StateDir = t.TempDir()
