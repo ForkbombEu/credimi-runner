@@ -1219,22 +1219,6 @@ type supervisorAddr string
 func (a supervisorAddr) Network() string { return "tcp" }
 func (a supervisorAddr) String() string  { return string(a) }
 
-type shutdownStuckListener struct {
-	release chan struct{}
-	entered chan struct{}
-	once    sync.Once
-}
-
-func (l *shutdownStuckListener) Accept() (net.Conn, error) {
-	l.once.Do(func() { close(l.entered) })
-	<-l.release
-	return nil, net.ErrClosed
-}
-func (*shutdownStuckListener) Close() error { return nil }
-func (*shutdownStuckListener) Addr() net.Addr {
-	return supervisorAddr("127.0.0.1:8050")
-}
-
 func TestHTTPAPIStartShutdownAndListenFailure(t *testing.T) {
 	old := listenTCP
 	t.Cleanup(func() { listenTCP = old })
@@ -1244,8 +1228,14 @@ func TestHTTPAPIStartShutdownAndListenFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if a.Listening() {
+		t.Fatal("new API reports listening")
+	}
 	if err := a.Start(); err != nil {
 		t.Fatal(err)
+	}
+	if err := a.Start(); err != nil {
+		t.Fatalf("second Start: %v", err)
 	}
 	if !a.Listening() {
 		t.Fatal("API not listening")
@@ -1254,6 +1244,12 @@ func TestHTTPAPIStartShutdownAndListenFailure(t *testing.T) {
 	defer cancel()
 	if err := a.Shutdown(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if !a.shutdownComplete {
+		t.Fatal("normal shutdown was not completed")
+	}
+	if err := a.Start(); err == nil {
+		t.Fatal("Start after shutdown unexpectedly succeeded")
 	}
 	if a.Listening() {
 		t.Fatal("API still listening")
@@ -1303,34 +1299,122 @@ func TestHTTPAPIRealShutdownUsesConfiguredTimeout(t *testing.T) {
 	}
 }
 
-func TestHTTPAPIShutdownTimeoutBoundsServeWait(t *testing.T) {
-	old := listenTCP
-	t.Cleanup(func() { listenTCP = old })
-	listener := &shutdownStuckListener{release: make(chan struct{}), entered: make(chan struct{})}
-	listenTCP = func(string, string) (net.Listener, error) { return listener, nil }
+func TestHTTPAPIShutdownRetriesActiveHandler(t *testing.T) {
 	cfg := validConfig()
+	cfg.Server.APIListen = "127.0.0.1:0"
 	cfg.Server.ShutdownTimeout = config.Duration(20 * time.Millisecond)
-	a, err := NewHTTPAPI(cfg, http.NewServeMux())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	handlerDone := make(chan struct{})
+	a, err := NewHTTPAPI(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusOK)
+		close(handlerDone)
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
+	var releaseOnce sync.Once
+	releaseHandler := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseHandler()
 	if err := a.Start(); err != nil {
 		t.Fatal(err)
 	}
+	requestDone := make(chan error, 1)
+	go func() {
+		response, err := http.Get("http://" + a.Listener.Addr().String())
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		requestDone <- err
+	}()
 	select {
-	case <-listener.entered:
+	case <-entered:
 	case <-time.After(time.Second):
-		t.Fatal("serve goroutine did not enter Accept")
+		t.Fatal("request handler did not start")
 	}
 	err = a.Shutdown(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown error=%v", err)
 	}
-	close(listener.release)
+	if a.Listening() || a.shutdownComplete {
+		t.Fatalf("timed-out shutdown state: serving=%v complete=%v", a.Listening(), a.shutdownComplete)
+	}
+	if err := a.Start(); err == nil {
+		t.Fatal("Start after timed-out shutdown unexpectedly succeeded")
+	}
 	select {
-	case <-a.done:
+	case <-handlerDone:
+		t.Fatal("handler finished before release")
+	default:
+	}
+	if err := a.Shutdown(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second shutdown error=%v", err)
+	}
+	releaseHandler()
+	select {
+	case <-handlerDone:
 	case <-time.After(time.Second):
-		t.Fatal("serve goroutine did not finish after listener release")
+		t.Fatal("handler did not finish")
+	}
+	if err := <-requestDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !a.shutdownComplete || a.Listening() {
+		t.Fatalf("completed shutdown state: serving=%v complete=%v", a.Listening(), a.shutdownComplete)
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPAPIShutdownHonorsEarlierParentDeadline(t *testing.T) {
+	cfg := validConfig()
+	cfg.Server.APIListen = "127.0.0.1:0"
+	cfg.Server.ShutdownTimeout = config.Duration(time.Second)
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	a, err := NewHTTPAPI(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var releaseOnce sync.Once
+	releaseHandler := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseHandler()
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	requestDone := make(chan struct{})
+	go func() {
+		response, _ := http.Get("http://" + a.Listener.Addr().String())
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		close(requestDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("request handler did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := a.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown error=%v", err)
+	}
+	releaseHandler()
+	select {
+	case <-requestDone:
+	case <-time.After(time.Second):
+		t.Fatal("request did not finish")
 	}
 }
 
@@ -1362,8 +1446,19 @@ func TestHTTPAPIUnexpectedServeFailureReportsFailure(t *testing.T) {
 	if a.Listening() {
 		t.Fatal("failed API still reports listening")
 	}
-	if err := a.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
+	if err := a.Shutdown(context.Background()); err == nil || !strings.Contains(err.Error(), "accept failed") {
+		t.Fatalf("shutdown error=%v", err)
+	}
+	if a.shutdownComplete {
+		t.Fatal("unexpected Serve failure was marked complete")
+	}
+	if err := a.Start(); err == nil {
+		t.Fatal("Start after Serve failure unexpectedly succeeded")
+	}
+	select {
+	case failure := <-a.Failures():
+		t.Fatalf("duplicate failure: %v", failure)
+	default:
 	}
 }
 
@@ -1379,8 +1474,14 @@ func TestHTTPAPIShutdownBeforeStartAndClosedStart(t *testing.T) {
 	if err := a.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if !a.shutdownComplete {
+		t.Fatal("never-started shutdown was not completed")
+	}
 	if a.Listening() {
 		t.Fatal("never-started API reports listening")
+	}
+	if err := a.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	if err := a.Start(); err == nil {
 		t.Fatal("expected closed API start error")

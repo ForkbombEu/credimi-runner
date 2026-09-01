@@ -772,13 +772,16 @@ type HTTPAPI struct {
 	Listener        net.Listener
 	Server          *http.Server
 	shutdownTimeout time.Duration
-	done            chan struct{}
+	serveDone       chan struct{}
 	failures        chan error
 	mu              sync.Mutex
-	closed          bool
-	started         bool
-	serving         bool
-	expectedClose   bool
+	// started is permanent; serving ends when Serve returns. Shutdown
+	// completion additionally requires successful connection draining.
+	started           bool
+	serving           bool
+	shutdownRequested bool
+	shutdownComplete  bool
+	serveErr          error
 }
 
 var listenTCP = net.Listen
@@ -792,61 +795,71 @@ func NewHTTPAPI(cfg config.Config, handler http.Handler) (*HTTPAPI, error) {
 		Listener:        l,
 		Server:          &http.Server{Handler: handler, ReadHeaderTimeout: time.Duration(cfg.Server.ReadHeaderTimeout)},
 		shutdownTimeout: time.Duration(cfg.Server.ShutdownTimeout),
-		done:            make(chan struct{}),
+		serveDone:       make(chan struct{}),
 		failures:        make(chan error, 1),
 	}, nil
 }
 func (a *HTTPAPI) Start() error {
 	a.mu.Lock()
-	if a.started {
+	if a.shutdownRequested {
 		a.mu.Unlock()
-		return nil
+		return errors.New("execution API shutdown has already started")
 	}
-	if a.closed {
+	if a.started {
+		serving := a.serving
 		a.mu.Unlock()
-		return errors.New("execution API is closed")
+		if serving {
+			return nil
+		}
+		return errors.New("execution API has already stopped")
 	}
 	a.started = true
 	a.serving = true
 	a.mu.Unlock()
-	go func() {
-		err := a.Server.Serve(a.Listener)
-		a.mu.Lock()
-		expected := a.expectedClose
-		a.serving = false
-		a.closed = true
-		a.mu.Unlock()
-		close(a.done)
-		if !expected {
-			if err == nil {
-				err = errors.New("execution API exited unexpectedly")
-			}
-			a.reportFailure(fmt.Errorf("execution API serve failed: %s", err.Error()))
-		}
-	}()
+	go a.serve()
 	return nil
 }
+
+func (a *HTTPAPI) serve() {
+	err := a.Server.Serve(a.Listener)
+	a.mu.Lock()
+	a.serveErr = err
+	a.serving = false
+	expected := a.shutdownRequested
+	a.mu.Unlock()
+	close(a.serveDone)
+	if expected {
+		return
+	}
+	if err == nil {
+		a.reportFailure(errors.New("execution API exited unexpectedly"))
+		return
+	}
+	a.reportFailure(fmt.Errorf("execution API serve failed: %w", err))
+}
+
 func (a *HTTPAPI) Shutdown(ctx context.Context) error {
 	if a == nil {
 		return nil
 	}
 	a.mu.Lock()
-	if a.closed {
+	if a.shutdownComplete {
 		a.mu.Unlock()
 		return nil
 	}
 	if !a.started {
-		a.expectedClose = true
-		a.closed = true
-		close(a.done)
+		a.shutdownRequested = true
 		listener := a.Listener
 		a.mu.Unlock()
 		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			return err
 		}
+		a.mu.Lock()
+		a.shutdownComplete = true
+		a.mu.Unlock()
 		return nil
 	}
-	a.expectedClose = true
+	a.shutdownRequested = true
 	a.mu.Unlock()
 	shutdownCtx := ctx
 	cancel := func() {}
@@ -854,30 +867,29 @@ func (a *HTTPAPI) Shutdown(ctx context.Context) error {
 		shutdownCtx, cancel = boundedContext(ctx, a.shutdownTimeout)
 	}
 	defer cancel()
-	shutdownDone := make(chan error, 1)
-	go func() { shutdownDone <- a.Server.Shutdown(shutdownCtx) }()
-	var err error
-	select {
-	case err = <-shutdownDone:
-	case <-shutdownCtx.Done():
-		err = shutdownCtx.Err()
+	err := a.Server.Shutdown(shutdownCtx)
+	if err != nil {
+		return err
 	}
 	select {
-	case <-a.done:
-		return err
+	case <-a.serveDone:
 	default:
-	}
-	select {
-	case <-a.done:
-		return err
-	case <-shutdownCtx.Done():
 		select {
-		case <-a.done:
-			return err
-		default:
-			return errors.Join(err, shutdownCtx.Err())
+		case <-a.serveDone:
+		case <-shutdownCtx.Done():
+			return shutdownCtx.Err()
 		}
 	}
+	a.mu.Lock()
+	serveErr := a.serveErr
+	a.mu.Unlock()
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return fmt.Errorf("execution API serve failed during shutdown: %w", serveErr)
+	}
+	a.mu.Lock()
+	a.shutdownComplete = true
+	a.mu.Unlock()
+	return nil
 }
 func (a *HTTPAPI) Listening() bool {
 	if a == nil {
