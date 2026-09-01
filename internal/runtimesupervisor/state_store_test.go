@@ -3,11 +3,16 @@ package runtimesupervisor
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
 )
 
 func TestStateStoreDefaultsAndAtomicRoundTrip(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv(atomicfile.OwnerUIDEnv, strconv.Itoa(os.Getuid()))
+	t.Setenv(atomicfile.OwnerGIDEnv, strconv.Itoa(os.Getgid()))
 	store := StateStore{Path: filepath.Join(dir, "nested", "runtime-state.json")}
 	state, err := store.Load(false)
 	if err != nil {

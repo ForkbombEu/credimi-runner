@@ -91,6 +91,9 @@ func TestWriteAtomicChownFailureLeavesDestination(t *testing.T) {
 
 func TestWriteAtomicNilOwnerOverwritesWithMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shared.json")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	chownCalls := 0
 	err := WriteAtomicWithChown(path, 0o600, nil, func(writer io.Writer) error {
 		_, writeErr := writer.Write([]byte("new"))

@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
 )
 
 func TestControllerLeaseExcludesSecondOwnerAndPublishesMetadata(t *testing.T) {
@@ -51,6 +54,27 @@ func TestControllerLeaseExcludesSecondOwnerAndPublishesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer third.Close()
+}
+
+func TestControllerLeasePublishKeepsSharedMetadataReadable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(atomicfile.OwnerUIDEnv, strconv.Itoa(os.Getuid()))
+	t.Setenv(atomicfile.OwnerGIDEnv, strconv.Itoa(os.Getgid()))
+	lease, err := Acquire(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	if err := lease.Publish(Metadata{ControllerID: "controller-1", PID: os.Getpid(), ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, IdentityToken: "token", ProbeURL: "http://127.0.0.1:8051/identity"}); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := ReadMetadata(dir)
+	if err != nil || metadata.ControllerID != "controller-1" {
+		t.Fatalf("published controller metadata = %#v, err=%v", metadata, err)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "controller.json")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("controller metadata mode = %v", err)
+	}
 }
 
 func TestControllerProbeRejectsUnavailableEndpoint(t *testing.T) {
