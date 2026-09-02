@@ -357,7 +357,7 @@ func (s *Supervisor) rollback(startErr error) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 	remoteErr, localErr := s.teardownGeneration(cleanupCtx, g, "start_failed", true)
-	if localErr == nil && g != nil && g.localResourcesClosed() {
+	if localErr == nil && g.localResourcesClosed() {
 		s.setGeneration(nil)
 	}
 	combined := errors.Join(startErr, remoteErr, localErr)
