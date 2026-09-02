@@ -191,9 +191,36 @@ func (m *DockerManager) recordAppliedImage(ctx context.Context, configured strin
 	if id == "" {
 		return errors.New("runner service container unavailable")
 	}
-	digest, err := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{.Image}}", id}, os.Environ())
+	localID, err := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{.Image}}", id}, os.Environ())
 	if err != nil {
 		return err
+	}
+	var repoDigests []string
+	imageRaw, err := m.Runner.Output(ctx, "docker", []string{"image", "inspect", "--format", "{{json .RepoDigests}}", strings.TrimSpace(string(localID))}, os.Environ())
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(imageRaw, &repoDigests); err != nil {
+		// Older/test command runners may not expose image metadata; do not
+		// manufacture an applied identity from the local image ID.
+		return nil
+	}
+	configuredRepo := configured
+	if at := strings.LastIndex(configuredRepo, "@"); at >= 0 {
+		configuredRepo = configuredRepo[:at]
+	}
+	if colon := strings.LastIndex(configuredRepo, ":"); colon > strings.LastIndex(configuredRepo, "/") {
+		configuredRepo = configuredRepo[:colon]
+	}
+	var digest string
+	for _, candidate := range repoDigests {
+		if at := strings.LastIndex(candidate, "@"); at >= 0 && strings.TrimSuffix(candidate[:at], ":") == configuredRepo {
+			digest = candidate[at+1:]
+			break
+		}
+	}
+	if digest == "" {
+		return fmt.Errorf("no RepoDigest matches configured image repository %q", configuredRepo)
 	}
 	state := struct {
 		Image     string    `json:"image"`

@@ -71,6 +71,22 @@ func TestRemoteDigestAndBearerAuthentication(t *testing.T) {
 	}
 }
 
+func TestRemoteDigestFallsBackFromHeadToGet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Docker-Content-Digest", "sha256:get")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	got, err := remoteDigest(context.Background(), server.Client(), server.URL+"/repo/image:latest")
+	if err != nil || got != "sha256:get" {
+		t.Fatalf("digest=%q err=%v", got, err)
+	}
+}
+
 func TestCheckerImageStateAndFailures(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"x","digest":"sha256:same"}`), 0o600); err != nil {
@@ -81,12 +97,12 @@ func TestCheckerImageStateAndFailures(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	checker := Checker{ConfigDir: dir, Image: srv.URL + "/x/y:latest", HTTPClient: srv.Client()}
+	checker := Checker{ConfigDir: dir, HTTPClient: srv.Client()}
 	status := checker.Check(context.Background(), "v1", time.Time{})
 	if status.Image.UpdateAvailable || status.Image.CurrentVersion == "" {
 		t.Fatalf("status=%+v", status)
 	}
-	if got := (Checker{ConfigDir: t.TempDir(), Image: checker.Image}).Check(context.Background(), "v1", time.Time{}); got.Image.LatestVersion != "" || got.Error == "" {
+	if got := (Checker{ConfigDir: t.TempDir()}).Check(context.Background(), "v1", time.Time{}); got.Image.LatestVersion != "" || got.Error == "" {
 		t.Fatalf("missing state=%+v", got)
 	}
 }
@@ -95,6 +111,30 @@ func TestParseImageRejectsMalformedReferences(t *testing.T) {
 	for _, image := range []string{"", "x@yesterday", "http://host"} {
 		if _, _, _, err := parseImage(image); err == nil {
 			t.Fatalf("accepted %q", image)
+		}
+	}
+}
+
+func TestImageStateReportsDigestChangeAndRegistryErrors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"http://registry/repo:latest","digest":"sha256:old"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Docker-Content-Digest", "sha256:new")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"`+server.URL+`/repo:latest","digest":"sha256:old"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status := (Checker{ConfigDir: dir, HTTPClient: server.Client()}).Check(context.Background(), "v1", time.Time{})
+	if !status.Image.UpdateAvailable || status.Image.LatestVersion != "sha256:new" {
+		t.Fatalf("status=%+v", status)
+	}
+	for _, challenge := range []string{"", "Basic abc", `Bearer service="x"`} {
+		if _, err := bearerToken(context.Background(), server.Client(), challenge); err == nil {
+			t.Fatalf("accepted challenge %q", challenge)
 		}
 	}
 }
@@ -132,7 +172,7 @@ func TestCheckerAllowsConfigurationWithoutRunnerImage(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"tag_name":"v1","published_at":"2026-01-01T00:00:00Z"}`))}, nil
 	})}
 	status := (Checker{HTTPClient: client}).Check(context.Background(), "v1", time.Time{})
-	if status.Error != "" || status.Runner.UpdateAvailable {
+	if status.Runner.UpdateAvailable || !strings.Contains(status.Error, "image:") {
 		t.Fatalf("status = %#v", status)
 	}
 }

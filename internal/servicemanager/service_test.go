@@ -61,6 +61,37 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 	}
 }
 
+func TestRecordAppliedImagePersistsMatchingRepoDigest(t *testing.T) {
+	dir := t.TempDir()
+	m := NewDockerManager(dir, "")
+	stateRunner := &sequenceRunner{outputs: [][]byte{[]byte("container123\n"), []byte("sha256:local-config\n"), []byte(`["example.com/other/image@sha256:wrong","ghcr.io/forkbombeu/credimi-runner@sha256:right"]`)}}
+	m.Runner = stateRunner
+	host, err := ResolveHostContext(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.host = host
+	if err := m.recordAppliedImage(context.Background(), "ghcr.io/forkbombeu/credimi-runner:latest"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"digest":"sha256:right"`) || strings.Contains(string(raw), "local-config") {
+		t.Fatalf("state=%s", raw)
+	}
+}
+
+type sequenceRunner struct{ outputs [][]byte }
+
+func (r *sequenceRunner) Run(context.Context, string, []string, []string) error { return nil }
+func (r *sequenceRunner) Output(context.Context, string, []string, []string) ([]byte, error) {
+	out := r.outputs[0]
+	r.outputs = r.outputs[1:]
+	return out, nil
+}
+
 func TestWriteServiceComposeUsesComposePullPolicyNames(t *testing.T) {
 	cfg := config.Bootstrap()
 	dir := t.TempDir()

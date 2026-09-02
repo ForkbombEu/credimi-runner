@@ -33,16 +33,15 @@ type Status struct {
 type Checker struct {
 	HTTPClient *http.Client
 	ConfigDir  string
-	Image      string
 }
 
 func (c Checker) Check(ctx context.Context, currentVersion string, currentBuiltAt time.Time) Status {
-	status := Status{CheckedAt: time.Now(), Runner: Component{CurrentVersion: currentVersion, CurrentBuiltAt: currentBuiltAt}, Image: Component{CurrentVersion: c.Image}}
+	status := Status{CheckedAt: time.Now(), Runner: Component{CurrentVersion: currentVersion, CurrentBuiltAt: currentBuiltAt}}
 	var problems []string
 	if err := c.checkRelease(ctx, &status.Runner); err != nil {
 		problems = append(problems, "runner: "+err.Error())
 	}
-	if strings.TrimSpace(c.Image) != "" && runtime.GOOS != "darwin" {
+	if runtime.GOOS != "darwin" {
 		if err := c.checkImage(ctx, &status.Image); err != nil {
 			problems = append(problems, "image: "+err.Error())
 		}
@@ -78,7 +77,10 @@ func (c Checker) checkImage(ctx context.Context, component *Component) error {
 	if strings.TrimSpace(state.Digest) == "" {
 		return fmt.Errorf("applied image digest unavailable")
 	}
-	digest, err := remoteDigest(ctx, c.client(), c.Image)
+	if at := strings.LastIndex(state.Image, "@"); at >= 0 && normalizeDigest(state.Image[at+1:]) != normalizeDigest(state.Digest) {
+		return fmt.Errorf("applied image reference and digest are inconsistent")
+	}
+	digest, err := remoteDigest(ctx, c.client(), state.Image)
 	if err != nil {
 		return err
 	}
@@ -113,20 +115,21 @@ func remoteDigest(ctx context.Context, client *http.Client, image string) (strin
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json")
+	req.Header.Set("Accept", manifestAccept)
 	resp, err := client.Do(req)
+	token := ""
 	if err != nil {
 		return "", err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
 		challenge := resp.Header.Get("WWW-Authenticate")
 		resp.Body.Close()
-		token, err := bearerToken(ctx, client, challenge)
+		token, err = bearerToken(ctx, client, challenge)
 		if err != nil {
 			return "", err
 		}
 		req, _ = http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-		req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
+		req.Header.Set("Accept", manifestAccept)
 		req.Header.Set("Authorization", "Bearer "+token)
 		resp, err = client.Do(req)
 		if err != nil {
@@ -134,6 +137,19 @@ func remoteDigest(ctx context.Context, client *http.Client, image string) (strin
 		}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || strings.TrimSpace(resp.Header.Get("Docker-Content-Digest")) == "" {
+		resp.Body.Close()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req.Header.Set("Accept", manifestAccept)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("registry returned %s", resp.Status)
 	}
@@ -143,6 +159,8 @@ func remoteDigest(ctx context.Context, client *http.Client, image string) (strin
 	}
 	return digest, nil
 }
+
+const manifestAccept = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"
 
 func parseImage(image string) (registry, repo, ref string, err error) {
 	image = strings.TrimSpace(image)

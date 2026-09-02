@@ -323,7 +323,7 @@ func (d PageData) MaintenanceStatus() maintenance.Status {
 }
 
 func (d PageData) RuntimeImageVisible() bool {
-	return runtimeGOOS() != "darwin" && d.Runner != nil && d.Runner.Get("CREDIMI_SERVICE_MODE") != "manual"
+	return runtimeGOOS() != "darwin"
 }
 
 func (d PageData) ImageVersionState() string { return componentState(d.MaintenanceStatus().Image) }
