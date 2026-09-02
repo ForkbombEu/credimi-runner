@@ -116,7 +116,7 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	status := Status{Running: strings.TrimSpace(string(out)) != ""}
+	status := Status{Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
 	if cfg, cfgErr := m.config(); cfgErr == nil {
 		status.DashboardURL = desiredDashboardURL(cfg)
 		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {

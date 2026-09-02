@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"github.com/spf13/cobra"
+	"strings"
 )
 
 var dashboardCommand = &cobra.Command{
@@ -19,7 +21,10 @@ func runDashboardCommand(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	url := controllerBaseURL(metadata)
+	url := strings.TrimRight(metadata.PublicURL, "/")
+	if url == "" {
+		return errors.New("controller metadata has no Dashboard URL")
+	}
 	if dashboardOpen && dashboardCanOpenBrowser() {
 		if err := openDashboardBrowserFunc(url); err == nil {
 			return nil

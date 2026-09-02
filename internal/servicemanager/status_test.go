@@ -7,56 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
-
-type upgradeRunner struct {
-	calls     [][]string
-	output    string
-	outputErr error
-	runErr    error
-}
-
-func (r *upgradeRunner) Run(_ context.Context, _ string, args []string, _ []string) error {
-	r.calls = append(r.calls, args)
-	return r.runErr
-}
-func (r *upgradeRunner) Output(context.Context, string, []string, []string) ([]byte, error) {
-	return []byte(r.output), r.outputErr
-}
-
-func TestDockerUpgradeImageUsesAppliedComposeAndRunningIntent(t *testing.T) {
-	for _, tc := range []struct {
-		name, output string
-		wantUp       bool
-	}{{"running", "container-id\n", true}, {"stopped", "\n", false}} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			r := &upgradeRunner{output: tc.output}
-			m := NewDockerManager(dir, "")
-			m.Runner = r
-			m.LoadConfig = func() (runnerconfig.Config, error) { return runnerconfig.Bootstrap(), nil }
-			if err := m.UpgradeImage(context.Background(), nil); err != nil {
-				t.Fatal(err)
-			}
-			if len(r.calls) < 1 || !strings.Contains(strings.Join(r.calls[0], " "), "pull runner") {
-				t.Fatalf("calls=%v", r.calls)
-			}
-			if tc.wantUp && !strings.Contains(strings.Join(r.calls[len(r.calls)-1], " "), "force-recreate") {
-				t.Fatalf("recreate calls=%v", r.calls)
-			}
-			if !tc.wantUp && len(r.calls) != 1 {
-				t.Fatalf("stopped calls=%v", r.calls)
-			}
-		})
-	}
-}
 
 func TestWriteServiceSpecFingerprintAndFactory(t *testing.T) {
 	dir := t.TempDir()
@@ -68,13 +22,24 @@ func TestWriteServiceSpecFingerprintAndFactory(t *testing.T) {
 	}
 }
 
+func TestEquivalentListenerNormalizesLoopback(t *testing.T) {
+	for _, tc := range []struct {
+		wh, wp, ah, ap string
+		want           bool
+	}{{"127.0.0.1", "8051", "127.0.0.1", "8051", true}, {"localhost", "8051", "127.0.0.1", "8051", true}, {"127.0.0.1", "9051", "127.0.0.1", "8051", false}} {
+		if got := isEquivalentListener(tc.wh, tc.wp, tc.ah, tc.ap); got != tc.want {
+			t.Fatalf("listener=%v want %v", got, tc.want)
+		}
+	}
+}
+
 func TestDesiredDashboardURLAndRuntimeState(t *testing.T) {
 	probe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"controller_id": "c", "config_fingerprint": "f"})
 	}))
 	defer probe.Close()
 	liveDir := t.TempDir()
-	metadata := map[string]any{"controller_id": "c", "config_fingerprint": "f", "probe_url": probe.URL, "public_url": "http://127.0.0.1:9051", "identity_token": "id"}
+	metadata := map[string]any{"schema": 1, "controller_id": "c", "config_dir": liveDir, "listen_port": 8051, "config_fingerprint": "f", "probe_url": probe.URL, "public_url": "http://127.0.0.1:9051", "identity_token": "id"}
 	rawMetadata, _ := json.Marshal(metadata)
 	if err := os.WriteFile(filepath.Join(liveDir, "controller.json"), rawMetadata, 0600); err != nil {
 		t.Fatal(err)

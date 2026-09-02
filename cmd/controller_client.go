@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
@@ -19,15 +21,27 @@ type controllerClient struct {
 	client         *http.Client
 }
 
-func newControllerClient(ctx context.Context, configDir string) (*controllerClient, error) {
+const controllerProbeTimeout = 3 * time.Second
+
+func verifiedController(ctx context.Context, configDir string) (controller.Metadata, error) {
 	metadata, err := controller.ReadMetadata(configDir)
+	if err != nil {
+		return metadata, err
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, controllerProbeTimeout)
+	defer cancel()
+	if err := controller.Probe(probeCtx, metadata); err != nil {
+		return metadata, err
+	}
+	return metadata, nil
+}
+
+func newControllerClient(ctx context.Context, configDir string) (*controllerClient, error) {
+	metadata, err := verifiedController(ctx, configDir)
 	if err != nil {
 		return nil, serviceNotRunningError()
 	}
-	if err := controller.Probe(ctx, metadata); err != nil {
-		return nil, serviceNotRunningError()
-	}
-	cfg, err := runnerconfig.LoadFile(configDir + "/config.toml")
+	cfg, err := runnerconfig.LoadFile(filepath.Join(configDir, "config.toml"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("load dashboard authentication configuration: %w", err)
 	}

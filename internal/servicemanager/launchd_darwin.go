@@ -6,11 +6,13 @@ import (
 	"context"
 	"fmt"
 	"html"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
@@ -114,12 +116,27 @@ func (m *LaunchAgentManager) Restart(ctx context.Context) error {
 func (m *LaunchAgentManager) Status(ctx context.Context) (Status, error) {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)
 	err := m.command(ctx, "launchctl", "print", target)
-	status := Status{Running: err == nil}
-	if cfg, cfgErr := runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml")); cfgErr == nil {
-		status.DashboardURL = desiredDashboardURL(cfg)
+	status := Status{Running: err == nil, DashboardURL: "http://127.0.0.1:8051"}
+	if status.Running {
+		if cfg, cfgErr := runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml")); cfgErr == nil {
+			status.DashboardURL = desiredDashboardURL(cfg)
+			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			if live, liveErr := readLiveController(probeCtx, m.ConfigDir); liveErr == nil {
+				status.DashboardURL = strings.TrimRight(live.PublicURL, "/")
+				wantHost, wantPort, _ := net.SplitHostPort(cfg.Server.DashboardListen)
+				if isEquivalentListener(wantHost, wantPort, live.ListenHost, strconv.Itoa(live.ListenPort)) {
+					status.ServiceRestartRequired = false
+				} else {
+					status.ServiceRestartRequired = true
+				}
+			}
+			cancel()
+		}
 	}
-	if live := liveDashboardURL(ctx, m.ConfigDir); live != "" {
-		status.DashboardURL = live
+	if status.Running {
+		if live := liveDashboardURL(ctx, m.ConfigDir); live != "" {
+			status.DashboardURL = live
+		}
 	}
 	populateRuntimeState(m.ConfigDir, &status)
 	return status, nil

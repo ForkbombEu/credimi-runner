@@ -152,7 +152,7 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 	host, port := dashboardHostPort(values)
 	bindHost := host
-	if os.Getenv(servicemanager.ServiceNetworkModeEnv) == "bridge" && bindHost == "127.0.0.1" {
+	if os.Getenv(servicemanager.ServiceNetworkModeEnv) == "bridge" && isLoopbackHost(bindHost) {
 		bindHost = "0.0.0.0"
 	}
 	listen := a.listen
@@ -215,6 +215,15 @@ func (a *Application) Run(ctx context.Context) error {
 		}
 		return a.shutdown()
 	}
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func atoiPort(port string) int {

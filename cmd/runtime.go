@@ -43,10 +43,21 @@ func runRuntimeAPIAction(cmd *cobra.Command, action string) error {
 		return err
 	}
 	if done.Phase != controller.PhaseSucceeded {
-		return errors.New(strings.TrimSpace(done.Error))
+		return errors.New(lifecycleFailureMessage(done))
 	}
 	cmd.Printf("Runtime %s successfully.\n", action)
 	return nil
+}
+
+func lifecycleFailureMessage(done controller.Snapshot) string {
+	message := strings.TrimSpace(done.Error)
+	if message == "" {
+		message = strings.TrimSpace(done.Message)
+	}
+	if message == "" {
+		message = "runtime operation did not succeed"
+	}
+	return message
 }
 func runRuntimeStatus(cmd *cobra.Command, _ []string) error {
 	client, err := newControllerClient(cmd.Context(), effectiveConfigDir())
@@ -63,10 +74,6 @@ func runRuntimeStatus(cmd *cobra.Command, _ []string) error {
 	}
 	cmd.Println(string(payload.Runtime))
 	return nil
-}
-
-func controllerBaseURL(metadata controller.Metadata) string {
-	return strings.TrimSuffix(metadata.ProbeURL, "/internal/controller/identity")
 }
 
 func waitForLifecycleOperation(ctx context.Context, client *controllerClient, operationID string) (controller.Snapshot, error) {

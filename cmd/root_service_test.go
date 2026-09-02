@@ -95,7 +95,9 @@ func TestRootCtrlCOnlyStopsLogFollower(t *testing.T) {
 	command.SetContext(ctx)
 	go func() { done <- runRoot(command, nil) }()
 	cancel()
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("root cancellation error = %v", err)
+	}
 	if fake.started != 0 || fake.stopped != 0 || fake.restarted != 0 || fake.logs != 1 {
 		t.Fatalf("manager calls=%+v", fake)
 	}

@@ -55,7 +55,11 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	} else {
 		cmd.Printf("Dashboard: %s\n", url)
 	}
-	return manager.Logs(cmd.Context(), servicemanager.LogOptions{Follow: true, Lines: 200})
+	err = manager.Logs(cmd.Context(), servicemanager.LogOptions{Follow: true, Lines: 200})
+	if err == nil || cmd.Context().Err() != nil {
+		return nil
+	}
+	return err
 }
 
 func Execute() {

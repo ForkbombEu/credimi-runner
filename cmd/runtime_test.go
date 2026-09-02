@@ -35,11 +35,25 @@ func TestRuntimeCommandUsesControllerOperationAPI(t *testing.T) {
 	if err != nil || snapshot.Phase != controller.PhaseSucceeded || calls != 2 {
 		t.Fatalf("wait result = %#v, calls=%d, err=%v", snapshot, calls, err)
 	}
-	if got := controllerBaseURL(controller.Metadata{ProbeURL: server.URL + "/internal/controller/identity"}); got != server.URL {
-		t.Fatalf("controller base URL = %q", got)
-	}
 	if _, err := waitForLifecycleOperation(context.Background(), client, ""); err == nil {
 		t.Fatal("empty operation ID was accepted")
+	}
+}
+
+func TestLifecycleFailureMessageFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name, errText, message, want string
+	}{
+		{"error", "failed", "message", "failed"},
+		{"message", "", "message", "message"},
+		{"generic", "", "", "runtime operation did not succeed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := lifecycleFailureMessage(controller.Snapshot{Error: tc.errText, Message: tc.message})
+			if got != tc.want {
+				t.Fatalf("message=%q want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -65,6 +79,38 @@ func TestRuntimeCommandHTTPHelpers(t *testing.T) {
 	}
 	if err := serviceNotRunningError(); err == nil || !strings.Contains(err.Error(), "service start") {
 		t.Fatalf("service error = %v", err)
+	}
+}
+
+func TestDashboardCommandUsesPublishedPublicURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Credimi-Controller-Token") != "token" {
+			t.Fatalf("identity token missing")
+		}
+		_, _ = w.Write([]byte(`{"controller_id":"controller","config_fingerprint":"fingerprint"}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	metadata := controller.Metadata{Schema: 1, ControllerID: "controller", ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, ProbeURL: server.URL + "/identity", PublicURL: "http://published.example:9051/", ConfigFingerprint: "fingerprint", IdentityToken: "token"}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "controller.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, oldOpen := dashboardConfigDir, dashboardOpen
+	dashboardConfigDir, dashboardOpen = dir, false
+	t.Cleanup(func() { dashboardConfigDir, dashboardOpen = oldDir, oldOpen })
+	command := &cobra.Command{Use: "dashboard"}
+	command.SetContext(context.Background())
+	var output strings.Builder
+	command.SetOut(&output)
+	if err := runDashboardCommand(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "http://published.example:9051") {
+		t.Fatalf("output=%q", output.String())
 	}
 }
 
