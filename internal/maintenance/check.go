@@ -73,8 +73,11 @@ func (c Checker) checkImage(ctx context.Context, component *Component) error {
 	if err != nil {
 		return fmt.Errorf("applied image state unavailable: %w", err)
 	}
+	if strings.TrimSpace(state.Image) == "" {
+		return fmt.Errorf("applied image reference unavailable")
+	}
 	component.CurrentVersion = state.Digest
-	if strings.TrimSpace(state.Digest) == "" {
+	if !validDigest(state.Digest) {
 		return fmt.Errorf("applied image digest unavailable")
 	}
 	if at := strings.LastIndex(state.Image, "@"); at >= 0 && normalizeDigest(state.Image[at+1:]) != normalizeDigest(state.Digest) {
@@ -98,26 +101,29 @@ func (c Checker) client() *http.Client {
 
 func normalizeDigest(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "sha256:") }
 
+func validDigest(v string) bool {
+	v = strings.TrimSpace(v)
+	return strings.HasPrefix(v, "sha256:") && len(strings.TrimPrefix(v, "sha256:")) > 0
+}
+
 func remoteDigest(ctx context.Context, client *http.Client, image string) (string, error) {
 	registry, repo, ref, err := parseImage(image)
 	if err != nil {
 		return "", err
 	}
 	if strings.HasPrefix(ref, "sha256:") {
+		if !validDigest(ref) {
+			return "", fmt.Errorf("invalid image digest")
+		}
 		return ref, nil
 	}
 	base := "https://" + registry
 	if strings.Contains(registry, "://") {
 		base = registry
 	}
-	url := base + "/v2/" + repo + "/manifests/" + ref
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", manifestAccept)
-	resp, err := client.Do(req)
+	manifestURL := base + "/v2/" + repo + "/manifests/" + ref
 	token := ""
+	resp, err := manifestRequest(ctx, client, http.MethodHead, manifestURL, token)
 	if err != nil {
 		return "", err
 	}
@@ -128,36 +134,66 @@ func remoteDigest(ctx context.Context, client *http.Client, image string) (strin
 		if err != nil {
 			return "", err
 		}
-		req, _ = http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-		req.Header.Set("Accept", manifestAccept)
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err = client.Do(req)
+		resp, err = manifestRequest(ctx, client, http.MethodHead, manifestURL, token)
 		if err != nil {
 			return "", err
 		}
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || strings.TrimSpace(resp.Header.Get("Docker-Content-Digest")) == "" {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		digest := strings.TrimSpace(resp.Header.Get("Docker-Content-Digest"))
 		resp.Body.Close()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		req.Header.Set("Accept", manifestAccept)
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+		if digest != "" {
+			if !validDigest(digest) {
+				return "", fmt.Errorf("registry returned invalid Docker-Content-Digest %q", digest)
+			}
+			return digest, nil
 		}
-		resp, err = client.Do(req)
+	} else {
+		resp.Body.Close()
+	}
+
+	resp, err = manifestRequest(ctx, client, http.MethodGet, manifestURL, token)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		challenge := resp.Header.Get("WWW-Authenticate")
+		resp.Body.Close()
+		token, err = bearerToken(ctx, client, challenge)
 		if err != nil {
 			return "", err
 		}
-		defer resp.Body.Close()
+		resp, err = manifestRequest(ctx, client, http.MethodGet, manifestURL, token)
+		if err != nil {
+			return "", err
+		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("registry returned %s", resp.Status)
+		status := resp.Status
+		resp.Body.Close()
+		return "", fmt.Errorf("registry returned %s", status)
 	}
 	digest := strings.TrimSpace(resp.Header.Get("Docker-Content-Digest"))
+	resp.Body.Close()
 	if digest == "" {
 		return "", fmt.Errorf("registry response omitted Docker-Content-Digest")
 	}
+	if !validDigest(digest) {
+		return "", fmt.Errorf("registry returned invalid Docker-Content-Digest %q", digest)
+	}
 	return digest, nil
+}
+
+func manifestRequest(ctx context.Context, client *http.Client, method, manifestURL, token string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, manifestURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", manifestAccept)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return client.Do(req)
 }
 
 const manifestAccept = "application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json"

@@ -22,7 +22,14 @@ func (r *upgradeRunner) Run(_ context.Context, _ string, args []string, _ []stri
 	r.calls = append(r.calls, args)
 	return nil
 }
-func (r *upgradeRunner) Output(context.Context, string, []string, []string) ([]byte, error) {
+func (r *upgradeRunner) Output(_ context.Context, _ string, args []string, _ []string) ([]byte, error) {
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "image inspect") {
+		return []byte(`["ghcr.io/forkbombeu/credimi-runner@sha256:test"]`), nil
+	}
+	if strings.Contains(joined, "inspect --format") {
+		return []byte("sha256:local\n"), nil
+	}
 	return []byte(r.output), nil
 }
 func TestDockerUpgradeImageUsesAppliedComposeAndRunningIntent(t *testing.T) {

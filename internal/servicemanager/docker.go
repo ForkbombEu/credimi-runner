@@ -182,6 +182,9 @@ func (m *DockerManager) UpgradeImage(ctx context.Context, progress func(string))
 }
 
 func (m *DockerManager) recordAppliedImage(ctx context.Context, configured string) error {
+	if strings.TrimSpace(configured) == "" {
+		configured = defaultServiceImage
+	}
 	args := []string{"compose", "--project-name", ProjectName(m.ConfigDir, m.host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "ps", "-q", "runner"}
 	out, err := m.Runner.Output(ctx, "docker", args, os.Environ())
 	if err != nil {
@@ -201,9 +204,10 @@ func (m *DockerManager) recordAppliedImage(ctx context.Context, configured strin
 		return err
 	}
 	if err := json.Unmarshal(imageRaw, &repoDigests); err != nil {
-		// Older/test command runners may not expose image metadata; do not
-		// manufacture an applied identity from the local image ID.
-		return nil
+		return fmt.Errorf("decode runner image RepoDigests: %w", err)
+	}
+	if len(repoDigests) == 0 {
+		return errors.New("runner image has no RepoDigests")
 	}
 	configuredRepo := configured
 	if at := strings.LastIndex(configuredRepo, "@"); at >= 0 {
@@ -222,6 +226,10 @@ func (m *DockerManager) recordAppliedImage(ctx context.Context, configured strin
 	if digest == "" {
 		return fmt.Errorf("no RepoDigest matches configured image repository %q", configuredRepo)
 	}
+	digest = strings.TrimSpace(digest)
+	if !validSHA256Digest(digest) {
+		return fmt.Errorf("invalid runner image RepoDigest %q", digest)
+	}
 	state := struct {
 		Image     string    `json:"image"`
 		Digest    string    `json:"digest"`
@@ -229,6 +237,11 @@ func (m *DockerManager) recordAppliedImage(ctx context.Context, configured strin
 	}{configured, strings.TrimSpace(string(digest)), time.Now().UTC()}
 	raw, _ := json.Marshal(state)
 	return atomicfile.WriteAtomic(filepath.Join(m.ConfigDir, "service-image-state.json"), 0o600, atomicfile.FromEnvironment(), func(w io.Writer) error { _, err := w.Write(raw); return err })
+}
+
+func validSHA256Digest(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "sha256:") && len(strings.TrimPrefix(value, "sha256:")) > 0
 }
 func (m *DockerManager) Logs(ctx context.Context, opts LogOptions) error {
 	lines := opts.Lines

@@ -4,6 +4,7 @@ package servicemanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -33,7 +34,14 @@ func (f *fakeCommandRunner) Run(_ context.Context, name string, args []string, _
 	f.calls = append(f.calls, append([]string{name}, args...))
 	return nil
 }
-func (f *fakeCommandRunner) Output(context.Context, string, []string, []string) ([]byte, error) {
+func (f *fakeCommandRunner) Output(_ context.Context, _ string, args []string, _ []string) ([]byte, error) {
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "image inspect") {
+		return []byte(`["credimi-runner@sha256:test","ghcr.io/forkbombeu/credimi-runner@sha256:test"]`), nil
+	}
+	if strings.Contains(joined, "inspect --format") {
+		return []byte("sha256:local-config\n"), nil
+	}
 	return []byte("container-id\n"), nil
 }
 
@@ -90,6 +98,296 @@ func (r *sequenceRunner) Output(context.Context, string, []string, []string) ([]
 	out := r.outputs[0]
 	r.outputs = r.outputs[1:]
 	return out, nil
+}
+
+type commandStep struct {
+	kind     string
+	contains []string
+	output   []byte
+	err      error
+}
+
+type scriptedRunner struct {
+	t     *testing.T
+	steps []commandStep
+}
+
+func (r *scriptedRunner) take(kind, name string, args []string) commandStep {
+	r.t.Helper()
+	if len(r.steps) == 0 {
+		r.t.Fatalf("unexpected %s %s %v", kind, name, args)
+	}
+	step := r.steps[0]
+	r.steps = r.steps[1:]
+	if step.kind != kind || name != "docker" {
+		r.t.Fatalf("got %s %s %v, want %s docker", kind, name, args, step.kind)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range step.contains {
+		if !strings.Contains(joined, want) {
+			r.t.Fatalf("args %v missing %q", args, want)
+		}
+	}
+	return step
+}
+
+func (r *scriptedRunner) Run(_ context.Context, name string, args []string, _ []string) error {
+	return r.take("run", name, args).err
+}
+
+func (r *scriptedRunner) Output(_ context.Context, name string, args []string, _ []string) ([]byte, error) {
+	step := r.take("output", name, args)
+	return step.output, step.err
+}
+
+func (r *scriptedRunner) done() {
+	r.t.Helper()
+	if len(r.steps) != 0 {
+		r.t.Fatalf("%d scripted command steps unused", len(r.steps))
+	}
+}
+
+func writeAppliedState(t *testing.T, dir, image, digest string) []byte {
+	t.Helper()
+	raw := []byte(`{"image":"` + image + `","digest":"` + digest + `"}`)
+	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func readAppliedState(t *testing.T, dir string) (image, digest string) {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Image  string `json:"image"`
+		Digest string `json:"digest"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state.Image, state.Digest
+}
+
+func dockerTestConfig() config.Config {
+	cfg := config.Bootstrap()
+	cfg.Android.RunnerImage = "ghcr.io/forkbombeu/credimi-runner:latest"
+	return cfg
+}
+
+func TestRecordAppliedImageRejectsMalformedRepoDigestsAndPreservesState(t *testing.T) {
+	dir := t.TempDir()
+	old := writeAppliedState(t, dir, "ghcr.io/forkbombeu/credimi-runner:latest", "sha256:old")
+	r := &scriptedRunner{t: t, steps: []commandStep{
+		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+		{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local\n")},
+		{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte("not-json")},
+	}}
+	m := NewDockerManager(dir, "")
+	m.Runner = r
+	err := m.recordAppliedImage(context.Background(), dockerTestConfig().Android.RunnerImage)
+	if err == nil || !strings.Contains(err.Error(), "RepoDigests") {
+		t.Fatalf("error=%v", err)
+	}
+	r.done()
+	got, _ := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
+	if string(got) != string(old) {
+		t.Fatalf("state changed from %q to %q", old, got)
+	}
+}
+
+func TestRecordAppliedImageRejectsEmptyAndUnmatchedRepoDigests(t *testing.T) {
+	for _, metadata := range []string{"[]", "null", `["ghcr.io/forkbombeu/credimi-runner@latest"]`, `["example.com/other/image@sha256:wrong"]`} {
+		t.Run(metadata, func(t *testing.T) {
+			dir := t.TempDir()
+			old := writeAppliedState(t, dir, "ghcr.io/forkbombeu/credimi-runner:latest", "sha256:old")
+			r := &scriptedRunner{t: t, steps: []commandStep{
+				{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+				{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local\n")},
+				{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte(metadata)},
+			}}
+			m := NewDockerManager(dir, "")
+			m.Runner = r
+			if err := m.recordAppliedImage(context.Background(), dockerTestConfig().Android.RunnerImage); err == nil {
+				t.Fatal("expected RepoDigest error")
+			}
+			r.done()
+			got, _ := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
+			if string(got) != string(old) {
+				t.Fatalf("state changed from %q to %q", old, got)
+			}
+		})
+	}
+}
+
+func TestDockerStartRecordsRepoDigestAndPropagatesFailure(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		dir := t.TempDir()
+		r := &scriptedRunner{t: t, steps: []commandStep{
+			{kind: "run", contains: []string{"up", "-d", "runner"}},
+			{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+			{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local\n")},
+			{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte(`["ghcr.io/forkbombeu/credimi-runner@sha256:applied"]`)},
+		}}
+		m := NewDockerManager(dir, "")
+		m.Runner = r
+		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
+		if err := m.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		r.done()
+		image, digest := readAppliedState(t, dir)
+		if image != dockerTestConfig().Android.RunnerImage || digest != "sha256:applied" {
+			t.Fatalf("state=%q %q", image, digest)
+		}
+	})
+	t.Run("recording failure", func(t *testing.T) {
+		dir := t.TempDir()
+		r := &scriptedRunner{t: t, steps: []commandStep{
+			{kind: "run", contains: []string{"up", "-d", "runner"}},
+			{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+			{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local\n")},
+			{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte("not-json")},
+		}}
+		m := NewDockerManager(dir, "")
+		m.Runner = r
+		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
+		if err := m.Start(context.Background()); err == nil {
+			t.Fatal("expected image-state error")
+		}
+		r.done()
+	})
+}
+
+func TestDockerUpgradeImagePreservesAndUpdatesAppliedState(t *testing.T) {
+	t.Run("pull failure", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = writeAppliedState(t, dir, dockerTestConfig().Android.RunnerImage, "sha256:old")
+		if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		pullErr := errors.New("pull failed")
+		r := &scriptedRunner{t: t, steps: []commandStep{
+			{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+			{kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("fingerprint\n")},
+			{kind: "run", contains: []string{"pull", "runner"}, err: pullErr},
+		}}
+		m := NewDockerManager(dir, "")
+		m.Runner = r
+		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
+		if err := m.UpgradeImage(context.Background(), nil); !errors.Is(err, pullErr) {
+			t.Fatalf("err=%v", err)
+		}
+		r.done()
+		_, digest := readAppliedState(t, dir)
+		if digest != "sha256:old" {
+			t.Fatalf("digest=%s", digest)
+		}
+	})
+	t.Run("stopped pull only", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = writeAppliedState(t, dir, dockerTestConfig().Android.RunnerImage, "sha256:old")
+		if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r := &scriptedRunner{t: t, steps: []commandStep{{kind: "output", contains: []string{"ps", "runner"}, output: []byte("\n")}, {kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("\n")}, {kind: "run", contains: []string{"pull", "runner"}}}}
+		m := NewDockerManager(dir, "")
+		m.Runner = r
+		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
+		if err := m.UpgradeImage(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		r.done()
+		_, digest := readAppliedState(t, dir)
+		if digest != "sha256:old" {
+			t.Fatalf("digest=%s", digest)
+		}
+	})
+	t.Run("recreate failure", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = writeAppliedState(t, dir, dockerTestConfig().Android.RunnerImage, "sha256:old")
+		if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		recreateErr := errors.New("recreate failed")
+		r := &scriptedRunner{t: t, steps: []commandStep{{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")}, {kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("fingerprint\n")}, {kind: "run", contains: []string{"pull", "runner"}}, {kind: "run", contains: []string{"up", "--force-recreate", "runner"}, err: recreateErr}}}
+		m := NewDockerManager(dir, "")
+		m.Runner = r
+		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
+		if err := m.UpgradeImage(context.Background(), nil); !errors.Is(err, recreateErr) {
+			t.Fatalf("err=%v", err)
+		}
+		r.done()
+		_, digest := readAppliedState(t, dir)
+		if digest != "sha256:old" {
+			t.Fatalf("digest=%s", digest)
+		}
+	})
+	t.Run("recreate success", func(t *testing.T) {
+		dir := t.TempDir()
+		_ = writeAppliedState(t, dir, dockerTestConfig().Android.RunnerImage, "sha256:old")
+		if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r := &scriptedRunner{t: t, steps: []commandStep{{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")}, {kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("fingerprint\n")}, {kind: "run", contains: []string{"pull", "runner"}}, {kind: "run", contains: []string{"up", "--force-recreate", "runner"}}, {kind: "output", contains: []string{"ps", "runner"}, output: []byte("new-container\n")}, {kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:new-local\n")}, {kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte(`["ghcr.io/forkbombeu/credimi-runner@sha256:new"]`)}}}
+		m := NewDockerManager(dir, "")
+		m.Runner = r
+		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
+		if err := m.UpgradeImage(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		r.done()
+		_, digest := readAppliedState(t, dir)
+		if digest != "sha256:new" {
+			t.Fatalf("digest=%s", digest)
+		}
+	})
+	t.Run("recreate success but recording fails", func(t *testing.T) {
+		dir := t.TempDir()
+		old := writeAppliedState(t, dir, dockerTestConfig().Android.RunnerImage, "sha256:old")
+		if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r := &scriptedRunner{t: t, steps: []commandStep{
+			{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+			{kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("fingerprint\n")},
+			{kind: "run", contains: []string{"pull", "runner"}},
+			{kind: "run", contains: []string{"up", "--force-recreate", "runner"}},
+			{kind: "output", contains: []string{"ps", "runner"}, output: []byte("new-container\n")},
+			{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:new-local\n")},
+			{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte("not-json")},
+		}}
+		m := NewDockerManager(dir, "")
+		m.Runner = r
+		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
+		if err := m.UpgradeImage(context.Background(), nil); err == nil {
+			t.Fatal("expected recording error")
+		}
+		r.done()
+		got, _ := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
+		if string(got) != string(old) {
+			t.Fatalf("state changed from %q to %q", old, got)
+		}
+	})
+}
+
+func TestDockerStopRetainsAppliedState(t *testing.T) {
+	dir := t.TempDir()
+	old := writeAppliedState(t, dir, dockerTestConfig().Android.RunnerImage, "sha256:old")
+	r := &scriptedRunner{t: t, steps: []commandStep{{kind: "run", contains: []string{"down", "--timeout", "30"}}}}
+	m := NewDockerManager(dir, "")
+	m.Runner = r
+	if err := m.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.done()
+	got, _ := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
+	if string(got) != string(old) {
+		t.Fatalf("state changed")
+	}
 }
 
 func TestWriteServiceComposeUsesComposePullPolicyNames(t *testing.T) {
