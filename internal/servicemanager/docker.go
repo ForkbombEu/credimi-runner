@@ -119,12 +119,14 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	}
 	status := Status{Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
 	if cfg, cfgErr := m.config(); cfgErr == nil {
-		status.DashboardURL = desiredDashboardURL(cfg)
 		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
+			status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
 			desired := desiredSpec.Fingerprint()
 			if running, runErr := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{ index .Config.Labels \"io.credimi.runner.service-fingerprint\" }}", strings.TrimSpace(string(out))}, os.Environ()); runErr == nil {
 				status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desired
 			}
+		} else {
+			status.DashboardURL = desiredDashboardURL(cfg)
 		}
 	}
 	if status.Running {

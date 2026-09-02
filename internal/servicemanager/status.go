@@ -33,6 +33,14 @@ func desiredDashboardURL(cfg runnerconfig.Config) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
+func dashboardURLForServiceNetwork(cfg runnerconfig.Config, networkMode string) string {
+	host, port := effectiveDashboardListen(cfg.Server.DashboardListen)
+	if networkMode != "host" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
 func effectiveDashboardListen(listen string) (string, string) {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(listen))
 	if err != nil || port == "" {
