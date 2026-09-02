@@ -8,7 +8,11 @@ import (
 var logsFollow bool
 var logsLines int
 var logsCmd = &cobra.Command{Use: "logs", Short: "Show service logs", RunE: func(cmd *cobra.Command, _ []string) error {
-	return servicemanager.ForCurrentPlatform(effectiveConfigDir()).Logs(cmd.Context(), servicemanager.LogOptions{Follow: logsFollow, Lines: logsLines})
+	err := currentServiceManager().Logs(cmd.Context(), servicemanager.LogOptions{Follow: logsFollow, Lines: logsLines})
+	if err == nil || cmd.Context().Err() != nil {
+		return nil
+	}
+	return err
 }}
 
 func init() {

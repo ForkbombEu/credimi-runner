@@ -11,18 +11,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
 
 const launchAgentLabel = "eu.forkbomb.credimi-runner"
 
-func launchAgentPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
-}
-
 type LaunchAgentManager struct {
 	ConfigDir  string
 	BinaryPath string
+	HomeDir    string
 	Run        func(context.Context, string, ...string) error
 }
 
@@ -37,10 +35,38 @@ func (m *LaunchAgentManager) plist() string {
 	return fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>internal-service</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string><key>EnvironmentVariables</key><dict><key>CREDIMI_RUNNER_CONFIG_DIR</key><string>%s</string></dict></dict></plist>\n", html.EscapeString(launchAgentLabel), html.EscapeString(m.BinaryPath), html.EscapeString(logPath), html.EscapeString(logPath), html.EscapeString(m.ConfigDir))
 }
 func (m *LaunchAgentManager) Start(ctx context.Context) error {
-	if err := os.MkdirAll(filepath.Dir(launchAgentPath()), 0700); err != nil {
+	home := m.HomeDir
+	if home == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("resolve user home directory: %w", err)
+		}
+	}
+	path := filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
+	if m.BinaryPath == "" {
+		binary, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("resolve executable: %w", err)
+		}
+		m.BinaryPath = binary
+	}
+	var err error
+	m.BinaryPath, err = filepath.Abs(m.BinaryPath)
+	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(launchAgentPath()), ".credimi-runner-*.plist")
+	m.ConfigDir, err = filepath.Abs(m.ConfigDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(m.ConfigDir, 0700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".credimi-runner-*.plist")
 	if err != nil {
 		return err
 	}
@@ -61,13 +87,13 @@ func (m *LaunchAgentManager) Start(ctx context.Context) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, launchAgentPath()); err != nil {
+	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
 	if err := m.command(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)); err == nil {
 		return nil
 	}
-	if err := m.command(ctx, "launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), launchAgentPath()); err != nil {
+	if err := m.command(ctx, "launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), path); err != nil {
 		return err
 	}
 	return m.command(ctx, "launchctl", "kickstart", fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel))
@@ -88,7 +114,15 @@ func (m *LaunchAgentManager) Restart(ctx context.Context) error {
 func (m *LaunchAgentManager) Status(ctx context.Context) (Status, error) {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)
 	err := m.command(ctx, "launchctl", "print", target)
-	return Status{Running: err == nil, DashboardURL: "http://127.0.0.1:8051"}, nil
+	status := Status{Running: err == nil}
+	if cfg, cfgErr := runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml")); cfgErr == nil {
+		status.DashboardURL = desiredDashboardURL(cfg)
+	}
+	if live := liveDashboardURL(ctx, m.ConfigDir); live != "" {
+		status.DashboardURL = live
+	}
+	populateRuntimeState(m.ConfigDir, &status)
+	return status, nil
 }
 func (m *LaunchAgentManager) Logs(ctx context.Context, o LogOptions) error {
 	lines := o.Lines

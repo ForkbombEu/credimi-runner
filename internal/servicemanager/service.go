@@ -40,6 +40,12 @@ type Manager interface {
 	Logs(context.Context, LogOptions) error
 }
 
+// ImageUpgrader is intentionally optional: only the Docker-backed service
+// owns a runner image.
+type ImageUpgrader interface {
+	UpgradeImage(context.Context, func(string)) error
+}
+
 var ErrUnsupported = errors.New("service manager is unsupported on this platform")
 
 // ProjectName is the canonical Compose project identity shared by service

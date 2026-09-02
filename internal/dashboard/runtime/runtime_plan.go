@@ -113,7 +113,7 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 		Backend:           backend,
 		ServiceMode:       serviceMode,
 		PublicMode:        serviceMode,
-		RequiresDocker:    backend == DefaultContainerBackend || serviceMode != "manual",
+		RequiresDocker:    backend == DefaultContainerBackend,
 	}
 	if backend == DefaultContainerBackend && strings.EqualFold(values[BootstrapPhaseEnv], "true") {
 		// Before config.toml exists the runner container only hosts the setup

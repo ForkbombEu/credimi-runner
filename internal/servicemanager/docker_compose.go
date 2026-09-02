@@ -38,9 +38,12 @@ const (
 	ContainerGoldenEnv  = "CREDIMI_CONTAINER_GOLDEN_ROOT"
 	AndroidAVDHomeEnv   = "ANDROID_AVD_HOME"
 	ADBServerSocketEnv  = "ADB_SERVER_SOCKET"
-	serviceFingerprint  = "io.credimi.runner.service-fingerprint"
-	serviceManagedLabel = "io.credimi.runner.managed"
-	serviceProjectLabel = "io.credimi.runner.project"
+	// ServiceNetworkModeEnv describes the actual Docker topology to the
+	// internal service; it is not user configuration.
+	ServiceNetworkModeEnv = "CREDIMI_SERVICE_NETWORK_MODE"
+	serviceFingerprint    = "io.credimi.runner.service-fingerprint"
+	serviceManagedLabel   = "io.credimi.runner.managed"
+	serviceProjectLabel   = "io.credimi.runner.project"
 )
 
 type HostContext struct {
@@ -245,6 +248,8 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 		spec.NetworkMode = "host"
 		spec.Devices = appendDevice(spec.Devices, DeviceMapping{Source: "/dev/bus/usb", Target: "/dev/bus/usb"})
 	}
+	// Set this only after every input that can select host networking.
+	setEnv(ServiceNetworkModeEnv, spec.NetworkMode)
 	if usesHostADB {
 		adbSocket := strings.TrimSpace(host.ADBServerSocket)
 		if adbSocket == "" {

@@ -6,7 +6,6 @@ import (
 	stdlog "log"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
@@ -25,27 +24,20 @@ var serviceManagerFactory = func(configDir string, bootstrap servicemanager.Boot
 	return servicemanager.ForCurrentPlatformWithBootstrap(configDir, bootstrap)
 }
 
-var waitForDashboardFunc = func(ctx context.Context, manager servicemanager.Manager) (string, error) {
-	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	for {
-		status, err := manager.Status(deadline)
-		if err == nil && strings.TrimSpace(status.DashboardURL) != "" {
-			return status.DashboardURL, nil
-		}
-		select {
-		case <-deadline.Done():
-			if err != nil {
-				return "", err
-			}
-			return "", deadline.Err()
-		case <-time.After(250 * time.Millisecond):
-		}
+func currentServiceManager() servicemanager.Manager {
+	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy})
+}
+
+var waitForDashboardFunc = func(ctx context.Context, _ servicemanager.Manager) (string, error) {
+	metadata, err := waitForRunningController(ctx, effectiveConfigDir(), "")
+	if err != nil {
+		return "", err
 	}
+	return metadata.PublicURL, nil
 }
 
 func runRoot(cmd *cobra.Command, _ []string) error {
-	manager := serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy})
+	manager := currentServiceManager()
 	status, err := manager.Status(cmd.Context())
 	if err != nil || !status.Running {
 		if err := manager.Start(cmd.Context()); err != nil {

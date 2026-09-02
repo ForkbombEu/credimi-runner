@@ -30,14 +30,15 @@ func TestRuntimeCommandUsesControllerOperationAPI(t *testing.T) {
 	}))
 	defer server.Close()
 
-	snapshot, err := waitForLifecycleOperation(context.Background(), server.URL, "op-1")
+	client := &controllerClient{baseURL: server.URL, client: http.DefaultClient}
+	snapshot, err := waitForLifecycleOperation(context.Background(), client, "op-1")
 	if err != nil || snapshot.Phase != controller.PhaseSucceeded || calls != 2 {
 		t.Fatalf("wait result = %#v, calls=%d, err=%v", snapshot, calls, err)
 	}
 	if got := controllerBaseURL(controller.Metadata{ProbeURL: server.URL + "/internal/controller/identity"}); got != server.URL {
 		t.Fatalf("controller base URL = %q", got)
 	}
-	if _, err := waitForLifecycleOperation(context.Background(), server.URL, ""); err == nil {
+	if _, err := waitForLifecycleOperation(context.Background(), client, ""); err == nil {
 		t.Fatal("empty operation ID was accepted")
 	}
 }
@@ -52,10 +53,11 @@ func TestRuntimeCommandHTTPHelpers(t *testing.T) {
 	}))
 	defer server.Close()
 	var payload map[string]bool
-	if err := getLifecycleJSON(context.Background(), server.URL+"/ok", &payload); err != nil || !payload["ok"] {
+	client := &controllerClient{baseURL: server.URL, client: http.DefaultClient}
+	if err := client.getJSON(context.Background(), "/ok", &payload); err != nil || !payload["ok"] {
 		t.Fatalf("JSON helper = %#v, %v", payload, err)
 	}
-	if err := getLifecycleJSON(context.Background(), server.URL+"/error", &payload); err == nil || !strings.Contains(err.Error(), "502") {
+	if err := client.getJSON(context.Background(), "/error", &payload); err == nil || !strings.Contains(err.Error(), "502") {
 		t.Fatalf("error helper = %v", err)
 	}
 	if err := openDashboardBrowser(""); err == nil {
@@ -83,7 +85,7 @@ func TestRuntimeCommandCallsRunningDashboard(t *testing.T) {
 	}))
 	defer server.Close()
 	dir := t.TempDir()
-	metadata := controller.Metadata{Schema: 1, ControllerID: "controller", PID: os.Getpid(), StartedAt: time.Now(), ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, ProbeURL: server.URL + "/internal/controller/identity", ConfigFingerprint: "fingerprint", IdentityToken: "token"}
+	metadata := controller.Metadata{Schema: 1, ControllerID: "controller", PID: os.Getpid(), StartedAt: time.Now(), ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, ProbeURL: server.URL + "/internal/controller/identity", PublicURL: server.URL, ConfigFingerprint: "fingerprint", IdentityToken: "token"}
 	raw, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatal(err)

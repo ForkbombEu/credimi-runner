@@ -21,12 +21,12 @@ func init() {
 
 func serviceAction(name string, action func(context.Context, servicemanager.Manager) error) *cobra.Command {
 	return &cobra.Command{Use: name, RunE: func(cmd *cobra.Command, _ []string) error {
-		return action(cmd.Context(), servicemanager.ForCurrentPlatform(effectiveConfigDir()))
+		return action(cmd.Context(), currentServiceManager())
 	}}
 }
 
 func runServiceStatus(cmd *cobra.Command, _ []string) error {
-	status, err := servicemanager.ForCurrentPlatform(effectiveConfigDir()).Status(cmd.Context())
+	status, err := currentServiceManager().Status(cmd.Context())
 	if err != nil {
 		return err
 	}

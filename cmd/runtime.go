@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -23,42 +21,24 @@ func runtimeAction(action string) *cobra.Command {
 	return &cobra.Command{Use: action, RunE: func(cmd *cobra.Command, _ []string) error { return runRuntimeAPIAction(cmd, action) }}
 }
 func requireRunningController(ctx context.Context) (controller.Metadata, error) {
-	metadata, err := controller.ReadMetadata(effectiveConfigDir())
+	client, err := newControllerClient(ctx, effectiveConfigDir())
 	if err != nil {
-		return metadata, fmt.Errorf("Credimi Runner service is not running. Start it with: credimi-runner service start")
+		return controller.Metadata{}, err
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := controller.Probe(probeCtx, metadata); err != nil {
-		return metadata, fmt.Errorf("Credimi Runner service is not running. Start it with: credimi-runner service start")
-	}
-	return metadata, nil
+	return client.metadata, nil
 }
 func runRuntimeAPIAction(cmd *cobra.Command, action string) error {
-	metadata, err := requireRunningController(cmd.Context())
+	client, err := newControllerClient(cmd.Context(), effectiveConfigDir())
 	if err != nil {
 		return err
 	}
-	base := controllerBaseURL(metadata)
 	var snap controller.Snapshot
-	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodPost, base+"/api/controller/runtime/"+action, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("runtime %s: %s", action, resp.Status)
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+	if err := client.postJSON(cmd.Context(), "/api/controller/runtime/"+action, &snap); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 	defer cancel()
-	done, err := waitForLifecycleOperation(ctx, base, snap.ID)
+	done, err := waitForLifecycleOperation(ctx, client, snap.ID)
 	if err != nil {
 		return err
 	}
@@ -69,7 +49,7 @@ func runRuntimeAPIAction(cmd *cobra.Command, action string) error {
 	return nil
 }
 func runRuntimeStatus(cmd *cobra.Command, _ []string) error {
-	metadata, err := requireRunningController(cmd.Context())
+	client, err := newControllerClient(cmd.Context(), effectiveConfigDir())
 	if err != nil {
 		return err
 	}
@@ -78,7 +58,7 @@ func runRuntimeStatus(cmd *cobra.Command, _ []string) error {
 	}
 	ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
 	defer cancel()
-	if err := getLifecycleJSON(ctx, controllerBaseURL(metadata)+"/api/controller/status", &payload); err != nil {
+	if err := client.getJSON(ctx, "/api/controller/status", &payload); err != nil {
 		return err
 	}
 	cmd.Println(string(payload.Runtime))
@@ -89,29 +69,15 @@ func controllerBaseURL(metadata controller.Metadata) string {
 	return strings.TrimSuffix(metadata.ProbeURL, "/internal/controller/identity")
 }
 
-func getLifecycleJSON(ctx context.Context, endpoint string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("GET %s: %s", endpoint, resp.Status)
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func waitForLifecycleOperation(ctx context.Context, baseURL, operationID string) (controller.Snapshot, error) {
+func waitForLifecycleOperation(ctx context.Context, client *controllerClient, operationID string) (controller.Snapshot, error) {
 	if strings.TrimSpace(operationID) == "" {
 		return controller.Snapshot{}, errors.New("dashboard returned an operation without an ID")
 	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		var snapshot controller.Snapshot
-		if err := getLifecycleJSON(ctx, baseURL+"/api/controller/operations/"+operationID, &snapshot); err != nil {
+		if err := client.getJSON(ctx, "/api/controller/operations/"+operationID, &snapshot); err != nil {
 			return controller.Snapshot{}, err
 		}
 		switch snapshot.Phase {
@@ -121,7 +87,7 @@ func waitForLifecycleOperation(ctx context.Context, baseURL, operationID string)
 		select {
 		case <-ctx.Done():
 			return controller.Snapshot{}, ctx.Err()
-		case <-time.After(250 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
 }

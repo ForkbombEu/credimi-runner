@@ -4,7 +4,6 @@ package servicemanager
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -117,8 +116,9 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	status := Status{Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
+	status := Status{Running: strings.TrimSpace(string(out)) != ""}
 	if cfg, cfgErr := m.config(); cfgErr == nil {
+		status.DashboardURL = desiredDashboardURL(cfg)
 		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
 			desired := desiredSpec.Fingerprint()
 			if running, runErr := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{ index .Config.Labels \"io.credimi.runner.service-fingerprint\" }}", strings.TrimSpace(string(out))}, os.Environ()); runErr == nil {
@@ -126,17 +126,38 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 			}
 		}
 	}
-	if raw, readErr := os.ReadFile(filepath.Join(m.ConfigDir, "runtime-state.json")); readErr == nil {
-		var state struct {
-			Desired   string `json:"desired"`
-			Actual    string `json:"actual"`
-			LastError string `json:"last_error"`
-		}
-		if json.Unmarshal(raw, &state) == nil {
-			status.RuntimeDesired, status.RuntimeActual, status.RuntimeError = state.Desired, state.Actual, state.LastError
-		}
+	if live := liveDashboardURL(ctx, m.ConfigDir); live != "" {
+		status.DashboardURL = live
 	}
+	populateRuntimeState(m.ConfigDir, &status)
 	return status, nil
+}
+
+func (m *DockerManager) UpgradeImage(ctx context.Context, progress func(string)) error {
+	composePath := filepath.Join(m.ConfigDir, "service-compose.yaml")
+	if _, err := os.Stat(composePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("persistent service has not been created; run credimi-runner service start")
+		}
+		return err
+	}
+	status, err := m.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if progress != nil {
+		progress("Pulling runner image")
+	}
+	if err := m.compose(ctx, "pull", "runner"); err != nil {
+		return err
+	}
+	if !status.Running {
+		return nil
+	}
+	if progress != nil {
+		progress("Recreating runner service")
+	}
+	return m.compose(ctx, "up", "-d", "--force-recreate", "runner")
 }
 func (m *DockerManager) Logs(ctx context.Context, opts LogOptions) error {
 	lines := opts.Lines

@@ -20,6 +20,7 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/edge"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 )
@@ -151,7 +152,7 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 	host, port := dashboardHostPort(values)
 	bindHost := host
-	if runtime.GOOS != "darwin" && bindHost == "127.0.0.1" {
+	if os.Getenv(servicemanager.ServiceNetworkModeEnv) == "bridge" && bindHost == "127.0.0.1" {
 		bindHost = "0.0.0.0"
 	}
 	listen := a.listen
@@ -171,7 +172,12 @@ func (a *Application) Run(ctx context.Context) error {
 	a.lease = lease
 	defer func() { _ = lease.Close() }()
 	a.operations = controller.NewCoordinator(ctx)
-	identity, _ := controller.NewIdentityToken()
+	identity, err := controller.NewIdentityToken()
+	if err != nil {
+		_ = lease.Close()
+		_ = listener.Close()
+		return err
+	}
 	plan := dashboardruntime.BuildRuntimePlan(a.configDir, values)
 	handler, cancelHandler, err := dashboard.NewHandler(ctx, a.configDir, fmt.Sprintf("application-%d", os.Getpid()), identity, plan.ConfigFingerprint, a.supervisor, a.operations)
 	if err != nil {
@@ -192,10 +198,11 @@ func (a *Application) Run(ctx context.Context) error {
 	go func() { serveErr <- a.dashboardServer.Serve(listener) }()
 	serviceRestartRequired := dashboardruntime.ServiceRestartRequired(values, cfg.Exists())
 	if cfg.Exists() && a.supervisor.Status().Desired == runtimesupervisor.DesiredRunning && !serviceRestartRequired {
-		go func() {
-			if err := a.supervisor.Start(ctx); err != nil { /* dashboard remains available */
-			}
-		}()
+		if _, err := a.operations.Submit(controller.OperationRuntimeStart, func(opCtx context.Context, _ func(controller.Progress)) error {
+			return a.supervisor.Start(opCtx)
+		}); err != nil {
+			fmt.Printf("submit runtime auto-start: %v\n", err)
+		}
 	}
 	select {
 	case <-ctx.Done():
