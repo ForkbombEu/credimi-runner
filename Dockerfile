@@ -47,6 +47,8 @@ FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
 FROM ubuntu:24.04
 ARG TARGETARCH
 ARG CLOUDFLARED_VERSION=2026.8.2
+ARG CLOUDFLARED_SHA256_AMD64=fcfb02b575a52ca1af2e3267af4e1517bcdeb30ac48c834c69abaed3c0576ad2
+ARG CLOUDFLARED_SHA256_ARM64=7747d94570fb390cf47dcb4f9555c193c6355cda9793f0d878d9049e5d6a7790
 COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
 COPY --from=avdctl /usr/local/bin/avdctl /usr/local/bin/avdctl
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -68,8 +70,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sdkmanager --sdk_root="$ANDROID_SDK_BOOTSTRAP" "platform-tools" "build-tools;35.0.0" && \
     ln -s "$ANDROID_SDK_BOOTSTRAP/build-tools/35.0.0/aapt2" /usr/local/bin/aapt2 && \
     curl -fsSL https://get.maestro.mobile.dev | bash && \
+    case "$TARGETARCH" in \
+        amd64) cloudflared_sha256="$CLOUDFLARED_SHA256_AMD64" ;; \
+        arm64) cloudflared_sha256="$CLOUDFLARED_SHA256_ARM64" ;; \
+        *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
     cloudflared_asset="cloudflared-linux-${TARGETARCH}" && \
-    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${cloudflared_asset}" -o /usr/local/bin/cloudflared && \
-    chmod 0555 /usr/local/bin/credimi-runner /usr/local/bin/avdctl /usr/local/bin/cloudflared && \
-    rm -rf /var/lib/apt/lists/* /tmp/android-cmdline-tools.zip
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${cloudflared_asset}" -o /tmp/cloudflared && \
+    printf '%s  %s\n' "$cloudflared_sha256" /tmp/cloudflared | sha256sum -c - && \
+    install -m 0555 /tmp/cloudflared /usr/local/bin/cloudflared && \
+    chmod 0555 /usr/local/bin/credimi-runner /usr/local/bin/avdctl && \
+    rm -rf /var/lib/apt/lists/* /tmp/android-cmdline-tools.zip /tmp/cloudflared
 ENTRYPOINT ["/usr/local/bin/credimi-runner"]

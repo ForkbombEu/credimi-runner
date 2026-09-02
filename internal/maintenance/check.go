@@ -3,6 +3,7 @@ package maintenance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,17 @@ import (
 )
 
 const latestReleaseURL = "https://api.github.com/repos/ForkbombEu/credimi-runner/releases/latest"
+
+type githubRelease struct {
+	TagName     string               `json:"tag_name"`
+	PublishedAt time.Time            `json:"published_at"`
+	Assets      []githubReleaseAsset `json:"assets"`
+}
+
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
 
 type Component struct {
 	CurrentVersion  string
@@ -298,34 +310,38 @@ func bearerToken(ctx context.Context, client *http.Client, challenge string) (st
 }
 
 func (c Checker) checkRelease(ctx context.Context, component *Component) error {
-	client := c.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleaseURL, nil)
+	release, err := fetchLatestRelease(ctx, c.client())
 	if err != nil {
-		return err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitHub returned %s", resp.Status)
-	}
-	var release struct {
-		TagName     string    `json:"tag_name"`
-		PublishedAt time.Time `json:"published_at"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 		return err
 	}
 	component.LatestVersion = release.TagName
 	component.LatestBuiltAt = release.PublishedAt
 	component.UpdateAvailable = normalizeVersion(component.CurrentVersion) != normalizeVersion(release.TagName)
 	return nil
+}
+
+func fetchLatestRelease(ctx context.Context, client *http.Client) (githubRelease, error) {
+	var release githubRelease
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleaseURL, nil)
+	if err != nil {
+		return release, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return release, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return release, fmt.Errorf("GitHub returned %s", resp.Status)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return release, err
+	}
+	if strings.TrimSpace(release.TagName) == "" {
+		return release, errors.New("GitHub release metadata has an empty tag")
+	}
+	return release, nil
 }
 
 func normalizeVersion(value string) string { return strings.TrimPrefix(strings.TrimSpace(value), "v") }
