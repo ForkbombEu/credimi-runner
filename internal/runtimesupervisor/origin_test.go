@@ -61,3 +61,32 @@ func TestActivationPassesLocalOriginToEdge(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestActivationUsesAPILocalOriginInsteadOfDesiredListen(t *testing.T) {
+	e := &testEdge{}
+	s, err := New(t.TempDir(), func() (config.Config, error) {
+		cfg := validConfig()
+		cfg.Server.APIListen = "192.0.2.10:8050"
+		return cfg, nil
+	}, Dependencies{
+		NewEdge: func(config.Config) (edge.Edge, error) { return e, nil },
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) {
+			return &testAPI{origin: "http://127.0.0.1:8050"}, nil
+		},
+		NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return &testWorkers{} },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Stop(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.origins) != 1 || e.origins[0] != "http://127.0.0.1:8050" {
+		t.Fatalf("edge origins=%v", e.origins)
+	}
+}

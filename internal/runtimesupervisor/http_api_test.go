@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,12 @@ type httpAPITestAddr string
 
 func (a httpAPITestAddr) Network() string { return "tcp" }
 func (a httpAPITestAddr) String() string  { return string(a) }
+
+type staticListener struct{ address string }
+
+func (l staticListener) Accept() (net.Conn, error) { return nil, net.ErrClosed }
+func (l staticListener) Close() error              { return nil }
+func (l staticListener) Addr() net.Addr            { return httpAPITestAddr(l.address) }
 
 type blockingListener struct{ done chan struct{} }
 
@@ -82,6 +89,41 @@ func TestHTTPAPINormalRealTCP(t *testing.T) {
 	case failure := <-a.Failures():
 		t.Fatalf("normal shutdown reported failure: %v", failure)
 	default:
+	}
+}
+
+func TestHTTPAPILocalOriginUsesActualListenerAddress(t *testing.T) {
+	cfg := validConfig()
+	cfg.Server.APIListen = "127.0.0.1:0"
+	a, err := NewHTTPAPI(cfg, http.NewServeMux())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Listener.Close()
+	origin, err := a.LocalOrigin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin != "http://127.0.0.1:"+strings.TrimPrefix(a.Listener.Addr().String(), "127.0.0.1:") {
+		t.Fatalf("origin=%q listener=%q", origin, a.Listener.Addr())
+	}
+}
+
+func TestHTTPAPILocalOriginNormalizesWildcardAndIPv6Addresses(t *testing.T) {
+	for _, tc := range []struct {
+		name, address, want string
+	}{
+		{"ipv4 wildcard", "0.0.0.0:8050", "http://127.0.0.1:8050"},
+		{"ipv6 wildcard", "[::]:8050", "http://127.0.0.1:8050"},
+		{"ipv6 loopback", "[::1]:8050", "http://[::1]:8050"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newHTTPAPI(validConfig(), http.NewServeMux(), staticListener{address: tc.address})
+			got, err := a.LocalOrigin()
+			if err != nil || got != tc.want {
+				t.Fatalf("LocalOrigin()=%q, %v; want %q", got, err, tc.want)
+			}
+		})
 	}
 }
 

@@ -70,7 +70,7 @@ type Server struct {
 	controllerID            string
 	controllerIdentityToken string
 	controllerFingerprint   string
-	appliedDashboardListen  string
+	appliedServerSettings   appliedServerSettings
 	runtime                 RuntimeController
 	operations              *controller.Coordinator
 	lookupPath              func(string) (string, error)
@@ -82,6 +82,12 @@ type Server struct {
 	systemMonitor           *SystemMonitor
 	mutationMu              sync.Mutex
 	mu                      sync.RWMutex
+}
+
+type appliedServerSettings struct {
+	DashboardListen   string
+	ReadHeaderTimeout time.Duration
+	ShutdownTimeout   time.Duration
 }
 
 type StartupPhase string
@@ -136,6 +142,13 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 	cfg.mu.Lock()
 	cfg.values = map[string]string(normalized)
 	cfg.mu.Unlock()
+	typedCfg, err := dashboardruntime.TypedConfigFromValues(normalized)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse normalized config: %w", err)
+	}
+	if err := runnerconfig.ApplyDefaults(&typedCfg); err != nil {
+		return nil, nil, fmt.Errorf("apply config defaults: %w", err)
+	}
 	srv := &Server{
 		cfg:                     cfg,
 		hub:                     hub,
@@ -145,7 +158,7 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 		controllerID:            controllerID,
 		controllerIdentityToken: identityToken,
 		controllerFingerprint:   fingerprint,
-		appliedDashboardListen:  dashboardListen(dashboardruntime.Values(normalized)),
+		appliedServerSettings:   persistentServerSettings(typedCfg),
 		runtime:                 runtime,
 		operations:              operations,
 		lookupPath:              lookupPath,
@@ -1122,7 +1135,8 @@ func (s *Server) serviceRestartRequired() bool {
 
 func (s *Server) serviceRestartRequiredFor(pending dashboardruntime.ConfigDiff) bool {
 	if runtimeGOOS() == "darwin" {
-		return s.desiredDashboardListen() != s.appliedDashboardListen
+		desired, err := persistentServerSettingsFromValues(dashboardruntime.Values(s.cfg.Snapshot()))
+		return err != nil || desired != s.appliedServerSettings
 	}
 	return dashboardruntime.ServiceRestartRequired(dashboardruntime.Values(s.cfg.Snapshot()), s.cfg.Exists())
 }
@@ -1136,10 +1150,29 @@ func dashboardListen(values dashboardruntime.Values) string {
 	if err != nil {
 		return strings.TrimSpace(cfg.Server.DashboardListen)
 	}
-	if host == "" || host == "0.0.0.0" {
+	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
+}
+
+func persistentServerSettings(cfg runnerconfig.Config) appliedServerSettings {
+	return appliedServerSettings{
+		DashboardListen:   dashboardListen(dashboardruntime.ValuesFromTypedConfig(cfg)),
+		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration(),
+		ShutdownTimeout:   cfg.Server.ShutdownTimeout.Duration(),
+	}
+}
+
+func persistentServerSettingsFromValues(values dashboardruntime.Values) (appliedServerSettings, error) {
+	cfg, err := dashboardruntime.TypedConfigFromValues(values)
+	if err != nil {
+		return appliedServerSettings{}, err
+	}
+	if err := runnerconfig.ApplyDefaults(&cfg); err != nil {
+		return appliedServerSettings{}, err
+	}
+	return persistentServerSettings(cfg), nil
 }
 
 func (s *Server) desiredDashboardListen() string {

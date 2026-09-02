@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"testing"
+	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
@@ -273,6 +274,45 @@ func TestServiceRestartRequiredUsesAppliedFingerprint(t *testing.T) {
 	}
 	if !ServiceRestartRequired(values, false) {
 		t.Fatal("bootstrap/configured mismatch was not reported stale")
+	}
+}
+
+func TestHTTPTimeoutsArePersistentServiceSettings(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Server.ReadHeaderTimeout = runnerconfig.Duration(time.Minute)
+	cfg.Server.ShutdownTimeout = runnerconfig.Duration(30 * time.Second)
+	base := ValuesFromTypedConfig(cfg)
+	if got, changed := servicemanager.ServiceConfigFingerprint(cfg, true), servicemanager.ServiceConfigFingerprint(cfg, true); got != changed {
+		t.Fatal("identical service configs produced different fingerprints")
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(Values)
+	}{
+		{"read header", func(values Values) { values["SERVER_READ_HEADER_TIMEOUT"] = "2m0s" }},
+		{"shutdown", func(values Values) { values["SERVER_SHUTDOWN_TIMEOUT"] = "45s" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := cloneValues(base)
+			tc.edit(changed)
+			oldCfg, err := TypedConfigFromValues(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			newCfg, err := TypedConfigFromValues(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if servicemanager.ServiceConfigFingerprint(oldCfg, true) == servicemanager.ServiceConfigFingerprint(newCfg, true) {
+				t.Fatal("timeout change did not change service fingerprint")
+			}
+			for _, goos := range []string{"linux", "darwin"} {
+				diff := DiffValuesForOS(base, changed, goos)
+				if !hasClass(diff, ApplyServiceRestartRequired) {
+					t.Fatalf("%s diff = %+v", goos, diff)
+				}
+			}
+		})
 	}
 }
 

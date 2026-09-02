@@ -49,6 +49,13 @@ func newHTTPAPI(cfg config.Config, handler http.Handler, listener net.Listener) 
 	}
 }
 
+func (a *HTTPAPI) LocalOrigin() (string, error) {
+	if a == nil || a.Listener == nil {
+		return "", errors.New("execution API listener is nil")
+	}
+	return localOriginURL(a.Listener.Addr().String())
+}
+
 func channelClosed(ch <-chan struct{}) bool {
 	select {
 	case <-ch:

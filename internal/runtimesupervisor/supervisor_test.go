@@ -22,6 +22,7 @@ type testAPI struct {
 	startErr, closeErr error
 	startHook          func()
 	failures           chan error
+	origin             string
 }
 
 func (a *testAPI) Start() error {
@@ -43,7 +44,15 @@ func (a *testAPI) Shutdown(context.Context) error {
 	a.mu.Unlock()
 	return err
 }
-func (a *testAPI) Listening() bool        { a.mu.Lock(); defer a.mu.Unlock(); return a.started && !a.closed }
+func (a *testAPI) Listening() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.started && !a.closed }
+func (a *testAPI) LocalOrigin() (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.origin == "" {
+		return "http://127.0.0.1:8050", nil
+	}
+	return a.origin, nil
+}
 func (a *testAPI) Failures() <-chan error { return a.failures }
 
 type testEdge struct {

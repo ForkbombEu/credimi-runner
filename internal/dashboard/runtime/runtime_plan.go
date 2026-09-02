@@ -54,6 +54,8 @@ var FieldImpacts = map[string]FieldImpact{
 	"CREDIMI_SERVICE_MODE":        {Runtime: true, CredimiUpdate: true},
 	"CREDIMI_USER_API_KEY":        {Runtime: true, Secret: true},
 	"DASHBOARD_TOKEN":             {Secret: true},
+	"SERVER_READ_HEADER_TIMEOUT":  {},
+	"SERVER_SHUTDOWN_TIMEOUT":     {},
 	"ANDROID_RUNNER_IMAGE":        {},
 	"ANDROID_PULL_POLICY":         {},
 	"ANDROID_NETWORK":             {},
@@ -227,6 +229,8 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 			case "DASHBOARD_HOST", "DASHBOARD_PORT":
 				// The Dashboard listener belongs to the persistent native service
 				// process, not to a runtime generation.
+				classSet[ApplyServiceRestartRequired] = struct{}{}
+			case "SERVER_READ_HEADER_TIMEOUT", "SERVER_SHUTDOWN_TIMEOUT":
 				classSet[ApplyServiceRestartRequired] = struct{}{}
 			}
 		}

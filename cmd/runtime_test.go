@@ -114,6 +114,41 @@ func TestDashboardCommandUsesPublishedPublicURL(t *testing.T) {
 	}
 }
 
+func TestDashboardCommandIgnoresMalformedConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Credimi-Controller-Token") != "token" {
+			t.Fatalf("identity token missing")
+		}
+		_, _ = w.Write([]byte(`{"controller_id":"controller","config_fingerprint":"fingerprint"}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("this is not valid TOML = ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadata := controller.Metadata{Schema: 1, ControllerID: "controller", ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, ProbeURL: server.URL, PublicURL: "http://published.example:9051", ConfigFingerprint: "fingerprint", IdentityToken: "token"}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "controller.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, oldOpen := dashboardConfigDir, dashboardOpen
+	dashboardConfigDir, dashboardOpen = dir, false
+	t.Cleanup(func() { dashboardConfigDir, dashboardOpen = oldDir, oldOpen })
+	command := &cobra.Command{Use: "dashboard"}
+	command.SetContext(context.Background())
+	var output strings.Builder
+	command.SetOut(&output)
+	if err := runDashboardCommand(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "http://published.example:9051") {
+		t.Fatalf("output=%q", output.String())
+	}
+}
+
 func TestRuntimeCommandCallsRunningDashboard(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

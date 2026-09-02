@@ -145,13 +145,14 @@ func validateDevice(device DeviceConfig, label, goos string, serials map[string]
 			if device.AndroidPhysical.Serial != "" {
 				return fmt.Errorf("%s.android_physical.wifi must not configure serial", label)
 			}
-			if device.AndroidPhysical.WiFiPort == "" {
-				device.AndroidPhysical.WiFiPort = "5555"
+			port := strings.TrimSpace(device.AndroidPhysical.WiFiPort)
+			if port == "" {
+				port = DefaultWiFiPort
 			}
-			if !validPort(device.AndroidPhysical.WiFiPort) {
+			if !validPort(port) {
 				return fmt.Errorf("%s.android_physical.wifi_port must be between 1 and 65535", label)
 			}
-			return unique(serials, net.JoinHostPort(device.AndroidPhysical.WiFiIP, device.AndroidPhysical.WiFiPort), label+".android_physical.wifi")
+			return unique(serials, net.JoinHostPort(device.AndroidPhysical.WiFiIP, port), label+".android_physical.wifi")
 		case "no_device":
 			if device.AndroidPhysical.Serial != "" || device.AndroidPhysical.WiFiIP != "" || device.AndroidPhysical.WiFiPort != "" {
 				return fmt.Errorf("%s.android_physical.no_device must not configure an address", label)

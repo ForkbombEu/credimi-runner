@@ -96,6 +96,12 @@ func (m *DockerManager) Start(ctx context.Context) error {
 	return m.recordAppliedImage(ctx, cfg.Android.RunnerImage)
 }
 func (m *DockerManager) Stop(ctx context.Context) error {
+	if _, err := os.Stat(filepath.Join(m.ConfigDir, "service-compose.yaml")); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
 	return m.compose(ctx, "down", "--timeout", "30")
 }
 func (m *DockerManager) Restart(ctx context.Context) error {
@@ -116,6 +122,24 @@ func (m *DockerManager) compose(ctx context.Context, args ...string) error {
 	return nil
 }
 func (m *DockerManager) Status(ctx context.Context) (Status, error) {
+	composePath := filepath.Join(m.ConfigDir, "service-compose.yaml")
+	if _, err := os.Stat(composePath); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return Status{}, err
+		}
+		status := Status{DashboardURL: "http://127.0.0.1:8051"}
+		if cfg, cfgErr := m.config(); cfgErr == nil {
+			if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
+				status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
+			} else {
+				status.DashboardURL = desiredDashboardURL(cfg)
+			}
+		} else if !errors.Is(cfgErr, os.ErrNotExist) {
+			return Status{}, cfgErr
+		}
+		populateRuntimeState(m.ConfigDir, &status)
+		return status, nil
+	}
 	if m.Runner == nil {
 		m.Runner = execRunner{}
 	}

@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
+	cluelog "goa.design/clue/log"
 )
 
 func TestDashboardHostPortDefaults(t *testing.T) {
@@ -25,6 +27,133 @@ func TestDashboardHostPortDefaults(t *testing.T) {
 	host, port = dashboardHostPort(map[string]string{"DASHBOARD_HOST": "127.0.0.2", "DASHBOARD_PORT": "9000"})
 	if host != "127.0.0.2" || port != "9000" {
 		t.Fatalf("got %s:%s", host, port)
+	}
+}
+
+func TestExecutionAPIBindAddressFollowsServiceNetwork(t *testing.T) {
+	for _, tc := range []struct {
+		name, desired, mode, want string
+	}{
+		{"bridge loopback", "127.0.0.1:8050", "bridge", "0.0.0.0:8050"},
+		{"bridge alternate loopback", "127.0.0.2:8050", "bridge", "0.0.0.0:8050"},
+		{"bridge non-loopback", "192.0.2.10:8050", "bridge", "0.0.0.0:8050"},
+		{"bridge ipv6 loopback", "[::1]:8050", "bridge", "0.0.0.0:8050"},
+		{"bridge ipv6 wildcard", "[::]:8050", "bridge", "0.0.0.0:8050"},
+		{"host alternate loopback", "127.0.0.2:8050", "host", "127.0.0.2:8050"},
+		{"host ipv6 loopback", "[::1]:8050", "host", "[::1]:8050"},
+		{"native", "[::1]:8050", "", "[::1]:8050"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := executionAPIBindAddress(tc.desired, tc.mode)
+			if err != nil || got != tc.want {
+				t.Fatalf("executionAPIBindAddress(%q, %q)=%q, %v; want %q", tc.desired, tc.mode, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestExecutionAPIBindAddressDoesNotMutateDesiredConfig(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Server.APIListen = "192.0.2.10:8050"
+	want := cfg.Server.APIListen
+	got, err := executionAPIBindAddress(cfg.Server.APIListen, "bridge")
+	if err != nil || got != "0.0.0.0:8050" || cfg.Server.APIListen != want {
+		t.Fatalf("effective=%q err=%v desired=%q want %q", got, err, cfg.Server.APIListen, want)
+	}
+}
+
+func TestProductionExecutionAPIUsesEffectiveBridgeBind(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Server.APIListen = "192.0.2.10:0"
+	cfg.Server.ReadHeaderTimeout = runnerconfig.Duration(time.Second)
+	cfg.Server.ShutdownTimeout = runnerconfig.Duration(time.Second)
+	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
+	api, err := runtimeDependencies(t.TempDir()).NewAPI(cfg, cluelog.Context(context.Background()), server.NewProcessStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer api.Shutdown(context.Background())
+	origin, err := api.LocalOrigin()
+	if err != nil {
+		t.Fatalf("effective API origin=%q listener=%q err=%v", origin, api.(*runtimesupervisor.HTTPAPI).Listener.Addr(), err)
+	}
+	if !strings.HasPrefix(origin, "http://127.0.0.1:") {
+		t.Fatalf("effective API origin=%q listener=%q", origin, api.(*runtimesupervisor.HTTPAPI).Listener.Addr())
+	}
+	if cfg.Server.APIListen != "192.0.2.10:0" {
+		t.Fatalf("desired config mutated to %q", cfg.Server.APIListen)
+	}
+}
+
+type observingListener struct {
+	acceptStarted chan struct{}
+	done          chan struct{}
+	once          sync.Once
+}
+
+func (l *observingListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { close(l.acceptStarted) })
+	<-l.done
+	return nil, net.ErrClosed
+}
+func (l *observingListener) Close() error {
+	select {
+	case <-l.done:
+	default:
+		close(l.done)
+	}
+	return nil
+}
+func (*observingListener) Addr() net.Addr { return testAddr("127.0.0.1:8051") }
+
+func TestApplicationAppliesConfiguredDashboardTimeouts(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal:7233"
+	cfg.Server.DashboardListen = "127.0.0.1:8051"
+	cfg.Server.ReadHeaderTimeout = runnerconfig.Duration(17 * time.Second)
+	cfg.Server.ShutdownTimeout = runnerconfig.Duration(23 * time.Second)
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "org/runner/device", Name: "Device", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"},
+	}}
+	cfg.Storage.StateDir = filepath.Join(dir, "state")
+	cfg.Storage.ArtifactRetention = runnerconfig.Duration(time.Hour)
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	s, err := runtimesupervisor.New(dir, nil, runtimesupervisor.Dependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := &observingListener{acceptStarted: make(chan struct{}), done: make(chan struct{})}
+	a := &Application{configDir: dir, supervisor: s, listen: func(string, string) (net.Listener, error) { return listener, nil }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	select {
+	case <-listener.acceptStarted:
+	case err := <-done:
+		t.Fatalf("application exited before Dashboard serving: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("Dashboard server did not start serving")
+	}
+	if a.dashboardServer.ReadHeaderTimeout != 17*time.Second {
+		t.Fatalf("Dashboard ReadHeaderTimeout=%s", a.dashboardServer.ReadHeaderTimeout)
+	}
+	if a.dashboardShutdownTimeout != 23*time.Second {
+		t.Fatalf("Dashboard shutdown timeout=%s", a.dashboardShutdownTimeout)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("application did not shut down")
 	}
 }
 
@@ -343,6 +472,7 @@ func (a *countingApplicationAPI) Start() error {
 }
 func (*countingApplicationAPI) Shutdown(context.Context) error { return nil }
 func (*countingApplicationAPI) Listening() bool                { return false }
+func (*countingApplicationAPI) LocalOrigin() (string, error)   { return "http://127.0.0.1:8050", nil }
 
 func TestApplicationDoesNotAutoStartStaleServiceConfiguration(t *testing.T) {
 	dir := t.TempDir()

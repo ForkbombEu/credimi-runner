@@ -42,6 +42,7 @@ type API interface {
 	Start() error
 	Shutdown(context.Context) error
 	Listening() bool
+	LocalOrigin() (string, error)
 }
 
 type failureSource interface {
@@ -268,9 +269,9 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		return err
 	}
 	if g.edge != nil {
-		origin, err := localOriginURL(cfg.Server.APIListen)
+		origin, err := g.api.LocalOrigin()
 		if err != nil {
-			return fmt.Errorf("build edge origin: %w", err)
+			return fmt.Errorf("build execution API local origin: %w", err)
 		}
 		if err := func() error {
 			edgeCtx, cancel := boundedContext(ctx, edgeStartTimeout)

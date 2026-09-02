@@ -20,13 +20,6 @@ func init() {
 func runtimeAction(action string) *cobra.Command {
 	return &cobra.Command{Use: action, RunE: func(cmd *cobra.Command, _ []string) error { return runRuntimeAPIAction(cmd, action) }}
 }
-func requireRunningController(ctx context.Context) (controller.Metadata, error) {
-	client, err := newControllerClient(ctx, effectiveConfigDir())
-	if err != nil {
-		return controller.Metadata{}, err
-	}
-	return client.metadata, nil
-}
 func runRuntimeAPIAction(cmd *cobra.Command, action string) error {
 	client, err := newControllerClient(cmd.Context(), effectiveConfigDir())
 	if err != nil {

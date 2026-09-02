@@ -26,15 +26,16 @@ import (
 )
 
 type Application struct {
-	configDir         string
-	supervisor        *runtimesupervisor.Supervisor
-	dashboardListener net.Listener
-	dashboardServer   *http.Server
-	operations        *controller.Coordinator
-	lease             *controller.Lease
-	metadata          controller.Metadata
-	closeOnce         sync.Once
-	listen            func(string, string) (net.Listener, error)
+	configDir                string
+	supervisor               *runtimesupervisor.Supervisor
+	dashboardListener        net.Listener
+	dashboardServer          *http.Server
+	dashboardShutdownTimeout time.Duration
+	operations               *controller.Coordinator
+	lease                    *controller.Lease
+	metadata                 controller.Metadata
+	closeOnce                sync.Once
+	listen                   func(string, string) (net.Listener, error)
 }
 
 func (a *Application) Supervisor() *runtimesupervisor.Supervisor { return a.supervisor }
@@ -77,11 +78,17 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 		},
 		NewAPI: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (runtimesupervisor.API, error) {
 			applyEnvironment(cfg)
+			apiCfg := cfg
+			listen, err := executionAPIBindAddress(cfg.Server.APIListen, os.Getenv(servicemanager.ServiceNetworkModeEnv))
+			if err != nil {
+				return nil, err
+			}
+			apiCfg.Server.APIListen = listen
 			loader := runtimeConfigLoader(cfg)
 			svc := server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: loader})
 			readiness := server.NewReadinessService()
 			readiness.RuntimeConfig = loader
-			return runtimesupervisor.NewHTTPAPI(cfg, server.NewHTTPHandlerWithReadiness(ctx, svc, false, readiness))
+			return runtimesupervisor.NewHTTPAPI(apiCfg, server.NewHTTPHandlerWithReadiness(ctx, svc, false, readiness))
 		},
 		NewWorkers: func(cfg runnerconfig.Config, store *server.ProcessStore) runtimesupervisor.WorkerSet {
 			applyEnvironment(cfg)
@@ -150,6 +157,14 @@ func (a *Application) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	typedCfg, err := dashboardruntime.TypedConfigFromValues(values)
+	if err != nil {
+		return err
+	}
+	if err := runnerconfig.ApplyDefaults(&typedCfg); err != nil {
+		return err
+	}
+	a.dashboardShutdownTimeout = typedCfg.Server.ShutdownTimeout.Duration()
 	host, port := dashboardHostPort(values)
 	serviceNetworkMode := os.Getenv(servicemanager.ServiceNetworkModeEnv)
 	bindHost := host
@@ -196,7 +211,7 @@ func (a *Application) Run(ctx context.Context) error {
 		_ = listener.Close()
 		return err
 	}
-	a.dashboardServer = &http.Server{Handler: handler, ReadHeaderTimeout: 60 * time.Second}
+	a.dashboardServer = &http.Server{Handler: handler, ReadHeaderTimeout: typedCfg.Server.ReadHeaderTimeout.Duration()}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- a.dashboardServer.Serve(listener) }()
 	serviceRestartRequired := dashboardruntime.ServiceRestartRequired(values, cfg.Exists())
@@ -240,6 +255,17 @@ func localHTTPURL(host, port string) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
+func executionAPIBindAddress(desiredListen, serviceNetworkMode string) (string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(desiredListen))
+	if err != nil {
+		return "", fmt.Errorf("parse execution API listen address %q: %w", desiredListen, err)
+	}
+	if serviceNetworkMode == "bridge" {
+		host = "0.0.0.0"
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
 func atoiPort(port string) int {
 	var n int
 	_, _ = fmt.Sscanf(port, "%d", &n)
@@ -249,7 +275,7 @@ func atoiPort(port string) int {
 func (a *Application) shutdown() error {
 	var result error
 	a.closeOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), a.dashboardShutdownTimeout)
 		defer cancel()
 		if a.supervisor != nil {
 			result = errors.Join(result, a.supervisor.Close(ctx))

@@ -42,6 +42,14 @@ type fakeRuntimeController struct {
 	reconcileErr error
 }
 
+func persistentServerSettingsFromTestValues(values map[string]string) appliedServerSettings {
+	settings, err := persistentServerSettingsFromValues(dashboardruntime.Values(values))
+	if err != nil {
+		panic(err)
+	}
+	return settings
+}
+
 func (f *fakeRuntimeController) Start(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -113,8 +121,37 @@ func newTestServer(t *testing.T) *Server {
 	return &Server{
 		cfg: cfg, hub: hub, render: render, composeDir: t.TempDir(), ctx: context.Background(),
 		runtime: fake, operations: controller.NewCoordinator(context.Background()),
-		appliedDashboardListen: dashboardListen(dashboardruntime.Values(cfg.Snapshot())),
-		lookupPath:             func(string) (string, error) { return "/tmp/fake-bin", nil },
+		appliedServerSettings: persistentServerSettingsFromTestValues(cfg.Snapshot()),
+		lookupPath:            func(string) (string, error) { return "/tmp/fake-bin", nil },
+	}
+}
+
+func TestDarwinAppliedServerTimeoutReversionClearsRestart(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	s := newTestServer(t)
+	base := s.cfg.Snapshot()
+	for _, tc := range []struct {
+		name, key, changed string
+	}{
+		{"read header", "SERVER_READ_HEADER_TIMEOUT", "2m0s"},
+		{"shutdown", "SERVER_SHUTDOWN_TIMEOUT", "45s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := cloneStringMap(base)
+			candidate[tc.key] = tc.changed
+			s.cfg.mu.Lock()
+			s.cfg.values = candidate
+			s.cfg.mu.Unlock()
+			if !s.serviceRestartRequired() {
+				t.Fatalf("changed %s did not require restart", tc.key)
+			}
+			s.cfg.mu.Lock()
+			s.cfg.values = cloneStringMap(base)
+			s.cfg.mu.Unlock()
+			if s.serviceRestartRequired() {
+				t.Fatalf("reverted %s still requires restart", tc.key)
+			}
+		})
 	}
 }
 
@@ -559,7 +596,7 @@ func TestDarwinDashboardListenerSaveStaysPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.serviceRestartRequired() || hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
-		t.Fatalf("reverted listener remained pending: service=%t pending=%+v applied=%q desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedDashboardListen, s.desiredDashboardListen())
+		t.Fatalf("reverted listener remained pending: service=%t pending=%+v applied=%+v desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedServerSettings, s.desiredDashboardListen())
 	}
 	for _, action := range []string{"start", "restart"} {
 		snapshot, err := s.submitRuntimeAction(action)
@@ -612,7 +649,7 @@ func TestDarwinMixedDashboardAndRuntimeSaveWaitsForServiceRestart(t *testing.T) 
 		t.Fatal(err)
 	}
 	if s.serviceRestartRequired() || hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
-		t.Fatalf("reverted mixed listener remained pending: service=%t pending=%+v applied=%q desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedDashboardListen, s.desiredDashboardListen())
+		t.Fatalf("reverted mixed listener remained pending: service=%t pending=%+v applied=%+v desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedServerSettings, s.desiredDashboardListen())
 	}
 	if _, _, _, reconciles := fake.counts(); reconciles != 1 {
 		t.Fatalf("runtime reconcile calls after revert = %d", reconciles)

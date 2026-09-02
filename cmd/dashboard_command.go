@@ -2,8 +2,9 @@ package cmd
 
 import (
 	"errors"
-	"github.com/spf13/cobra"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 var dashboardCommand = &cobra.Command{
@@ -17,9 +18,9 @@ func init() {
 }
 
 func runDashboardCommand(cmd *cobra.Command, _ []string) error {
-	metadata, err := requireRunningController(cmd.Context())
+	metadata, err := verifiedController(cmd.Context(), effectiveConfigDir())
 	if err != nil {
-		return err
+		return serviceNotRunningError()
 	}
 	url := strings.TrimRight(metadata.PublicURL, "/")
 	if url == "" {

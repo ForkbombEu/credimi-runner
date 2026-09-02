@@ -165,7 +165,7 @@ func (d PageData) RunnerAPIURL() string {
 	if port == "" {
 		port = dashboardruntime.DefaultRunnerPort
 	}
-	return "http://" + host + ":" + port
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func (d PageData) ServicesAllUp() bool {

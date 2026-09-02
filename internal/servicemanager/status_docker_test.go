@@ -4,6 +4,7 @@ package servicemanager
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,17 @@ import (
 type upgradeRunner struct {
 	calls  [][]string
 	output string
+}
+
+type noDockerCallsRunner struct{ calls int }
+
+func (r *noDockerCallsRunner) Run(context.Context, string, []string, []string) error {
+	r.calls++
+	return errors.New("unexpected Docker call")
+}
+func (r *noDockerCallsRunner) Output(context.Context, string, []string, []string) ([]byte, error) {
+	r.calls++
+	return nil, errors.New("unexpected Docker call")
 }
 
 func (r *upgradeRunner) Run(_ context.Context, _ string, args []string, _ []string) error {
@@ -73,6 +85,63 @@ func TestDockerStatusHasDefaultDashboardURLWithoutConfig(t *testing.T) {
 	}
 	if status.DashboardURL != "http://127.0.0.1:8051" {
 		t.Fatalf("dashboard URL=%q", status.DashboardURL)
+	}
+}
+
+func TestDockerPreCreationStatusAndStopMakeNoDockerCalls(t *testing.T) {
+	tests := []struct {
+		name, network, dashboard, wantURL string
+		writeConfig                       bool
+		malformed                         bool
+	}{
+		{"no config", "", "", "http://127.0.0.1:8051", false, false},
+		{"bridge config", "bridge", "192.0.2.10:9051", "http://127.0.0.1:9051", true, false},
+		{"host config", "host", "127.0.0.2:9051", "http://127.0.0.2:9051", true, false},
+		{"malformed config", "", "", "", true, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.writeConfig {
+				if tc.malformed {
+					if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("not valid = ["), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					cfg := runnerconfig.Bootstrap()
+					cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+					cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+					cfg.Temporal.Address = "temporal:7233"
+					cfg.Server.DashboardListen = tc.dashboard
+					cfg.Android.Network = tc.network
+					cfg.Storage.StateDir = filepath.Join(dir, "state")
+					cfg.Storage.ArtifactRetention = runnerconfig.Duration(time.Hour)
+					if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			runner := &noDockerCallsRunner{}
+			m := NewDockerManager(dir, "")
+			m.Runner = runner
+			status, err := m.Status(context.Background())
+			if tc.malformed {
+				if err == nil {
+					t.Fatal("malformed config unexpectedly succeeded")
+				}
+			} else if err != nil || status.Running || status.DashboardURL != tc.wantURL {
+				t.Fatalf("status=%+v err=%v want URL %q", status, err, tc.wantURL)
+			}
+			if runner.calls != 0 {
+				t.Fatalf("Docker calls=%d", runner.calls)
+			}
+			if err := m.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if runner.calls != 0 {
+				t.Fatalf("Docker calls after Stop=%d", runner.calls)
+			}
+		})
 	}
 }
 

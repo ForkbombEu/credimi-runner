@@ -47,6 +47,46 @@ func TestValidateForPlatformAcceptsSupportedInventory(t *testing.T) {
 	}
 }
 
+func TestValidateForPlatformDoesNotMutateWiFiPort(t *testing.T) {
+	cfg := validConfig()
+	cfg.Devices = []DeviceConfig{{
+		ID: "acme/runner/wifi", Name: "Wi-Fi", Type: DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10"},
+	}}
+	if err := ValidateForPlatform(cfg, "linux"); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Devices[0].AndroidPhysical.WiFiPort; got != "" {
+		t.Fatalf("validation mutated blank Wi-Fi port to %q", got)
+	}
+}
+
+func TestValidateForPlatformTreatsBlankWiFiPortAsDefaultForDuplicates(t *testing.T) {
+	cfg := validConfig()
+	cfg.Devices = []DeviceConfig{
+		{ID: "acme/runner/wifi-a", Name: "A", Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10"}},
+		{ID: "acme/runner/wifi-b", Name: "B", Type: DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10", WiFiPort: DefaultWiFiPort}},
+	}
+	if err := ValidateForPlatform(cfg, "linux"); err == nil || !strings.Contains(err.Error(), "duplicate devices[1].android_physical.wifi") {
+		t.Fatalf("duplicate default Wi-Fi endpoint error = %v", err)
+	}
+}
+
+func TestValidateForPlatformRejectsInvalidWiFiPorts(t *testing.T) {
+	for _, port := range []string{"0", "65536", "abc"} {
+		t.Run(port, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Devices = []DeviceConfig{{
+				ID: "acme/runner/wifi", Name: "Wi-Fi", Type: DeviceAndroidPhysical, Enabled: true,
+				AndroidPhysical: &AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10", WiFiPort: port},
+			}}
+			if err := ValidateForPlatform(cfg, "linux"); err == nil {
+				t.Fatal("invalid Wi-Fi port accepted")
+			}
+		})
+	}
+}
+
 func TestValidatePhysicalAddressModes(t *testing.T) {
 	cases := []struct {
 		name  string

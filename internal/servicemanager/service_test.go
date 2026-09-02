@@ -377,6 +377,9 @@ func TestDockerUpgradeImagePreservesAndUpdatesAppliedState(t *testing.T) {
 func TestDockerStopRetainsAppliedState(t *testing.T) {
 	dir := t.TempDir()
 	old := writeAppliedState(t, dir, dockerTestConfig().Android.RunnerImage, "sha256:old")
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	r := &scriptedRunner{t: t, steps: []commandStep{{kind: "run", contains: []string{"down", "--timeout", "30"}}}}
 	m := NewDockerManager(dir, "")
 	m.Runner = r
@@ -1010,7 +1013,11 @@ func TestDockerStatusReadsRuntimeAndFingerprint(t *testing.T) {
 
 func TestDockerStatusReportsComposeError(t *testing.T) {
 	want := errors.New("compose ps failed")
-	m := NewDockerManager(t.TempDir(), "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewDockerManager(dir, "")
 	m.Runner = failingCommandRunner{err: want}
 	if _, err := m.Status(context.Background()); !errors.Is(err, want) {
 		t.Fatalf("status error=%v", err)

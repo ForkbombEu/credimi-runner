@@ -16,6 +16,8 @@ type serviceConfigProjection struct {
 	Configured        bool                     `json:"configured"`
 	APIListen         string                   `json:"api_listen"`
 	DashboardListen   string                   `json:"dashboard_listen"`
+	ReadHeaderTimeout string                   `json:"read_header_timeout"`
+	ShutdownTimeout   string                   `json:"shutdown_timeout"`
 	ExposureClass     string                   `json:"exposure_class"`
 	Android           serviceAndroidProjection `json:"android"`
 	NeedsHostADB      bool                     `json:"needs_host_adb"`
@@ -45,11 +47,13 @@ func ServiceConfigFingerprint(cfg config.Config, configured bool) string {
 	// same canonical projection.
 	_ = config.ApplyDefaults(&cfg)
 	projection := serviceConfigProjection{
-		Configured:      configured,
-		APIListen:       cfg.Server.APIListen,
-		DashboardListen: cfg.Server.DashboardListen,
-		ExposureClass:   serviceExposureClass(cfg.Exposure.Mode),
-		NeedsHostADB:    !configured,
+		Configured:        configured,
+		APIListen:         cfg.Server.APIListen,
+		DashboardListen:   cfg.Server.DashboardListen,
+		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration().String(),
+		ShutdownTimeout:   cfg.Server.ShutdownTimeout.Duration().String(),
+		ExposureClass:     serviceExposureClass(cfg.Exposure.Mode),
+		NeedsHostADB:      !configured,
 		Android: serviceAndroidProjection{
 			RunnerImage:     cfg.Android.RunnerImage,
 			PullPolicy:      cfg.Android.PullPolicy,

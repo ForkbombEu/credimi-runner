@@ -788,6 +788,14 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 	if d.RunnerAPIURL() != "http://127.0.0.1:9000" || d.PublicURL() != "https://runner.example:443" {
 		t.Fatalf("URLs api=%q public=%q", d.RunnerAPIURL(), d.PublicURL())
 	}
+	d.Runner.values["RUNNER_HOST"] = "::1"
+	if d.RunnerAPIURL() != "http://[::1]:9000" {
+		t.Fatalf("IPv6 API URL=%q", d.RunnerAPIURL())
+	}
+	d.Runner.values["RUNNER_HOST"] = "::"
+	if d.RunnerAPIURL() != "http://127.0.0.1:9000" {
+		t.Fatalf("wildcard API URL=%q", d.RunnerAPIURL())
+	}
 	if d.RunnerServiceDetails() != "Online · 2m" {
 		t.Fatalf("runner details=%q", d.RunnerServiceDetails())
 	}
