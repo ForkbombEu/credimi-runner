@@ -32,12 +32,11 @@ type client struct {
 }
 
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[*client]struct{}
-	cfg        *Config
-	composeDir string
-	render     *Renderer
-	statusFn   func() dashboardruntime.RuntimeStatus
+	mu       sync.RWMutex
+	clients  map[*client]struct{}
+	cfg      *Config
+	render   *Renderer
+	statusFn func() dashboardruntime.RuntimeStatus
 
 	snapMu  sync.RWMutex
 	snap    Snapshot
@@ -54,8 +53,8 @@ type Worker struct {
 	Enabled bool
 }
 
-func NewHub(cfg *Config, composeDir string, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus) *Hub {
-	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, composeDir: composeDir, render: r, statusFn: statusFn}
+func NewHub(cfg *Config, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus) *Hub {
+	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, render: r, statusFn: statusFn}
 }
 
 func (h *Hub) add(c *client) {
@@ -118,16 +117,7 @@ func (h *Hub) poll(ctx context.Context) {
 		status := h.statusFn()
 		runtimeRunning = status.RunnerRunning
 	}
-	services := probeServices(ctx, values, runtimeRunning)
-	temporalAddr := h.cfg.Get("TEMPORAL_ADDRESS")
-	for i := range services {
-		if services[i].ID == "temporal" {
-			services[i].Role = temporalAddr
-			services[i].Image = "gRPC"
-			services[i].Status = dialTemporal(temporalAddr)
-			services[i].Uptime = "—"
-		}
-	}
+	services := probeServices(values, runtimeRunning)
 
 	snap := Snapshot{Services: services, Devices: devices, Time: time.Now()}
 	workers := h.runningWorkers(ctx, services)

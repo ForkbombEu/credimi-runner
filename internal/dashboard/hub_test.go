@@ -10,7 +10,7 @@ import (
 )
 
 func TestHubClientLifecycleAndBroadcast(t *testing.T) {
-	h := NewHub(&Config{values: map[string]string{}}, t.TempDir(), nil, nil)
+	h := NewHub(&Config{values: map[string]string{}}, nil, nil)
 	health := &client{ch: make(chan event, 1), stream: "health"}
 	workers := &client{ch: make(chan event, 1), stream: "workers"}
 
@@ -39,7 +39,7 @@ func TestHubClientLifecycleAndBroadcast(t *testing.T) {
 }
 
 func TestHubSnapshotAccessors(t *testing.T) {
-	h := NewHub(&Config{values: map[string]string{}}, t.TempDir(), nil, nil)
+	h := NewHub(&Config{values: map[string]string{}}, nil, nil)
 	h.snap = Snapshot{Services: []Service{{ID: "runner", Status: Online}}}
 	h.workers = []Worker{{ID: "production-mr", Status: Online}}
 
@@ -57,7 +57,7 @@ func TestHubDeriveWorkers(t *testing.T) {
 		"CREDIMI_RUNNER_ORGANIZATION": "acme",
 		"CREDIMI_URL":                 "https://credimi.example",
 	}}
-	h := NewHub(cfg, t.TempDir(), nil, nil)
+	h := NewHub(cfg, nil, nil)
 
 	workers := h.deriveWorkers([]Service{{ID: "runner", Status: Online}, {ID: "temporal", Status: Online}})
 	if len(workers) != 1 {
@@ -87,7 +87,7 @@ func TestHubFetchRunningWorkers(t *testing.T) {
 		"RUNNER_PORT":          strings.Split(host, ":")[1],
 		"CREDIMI_USER_API_KEY": "key",
 	}}
-	h := NewHub(cfg, t.TempDir(), nil, nil)
+	h := NewHub(cfg, nil, nil)
 	workers, ok := h.fetchRunningWorkers(context.Background())
 	if !ok || len(workers) != 2 {
 		t.Fatalf("workers=%#v ok=%v", workers, ok)
@@ -103,7 +103,7 @@ func TestHubRunStopsOnContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewHub(&Config{values: map[string]string{"TEMPORAL_ADDRESS": ""}}, t.TempDir(), r, nil)
+	h := NewHub(&Config{values: map[string]string{"TEMPORAL_ADDRESS": ""}}, r, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {

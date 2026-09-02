@@ -257,24 +257,6 @@ func TestRuntimeStatusOmitsInternalRunnerAPIAddress(t *testing.T) {
 	}
 }
 
-func TestRendererOverviewPageIncludesUpgradeLogModal(t *testing.T) {
-	renderer, err := NewRenderer()
-	if err != nil {
-		t.Fatal(err)
-	}
-	html, err := renderer.Page("overview", PageData{
-		Active: "overview",
-		Title:  "Overview",
-		Runner: &Config{values: Defaults},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(html, "runner-upgrade-modal") || !strings.Contains(html, "data-upgrade-log") || !strings.Contains(html, "data-upgrade-close disabled") {
-		t.Fatalf("overview page missing locked upgrade modal: %s", html)
-	}
-}
-
 func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {

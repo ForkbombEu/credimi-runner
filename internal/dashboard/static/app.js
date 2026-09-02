@@ -251,7 +251,7 @@
   let busyStartupTimer = null;
   let busyLogSeen = new Set();
   let busyStartupNextID = 0;
-  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering', 'upgrading']);
+  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering']);
   function busyOverlay() { return $('#busy-overlay'); }
   function busyLogNode() {
     const overlay = busyOverlay();
@@ -418,119 +418,16 @@
   });
   resumeSetupBusyIfNeeded();
 
-  // ── Runner image upgrade modal ─────────────────────────────────────────
-  let upgradeTimer = null;
-  let upgradeNextID = 0;
-  let upgradeDisconnected = false;
-  function appendUpgradeLog(line) {
-    const log = $('[data-upgrade-log]');
-    const text = String(line || '').trim();
-    if (!log || !text) return;
-    const stamp = new Date().toLocaleTimeString([], { hour12: false });
-    log.textContent += `${stamp}  ${text}\n`;
-    log.scrollTop = log.scrollHeight;
-  }
-  async function pollUpgrade() {
-    try {
-      const url = dashboardURL(upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status');
-      const response = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (response.ok) {
-        if (upgradeDisconnected) {
-          window.location.reload();
-          return;
-        }
-        const data = await response.json();
-        (data.lines || []).forEach(appendUpgradeLog);
-        upgradeNextID = Number(data.next_id || upgradeNextID);
-        const message = $('[data-upgrade-message]');
-        if (message && data.message) message.textContent = data.message;
-        if (!data.running) {
-          clearTimeout(upgradeTimer);
-          upgradeTimer = null;
-          const modal = $('#runner-upgrade-modal');
-          if (modal) modal.dataset.upgradeRunning = '0';
-          const close = $('[data-upgrade-close]');
-          if (close) close.disabled = false;
-        }
-      }
-    } catch (_) {
-      const modal = $('#runner-upgrade-modal');
-      if (modal && modal.dataset.upgradeRunning === '1' && !upgradeDisconnected) {
-        upgradeDisconnected = true;
-        appendUpgradeLog('Dashboard is restarting. Waiting to reconnect.');
-      }
-    }
-    if (upgradeTimer !== null && !upgradeDisconnected) upgradeTimer = setTimeout(pollUpgrade, 1000);
-  }
-  document.addEventListener('click', async (e) => {
-    const check = e.target.closest('[data-maintenance-check]');
-    if (check) {
-      check.disabled = true;
-      try {
-        const response = await fetch(dashboardURL('/maintenance/check'), { method: 'POST', headers: { Accept: 'application/json' } });
-        if (!response.ok) throw new Error(await response.text());
-        window.location.reload();
-      } catch (error) {
-        check.disabled = false;
-        window.alert(`Update check failed: ${String(error.message || error).trim()}`);
-      }
-      return;
-    }
-    const upgrade = e.target.closest('[data-runner-upgrade]');
-    if (upgrade) {
-      const modal = $('#runner-upgrade-modal');
-      const log = $('[data-upgrade-log]');
-      const close = $('[data-upgrade-close]');
-      if (!modal || !log || !close) return;
-      modal.hidden = false;
-      modal.dataset.upgradeRunning = '1';
-      log.textContent = '';
-      close.disabled = true;
-      upgradeNextID = 0;
-      upgradeDisconnected = false;
-      appendUpgradeLog('Requesting runner image upgrade.');
-      const controller = new AbortController();
-      const requestTimeout = setTimeout(() => controller.abort(), 10000);
-      try {
-        const response = await fetch(dashboardURL('/maintenance/upgrade'), {
-          method: 'POST',
-          headers: { Accept: 'application/json' },
-          signal: controller.signal,
-        });
-        clearTimeout(requestTimeout);
-        if (!response.ok) throw new Error(await response.text());
-        clearTimeout(upgradeTimer);
-        upgradeTimer = 0;
-        await pollUpgrade();
-      } catch (error) {
-        clearTimeout(requestTimeout);
-        const reason = error && error.name === 'AbortError'
-          ? 'Dashboard did not accept the request within 10 seconds. Reload the page and verify that the dashboard process is reachable.'
-          : String(error.message || error).trim();
-        appendUpgradeLog(`Upgrade could not start: ${reason}`);
-        modal.dataset.upgradeRunning = '0';
-        close.disabled = false;
-      }
-    }
-    if (e.target.closest('[data-upgrade-close]')) {
-      const modal = $('#runner-upgrade-modal');
-      if (modal && modal.dataset.upgradeRunning !== '1') {
-        modal.hidden = true;
-        window.location.reload();
-      }
-    }
-  });
-
   // ── Modal open / close ───────────────────────────────────────────────────
   function closeModals() {
     if (dismissDeviceConflict) dismissDeviceConflict(null);
-    $$('.modal-bk').forEach((m) => { if (m.dataset.upgradeRunning !== '1') m.hidden = true; });
+    $$('.modal-bk').forEach((m) => { m.hidden = true; });
   }
   document.addEventListener('click', (e) => {
     const open = e.target.closest('[data-open-modal]');
     if (open) { const m = $('#modal-' + open.dataset.openModal); if (m) { m.hidden = false; resetWizard(m); } }
     if (e.target.closest('[data-close-modal]')) closeModals();
-    if (e.target.classList && e.target.classList.contains('modal-bk') && e.target.dataset.upgradeRunning !== '1') closeModals();
+    if (e.target.classList && e.target.classList.contains('modal-bk')) closeModals();
   });
 
   // A name that already exists in Credimi is not silently suffixed. Let the

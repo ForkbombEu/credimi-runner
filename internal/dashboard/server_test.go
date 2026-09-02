@@ -107,7 +107,7 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	fake := &fakeRuntimeController{}
-	hub := NewHub(cfg, t.TempDir(), render, func() dashboardruntime.RuntimeStatus { return dashboardRuntimeStatus(cfg, fake.Status()) })
+	hub := NewHub(cfg, render, func() dashboardruntime.RuntimeStatus { return dashboardRuntimeStatus(cfg, fake.Status()) })
 	hub.snap = Snapshot{Services: []Service{{ID: "runner", Name: "runner", Status: Online}}, Devices: []Device{{Serial: "device-1", Name: "Pixel 8", Type: "android_phone", Mode: "usb", Status: Online}}}
 	hub.workers = []Worker{{ID: "runner-worker", Env: "runner", Status: Online}}
 	return &Server{

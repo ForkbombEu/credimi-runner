@@ -80,7 +80,6 @@ type Server struct {
 	maintenanceChecked      bool
 	maintenanceChecker      func(context.Context, string, time.Time) maintenance.Status
 	systemMonitor           *SystemMonitor
-	startupProgress         func(string)
 	mutationMu              sync.Mutex
 	mu                      sync.RWMutex
 }
@@ -127,7 +126,7 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("templates: %w", err)
 	}
-	hub := NewHub(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
+	hub := NewHub(cfg, render, func() dashboardruntime.RuntimeStatus {
 		return dashboardRuntimeStatus(cfg, runtime.Status())
 	})
 	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(cfg.Snapshot()), runtimeGOOS())
@@ -153,7 +152,6 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 		startup: startupState{
 			Phase: StartupIdle,
 		},
-		startupProgress: nil,
 	}
 	if srv.operations == nil {
 		srv.operations = controller.NewCoordinator(parent)
@@ -1422,9 +1420,6 @@ func (s *Server) appendStartupLogLocked(message string) {
 	}
 	s.startup.Logs = append(s.startup.Logs, message)
 	s.startup.LogNextID++
-	if s.startupProgress != nil {
-		s.startupProgress(message)
-	}
 	if extra := len(s.startup.Logs) - startupLogRetain; extra > 0 {
 		s.startup.Logs = append([]string(nil), s.startup.Logs[extra:]...)
 		s.startup.LogBase += int64(extra)

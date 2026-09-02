@@ -223,7 +223,7 @@ printf '%s\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid
 }
 
 func TestProbeServicesUsesRuntimeAndTemporalState(t *testing.T) {
-	services := probeServices(context.Background(), map[string]string{"TEMPORAL_ADDRESS": ""}, true)
+	services := probeServices(map[string]string{"TEMPORAL_ADDRESS": ""}, true)
 	if len(services) != 2 {
 		t.Fatalf("services len = %d", len(services))
 	}
@@ -236,7 +236,7 @@ func TestProbeServicesUsesRuntimeAndTemporalState(t *testing.T) {
 }
 
 func TestProbeServicesReportsStoppedRuntime(t *testing.T) {
-	services := probeServices(context.Background(), map[string]string{}, false)
+	services := probeServices(map[string]string{}, false)
 	for _, svc := range services {
 		if svc.ID == "temporal" {
 			continue

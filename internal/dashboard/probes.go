@@ -65,15 +65,6 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-func runWithEnv(ctx context.Context, environment []string, name string, args ...string) (string, error) {
-	cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	defer cancel()
-	command := exec.CommandContext(cctx, name, args...)
-	command.Env = environment
-	out, err := command.Output()
-	return string(out), err
-}
-
 // ── ADB ──────────────────────────────────────────────────────────────────────
 
 var adbModelRe = mustCompile(`model:(\S+)`)
@@ -202,7 +193,7 @@ func probeIOS(ctx context.Context) []Device {
 	return devs
 }
 
-func probeServices(ctx context.Context, values map[string]string, runtimeRunning bool) []Service {
+func probeServices(values map[string]string, runtimeRunning bool) []Service {
 	runner := Service{ID: "runner", Name: "runner", Role: "Credimi Runner", Expected: true, Critical: true, Status: Offline}
 	if runtimeRunning {
 		runner.Status = Online

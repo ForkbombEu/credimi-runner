@@ -217,11 +217,7 @@ func (s *Supervisor) newGeneration(cfg config.Config) (result *generation, resul
 		cleanupCancel()
 		resultErr = errors.Join(resultErr, remoteErr, localErr)
 	}()
-	if s.deps.NewProcessStore != nil {
-		g.store = s.deps.NewProcessStore()
-	} else {
-		g.store = server.NewProcessStore()
-	}
+	g.store = s.deps.NewProcessStore()
 	if s.deps.InitObservability != nil {
 		shutdown, err := s.deps.InitObservability(ctx, cfg)
 		if err != nil {

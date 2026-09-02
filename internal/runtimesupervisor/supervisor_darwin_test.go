@@ -23,8 +23,9 @@ func TestDarwinSupervisorGenerationReplacement(t *testing.T) {
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !s.Status().Desired == DesiredRunning || s.Status().Actual != ActualRunning {
-		t.Fatalf("start status=%+v", s.Status())
+	status := s.Status()
+	if status.Desired != DesiredRunning || status.Actual != ActualRunning {
+		t.Fatalf("start status=%+v", status)
 	}
 	if err := s.Stop(ctx); err != nil {
 		t.Fatal(err)
