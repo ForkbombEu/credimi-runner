@@ -23,13 +23,13 @@ func TestDarwinSupervisorGenerationReplacement(t *testing.T) {
 	if err := s.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !s.ExecutionRunning() || s.Status().Actual != ActualRunning {
+	if !s.Status().Desired == DesiredRunning || s.Status().Actual != ActualRunning {
 		t.Fatalf("start status=%+v", s.Status())
 	}
 	if err := s.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if s.ExecutionRunning() || s.Status().Actual != ActualStopped {
+	if s.Status().Desired == DesiredRunning || s.Status().Actual != ActualStopped {
 		t.Fatalf("stop status=%+v", s.Status())
 	}
 	if err := s.Start(ctx); err != nil {

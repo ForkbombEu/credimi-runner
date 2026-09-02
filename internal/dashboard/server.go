@@ -18,14 +18,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
-	"github.com/forkbombeu/credimi-runner/internal/controller/driver"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
@@ -42,18 +40,7 @@ import (
 var staticFS embed.FS
 
 var (
-	lookupPath                  = exec.LookPath
-	statPath                    = os.Stat
-	dashboardExecutable         = os.Executable
-	startDashboardRestartHelper = func(name string, args ...string) error {
-		helper := exec.Command(name, args...)
-		helper.Stdout = os.Stdout
-		helper.Stderr = os.Stderr
-		return helper.Start()
-	}
-	terminateDashboardAfter = func(delay time.Duration, pid int) {
-		time.AfterFunc(delay, func() { _ = syscall.Kill(pid, syscall.SIGTERM) })
-	}
+	lookupPath                   = exec.LookPath
 	ensureCandidateEmulatorReady = androidtools.PrepareEmulatorReady
 	// beforeCandidateCommit is a deterministic test seam for the optimistic
 	// concurrency window; production leaves it nil.
@@ -87,17 +74,12 @@ type Server struct {
 	runtime                 RuntimeController
 	operations              *controller.Coordinator
 	lookupPath              func(string) (string, error)
-	statPath                func(string) (os.FileInfo, error)
-	lastRegistrationStatus  string
 	pendingDiff             dashboardruntime.ConfigDiff
 	startup                 startupState
 	maintenance             maintenance.Status
 	maintenanceChecked      bool
-	maintenanceChecker      func(context.Context, string, time.Time, string) maintenance.Status
+	maintenanceChecker      func(context.Context, string, time.Time) maintenance.Status
 	systemMonitor           *SystemMonitor
-	binaryPath              string
-	downloadBinary          func(context.Context, *http.Client, string, func(string)) error
-	restartDashboard        func(string) error
 	startupProgress         func(string)
 	mutationMu              sync.Mutex
 	mu                      sync.RWMutex
@@ -110,7 +92,6 @@ const (
 	StartupStarting       StartupPhase = "starting"
 	StartupWaitingRunner  StartupPhase = "waiting_for_runner"
 	StartupRegistering    StartupPhase = "registering"
-	StartupUpgrading      StartupPhase = "upgrading"
 	StartupReady          StartupPhase = "ready"
 	StartupNeedsAttention StartupPhase = "needs_attention"
 )
@@ -126,7 +107,6 @@ type startupState struct {
 	LogBase   int64
 	LogNextID int64
 	running   bool
-	done      chan struct{}
 }
 
 // NewHandler creates the dashboard around the application's one runtime
@@ -147,16 +127,9 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 	if err != nil {
 		return nil, nil, fmt.Errorf("templates: %w", err)
 	}
-	observer := controller.Observer{Drivers: []driver.Driver{driver.Compose{}}}
-	hub := NewHubWithObservation(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
+	hub := NewHub(cfg, composeDir, render, func() dashboardruntime.RuntimeStatus {
 		return dashboardRuntimeStatus(cfg, runtime.Status())
-	}, func(ctx context.Context, values dashboardruntime.Values) controller.ObservedRuntime {
-		return observer.Observe(ctx, composeDir, values)
 	})
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolve executable: %w", err)
-	}
 	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(cfg.Snapshot()), runtimeGOOS())
 	if err != nil {
 		return nil, nil, fmt.Errorf("normalize config: %w", err)
@@ -177,7 +150,6 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 		runtime:                 runtime,
 		operations:              operations,
 		lookupPath:              lookupPath,
-		statPath:                statPath,
 		startup: startupState{
 			Phase: StartupIdle,
 		},
@@ -186,9 +158,6 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 	if srv.operations == nil {
 		srv.operations = controller.NewCoordinator(parent)
 	}
-	srv.binaryPath = executable
-	srv.downloadBinary = maintenance.DownloadLatestBinary
-	srv.restartDashboard = scheduleDashboardRestart
 	checker := maintenance.Checker{}
 	srv.maintenanceChecker = checker.Check
 
@@ -257,7 +226,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /runtime/stop", s.runtimeStop)
 	mux.HandleFunc("POST /runtime/restart", s.runtimeRestart)
 	mux.HandleFunc("POST /maintenance/check", s.maintenanceCheck)
-	mux.HandleFunc("GET /runtime/logs", s.runtimeLogs)
 	mux.HandleFunc("GET /startup/status", s.startupStatus)
 	mux.HandleFunc("GET /api/system/metrics", s.systemMetrics)
 
@@ -643,16 +611,7 @@ func (s *Server) ensureMaintenanceChecked(ctx context.Context, force bool) {
 	if checker == nil {
 		return
 	}
-	image := ""
-	if runtime.GOOS != "darwin" {
-		var pullPolicy string
-		var err error
-		image, pullPolicy, err = dashboardruntime.SharedRunnerImage(s.cfg.Snapshot(), runtime.GOOS)
-		if err != nil || pullPolicy == "never" {
-			image = ""
-		}
-	}
-	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt(), image)
+	status := checker(ctx, buildinfo.String(), buildinfo.BuiltAt())
 	s.mu.Lock()
 	s.maintenance = status
 	s.mu.Unlock()
@@ -662,22 +621,6 @@ func (s *Server) maintenanceCheck(w http.ResponseWriter, r *http.Request) {
 	s.ensureMaintenanceChecked(r.Context(), true)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"checked":true}`))
-}
-
-func scheduleDashboardRestart(stagedBinary string) error {
-	target, err := dashboardExecutable()
-	if err != nil {
-		return err
-	}
-	args := []string{"restart-dashboard-helper", "--wait-pid", strconv.Itoa(os.Getpid()), "--target", target, "--staged", stagedBinary}
-	for _, arg := range os.Args[1:] {
-		args = append(args, "--restart-arg", arg)
-	}
-	if err := startDashboardRestartHelper(target, args...); err != nil {
-		return err
-	}
-	terminateDashboardAfter(2*time.Second, os.Getpid())
-	return nil
 }
 
 func formValuesMap(values url.Values) map[string]string {
@@ -1075,9 +1018,6 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	if err := s.applySavedConfig(r.Context(), diff); err != nil {
 		return fmt.Errorf("configuration was saved but reconciliation failed: %w", err)
 	}
-	s.mu.Lock()
-	s.lastRegistrationStatus = ""
-	s.mu.Unlock()
 	return nil
 }
 
@@ -1457,7 +1397,6 @@ func (s *Server) setStartupState(phase StartupPhase, message string) {
 	if strings.TrimSpace(message) != "" {
 		s.appendStartupLogLocked(message)
 	}
-	s.lastRegistrationStatus = message
 	s.mu.Unlock()
 }
 
@@ -1772,10 +1711,6 @@ func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
 	s.queueDashboardRuntimeAction(w, "restart")
 }
 
-func (s *Server) runtimeLogs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"lines": []string{}})
-}
-
 func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	startup := s.startupSnapshot()
 	if s.operations != nil {
@@ -1821,20 +1756,6 @@ func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, action strin
 		return
 	}
 	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action), "/")
-}
-
-func (s *Server) queueRuntimeAction(w http.ResponseWriter, page string, kind controller.OperationKind, action func(context.Context) error, success string) {
-	if s.operations == nil {
-		s.operations = controller.NewCoordinator(s.ctx)
-	}
-	snapshot, err := s.operations.Submit(kind, func(ctx context.Context, _ func(controller.Progress)) error {
-		return action(ctx)
-	})
-	if err != nil {
-		s.renderRuntimeActionError(w, page, err)
-		return
-	}
-	s.writeQueuedRuntimeAction(w, snapshot, success, dashboardRefreshPath(page))
 }
 
 func (s *Server) renderRuntimeActionError(w http.ResponseWriter, page string, err error) {

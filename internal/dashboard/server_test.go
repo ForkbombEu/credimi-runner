@@ -115,7 +115,6 @@ func newTestServer(t *testing.T) *Server {
 		runtime: fake, operations: controller.NewCoordinator(context.Background()),
 		appliedDashboardListen: dashboardListen(dashboardruntime.Values(cfg.Snapshot())),
 		lookupPath:             func(string) (string, error) { return "/tmp/fake-bin", nil },
-		statPath:               func(string) (os.FileInfo, error) { return nil, nil },
 	}
 }
 
@@ -211,15 +210,13 @@ func TestDashboardRuntimeActionHandlersAndControllerStatus(t *testing.T) {
 			t.Fatalf("runtime action status = %d", recorder.Code)
 		}
 	}
-	for _, endpoint := range []string{"/api/controller/status", "/api/controller/operations/current", "/runtime/logs"} {
+	for _, endpoint := range []string{"/api/controller/status", "/api/controller/operations/current"} {
 		recorder := httptest.NewRecorder()
 		s.routes(http.NewServeMux())
 		if endpoint == "/api/controller/status" {
 			s.controllerStatus(recorder, httptest.NewRequest(http.MethodGet, endpoint, nil))
 		} else if endpoint == "/api/controller/operations/current" {
 			s.controllerOperationCurrent(recorder, httptest.NewRequest(http.MethodGet, endpoint, nil))
-		} else {
-			s.runtimeLogs(recorder, httptest.NewRequest(http.MethodGet, endpoint, nil))
 		}
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("%s status = %d", endpoint, recorder.Code)
@@ -292,12 +289,6 @@ func TestDashboardConfigAndViewHelperBranches(t *testing.T) {
 		t.Fatal("offline critical service reported healthy")
 	}
 	recorder := httptest.NewRecorder()
-	s.queueRuntimeAction(recorder, "overview", controller.OperationRuntimeStart, func(context.Context) error { return nil }, "done")
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("generic runtime action status = %d", recorder.Code)
-	}
-	waitForQueuedOperation(t, s, recorder)
-	recorder = httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/overview/config", strings.NewReader(url.Values{"CREDIMI_RUNNER_PUBLISHED": {"on"}}.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveOverviewConfig(recorder, request)
@@ -1028,7 +1019,7 @@ func TestServerMaintenanceCheckRefreshesMetadata(t *testing.T) {
 	s := newTestServer(t)
 	s.maintenanceChecked = false
 	calls := 0
-	s.maintenanceChecker = func(context.Context, string, time.Time, string) maintenance.Status {
+	s.maintenanceChecker = func(context.Context, string, time.Time) maintenance.Status {
 		calls++
 		return maintenance.Status{Runner: maintenance.Component{LatestVersion: "v2", UpdateAvailable: true}}
 	}
@@ -1040,28 +1031,6 @@ func TestServerMaintenanceCheckRefreshesMetadata(t *testing.T) {
 	s.ensureMaintenanceChecked(context.Background(), false)
 	if calls != 1 {
 		t.Fatalf("cached check calls = %d", calls)
-	}
-}
-
-func TestServerMaintenanceCheckSkipsLocalRunnerImage(t *testing.T) {
-	s := newTestServer(t)
-	s.maintenanceChecked = false
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_DEVICE_COUNT"] = "1"
-	s.cfg.values["CREDIMI_DEVICE_1_ID"] = "acme/runner/phone"
-	s.cfg.values["ANDROID_RUNNER_IMAGE"] = "local:latest"
-	s.cfg.values["ANDROID_PULL_POLICY"] = "never"
-	checkedImage := "not-called"
-	s.maintenanceChecker = func(_ context.Context, _ string, _ time.Time, image string) maintenance.Status {
-		checkedImage = image
-		return maintenance.Status{Runner: maintenance.Component{LatestVersion: "v2"}}
-	}
-	s.ensureMaintenanceChecked(context.Background(), true)
-	if checkedImage != "" {
-		t.Fatalf("checked image = %q", checkedImage)
-	}
-	if s.maintenance.Error != "" || s.maintenance.Runner.LatestVersion != "v2" {
-		t.Fatalf("maintenance status = %#v", s.maintenance)
 	}
 }
 
@@ -1641,12 +1610,6 @@ func TestServerValidateRuntimeRequirements(t *testing.T) {
 	emulator["CREDIMI_DEVICE_1_ANDROID_KEYS_DIR"] = "/keys"
 	emulator["CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH"] = "/avd"
 	emulator["CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH"] = "/golden"
-	s.statPath = func(path string) (os.FileInfo, error) {
-		if path == "/dev/kvm" {
-			return nil, os.ErrNotExist
-		}
-		return nil, nil
-	}
 	if err := s.validateRuntimeRequirements(emulator); err != nil {
 		t.Fatalf("emulator candidate requirements = %v", err)
 	}

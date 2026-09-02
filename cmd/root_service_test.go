@@ -34,7 +34,7 @@ func TestRootStartsStoppedService(t *testing.T) {
 	t.Cleanup(func() { serviceManagerFactory, waitForDashboardFunc, dashboardOpen = oldFactory, oldWait, oldOpen })
 	fake := &rootStoppedManager{}
 	serviceManagerFactory = func(string, servicemanager.BootstrapOptions) servicemanager.Manager { return fake }
-	waitForDashboardFunc = func(context.Context, servicemanager.Manager) (string, error) { return "http://127.0.0.1:8051", nil }
+	waitForDashboardFunc = func(context.Context) (string, error) { return "http://127.0.0.1:8051", nil }
 	dashboardOpen = false
 	ctx, cancel := context.WithCancel(context.Background())
 	command := &cobra.Command{Use: "test"}
@@ -53,12 +53,12 @@ func TestRootStartsStoppedService(t *testing.T) {
 func TestWaitForDashboardHonorsCancellation(t *testing.T) {
 	old := waitForDashboardFunc
 	t.Cleanup(func() { waitForDashboardFunc = old })
-	waitForDashboardFunc = func(ctx context.Context, manager servicemanager.Manager) (string, error) {
-		return old(ctx, &noURLManager{Manager: manager})
+	waitForDashboardFunc = func(ctx context.Context) (string, error) {
+		return old(ctx)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := waitForDashboardFunc(ctx, &rootManagerFake{})
+	_, err := waitForDashboardFunc(ctx)
 	if err == nil {
 		t.Fatal("expected cancellation error")
 	}
@@ -86,7 +86,7 @@ func TestRootCtrlCOnlyStopsLogFollower(t *testing.T) {
 	t.Cleanup(func() { serviceManagerFactory, waitForDashboardFunc, dashboardOpen = oldFactory, oldWait, oldOpen })
 	fake := &rootManagerFake{}
 	serviceManagerFactory = func(string, servicemanager.BootstrapOptions) servicemanager.Manager { return fake }
-	waitForDashboardFunc = func(context.Context, servicemanager.Manager) (string, error) { return "http://127.0.0.1:8051", nil }
+	waitForDashboardFunc = func(context.Context) (string, error) { return "http://127.0.0.1:8051", nil }
 	dashboardOpen = false
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -114,7 +114,7 @@ func TestRootStartsServiceOnceWhenStatusUnavailable(t *testing.T) {
 	t.Cleanup(func() { serviceManagerFactory, waitForDashboardFunc, dashboardOpen = oldFactory, oldWait, oldOpen })
 	fake := &rootStatusErrorManager{}
 	serviceManagerFactory = func(string, servicemanager.BootstrapOptions) servicemanager.Manager { return fake }
-	waitForDashboardFunc = func(context.Context, servicemanager.Manager) (string, error) {
+	waitForDashboardFunc = func(context.Context) (string, error) {
 		return "http://127.0.0.1:8051", nil
 	}
 	dashboardOpen = false
@@ -144,7 +144,7 @@ func TestRootPassesBootstrapOptionsToServiceManager(t *testing.T) {
 		got = options
 		return fake
 	}
-	waitForDashboardFunc = func(context.Context, servicemanager.Manager) (string, error) { return "http://127.0.0.1:8051", nil }
+	waitForDashboardFunc = func(context.Context) (string, error) { return "http://127.0.0.1:8051", nil }
 	dashboardOpen = false
 	bootstrapImage = "credimi-runner:local"
 	bootstrapPullPolicy = "never"

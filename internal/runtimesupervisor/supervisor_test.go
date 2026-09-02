@@ -224,7 +224,7 @@ func newTestSupervisor(t *testing.T, life *testLife, edgeImpl *testEdge, workers
 	t.Helper()
 	api := &testAPI{}
 	cfg := validConfig()
-	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{NewAPI: func(config.Config, context.Context) (API, error) { return api, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return edgeImpl, nil }, NewWorkers: func(config.Config) WorkerSet { return workers }, NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life }})
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return edgeImpl, nil }, NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return workers }, NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,13 +239,13 @@ func TestSupervisorLifecycleAndPauseFailure(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !api.Listening() || !s.ExecutionRunning() {
+	if !api.Listening() || s.Status().Desired != DesiredRunning {
 		t.Fatal("not running")
 	}
 	if err := s.Stop(context.Background()); err == nil {
 		t.Fatal("expected pause error")
 	}
-	if api.Listening() || e.Running() || s.ExecutionRunning() {
+	if api.Listening() || e.Running() || s.Status().Desired == DesiredRunning {
 		t.Fatal("resources still active")
 	}
 	if s.Status().Actual != ActualStopped {
@@ -279,9 +279,9 @@ func TestSupervisorAPIFailureTearsDownGeneration(t *testing.T) {
 	workers := &testWorkers{}
 	life := &testLife{}
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
 		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
-		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
 		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
 	})
 	if err != nil {
@@ -322,9 +322,9 @@ func TestSupervisorEdgeFailureTearsDownGeneration(t *testing.T) {
 	workers := &testWorkers{}
 	life := &testLife{}
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
 		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
-		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
 		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
 	})
 	if err != nil {
@@ -363,8 +363,9 @@ func TestSupervisorExpectedStopDoesNotBecomeFatal(t *testing.T) {
 	api := &testAPI{failures: make(chan error, 1)}
 	edgeImpl := &testEdge{failures: make(chan error, 1)}
 	s, _ := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI:  func(config.Config, context.Context) (API, error) { return api, nil },
-		NewEdge: func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewAPI:     func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return &testWorkers{} },
+		NewEdge:    func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
 	})
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -383,7 +384,7 @@ func TestSupervisorIgnoresFailureFromReplacedGeneration(t *testing.T) {
 	var apis []*testAPI
 	var edges []*testEdge
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI: func(config.Config, context.Context) (API, error) {
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) {
 			api := &testAPI{failures: make(chan error, 1)}
 			apis = append(apis, api)
 			return api, nil
@@ -420,7 +421,7 @@ func TestSupervisorIgnoresFailureFromReplacedGeneration(t *testing.T) {
 func TestSupervisorStopClosesListenerAndStartReopensIt(t *testing.T) {
 	var apis []*testAPI
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI: func(config.Config, context.Context) (API, error) {
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) {
 			api := &testAPI{}
 			apis = append(apis, api)
 			return api, nil
@@ -452,7 +453,7 @@ func TestSupervisorStopClosesListenerAndStartReopensIt(t *testing.T) {
 func TestNewSupervisorAliasLoadsState(t *testing.T) {
 	dir := t.TempDir()
 	cfg := validConfig()
-	s, err := NewSupervisor(dir, func() (config.Config, error) { return cfg, nil }, Dependencies{})
+	s, err := New(dir, func() (config.Config, error) { return cfg, nil }, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +511,7 @@ func TestSupervisorRestartContinuesAfterRemotePauseFailure(t *testing.T) {
 	if err := s.Restart(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s.Status().Actual != ActualRunning || !s.ExecutionRunning() {
+	if s.Status().Actual != ActualRunning || s.Status().Desired != DesiredRunning {
 		t.Fatalf("restart state=%+v", s.Status())
 	}
 }
@@ -521,9 +522,9 @@ func TestSupervisorLocalCleanupErrorsRetainGeneration(t *testing.T) {
 	api := &testAPI{closeErr: errors.New("api close")}
 	workers := &testWorkers{}
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
 		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
-		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
 		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
 	})
 	if err != nil {
@@ -627,13 +628,13 @@ func TestSupervisorRestartAndClosePreserveDesired(t *testing.T) {
 	if err := s.Restart(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !s.ExecutionRunning() || s.Status().Actual != ActualRunning {
+	if s.Status().Desired != DesiredRunning || s.Status().Actual != ActualRunning {
 		t.Fatalf("restart state=%+v", s.Status())
 	}
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if !s.ExecutionRunning() || s.Status().Actual != ActualStopped {
+	if s.Status().Desired != DesiredRunning || s.Status().Actual != ActualStopped {
 		t.Fatalf("close state=%+v", s.Status())
 	}
 }
@@ -646,7 +647,7 @@ func TestSupervisorStoppedReconcileDoesNotBuildGeneration(t *testing.T) {
 	if err := s.Reconcile(context.Background(), validConfig()); err != nil {
 		t.Fatal(err)
 	}
-	if s.ExecutionRunning() || s.Status().Actual != ActualStopped {
+	if s.Status().Desired == DesiredRunning || s.Status().Actual != ActualStopped {
 		t.Fatalf("state=%+v", s.Status())
 	}
 	if s.currentGeneration() != nil || e.Running() || w.Running() {
@@ -777,7 +778,7 @@ func TestSupervisorRollbackJoinsStatePersistenceFailure(t *testing.T) {
 	verifyErr := errors.New("endpoint verification failed")
 	persistErr := errors.New("failed state write")
 	s, _ := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI: func(config.Config, context.Context) (API, error) { return &testAPI{}, nil },
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
 		VerifyPublicEndpoint: func(context.Context, config.Config, string) error {
 			return verifyErr
 		},
@@ -828,7 +829,7 @@ func TestSupervisorObservabilityAndRegistrationHooks(t *testing.T) {
 			setup++
 			return func(context.Context) error { shutdown++; return nil }, nil
 		},
-		NewAPI: func(config.Config, context.Context) (API, error) { return &testAPI{}, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return e, nil }, NewWorkers: func(config.Config) WorkerSet { return w }, NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return e, nil }, NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return w }, NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
 		VerifyPublicEndpoint: func(context.Context, config.Config, string) error { verify++; return nil }, Register: func(context.Context, config.Config, string) error { register++; return nil },
 	})
 	if err != nil {
@@ -853,8 +854,8 @@ func TestSupervisorRegistersBeforeWorkers(t *testing.T) {
 	workers := &testWorkers{startHook: func() { events = append(events, "workers") }}
 	api := &testAPI{}
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI:     func(config.Config, context.Context) (API, error) { return api, nil },
-		NewWorkers: func(config.Config) WorkerSet { return workers },
+		NewAPI:     func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return workers },
 		Register:   func(context.Context, config.Config, string) error { events = append(events, "register"); return nil },
 	})
 	if err != nil {
@@ -880,9 +881,9 @@ func TestSupervisorValidatesCapabilitiesBeforeActivationCompletes(t *testing.T) 
 		loopHook:      func() { events = append(events, "heartbeat-loop") },
 	}
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
 		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
-		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
 		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
 		VerifyPublicEndpoint: func(context.Context, config.Config, string) error {
 			events = append(events, "verify")
@@ -918,9 +919,9 @@ func TestSupervisorCapabilityFailureRollsBackBeforeWorkers(t *testing.T) {
 	capabilityErr := errors.New("/dev/kvm is required")
 	validations := 0
 	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
-		NewAPI:             func(config.Config, context.Context) (API, error) { return api, nil },
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
 		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
-		NewWorkers:         func(config.Config) WorkerSet { return workers },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
 		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
 		ValidateRuntimeCapabilities: func(context.Context, config.Config) error {
 			validations++
@@ -1017,7 +1018,7 @@ func TestSupervisorCloseAndStateFailures(t *testing.T) {
 	life := &testLife{}
 	e := &testEdge{}
 	w := &testWorkers{}
-	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{NewAPI: func(config.Config, context.Context) (API, error) { return &testAPI{}, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return e, nil }, NewWorkers: func(config.Config) WorkerSet { return w }, NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life }})
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return e, nil }, NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return w }, NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1041,7 +1042,7 @@ func TestSupervisorCloseAndStateFailures(t *testing.T) {
 func TestSupervisorCreateAndVerifyFailures(t *testing.T) {
 	base := validConfig()
 	apiErr := errors.New("api bind")
-	s, err := New(t.TempDir(), func() (config.Config, error) { return base, nil }, Dependencies{NewAPI: func(config.Config, context.Context) (API, error) { return nil, apiErr }})
+	s, err := New(t.TempDir(), func() (config.Config, error) { return base, nil }, Dependencies{NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return nil, apiErr }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,7 +1052,7 @@ func TestSupervisorCreateAndVerifyFailures(t *testing.T) {
 	verifyErr := errors.New("verify")
 	e := &testEdge{}
 	w := &testWorkers{}
-	s, err = New(t.TempDir(), func() (config.Config, error) { return base, nil }, Dependencies{NewAPI: func(config.Config, context.Context) (API, error) { return &testAPI{}, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return e, nil }, NewWorkers: func(config.Config) WorkerSet { return w }, VerifyPublicEndpoint: func(context.Context, config.Config, string) error { return verifyErr }})
+	s, err = New(t.TempDir(), func() (config.Config, error) { return base, nil }, Dependencies{NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil }, NewEdge: func(config.Config) (edge.Edge, error) { return e, nil }, NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return w }, VerifyPublicEndpoint: func(context.Context, config.Config, string) error { return verifyErr }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1064,7 +1065,7 @@ func TestSupervisorGenerationConstructionFailures(t *testing.T) {
 	cfg := validConfig()
 	apiErr := errors.New("api construction")
 	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
-		NewAPI: func(config.Config, context.Context) (API, error) { return nil, apiErr },
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return nil, apiErr },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1074,6 +1075,7 @@ func TestSupervisorGenerationConstructionFailures(t *testing.T) {
 	}
 	otelErr := errors.New("otel construction")
 	s, err = New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:            func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
 		InitObservability: func(context.Context, config.Config) (func(context.Context) error, error) { return nil, otelErr },
 	})
 	if err != nil {
@@ -1084,7 +1086,7 @@ func TestSupervisorGenerationConstructionFailures(t *testing.T) {
 	}
 	edgeErr := errors.New("edge construction")
 	s, err = New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
-		NewAPI:  func(config.Config, context.Context) (API, error) { return &testAPI{}, nil },
+		NewAPI:  func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
 		NewEdge: func(config.Config) (edge.Edge, error) { return nil, edgeErr },
 	})
 	if err != nil {
@@ -1100,7 +1102,7 @@ func TestSupervisorActivationWithoutOptionalDependencies(t *testing.T) {
 	// An API with no edge, workers, lifecycle, or observability is a valid
 	// minimal generation for installation/bootstrap tests.
 	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
-		NewAPI: func(config.Config, context.Context) (API, error) { return &testAPI{}, nil },
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1121,10 +1123,10 @@ func TestSupervisorDependencyVariantsAndHelpers(t *testing.T) {
 	life, workers := &testLife{}, &testWorkers{}
 	api := &testAPI{}
 	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
-		NewAPIWithStore:     func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
-		NewWorkersWithStore: func(config.Config, *server.ProcessStore) WorkerSet { return workers },
-		NewLifecycleClient:  func(config.Config, *server.ProcessStore) LifecycleClient { return life },
-		NewEdge:             func(config.Config) (edge.Edge, error) { return &testEdge{}, nil },
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return &testEdge{}, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1143,12 +1145,12 @@ func TestSupervisorDependencyVariantsAndHelpers(t *testing.T) {
 	}
 }
 
-func TestSupervisorStartWorkersCallback(t *testing.T) {
+func TestSupervisorStartsExplicitWorkerSet(t *testing.T) {
 	cfg := validConfig()
-	called := 0
+	workers := &testWorkers{}
 	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
-		NewAPI:       func(config.Config, context.Context) (API, error) { return &testAPI{}, nil },
-		StartWorkers: func(context.Context, config.Config, *server.ProcessStore) error { called++; return nil },
+		NewAPI:     func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
+		NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return workers },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1156,46 +1158,24 @@ func TestSupervisorStartWorkersCallback(t *testing.T) {
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if called != 1 {
-		t.Fatalf("workers callback=%d", called)
-	}
 	if g := s.currentGeneration(); g == nil || !g.workers.Running() {
 		t.Fatal("callback workers not marked running")
 	}
 	_ = s.Stop(context.Background())
 }
 
-func TestSupervisorNoopGenerationAndBoundedContext(t *testing.T) {
+func TestSupervisorAllowsNoWorkersAndBoundsContext(t *testing.T) {
 	cfg := validConfig()
-	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{NewAPI: func(config.Config, context.Context) (API, error) { return &testAPI{}, nil }})
-	if err != nil {
-		t.Fatal(err)
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil }})
+	if err != nil || s == nil {
+		t.Fatal("construct supervisor")
 	}
 	if err := s.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if !s.Status().APIListening && s.Status().Actual != ActualRunning {
-		t.Fatal("unexpected status")
-	}
-	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	short, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	if _, c := boundedContext(short, time.Hour); c == nil {
 		t.Fatal("missing cancel")
-	}
-}
-
-func TestNoopAPIIsSafe(t *testing.T) {
-	a := &noopAPI{}
-	if err := a.Start(); err != nil {
-		t.Fatal(err)
-	}
-	if err := a.Shutdown(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if a.Listening() {
-		t.Fatal("noop API reports listening")
 	}
 }

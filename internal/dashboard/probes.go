@@ -9,9 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/forkbombeu/credimi-runner/internal/controller"
-	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,26 +51,9 @@ type Service struct {
 }
 
 type Snapshot struct {
-	Services         []Service
-	Devices          []Device
-	Time             time.Time
-	Observation      controller.ObservedRuntime
-	ObservationStale bool
-}
-
-func servicesFromObservation(observed controller.ObservedRuntime) []Service {
-	services := make([]Service, 0, len(observed.Services))
-	for _, service := range observed.Services {
-		status := Offline
-		switch service.State {
-		case controller.StateRunning:
-			status = Online
-		case controller.StateDegraded, controller.StateForeign, controller.StateUnknown:
-			status = Degraded
-		}
-		services = append(services, Service{ID: service.ID, Name: service.Name, Role: service.Role, Image: service.Image, Status: status, Uptime: service.Detail, Expected: true, Critical: service.Critical, Reason: service.Detail})
-	}
-	return services
+	Services []Service
+	Devices  []Device
+	Time     time.Time
 }
 
 func has(bin string) bool { _, err := exec.LookPath(bin); return err == nil }
@@ -222,78 +202,13 @@ func probeIOS(ctx context.Context) []Device {
 	return devs
 }
 
-// ── Docker compose services ──────────────────────────────────────────────────
-
-func probeServices(ctx context.Context, composeDir string, plan dashboardruntime.RuntimePlan, values dashboardruntime.Values, runtimeRunning bool) []Service {
-	want := make([]Service, 0, len(plan.ExpectedServices))
-	for _, planned := range plan.ExpectedServices {
-		want = append(want, Service{
-			ID:       planned.ID,
-			Name:     planned.Name,
-			Role:     planned.Role,
-			Expected: true,
-			Critical: planned.Critical,
-		})
+func probeServices(ctx context.Context, values map[string]string, runtimeRunning bool) []Service {
+	runner := Service{ID: "runner", Name: "runner", Role: "Credimi Runner", Expected: true, Critical: true, Status: Offline}
+	if runtimeRunning {
+		runner.Status = Online
 	}
-	if !has("docker") {
-		for i := range want {
-			if want[i].ID == "temporal" {
-				want[i].Status = Idle
-				want[i].Reason = "external check pending"
-				continue
-			}
-			want[i].Status = Offline
-		}
-		return want
-	}
-	configDir := plan.ConfigDir
-	if configDir == "" {
-		configDir = composeDir
-	}
-	args := []string{"compose", "--project-name", plan.ComposeProject, "--project-directory", configDir, "-f", plan.ComposePath, "ps", "--format", "json"}
-	out, err := runWithEnv(ctx, dashboardruntime.ComposeEnvironment(values, plan, runtimeGOOS()), "docker", args...)
-	byName := map[string]struct {
-		state, status, image string
-	}{}
-	if err == nil {
-		// docker compose ps emits one JSON object per line
-		sc := bufio.NewScanner(strings.NewReader(out))
-		for sc.Scan() {
-			var row struct {
-				Service, State, Status, Image, Name string
-			}
-			if json.Unmarshal(sc.Bytes(), &row) == nil {
-				key := row.Service
-				if key == "" {
-					key = row.Name
-				}
-				byName[key] = struct{ state, status, image string }{row.State, row.Status, row.Image}
-			}
-		}
-	}
-	for i := range want {
-		switch want[i].ID {
-		case "temporal":
-			want[i].Status = Idle
-			want[i].Reason = "external workflow backend"
-		default:
-			if r, ok := byName[want[i].Name]; ok {
-				want[i].Image = r.image
-				want[i].Uptime = r.status
-				switch r.state {
-				case "running":
-					want[i].Status = Online
-				case "restarting", "paused":
-					want[i].Status = Degraded
-				default:
-					want[i].Status = Offline
-				}
-			} else {
-				want[i].Status = Offline
-			}
-		}
-	}
-	return want
+	temporal := Service{ID: "temporal", Name: "temporal", Role: values["TEMPORAL_ADDRESS"], Image: "gRPC", Expected: true, Status: dialTemporal(values["TEMPORAL_ADDRESS"]), Uptime: "—"}
+	return []Service{runner, temporal}
 }
 
 // dialTemporal reports whether the Temporal gRPC frontend accepts a TCP connection.

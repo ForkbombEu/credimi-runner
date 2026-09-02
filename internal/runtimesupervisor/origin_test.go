@@ -1,10 +1,12 @@
 package runtimesupervisor
 
 import (
+	"context"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/edge"
+	"github.com/forkbombeu/credimi-runner/pkg/server"
 )
 
 func TestLocalOriginURL(t *testing.T) {
@@ -39,7 +41,9 @@ func TestActivationPassesLocalOriginToEdge(t *testing.T) {
 		cfg.Server.APIListen = "0.0.0.0:8050"
 		return cfg, nil
 	}, Dependencies{
-		NewEdge: func(config.Config) (edge.Edge, error) { return e, nil },
+		NewEdge:    func(config.Config) (edge.Edge, error) { return e, nil },
+		NewAPI:     func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
+		NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return &testWorkers{} },
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -4,7 +4,7 @@ import (
 	"html/template"
 	"net"
 	"net/url"
-	goruntime "runtime"
+	"runtime"
 	"strings"
 	"time"
 
@@ -280,8 +280,6 @@ func (d PageData) RuntimeControlsAvailable() bool {
 	return true
 }
 
-func (d PageData) RuntimeImageVisible() bool { return goruntime.GOOS != "darwin" }
-
 func (d PageData) StartupPhase() StartupPhase {
 	if startup, ok := d.payload()["Startup"].(startupState); ok {
 		return startup.Phase
@@ -301,23 +299,6 @@ func (d PageData) RunnerVersion() string {
 		return version
 	}
 	return "dev"
-}
-
-func (d PageData) RunnerImage() string {
-	if !d.RuntimeImageVisible() {
-		return "—"
-	}
-	for _, service := range d.Snapshot.Services {
-		if service.ID == "runner" && strings.TrimSpace(service.Image) != "" {
-			return service.Image
-		}
-	}
-	if d.Runner != nil {
-		if image, _, err := dashboardruntime.SharedRunnerImage(d.Runner.Snapshot(), goruntime.GOOS); err == nil {
-			return orDash(image)
-		}
-	}
-	return "—"
 }
 
 func (d PageData) RunnerContainerDetails() string {
@@ -345,7 +326,7 @@ func (d PageData) MaintenanceStatus() maintenance.Status {
 
 func (d PageData) UpgradeAvailable() bool {
 	status := d.MaintenanceStatus()
-	return status.Runner.UpdateAvailable || (d.RuntimeImageVisible() && status.Image.UpdateAvailable)
+	return status.Runner.UpdateAvailable
 }
 
 func componentState(component maintenance.Component) string {
@@ -359,34 +340,14 @@ func componentState(component maintenance.Component) string {
 }
 
 func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
-func (d PageData) ImageVersionState() string {
-	if !d.RuntimeImageVisible() {
-		return "Not applicable on macOS"
-	}
-	if d.Runner != nil {
-		if _, pullPolicy, err := dashboardruntime.SharedRunnerImage(d.Runner.Snapshot(), goruntime.GOOS); err == nil && pullPolicy == "never" {
-			return "Registry check disabled"
-		}
-	}
-	return componentState(d.MaintenanceStatus().Image)
-}
 func (d PageData) RunnerCurrentBuiltAt() string {
 	return formatMaintenanceTime(d.MaintenanceStatus().Runner.CurrentBuiltAt)
 }
 func (d PageData) RunnerLatestBuiltAt() string {
 	return formatMaintenanceTime(d.MaintenanceStatus().Runner.LatestBuiltAt)
 }
-func (d PageData) ImageCurrentBuiltAt() string {
-	return formatMaintenanceTime(d.MaintenanceStatus().Image.CurrentBuiltAt)
-}
-func (d PageData) ImageLatestBuiltAt() string {
-	return formatMaintenanceTime(d.MaintenanceStatus().Image.LatestBuiltAt)
-}
 func (d PageData) LatestRunnerVersion() string {
 	return orDash(d.MaintenanceStatus().Runner.LatestVersion)
-}
-func (d PageData) LatestImageVersion() string {
-	return orDash(d.MaintenanceStatus().Image.LatestVersion)
 }
 func (d PageData) MaintenanceError() string { return d.MaintenanceStatus().Error }
 
@@ -503,5 +464,5 @@ func currentGOOS() string {
 	if goos != "" {
 		return goos
 	}
-	return goruntime.GOOS
+	return runtime.GOOS
 }

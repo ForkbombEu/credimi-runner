@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -51,16 +50,13 @@ type failureSource interface {
 
 type Dependencies struct {
 	NewEdge                     func(config.Config) (edge.Edge, error)
-	NewAPI                      func(config.Config, context.Context) (API, error)
-	NewAPIWithStore             func(config.Config, context.Context, *server.ProcessStore) (API, error)
-	NewWorkers                  func(config.Config) WorkerSet
-	NewWorkersWithStore         func(config.Config, *server.ProcessStore) WorkerSet
+	NewAPI                      func(config.Config, context.Context, *server.ProcessStore) (API, error)
+	NewWorkers                  func(config.Config, *server.ProcessStore) WorkerSet
 	NewLifecycleClient          func(config.Config, *server.ProcessStore) LifecycleClient
 	InitObservability           func(context.Context, config.Config) (func(context.Context) error, error)
 	ValidateRuntimeCapabilities func(context.Context, config.Config) error
 	Register                    func(context.Context, config.Config, string) error
 	VerifyPublicEndpoint        func(context.Context, config.Config, string) error
-	StartWorkers                func(context.Context, config.Config, *server.ProcessStore) error
 	NewProcessStore             func() *server.ProcessStore
 }
 
@@ -98,11 +94,6 @@ func New(configDir string, load func() (config.Config, error), deps Dependencies
 	return &Supervisor{configDir: configDir, stateStore: stateStore, loadConfig: load, deps: deps, saveState: stateStore.Save, state: state}, nil
 }
 
-// NewSupervisor is the descriptive constructor used by application wiring.
-func NewSupervisor(configDir string, load func() (config.Config, error), deps Dependencies) (*Supervisor, error) {
-	return New(configDir, load, deps)
-}
-
 func boundedContext(parent context.Context, maximum time.Duration) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
@@ -123,11 +114,6 @@ func (s *Supervisor) Status() Status {
 		status.HeartbeatRunning = s.generation.heartbeatRunning()
 	}
 	return status
-}
-func (s *Supervisor) ExecutionRunning() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.state.Desired == DesiredRunning
 }
 func (s *Supervisor) updateState(fn func(*PersistentState)) error {
 	s.mu.Lock()
@@ -197,7 +183,7 @@ func (s *Supervisor) startLocked(ctx context.Context, restoreOnPersistenceFailur
 	if err := config.ValidateForPlatform(cfg, runtime.GOOS); err != nil {
 		return s.fail(DesiredRunning, err)
 	}
-	g, err := s.newGeneration(ctx, cfg)
+	g, err := s.newGeneration(cfg)
 	if err != nil {
 		return s.fail(DesiredRunning, err)
 	}
@@ -212,7 +198,10 @@ func (s *Supervisor) startLocked(ctx context.Context, restoreOnPersistenceFailur
 	return nil
 }
 
-func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (result *generation, resultErr error) {
+func (s *Supervisor) newGeneration(cfg config.Config) (result *generation, resultErr error) {
+	if s.deps.NewAPI == nil {
+		return nil, errors.New("runtime API constructor is required")
+	}
 	// Generation lifetime is owned by the supervisor, not by the bounded
 	// transition context. The latter is canceled as soon as Start/Reconcile
 	// returns and must never tear down a successfully activated generation.
@@ -242,42 +231,19 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (r
 		g.shutdownObservability = shutdown
 		g.setOTELClosed(false)
 	}
-	if s.deps.NewAPIWithStore != nil {
-		api, err := s.deps.NewAPIWithStore(cfg, ctx, g.store)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		g.api = api
-		g.setAPIClosed(false)
-	} else if s.deps.NewAPI != nil {
-		api, err := s.deps.NewAPI(cfg, ctx)
-		if err != nil {
-			cancel()
-			return nil, err
-		}
-		g.api = api
-		g.setAPIClosed(false)
+	api, err := s.deps.NewAPI(cfg, ctx, g.store)
+	if err != nil {
+		cancel()
+		return nil, err
 	}
-	if g.api == nil {
-		if cfg.Server.APIListen != "" {
-			api, err := NewHTTPAPI(cfg, http.NewServeMux())
-			if err != nil {
-				cancel()
-				return nil, err
-			}
-			g.api = api
-			g.setAPIClosed(false)
-		} else {
-			g.api = &noopAPI{}
-		}
+	if api == nil {
+		cancel()
+		return nil, errors.New("runtime API constructor returned nil")
 	}
-	if s.deps.NewWorkersWithStore != nil {
-		g.workers = s.deps.NewWorkersWithStore(cfg, g.store)
-	} else if s.deps.NewWorkers != nil {
-		g.workers = s.deps.NewWorkers(cfg)
-	} else if s.deps.StartWorkers != nil {
-		g.workers = &callbackWorkers{start: func(ctx context.Context) error { return s.deps.StartWorkers(ctx, cfg, g.store) }}
+	g.api = api
+	g.setAPIClosed(false)
+	if s.deps.NewWorkers != nil {
+		g.workers = s.deps.NewWorkers(cfg, g.store)
 	}
 	if s.deps.NewLifecycleClient != nil {
 		g.lifecycle = s.deps.NewLifecycleClient(cfg, g.store)
@@ -346,12 +312,11 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 	if err := g.fatalError(); err != nil {
 		return err
 	}
-	if g.workers != nil || s.deps.StartWorkers != nil {
+	if g.workers != nil {
 		g.setWorkersClosed(false)
 		if err := g.workers.Start(ctx); err != nil {
 			return fmt.Errorf("start workers: %w", err)
 		}
-		g.setWorkersClosed(false)
 	}
 	if g.lifecycle != nil {
 		if err := g.fatalError(); err != nil {
@@ -534,7 +499,7 @@ func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 	if err := s.updateState(func(st *PersistentState) { st.Actual = ActualStopped; st.LastError = "" }); err != nil {
 		return s.fail(desired, err)
 	}
-	g, err := s.newGeneration(ctx, cfg)
+	g, err := s.newGeneration(cfg)
 	if err != nil {
 		return s.fail(desired, err)
 	}
@@ -741,28 +706,3 @@ func (g *generation) snapshot() (string, bool) {
 	defer g.mu.RUnlock()
 	return g.publicURL, g.executing
 }
-
-type noopAPI struct{}
-
-type callbackWorkers struct {
-	mu      sync.Mutex
-	start   func(context.Context) error
-	running bool
-}
-
-func (w *callbackWorkers) Start(ctx context.Context) error {
-	err := w.start(ctx)
-	if err == nil {
-		w.mu.Lock()
-		w.running = true
-		w.mu.Unlock()
-	}
-	return err
-}
-func (w *callbackWorkers) StopAll()                    { w.mu.Lock(); w.running = false; w.mu.Unlock() }
-func (*callbackWorkers) WaitAll(context.Context) error { return nil }
-func (w *callbackWorkers) Running() bool               { w.mu.Lock(); defer w.mu.Unlock(); return w.running }
-
-func (*noopAPI) Start() error                   { return nil }
-func (*noopAPI) Shutdown(context.Context) error { return nil }
-func (*noopAPI) Listening() bool                { return false }

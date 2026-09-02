@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
-	"path/filepath"
 	goruntime "runtime"
 	"sort"
-	"strconv"
 	"strings"
 
 	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
@@ -15,25 +13,11 @@ import (
 )
 
 type RuntimePlan struct {
-	ConfigDir         string
-	EnvPath           string
-	ComposePath       string
-	ComposeProject    string
 	ConfigFingerprint string
 	Backend           string
 	ServiceMode       string
-	ComposeServices   []string
 	PublicMode        string
 	RequiresDocker    bool
-	ExpectedServices  []PlannedService
-}
-
-type PlannedService struct {
-	ID       string
-	Name     string
-	Role     string
-	Critical bool
-	Kind     string
 }
 
 type ApplyClass string
@@ -99,16 +83,8 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 	serviceMode := normalizeServiceMode(values["CREDIMI_SERVICE_MODE"])
 	backend := backendForOS(goos)
 
-	canonicalDir, err := filepath.Abs(configDir)
-	if err != nil {
-		canonicalDir = configDir
-	}
-	fingerprint := configFingerprint(canonicalDir, values)
+	fingerprint := configFingerprint(configDir, values)
 	plan := RuntimePlan{
-		ConfigDir:         configDir,
-		EnvPath:           filepathJoin(configDir, "config.toml"),
-		ComposePath:       filepathJoin(configDir, "service-compose.yaml"),
-		ComposeProject:    composeProjectName(canonicalDir),
 		ConfigFingerprint: fingerprint,
 		Backend:           backend,
 		ServiceMode:       serviceMode,
@@ -121,36 +97,9 @@ func BuildRuntimePlanForOS(configDir string, values Values, goos string) Runtime
 		// from their form defaults before the user commits a service mode.
 		plan.ServiceMode = "bootstrap"
 		plan.PublicMode = "bootstrap"
-		plan.ComposeServices = []string{"runner"}
-		plan.ExpectedServices = expectedServices(plan)
 		return plan
 	}
-
-	switch {
-	case backend == DefaultNativeBackend && serviceMode == "manual":
-		plan.ComposeServices = nil
-	case backend == DefaultNativeBackend:
-		plan.ComposeServices = nil
-	case serviceMode == "manual":
-		plan.ComposeServices = []string{"runner"}
-	default:
-		plan.ComposeServices = []string{"runner"}
-	}
-
-	plan.ExpectedServices = expectedServices(plan)
-
 	return plan
-}
-
-func composeProjectName(configDir string) string {
-	if explicit := strings.TrimSpace(os.Getenv(servicemanager.ComposeProjectEnv)); explicit != "" {
-		return explicit
-	}
-	uid := os.Getuid()
-	if configured, err := strconv.Atoi(strings.TrimSpace(os.Getenv(ConfigOwnerUIDEnv))); err == nil && configured >= 0 {
-		uid = configured
-	}
-	return servicemanager.ProjectName(configDir, uid)
 }
 
 // ServiceRestartRequired compares desired typed configuration with the
@@ -175,20 +124,6 @@ func configFingerprint(configDir string, values Values) string {
 		_, _ = hash.Write([]byte(key + "=" + values[key] + "\n"))
 	}
 	return fmt.Sprintf("%016x", hash.Sum64())
-}
-
-func expectedServices(plan RuntimePlan) []PlannedService {
-	services := make([]PlannedService, 0, len(plan.ComposeServices)+2)
-	for _, service := range plan.ComposeServices {
-		switch service {
-		case "runner":
-			services = append(services, PlannedService{ID: "runner", Name: "runner", Role: "credimi-runner serve", Critical: true, Kind: "compose"})
-		}
-	}
-	if strings.TrimSpace(plan.ServiceMode) != "" && plan.ServiceMode != "bootstrap" {
-		services = append(services, PlannedService{ID: "temporal", Name: "temporal", Role: "workflow backend", Critical: false, Kind: "external"})
-	}
-	return services
 }
 
 func RunnerAPIReachableFromHost(values Values, goos string) bool {
@@ -360,52 +295,4 @@ func serviceFallbackChanged(keys []string) bool {
 		}
 	}
 	return false
-}
-
-// SharedRunnerImage exposes the image used by the service manager for the
-// single runner service. Rendering remains exclusively in servicemanager.
-func SharedRunnerImage(values Values, _ string) (image, pullPolicy string, err error) {
-	return defaultIfEmpty(values["ANDROID_RUNNER_IMAGE"], DefaultAndroidRunnerImage), defaultIfEmpty(values["ANDROID_PULL_POLICY"], DefaultAndroidPullPolicy), nil
-}
-
-// ComposeEnvironment supplies interpolation variables to the read-only
-// service observation path. It does not render or start a service.
-func ComposeEnvironment(values Values, plan RuntimePlan, goos string) []string {
-	normalized, err := NormalizeValues(values, goos)
-	if err != nil {
-		normalized = cloneValues(values)
-	}
-	overrides := []string{
-		"RUNNER_PORT=" + defaultIfEmpty(normalized["RUNNER_PORT"], DefaultRunnerPort),
-		"DASHBOARD_PORT=" + defaultIfEmpty(normalized["DASHBOARD_PORT"], DefaultDashboardPort),
-		servicemanager.ComposeProjectEnv + "=" + defaultIfEmpty(plan.ComposeProject, "credimi-runner"),
-		"CREDIMI_CONFIG_FINGERPRINT=" + defaultIfEmpty(plan.ConfigFingerprint, "unknown"),
-		"COMPOSE_PROGRESS=plain",
-		"DOCKER_CLI_HINTS=false",
-	}
-	for _, key := range []string{
-		BootstrapImageEnv, BootstrapPullPolicyEnv, ConfigOwnerUIDEnv,
-		ConfigOwnerGIDEnv, HostHomeEnv, HostAndroidDirEnv, HostGoldenRootEnv,
-		ContainerAndroidDirEnv, ContainerAVDHomeEnv, ContainerGoldenRootEnv,
-		BootstrapHostNetworkEnv, BootstrapPhaseEnv,
-	} {
-		overrides = append(overrides, key+"="+normalized[key])
-	}
-	return replaceEnvironment(os.Environ(), overrides...)
-}
-
-func replaceEnvironment(environment []string, overrides ...string) []string {
-	managed := make(map[string]struct{}, len(overrides))
-	for _, override := range overrides {
-		key, _, _ := strings.Cut(override, "=")
-		managed[key] = struct{}{}
-	}
-	result := make([]string, 0, len(environment)+len(overrides))
-	for _, entry := range environment {
-		key, _, _ := strings.Cut(entry, "=")
-		if _, ok := managed[key]; !ok {
-			result = append(result, entry)
-		}
-	}
-	return append(result, overrides...)
 }

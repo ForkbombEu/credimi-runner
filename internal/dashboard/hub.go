@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
@@ -39,7 +38,6 @@ type Hub struct {
 	composeDir string
 	render     *Renderer
 	statusFn   func() dashboardruntime.RuntimeStatus
-	observeFn  func(context.Context, dashboardruntime.Values) controller.ObservedRuntime
 
 	snapMu  sync.RWMutex
 	snap    Snapshot
@@ -58,12 +56,6 @@ type Worker struct {
 
 func NewHub(cfg *Config, composeDir string, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus) *Hub {
 	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, composeDir: composeDir, render: r, statusFn: statusFn}
-}
-
-func NewHubWithObservation(cfg *Config, composeDir string, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus, observeFn func(context.Context, dashboardruntime.Values) controller.ObservedRuntime) *Hub {
-	hub := NewHub(cfg, composeDir, r, statusFn)
-	hub.observeFn = observeFn
-	return hub
 }
 
 func (h *Hub) add(c *client) {
@@ -121,27 +113,12 @@ func (h *Hub) Run(ctx context.Context, interval time.Duration) {
 func (h *Hub) poll(ctx context.Context) {
 	devices := append(probeAndroid(ctx), probeIOS(ctx)...)
 	values := dashboardruntime.Values(h.cfg.Snapshot())
-	plan := dashboardruntime.BuildRuntimePlan(h.composeDir, values)
 	runtimeRunning := false
 	if h.statusFn != nil {
 		status := h.statusFn()
 		runtimeRunning = status.RunnerRunning
 	}
-	var services []Service
-	var observation controller.ObservedRuntime
-	observationStale := false
-	if h.observeFn != nil {
-		observation = h.observeFn(ctx, values)
-		observationStale = observation.Stale(time.Now(), 6*time.Second)
-		services = servicesFromObservation(observation)
-		for _, expected := range plan.ExpectedServices {
-			if expected.Kind == "external" {
-				services = append(services, Service{ID: expected.ID, Name: expected.Name, Role: expected.Role, Status: Idle, Expected: true, Critical: expected.Critical})
-			}
-		}
-	} else {
-		services = probeServices(ctx, h.composeDir, plan, values, runtimeRunning)
-	}
+	services := probeServices(ctx, values, runtimeRunning)
 	temporalAddr := h.cfg.Get("TEMPORAL_ADDRESS")
 	for i := range services {
 		if services[i].ID == "temporal" {
@@ -152,7 +129,7 @@ func (h *Hub) poll(ctx context.Context) {
 		}
 	}
 
-	snap := Snapshot{Services: services, Devices: devices, Time: time.Now(), Observation: observation, ObservationStale: observationStale}
+	snap := Snapshot{Services: services, Devices: devices, Time: time.Now()}
 	workers := h.runningWorkers(ctx, services)
 
 	h.snapMu.Lock()

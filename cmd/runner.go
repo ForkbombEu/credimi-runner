@@ -28,7 +28,7 @@ func currentServiceManager() servicemanager.Manager {
 	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy})
 }
 
-var waitForDashboardFunc = func(ctx context.Context, _ servicemanager.Manager) (string, error) {
+var waitForDashboardFunc = func(ctx context.Context) (string, error) {
 	metadata, err := waitForRunningController(ctx, effectiveConfigDir(), "")
 	if err != nil {
 		return "", err
@@ -44,7 +44,7 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	url, err := waitForDashboardFunc(cmd.Context(), manager)
+	url, err := waitForDashboardFunc(cmd.Context())
 	if err != nil {
 		return err
 	}

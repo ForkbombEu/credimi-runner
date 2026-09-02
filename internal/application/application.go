@@ -75,7 +75,7 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 			}
 			return edge.NewCloudflared(binary, mode, cfg.Exposure.CloudflareToken, cfg.Exposure.Domain), nil
 		},
-		NewAPIWithStore: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (runtimesupervisor.API, error) {
+		NewAPI: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (runtimesupervisor.API, error) {
 			applyEnvironment(cfg)
 			loader := runtimeConfigLoader(cfg)
 			svc := server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: loader})
@@ -83,7 +83,7 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 			readiness.RuntimeConfig = loader
 			return runtimesupervisor.NewHTTPAPI(cfg, server.NewHTTPHandlerWithReadiness(ctx, svc, false, readiness))
 		},
-		NewWorkersWithStore: func(cfg runnerconfig.Config, store *server.ProcessStore) runtimesupervisor.WorkerSet {
+		NewWorkers: func(cfg runnerconfig.Config, store *server.ProcessStore) runtimesupervisor.WorkerSet {
 			applyEnvironment(cfg)
 			return &workerSet{service: server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: runtimeConfigLoader(cfg)}), store: store}
 		},

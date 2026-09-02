@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -87,8 +88,13 @@ func (l *Lease) Publish(metadata Metadata) error {
 	})
 }
 
-var ReadMetadata = controlleridentity.ReadMetadata
-var Probe = controlleridentity.Probe
+func ReadMetadata(configDir string) (Metadata, error) {
+	return controlleridentity.ReadMetadata(configDir)
+}
+
+func Probe(ctx context.Context, metadata Metadata) error {
+	return controlleridentity.Probe(ctx, metadata)
+}
 
 func (l *Lease) Close() error {
 	if l == nil || l.file == nil {

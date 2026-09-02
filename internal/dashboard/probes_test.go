@@ -10,26 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/forkbombeu/credimi-runner/internal/controller"
-	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
-
-func TestServicesFromObservationMapsLifecycleStates(t *testing.T) {
-	services := servicesFromObservation(controller.ObservedRuntime{Services: []controller.ObservedService{
-		{ID: "running", State: controller.StateRunning, Critical: true},
-		{ID: "degraded", State: controller.StateDegraded},
-		{ID: "foreign", State: controller.StateForeign},
-		{ID: "unknown", State: controller.StateUnknown},
-		{ID: "stopped", State: controller.StateStopped},
-	}})
-	want := []Status{Online, Degraded, Degraded, Degraded, Offline}
-	for index, service := range services {
-		if service.Status != want[index] || !service.Expected {
-			t.Fatalf("service %d = %#v", index, service)
-		}
-	}
-}
 
 func TestProbeAndroid_ParseOutput(t *testing.T) {
 	// Simulated output from "adb devices -l"
@@ -241,21 +222,12 @@ printf '%s\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid
 	}
 }
 
-func TestProbeServicesWithFakeDocker(t *testing.T) {
-	bin := t.TempDir()
-	writeExecutable(t, filepath.Join(bin, "docker"), `#!/bin/sh
-	printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","Image":"runner:local"}'
-`)
-	t.Setenv("PATH", bin)
-
-	plan := dashboardruntime.BuildRuntimePlan(t.TempDir(), dashboardruntime.Values{
-		"CREDIMI_SERVICE_MODE": "auto",
-	})
-	services := probeServices(context.Background(), t.TempDir(), plan, dashboardruntime.Values{"CREDIMI_SERVICE_MODE": "auto"}, true)
+func TestProbeServicesUsesRuntimeAndTemporalState(t *testing.T) {
+	services := probeServices(context.Background(), map[string]string{"TEMPORAL_ADDRESS": ""}, true)
 	if len(services) != 2 {
 		t.Fatalf("services len = %d", len(services))
 	}
-	if services[0].Status != Online || services[0].Image != "runner:local" || services[0].Uptime != "Up 10 seconds" {
+	if services[0].Status != Online || services[0].Image != "" || services[0].Uptime != "" {
 		t.Fatalf("runner service = %#v", services[0])
 	}
 	if services[1].ID != "temporal" || services[1].Critical {
@@ -263,13 +235,8 @@ func TestProbeServicesWithFakeDocker(t *testing.T) {
 	}
 }
 
-func TestProbeServicesWithoutDocker(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	plan := dashboardruntime.BuildRuntimePlanForOS("", dashboardruntime.Values{
-		"CREDIMI_RUNNER_TYPE":  "ios_simulator",
-		"CREDIMI_SERVICE_MODE": "manual",
-	}, "darwin")
-	services := probeServices(context.Background(), "", plan, dashboardruntime.Values{"CREDIMI_RUNNER_TYPE": "ios_simulator", "CREDIMI_SERVICE_MODE": "manual"}, false)
+func TestProbeServicesReportsStoppedRuntime(t *testing.T) {
+	services := probeServices(context.Background(), map[string]string{}, false)
 	for _, svc := range services {
 		if svc.ID == "temporal" {
 			continue

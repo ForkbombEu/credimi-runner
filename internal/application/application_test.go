@@ -366,7 +366,9 @@ func TestApplicationDoesNotAutoStartStaleServiceConfiguration(t *testing.T) {
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(cfgA, true))
 	api := &countingApplicationAPI{}
 	s, err := runtimesupervisor.New(dir, nil, runtimesupervisor.Dependencies{
-		NewAPI: func(runnerconfig.Config, context.Context) (runtimesupervisor.API, error) { return api, nil },
+		NewAPI: func(runnerconfig.Config, context.Context, *server.ProcessStore) (runtimesupervisor.API, error) {
+			return api, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -425,7 +427,9 @@ func TestApplicationAutoStartsMatchingServiceAfterProcessRestart(t *testing.T) {
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(cfg, true))
 	api := &countingApplicationAPI{started: make(chan struct{})}
 	s, err := runtimesupervisor.New(dir, nil, runtimesupervisor.Dependencies{
-		NewAPI: func(runnerconfig.Config, context.Context) (runtimesupervisor.API, error) { return api, nil },
+		NewAPI: func(runnerconfig.Config, context.Context, *server.ProcessStore) (runtimesupervisor.API, error) {
+			return api, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -458,7 +462,7 @@ func TestRuntimeDependencyFactories(t *testing.T) {
 	cfg := runnerconfig.Bootstrap()
 	cfg.Exposure.Mode = "manual"
 	cfg.Exposure.PublicURL = "https://runner"
-	w := deps.NewWorkersWithStore(cfg, server.NewProcessStore())
+	w := deps.NewWorkers(cfg, server.NewProcessStore())
 	if w == nil || w.Running() {
 		t.Fatal("worker set unavailable")
 	}

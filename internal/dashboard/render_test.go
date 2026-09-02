@@ -162,7 +162,7 @@ func TestRenderer_FragmentPage(t *testing.T) {
 	if !strings.Contains(html, "Start Runner") {
 		t.Fatalf("overview fragment missing runtime start control: %s", html)
 	}
-	if !strings.Contains(html, "Maintenance") || !strings.Contains(html, "example.test/runner:latest") || !strings.Contains(html, "Up 2 minutes") {
+	if !strings.Contains(html, "Maintenance") || !strings.Contains(html, "Up 2 minutes") {
 		t.Fatalf("overview fragment missing maintenance details: %s", html)
 	}
 	if strings.Contains(html, "health-pill") {
@@ -637,7 +637,6 @@ func TestStaticBusyPollingIsSequential(t *testing.T) {
 		t.Fatal("dashboard network polling must schedule the next request only after the current request completes")
 	}
 	for _, want := range []string{
-		"setTimeout(pollBusyLogs, 1500)",
 		"setTimeout(pollBusyControllerOperation, 500)",
 		"setTimeout(pollBusyStartupStatus, 1500)",
 	} {
@@ -788,7 +787,7 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 			"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: true},
 			"Startup":       startupState{Phase: StartupReady, Message: "Ready"},
 			"RunnerVersion": "v1.2.3",
-			"Maintenance":   maintenance.Status{Runner: maintenance.Component{LatestVersion: "v1.2.4", UpdateAvailable: true}, Image: maintenance.Component{LatestVersion: "v2"}},
+			"Maintenance":   maintenance.Status{Runner: maintenance.Component{LatestVersion: "v1.2.4", UpdateAvailable: true}},
 		},
 	}
 
@@ -807,14 +806,14 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 	if d.RunnerAPIURL() != "http://127.0.0.1:9000" || d.PublicURL() != "https://runner.example:443" {
 		t.Fatalf("URLs api=%q public=%q", d.RunnerAPIURL(), d.PublicURL())
 	}
-	if d.RunnerImage() != "registry.example/runner:v2" || d.RunnerContainerDetails() != "Online · 2m" {
-		t.Fatalf("runner display image=%q details=%q", d.RunnerImage(), d.RunnerContainerDetails())
+	if d.RunnerContainerDetails() != "Online · 2m" {
+		t.Fatalf("runner details=%q", d.RunnerContainerDetails())
 	}
 	if !d.HasErrors() || d.Field("RUNNER_PORT").Err == "" || d.Flash() != "Saved" || d.StartupPhase() != StartupReady || d.StartupMessage() != "Ready" {
 		t.Fatalf("template payload was not exposed: %#v", d)
 	}
-	if !d.UpgradeAvailable() || d.RunnerVersionState() != "New version available" || d.ImageVersionState() != "Registry check disabled" || d.LatestRunnerVersion() != "v1.2.4" || d.LatestImageVersion() != "v2" {
-		t.Fatalf("maintenance view = runner=%q image=%q", d.RunnerVersionState(), d.ImageVersionState())
+	if !d.UpgradeAvailable() || d.RunnerVersionState() != "New version available" || d.LatestRunnerVersion() != "v1.2.4" {
+		t.Fatalf("maintenance view = runner=%q", d.RunnerVersionState())
 	}
 	if d.RunnerVersion() != "v1.2.3" || d.AvatarInitials() != "AC" || d.Field("CREDIMI_USER_API_KEY").MaskedValue() == "secret-value" {
 		t.Fatalf("identity view runner=%q avatar=%q", d.RunnerVersion(), d.AvatarInitials())

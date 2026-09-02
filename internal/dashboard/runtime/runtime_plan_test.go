@@ -1,50 +1,27 @@
 package runtime
 
 import (
-	"os"
-	"strings"
 	"testing"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
-func TestComposeProjectNameUsesHostIdentityAcrossContainerPaths(t *testing.T) {
-	hostPath := "/home/alice/.config/credimi-runner"
-	project := servicemanager.ProjectName(hostPath, 1000)
-	t.Setenv(servicemanager.ComposeProjectEnv, project)
-	t.Setenv(ConfigOwnerUIDEnv, "1000")
-	if got := composeProjectName("/etc/credimi-runner"); got != project {
-		t.Fatalf("container project = %q, want host project %q", got, project)
-	}
-	if got := os.Getenv(servicemanager.ComposeProjectEnv); got != project {
-		t.Fatalf("project environment = %q, want %q", got, project)
-	}
-}
-
-func TestRuntimePlanUsesOnlyServiceComposeRunner(t *testing.T) {
+func TestRuntimePlanDescribesRuntimePlacement(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		goos string
-		mode string
-		want int
+		name       string
+		goos       string
+		mode       string
+		wantDocker bool
 	}{
-		{name: "linux", goos: "linux", mode: "auto", want: 1},
-		{name: "manual", goos: "linux", mode: "manual", want: 1},
-		{name: "darwin", goos: "darwin", mode: "manual", want: 0},
+		{name: "linux", goos: "linux", mode: "auto", wantDocker: true},
+		{name: "manual", goos: "linux", mode: "manual", wantDocker: true},
+		{name: "darwin", goos: "darwin", mode: "manual", wantDocker: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plan := BuildRuntimePlanForOS(t.TempDir(), Values{"CREDIMI_SERVICE_MODE": tc.mode}, tc.goos)
-			if !strings.HasSuffix(plan.ComposePath, "service-compose.yaml") {
-				t.Fatalf("compose path = %q", plan.ComposePath)
-			}
-			if len(plan.ComposeServices) != tc.want {
-				t.Fatalf("compose services = %#v", plan.ComposeServices)
-			}
-			for _, service := range plan.ExpectedServices {
-				if service.ID != "runner" && service.Kind == "compose" {
-					t.Fatalf("unexpected compose service = %#v", service)
-				}
+			if plan.RequiresDocker != tc.wantDocker {
+				t.Fatalf("plan = %#v", plan)
 			}
 		})
 	}
@@ -83,28 +60,16 @@ func TestRuntimePlanClassifiesPersistentChanges(t *testing.T) {
 	}
 }
 
-func TestRuntimePlanEnvironmentAndImageHelpers(t *testing.T) {
+func TestRuntimePlanRuntimeHelpers(t *testing.T) {
 	values := Values{"ANDROID_RUNNER_IMAGE": "runner:test", "ANDROID_PULL_POLICY": "never", "RUNNER_PORT": "18050"}
-	image, policy, err := SharedRunnerImage(values, "linux")
-	if err != nil || image != "runner:test" || policy != "never" {
-		t.Fatalf("image helper = %q/%q/%v", image, policy, err)
-	}
-	plan := BuildRuntimePlanForOS("/tmp/config", values, "linux")
-	environment := ComposeEnvironment(values, plan, "linux")
-	if !containsEnvironment(environment, "RUNNER_PORT=18050") || !containsEnvironment(environment, "COMPOSE_PROGRESS=plain") {
-		t.Fatalf("environment = %#v", environment)
-	}
 	if !RunnerAPIReachableFromHost(values, "linux") || !RunnerReadinessRequiredBeforeRegistration(values, "linux") {
 		t.Fatal("linux runner should be host reachable")
 	}
 	if !DeviceReadinessRequired(Values{"CREDIMI_RUNNER_ID": "org/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "org/runner/device", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb"}, "linux") {
 		t.Fatal("physical Android device should require readiness")
 	}
-	if BuildRuntimePlan("/tmp/config", values).ComposePath == "" || len(DiffValues(Values{}, Values{"DASHBOARD_TOKEN": "token"}).Classes) != 1 {
+	if BuildRuntimePlan("/tmp/config", values).ConfigFingerprint == "" || len(DiffValues(Values{}, Values{"DASHBOARD_TOKEN": "token"}).Classes) != 1 {
 		t.Fatal("wrapper helpers returned empty results")
-	}
-	if image, policy, err := SharedRunnerImage(Values{}, "linux"); err != nil || image == "" || policy == "" {
-		t.Fatalf("default image helper = %q/%q/%v", image, policy, err)
 	}
 	if RunnerAPIReachableFromHost(Values{"CREDIMI_RUNNER_TYPE": "ios_simulator"}, "linux") {
 		t.Fatal("unsupported device type reported as reachable")
@@ -117,21 +82,13 @@ func TestRuntimePlanEnvironmentAndImageHelpers(t *testing.T) {
 	}
 }
 
-func TestRuntimePlanBootstrapAndEnvironmentFallbacks(t *testing.T) {
+func TestRuntimePlanBootstrap(t *testing.T) {
 	plan := BuildRuntimePlanForOS(t.TempDir(), Values{BootstrapPhaseEnv: "true"}, "linux")
-	if plan.ServiceMode != "bootstrap" || len(plan.ComposeServices) != 1 || len(plan.ExpectedServices) != 1 {
+	if plan.ServiceMode != "bootstrap" || plan.PublicMode != "bootstrap" {
 		t.Fatalf("bootstrap plan = %+v", plan)
 	}
 	if !RunnerAPIReachableFromHost(Values{}, "darwin") || !RunnerReadinessRequiredBeforeRegistration(Values{}, "darwin") {
 		t.Fatal("native runner should be reachable")
-	}
-	invalid := ComposeEnvironment(Values{"RUNNER_PORT": "bad"}, RuntimePlan{}, "linux")
-	if !containsEnvironment(invalid, "CREDIMI_COMPOSE_PROJECT=credimi-runner") || !containsEnvironment(invalid, "CREDIMI_CONFIG_FINGERPRINT=unknown") {
-		t.Fatalf("fallback environment = %#v", invalid)
-	}
-	replaced := replaceEnvironment([]string{"RUNNER_PORT=old", "OTHER=value"}, "RUNNER_PORT=new")
-	if !containsEnvironment(replaced, "RUNNER_PORT=new") || !containsEnvironment(replaced, "OTHER=value") {
-		t.Fatalf("replaced environment = %#v", replaced)
 	}
 }
 

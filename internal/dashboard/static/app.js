@@ -247,7 +247,6 @@
 
   // ── Global busy overlay for runtime-changing requests ───────────────────
   const setupBusyKey = 'credimi-runner:setup-startup-busy';
-  let busyLogTimer = null;
 	let busyControllerTimer = null;
   let busyStartupTimer = null;
   let busyLogSeen = new Set();
@@ -267,16 +266,6 @@
     const stamp = new Date().toLocaleTimeString([], { hour12: false });
     log.textContent += `${stamp}  ${text}\n`;
     log.scrollTop = log.scrollHeight;
-  }
-  async function pollBusyLogs() {
-    try {
-      const res = await fetch(dashboardURL('/runtime/logs'), { headers: { Accept: 'application/json' } });
-      if (res.ok) {
-        const data = await res.json();
-        (data.lines || []).slice(-24).forEach(appendBusyLog);
-      }
-    } catch (_) {}
-    if (busyLogTimer !== null && !busyOverlay()?.hidden) busyLogTimer = setTimeout(pollBusyLogs, 1500);
   }
 	async function pollBusyControllerOperation() {
 		try {
@@ -346,14 +335,8 @@
 			appendBusyLog('Writing configuration and preparing Docker services.');
 			appendBusyLog('Large runner images can take several minutes the first time.');
 		}
-    clearTimeout(busyLogTimer);
 		clearTimeout(busyControllerTimer);
-    busyLogTimer = null;
 		busyControllerTimer = null;
-    if (options.runtimeLogs !== false) {
-      busyLogTimer = 0;
-      pollBusyLogs();
-    }
 		if (options.controllerProgress) {
 			busyControllerTimer = 0;
 			pollBusyControllerOperation();
@@ -364,17 +347,15 @@
   function hideBusy() {
     const overlay = busyOverlay();
     if (!overlay) return;
-    clearTimeout(busyLogTimer);
 		clearTimeout(busyControllerTimer);
     clearTimeout(busyStartupTimer);
-    busyLogTimer = null;
 		busyControllerTimer = null;
     busyStartupTimer = null;
     overlay.hidden = true;
     document.body.classList.remove('busy-lock');
   }
   function showSetupBusy(message) {
-    showBusy(message || 'Writing runner config and starting services. You may close this page safely.', { runtimeLogs: false });
+    showBusy(message || 'Writing runner config and starting services. You may close this page safely.');
     clearTimeout(busyStartupTimer);
     busyStartupTimer = null;
     busyStartupTimer = 0;

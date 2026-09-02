@@ -30,21 +30,15 @@ func TestAssetNameMatchesInstallerPlatforms(t *testing.T) {
 	}
 }
 
-func TestCheckerComparesRunnerAndImageMetadata(t *testing.T) {
+func TestCheckerComparesRunnerReleaseMetadata(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"tag_name":"v2.0.0","published_at":"2026-07-01T12:00:00Z"}`))}, nil
 	})}
-	run := func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if len(args) > 1 && args[0] == "image" {
-			return []byte(`[{"Id":"sha256:old","Created":"2026-06-01T12:00:00Z","RepoDigests":["example/image@sha256:old"]}]`), nil
-		}
-		return []byte(`{"Digest":"sha256:new","Image":{"created":"2026-07-02T12:00:00Z"}}`), nil
-	}
-	status := (Checker{HTTPClient: client, Run: run}).Check(context.Background(), "v1.0.0", time.Time{}, "example/image:latest")
-	if !status.Runner.UpdateAvailable || !status.Image.UpdateAvailable {
+	status := (Checker{HTTPClient: client}).Check(context.Background(), "v1.0.0", time.Time{})
+	if !status.Runner.UpdateAvailable {
 		t.Fatalf("status = %#v", status)
 	}
-	if status.Runner.LatestVersion != "v2.0.0" || status.Image.LatestVersion != "sha256:new" {
+	if status.Runner.LatestVersion != "v2.0.0" {
 		t.Fatalf("status = %#v", status)
 	}
 }
@@ -81,37 +75,19 @@ func TestCheckerAllowsConfigurationWithoutRunnerImage(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"tag_name":"v1","published_at":"2026-01-01T00:00:00Z"}`))}, nil
 	})}
-	status := (Checker{HTTPClient: client}).Check(context.Background(), "v1", time.Time{}, "")
+	status := (Checker{HTTPClient: client}).Check(context.Background(), "v1", time.Time{})
 	if status.Error != "" || status.Runner.UpdateAvailable {
 		t.Fatalf("status = %#v", status)
 	}
 }
 
-func TestCheckerReportsReleaseAndImageInspectionErrors(t *testing.T) {
+func TestCheckerReportsReleaseErrors(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Status: "503 unavailable", Body: io.NopCloser(strings.NewReader(""))}, nil
 	})}
-	status := (Checker{HTTPClient: client, Run: func(context.Context, string, ...string) ([]byte, error) {
-		return nil, errors.New("docker unavailable")
-	}}).Check(context.Background(), "v1", time.Time{}, "example/image:latest")
-	if !strings.Contains(status.Error, "GitHub returned 503") || !strings.Contains(status.Error, "docker unavailable") {
+	status := (Checker{HTTPClient: client}).Check(context.Background(), "v1", time.Time{})
+	if !strings.Contains(status.Error, "GitHub returned 503") {
 		t.Fatalf("status error = %q", status.Error)
-	}
-}
-
-func TestCheckerRecognizesCurrentImageDigest(t *testing.T) {
-	checker := Checker{Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if args[0] == "image" {
-			return []byte(`[{"Id":"sha256:same","Created":"2026-06-01T12:00:00Z","RepoDigests":["example/image@sha256:same"]}]`), nil
-		}
-		return []byte(`{"Digest":"sha256:same","created":"2026-06-01T12:00:00Z"}`), nil
-	}}
-	component := Component{}
-	if err := checker.checkImage(context.Background(), "example/image:latest", &component); err != nil {
-		t.Fatal(err)
-	}
-	if component.UpdateAvailable {
-		t.Fatalf("component = %#v", component)
 	}
 }
 
@@ -141,39 +117,12 @@ func TestDownloadLatestBinaryReportsTransportAndInstallErrors(t *testing.T) {
 	}
 }
 
-func TestCheckerRejectsMalformedMetadata(t *testing.T) {
+func TestCheckerRejectsMalformedReleaseMetadata(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("not-json"))}, nil
 	})}
-	checker := Checker{HTTPClient: client, Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		if args[0] == "image" {
-			return []byte(`[{"Id":"sha256:old","Created":"2026-01-01T00:00:00Z"}]`), nil
-		}
-		return []byte("not-json"), nil
-	}}
-	status := checker.Check(context.Background(), "v1", time.Time{}, "example/image:latest")
+	status := (Checker{HTTPClient: client}).Check(context.Background(), "v1", time.Time{})
 	if !strings.Contains(status.Error, "invalid character") {
 		t.Fatalf("status error = %q", status.Error)
-	}
-	component := Component{}
-	if err := (Checker{Run: func(context.Context, string, ...string) ([]byte, error) { return []byte("[]"), nil }}).checkImage(context.Background(), "image", &component); err == nil {
-		t.Fatal("expected empty local metadata error")
-	}
-}
-
-func TestFindStringSearchesNestedImageMetadata(t *testing.T) {
-	nested := map[string]any{
-		"metadata": []any{
-			map[string]any{"digest": "sha256:nested"},
-		},
-	}
-	if got := findString(nested, "Digest", "digest"); got != "sha256:nested" {
-		t.Fatalf("nested digest = %q", got)
-	}
-	if got := findString(map[string]any{"digest": 42}, "digest"); got != "" {
-		t.Fatalf("non-string digest = %q", got)
-	}
-	if got := findString([]any{map[string]any{"other": "value"}}, "digest"); got != "" {
-		t.Fatalf("missing digest = %q", got)
 	}
 }
