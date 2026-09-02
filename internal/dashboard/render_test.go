@@ -788,13 +788,13 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 	if d.RunnerAPIURL() != "http://127.0.0.1:9000" || d.PublicURL() != "https://runner.example:443" {
 		t.Fatalf("URLs api=%q public=%q", d.RunnerAPIURL(), d.PublicURL())
 	}
-	if d.RunnerContainerDetails() != "Online · 2m" {
-		t.Fatalf("runner details=%q", d.RunnerContainerDetails())
+	if d.RunnerServiceDetails() != "Online · 2m" {
+		t.Fatalf("runner details=%q", d.RunnerServiceDetails())
 	}
 	if !d.HasErrors() || d.Field("RUNNER_PORT").Err == "" || d.Flash() != "Saved" || d.StartupPhase() != StartupReady || d.StartupMessage() != "Ready" {
 		t.Fatalf("template payload was not exposed: %#v", d)
 	}
-	if !d.UpgradeAvailable() || d.RunnerVersionState() != "New version available" || d.LatestRunnerVersion() != "v1.2.4" {
+	if d.RunnerVersionState() != "New version available" || d.LatestRunnerVersion() != "v1.2.4" {
 		t.Fatalf("maintenance view = runner=%q", d.RunnerVersionState())
 	}
 	if d.RunnerVersion() != "v1.2.3" || d.AvatarInitials() != "AC" || d.Field("CREDIMI_USER_API_KEY").MaskedValue() == "secret-value" {

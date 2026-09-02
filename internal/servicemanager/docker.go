@@ -4,13 +4,17 @@ package servicemanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	controller "github.com/forkbombeu/credimi-runner/internal/controller/identity"
 )
@@ -86,7 +90,10 @@ func (m *DockerManager) Start(ctx context.Context) error {
 	if err := WriteServiceComposeWithHost(m.ConfigDir, cfg, m.host); err != nil {
 		return err
 	}
-	return m.compose(ctx, "up", "-d", "runner")
+	if err := m.compose(ctx, "up", "-d", "runner"); err != nil {
+		return err
+	}
+	return m.recordAppliedImage(ctx, cfg.Android.RunnerImage)
 }
 func (m *DockerManager) Stop(ctx context.Context) error {
 	return m.compose(ctx, "down", "--timeout", "30")
@@ -164,7 +171,37 @@ func (m *DockerManager) UpgradeImage(ctx context.Context, progress func(string))
 	if progress != nil {
 		progress("Recreating runner service")
 	}
-	return m.compose(ctx, "up", "-d", "--force-recreate", "runner")
+	if err := m.compose(ctx, "up", "-d", "--force-recreate", "runner"); err != nil {
+		return err
+	}
+	cfg, err := m.config()
+	if err != nil {
+		return err
+	}
+	return m.recordAppliedImage(ctx, cfg.Android.RunnerImage)
+}
+
+func (m *DockerManager) recordAppliedImage(ctx context.Context, configured string) error {
+	args := []string{"compose", "--project-name", ProjectName(m.ConfigDir, m.host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "ps", "-q", "runner"}
+	out, err := m.Runner.Output(ctx, "docker", args, os.Environ())
+	if err != nil {
+		return err
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return errors.New("runner service container unavailable")
+	}
+	digest, err := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{.Image}}", id}, os.Environ())
+	if err != nil {
+		return err
+	}
+	state := struct {
+		Image     string    `json:"image"`
+		Digest    string    `json:"digest"`
+		UpdatedAt time.Time `json:"updated_at"`
+	}{configured, strings.TrimSpace(string(digest)), time.Now().UTC()}
+	raw, _ := json.Marshal(state)
+	return atomicfile.WriteAtomic(filepath.Join(m.ConfigDir, "service-image-state.json"), 0o600, atomicfile.FromEnvironment(), func(w io.Writer) error { _, err := w.Write(raw); return err })
 }
 func (m *DockerManager) Logs(ctx context.Context, opts LogOptions) error {
 	lines := opts.Lines

@@ -71,7 +71,8 @@
     </header>
     <div class="card-b">
       <div class="maintenance-grid">
-        <div class="maintenance-detail"><span>Runner version</span><b>{{.RunnerVersion}}</b><strong>{{.RunnerVersionState}}</strong><small>Installed build: {{.RunnerCurrentBuiltAt}}</small><small>Latest: {{.LatestRunnerVersion}} · {{.RunnerLatestBuiltAt}}</small></div>
+        <div class="maintenance-detail"><span>Runner binary</span><b>{{.RunnerVersion}}</b><strong>{{.RunnerVersionState}}</strong><small>Installed build: {{.RunnerCurrentBuiltAt}}</small><small>Latest: {{.LatestRunnerVersion}} · {{.RunnerLatestBuiltAt}}</small></div>
+        {{if .RuntimeImageVisible}}<div class="maintenance-detail"><span>Runner image</span><b class="mono">{{.ImageCurrentVersion}}</b><strong>{{.ImageVersionState}}</strong><small>Latest: {{.ImageLatestVersion}}</small></div>{{end}}
       </div>
       {{if .MaintenanceError}}<div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Update check incomplete: {{.MaintenanceError}}</div></div>{{end}}
       <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Use the host CLI to upgrade or restart the persistent Runner service.</div></div>

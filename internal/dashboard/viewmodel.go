@@ -301,7 +301,7 @@ func (d PageData) RunnerVersion() string {
 	return "dev"
 }
 
-func (d PageData) RunnerContainerDetails() string {
+func (d PageData) RunnerServiceDetails() string {
 	for _, service := range d.Snapshot.Services {
 		if service.ID != "runner" {
 			continue
@@ -315,8 +315,6 @@ func (d PageData) RunnerContainerDetails() string {
 	return "Not present"
 }
 
-func (d PageData) RunnerServiceDetails() string { return d.RunnerContainerDetails() }
-
 func (d PageData) MaintenanceStatus() maintenance.Status {
 	if status, ok := d.payload()["Maintenance"].(maintenance.Status); ok {
 		return status
@@ -324,9 +322,16 @@ func (d PageData) MaintenanceStatus() maintenance.Status {
 	return maintenance.Status{}
 }
 
-func (d PageData) UpgradeAvailable() bool {
-	status := d.MaintenanceStatus()
-	return status.Runner.UpdateAvailable
+func (d PageData) RuntimeImageVisible() bool {
+	return runtimeGOOS() != "darwin" && d.Runner != nil && d.Runner.Get("CREDIMI_SERVICE_MODE") != "manual"
+}
+
+func (d PageData) ImageVersionState() string { return componentState(d.MaintenanceStatus().Image) }
+func (d PageData) ImageCurrentVersion() string {
+	return orDash(shortDigest(d.MaintenanceStatus().Image.CurrentVersion))
+}
+func (d PageData) ImageLatestVersion() string {
+	return orDash(shortDigest(d.MaintenanceStatus().Image.LatestVersion))
 }
 
 func componentState(component maintenance.Component) string {
@@ -348,6 +353,12 @@ func (d PageData) RunnerLatestBuiltAt() string {
 }
 func (d PageData) LatestRunnerVersion() string {
 	return orDash(d.MaintenanceStatus().Runner.LatestVersion)
+}
+func shortDigest(value string) string {
+	if len(value) > 19 && strings.HasPrefix(value, "sha256:") {
+		return value[:19]
+	}
+	return value
 }
 func (d PageData) MaintenanceError() string { return d.MaintenanceStatus().Error }
 

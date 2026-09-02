@@ -161,7 +161,7 @@ func RunnerReadinessRequiredBeforeRegistration(values Values, goos string) bool 
 		return false
 	}
 	// Container runners publish their API on the local host. Registration must
-	// wait for that API instead of treating `docker compose up -d` as readiness.
+	// wait for that API instead of treating service start as readiness.
 	return RunnerAPIReachableFromHost(normalized, goos)
 }
 

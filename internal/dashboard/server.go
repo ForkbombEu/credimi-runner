@@ -156,7 +156,7 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 	if srv.operations == nil {
 		srv.operations = controller.NewCoordinator(parent)
 	}
-	checker := maintenance.Checker{}
+	checker := maintenance.Checker{ConfigDir: composeDir, Image: cfg.Get("ANDROID_RUNNER_IMAGE")}
 	srv.maintenanceChecker = checker.Check
 
 	hubCtx, cancel := context.WithCancel(parent)

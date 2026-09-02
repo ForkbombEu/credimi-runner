@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -22,22 +25,222 @@ type Component struct {
 
 type Status struct {
 	Runner    Component
+	Image     Component
 	CheckedAt time.Time
 	Error     string
 }
 
 type Checker struct {
 	HTTPClient *http.Client
+	ConfigDir  string
+	Image      string
 }
 
 func (c Checker) Check(ctx context.Context, currentVersion string, currentBuiltAt time.Time) Status {
-	status := Status{CheckedAt: time.Now(), Runner: Component{CurrentVersion: currentVersion, CurrentBuiltAt: currentBuiltAt}}
+	status := Status{CheckedAt: time.Now(), Runner: Component{CurrentVersion: currentVersion, CurrentBuiltAt: currentBuiltAt}, Image: Component{CurrentVersion: c.Image}}
 	var problems []string
 	if err := c.checkRelease(ctx, &status.Runner); err != nil {
 		problems = append(problems, "runner: "+err.Error())
 	}
+	if strings.TrimSpace(c.Image) != "" && runtime.GOOS != "darwin" {
+		if err := c.checkImage(ctx, &status.Image); err != nil {
+			problems = append(problems, "image: "+err.Error())
+		}
+	}
 	status.Error = strings.Join(problems, "; ")
 	return status
+}
+
+type ServiceImageState struct {
+	Image     string    `json:"image"`
+	Digest    string    `json:"digest"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+func ReadImageState(configDir string) (ServiceImageState, error) {
+	raw, err := os.ReadFile(filepath.Join(configDir, "service-image-state.json"))
+	if err != nil {
+		return ServiceImageState{}, err
+	}
+	var state ServiceImageState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return ServiceImageState{}, err
+	}
+	return state, nil
+}
+
+func (c Checker) checkImage(ctx context.Context, component *Component) error {
+	state, err := ReadImageState(c.ConfigDir)
+	if err != nil {
+		return fmt.Errorf("applied image state unavailable: %w", err)
+	}
+	component.CurrentVersion = state.Digest
+	if strings.TrimSpace(state.Digest) == "" {
+		return fmt.Errorf("applied image digest unavailable")
+	}
+	digest, err := remoteDigest(ctx, c.client(), c.Image)
+	if err != nil {
+		return err
+	}
+	component.LatestVersion = digest
+	component.UpdateAvailable = normalizeDigest(state.Digest) != normalizeDigest(digest)
+	return nil
+}
+
+func (c Checker) client() *http.Client {
+	if c.HTTPClient != nil {
+		return c.HTTPClient
+	}
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
+func normalizeDigest(v string) string { return strings.TrimPrefix(strings.TrimSpace(v), "sha256:") }
+
+func remoteDigest(ctx context.Context, client *http.Client, image string) (string, error) {
+	registry, repo, ref, err := parseImage(image)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(ref, "sha256:") {
+		return ref, nil
+	}
+	base := "https://" + registry
+	if strings.Contains(registry, "://") {
+		base = registry
+	}
+	url := base + "/v2/" + repo + "/manifests/" + ref
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		challenge := resp.Header.Get("WWW-Authenticate")
+		resp.Body.Close()
+		token, err := bearerToken(ctx, client, challenge)
+		if err != nil {
+			return "", err
+		}
+		req, _ = http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
+		req.Header.Set("Accept", "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err = client.Do(req)
+		if err != nil {
+			return "", err
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("registry returned %s", resp.Status)
+	}
+	digest := strings.TrimSpace(resp.Header.Get("Docker-Content-Digest"))
+	if digest == "" {
+		return "", fmt.Errorf("registry response omitted Docker-Content-Digest")
+	}
+	return digest, nil
+}
+
+func parseImage(image string) (registry, repo, ref string, err error) {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return "", "", "", fmt.Errorf("image reference is empty")
+	}
+	if at := strings.LastIndex(image, "@"); at >= 0 {
+		registryRepo := image[:at]
+		ref = image[at+1:]
+		image = registryRepo
+		if !strings.HasPrefix(ref, "sha256:") {
+			return "", "", "", fmt.Errorf("unsupported image digest")
+		}
+	}
+	customRegistry := ""
+	if strings.HasPrefix(image, "http://") || strings.HasPrefix(image, "https://") {
+		schemeEnd := strings.Index(image, "://")
+		rest := image[schemeEnd+3:]
+		slash := strings.IndexByte(rest, '/')
+		if slash < 1 {
+			return "", "", "", fmt.Errorf("invalid image reference")
+		}
+		customRegistry, image = image[:schemeEnd+3+slash], rest[slash+1:]
+	}
+	parts := strings.Split(image, "/")
+	registry = "docker.io"
+	if customRegistry != "" {
+		registry = customRegistry
+	}
+	if customRegistry == "" && len(parts) > 1 {
+		registry = parts[0]
+		parts = parts[1:]
+	}
+	repo = strings.Join(parts, "/")
+	if repo == "" {
+		return "", "", "", fmt.Errorf("invalid image reference")
+	}
+	if ref == "" {
+		ref = "latest"
+		if colon := strings.LastIndex(repo, ":"); colon >= 0 {
+			ref, repo = repo[colon+1:], repo[:colon]
+		}
+	}
+	if strings.Contains(ref, "/") {
+		return "", "", "", fmt.Errorf("invalid image reference")
+	}
+	return registry, repo, ref, nil
+}
+
+func bearerToken(ctx context.Context, client *http.Client, challenge string) (string, error) {
+	fields := strings.Fields(challenge)
+	if len(fields) < 2 || !strings.EqualFold(fields[0], "Bearer") {
+		return "", fmt.Errorf("registry authentication challenge unavailable")
+	}
+	params := map[string]string{}
+	for _, part := range strings.Split(strings.Join(fields[1:], " "), ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if ok {
+			params[k] = strings.Trim(v, "\"")
+		}
+	}
+	if params["realm"] == "" {
+		return "", fmt.Errorf("registry token realm unavailable")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, params["realm"], nil)
+	if err != nil {
+		return "", err
+	}
+	q := req.URL.Query()
+	if params["service"] != "" {
+		q.Set("service", params["service"])
+	}
+	if params["scope"] != "" {
+		q.Set("scope", params["scope"])
+	}
+	req.URL.RawQuery = q.Encode()
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("registry token returned %s", resp.Status)
+	}
+	var body struct {
+		Token       string `json:"token"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return "", err
+	}
+	if body.Token == "" {
+		body.Token = body.AccessToken
+	}
+	if body.Token == "" {
+		return "", fmt.Errorf("registry token missing")
+	}
+	return body.Token, nil
 }
 
 func (c Checker) checkRelease(ctx context.Context, component *Component) error {

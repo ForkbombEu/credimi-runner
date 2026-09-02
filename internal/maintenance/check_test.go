@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,61 @@ func TestCheckerComparesRunnerReleaseMetadata(t *testing.T) {
 	}
 	if status.Runner.LatestVersion != "v2.0.0" {
 		t.Fatalf("status = %#v", status)
+	}
+}
+
+func TestRemoteDigestAndBearerAuthentication(t *testing.T) {
+	var manifestCalls, tokenCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/token") {
+			tokenCalls++
+			_, _ = io.WriteString(w, `{"token":"abc"}`)
+			return
+		}
+		manifestCalls++
+		if r.Header.Get("Authorization") == "" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="`+"http://"+r.Host+`/token",service="ghcr.io",scope="repository:x:y:pull"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Docker-Content-Digest", "sha256:new")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	digest, err := remoteDigest(context.Background(), srv.Client(), srv.URL+"/x/y:latest")
+	if err != nil || digest != "sha256:new" || manifestCalls != 2 || tokenCalls != 1 {
+		t.Fatalf("digest=%q err=%v calls=%d/%d", digest, err, manifestCalls, tokenCalls)
+	}
+	if pinned, err := remoteDigest(context.Background(), srv.Client(), srv.URL+"/x/y@sha256:pinned"); err != nil || pinned != "sha256:pinned" {
+		t.Fatalf("pinned=%q err=%v", pinned, err)
+	}
+}
+
+func TestCheckerImageStateAndFailures(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"x","digest":"sha256:same"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Docker-Content-Digest", "sha256:same")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	checker := Checker{ConfigDir: dir, Image: srv.URL + "/x/y:latest", HTTPClient: srv.Client()}
+	status := checker.Check(context.Background(), "v1", time.Time{})
+	if status.Image.UpdateAvailable || status.Image.CurrentVersion == "" {
+		t.Fatalf("status=%+v", status)
+	}
+	if got := (Checker{ConfigDir: t.TempDir(), Image: checker.Image}).Check(context.Background(), "v1", time.Time{}); got.Image.LatestVersion != "" || got.Error == "" {
+		t.Fatalf("missing state=%+v", got)
+	}
+}
+
+func TestParseImageRejectsMalformedReferences(t *testing.T) {
+	for _, image := range []string{"", "x@yesterday", "http://host"} {
+		if _, _, _, err := parseImage(image); err == nil {
+			t.Fatalf("accepted %q", image)
+		}
 	}
 }
 

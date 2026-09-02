@@ -332,8 +332,8 @@
 		appendBusyLog(message || 'Starting runtime operation.');
 		if (options.controllerProgress) appendBusyLog('Waiting for device preparation to start.');
 		else {
-			appendBusyLog('Writing configuration and preparing Docker services.');
-			appendBusyLog('Large runner images can take several minutes the first time.');
+			appendBusyLog('Writing configuration and preparing the Runner runtime.');
+			appendBusyLog('Runtime preparation can take several minutes the first time.');
 		}
 		clearTimeout(busyControllerTimer);
 		busyControllerTimer = null;
@@ -424,6 +424,14 @@
     $$('.modal-bk').forEach((m) => { m.hidden = true; });
   }
   document.addEventListener('click', (e) => {
+    const check = e.target.closest('[data-maintenance-check]');
+    if (check) {
+      check.disabled = true;
+      fetch(dashboardURL('/maintenance/check'), { method: 'POST', headers: { Accept: 'application/json' } })
+        .then(async (response) => { if (!response.ok) throw new Error(await response.text()); refreshOverview(); })
+        .catch((error) => { check.disabled = false; window.alert(`Update check failed: ${String(error.message || error).trim()}`); });
+      return;
+    }
     const open = e.target.closest('[data-open-modal]');
     if (open) { const m = $('#modal-' + open.dataset.openModal); if (m) { m.hidden = false; resetWizard(m); } }
     if (e.target.closest('[data-close-modal]')) closeModals();
