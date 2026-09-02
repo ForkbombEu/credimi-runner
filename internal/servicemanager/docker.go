@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
+	controller "github.com/forkbombeu/credimi-runner/internal/controller/identity"
 )
 
 type CommandRunner interface {
@@ -126,8 +127,12 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 			}
 		}
 	}
-	if live := liveDashboardURL(ctx, m.ConfigDir); live != "" {
-		status.DashboardURL = live
+	if status.Running {
+		probeCtx, cancel := context.WithTimeout(ctx, controller.ProbeTimeout)
+		if live, liveErr := readLiveController(probeCtx, m.ConfigDir); liveErr == nil {
+			status.DashboardURL = strings.TrimRight(live.PublicURL, "/")
+		}
+		cancel()
 	}
 	populateRuntimeState(m.ConfigDir, &status)
 	return status, nil

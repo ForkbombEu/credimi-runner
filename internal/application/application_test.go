@@ -11,6 +11,7 @@ import (
 	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
+	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
@@ -24,6 +25,92 @@ func TestDashboardHostPortDefaults(t *testing.T) {
 	host, port = dashboardHostPort(map[string]string{"DASHBOARD_HOST": "127.0.0.2", "DASHBOARD_PORT": "9000"})
 	if host != "127.0.0.2" || port != "9000" {
 		t.Fatalf("got %s:%s", host, port)
+	}
+}
+
+func TestApplicationPublishesReachableControllerURLs(t *testing.T) {
+	for _, tc := range []struct {
+		name, listen, mode, wantListen, wantURL string
+	}{
+		{"native ipv4", "127.0.0.1:9051", "", "127.0.0.1:9051", "http://127.0.0.1:9051"},
+		{"native alternate loopback", "127.0.0.2:9051", "", "127.0.0.2:9051", "http://127.0.0.2:9051"},
+		{"native ipv6", "[::1]:9051", "", "[::1]:9051", "http://[::1]:9051"},
+		{"bridge", "127.0.0.1:9051", "bridge", "0.0.0.0:9051", "http://127.0.0.1:9051"},
+		{"host network", "127.0.0.1:9051", "host", "127.0.0.1:9051", "http://127.0.0.1:9051"},
+		{"explicit address", "192.0.2.10:9051", "", "192.0.2.10:9051", "http://192.0.2.10:9051"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := runnerconfig.Bootstrap()
+			cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+			cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+			cfg.Temporal.Address = "temporal:7233"
+			cfg.Server.DashboardListen = tc.listen
+			cfg.Server.APIListen = "127.0.0.1:8050"
+			cfg.Server.ReadHeaderTimeout = runnerconfig.Duration(time.Second)
+			cfg.Server.ShutdownTimeout = runnerconfig.Duration(time.Second)
+			cfg.Exposure.Mode = "manual"
+			cfg.Exposure.PublicURL = "https://runner.example"
+			cfg.Devices = []runnerconfig.DeviceConfig{{
+				ID: "org/runner/device", Name: "Device", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+				AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"},
+			}}
+			cfg.Storage.StateDir = filepath.Join(dir, "state")
+			cfg.Storage.ArtifactRetention = runnerconfig.Duration(time.Hour)
+			if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(servicemanager.ServiceNetworkModeEnv, tc.mode)
+			var gotAddress string
+			s, err := runtimesupervisor.New(dir, func() (runnerconfig.Config, error) { return cfg, nil }, runtimesupervisor.Dependencies{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := &Application{configDir: dir, supervisor: s, listen: func(network, address string) (net.Listener, error) {
+				gotAddress = address
+				return newTestListener(), nil
+			}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- a.Run(ctx) }()
+			var metadata controller.Metadata
+			metadataReady := time.NewTicker(5 * time.Millisecond)
+			defer metadataReady.Stop()
+			deadline := time.NewTimer(time.Second)
+			defer deadline.Stop()
+			for {
+				select {
+				case runErr := <-done:
+					t.Fatalf("application exited before metadata: %v", runErr)
+				default:
+				}
+				metadata, err = controller.ReadMetadata(dir)
+				if err == nil {
+					break
+				}
+				select {
+				case <-metadataReady.C:
+				case <-deadline.C:
+					t.Fatalf("metadata not published: %v", err)
+				}
+			}
+			if gotAddress != tc.wantListen {
+				t.Fatalf("listen address=%q want %q", gotAddress, tc.wantListen)
+			}
+			if net.JoinHostPort(metadata.ListenHost, fmt.Sprint(metadata.ListenPort)) != tc.wantListen || metadata.PublicURL != tc.wantURL || metadata.ProbeURL != tc.wantURL+"/internal/controller/identity" {
+				t.Fatalf("metadata=%+v want listen=%q URL=%q", metadata, tc.wantListen, tc.wantURL)
+			}
+			cancel()
+			select {
+			case runErr := <-done:
+				if runErr != nil {
+					t.Fatal(runErr)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("application did not stop")
+			}
+		})
 	}
 }
 func TestApplicationRequiresDirectory(t *testing.T) {

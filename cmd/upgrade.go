@@ -106,15 +106,27 @@ func runUpgradeImage(cmd *cobra.Command, _ []string) error {
 }
 
 func waitForRunningController(ctx context.Context, configDir, previousIdentityToken string) (controller.Metadata, error) {
+	return waitForRunningControllerUsing(ctx, configDir, previousIdentityToken, controller.ReadMetadata, controller.Probe)
+}
+
+func waitForRunningControllerUsing(
+	ctx context.Context,
+	configDir, previousIdentityToken string,
+	readMetadata func(string) (controller.Metadata, error),
+	probe func(context.Context, controller.Metadata) error,
+) (controller.Metadata, error) {
 	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
 	for {
-		metadata, err := controller.ReadMetadata(configDir)
+		metadata, err := readMetadata(configDir)
 		if err == nil && (previousIdentityToken == "" || metadata.IdentityToken != previousIdentityToken) {
-			if err = controller.Probe(deadline, metadata); err == nil {
+			probeCtx, probeCancel := context.WithTimeout(deadline, controller.ProbeTimeout)
+			err = probe(probeCtx, metadata)
+			probeCancel()
+			if err == nil {
 				return metadata, nil
 			}
 		}

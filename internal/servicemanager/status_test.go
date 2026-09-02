@@ -26,7 +26,7 @@ func TestEquivalentListenerNormalizesLoopback(t *testing.T) {
 	for _, tc := range []struct {
 		wh, wp, ah, ap string
 		want           bool
-	}{{"127.0.0.1", "8051", "127.0.0.1", "8051", true}, {"localhost", "8051", "127.0.0.1", "8051", true}, {"127.0.0.1", "9051", "127.0.0.1", "8051", false}} {
+	}{{"127.0.0.1", "8051", "127.0.0.1", "8051", true}, {"localhost", "8051", "127.0.0.1", "8051", true}, {"127.0.0.1", "8051", "127.0.0.2", "8051", false}, {"127.0.0.1", "8051", "::1", "8051", false}, {"::1", "8051", "::1", "8051", true}, {"192.0.2.1", "8051", "192.0.2.1", "8051", true}, {"127.0.0.1", "9051", "127.0.0.1", "8051", false}} {
 		if got := isEquivalentListener(tc.wh, tc.wp, tc.ah, tc.ap); got != tc.want {
 			t.Fatalf("listener=%v want %v", got, tc.want)
 		}
@@ -44,18 +44,18 @@ func TestDesiredDashboardURLAndRuntimeState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(liveDir, "controller.json"), rawMetadata, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := liveDashboardURL(context.Background(), liveDir); got != "http://127.0.0.1:9051" {
-		t.Fatalf("live URL=%q", got)
+	if live, err := readLiveController(context.Background(), liveDir); err != nil || live.PublicURL != "http://127.0.0.1:9051" {
+		t.Fatalf("live=%+v err=%v", live, err)
 	}
-	if got := liveDashboardURL(context.Background(), t.TempDir()); got != "" {
-		t.Fatalf("unexpected live URL %q", got)
+	if _, err := readLiveController(context.Background(), t.TempDir()); err == nil {
+		t.Fatal("unexpected live controller success")
 	}
 	badDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(badDir, "controller.json"), []byte("{bad"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if got := liveDashboardURL(context.Background(), badDir); got != "" {
-		t.Fatalf("unexpected malformed URL %q", got)
+	if _, err := readLiveController(context.Background(), badDir); err == nil {
+		t.Fatal("unexpected malformed controller success")
 	}
 	for _, tc := range []struct{ listen, want string }{{"", "http://127.0.0.1:8051"}, {"127.0.0.1:9051", "http://127.0.0.1:9051"}, {"0.0.0.0:9051", "http://127.0.0.1:9051"}, {"[::]:9051", "http://127.0.0.1:9051"}} {
 		if got := desiredDashboardURL(runnerconfig.Config{Server: runnerconfig.ServerConfig{DashboardListen: tc.listen}}); got != tc.want {

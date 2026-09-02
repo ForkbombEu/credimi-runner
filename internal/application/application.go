@@ -184,10 +184,12 @@ func (a *Application) Run(ctx context.Context) error {
 		listener.Close()
 		return err
 	}
+	controllerHost := dashboardControllerHost(host, bindHost, os.Getenv(servicemanager.ServiceNetworkModeEnv))
+	controllerURL := localHTTPURL(controllerHost, port)
 	if err := lease.Publish(controller.Metadata{
 		ControllerID: fmt.Sprintf("application-%d", os.Getpid()), PID: os.Getpid(), ConfigDir: a.configDir,
-		ListenHost: bindHost, ListenPort: atoiPort(port), ProbeURL: fmt.Sprintf("http://127.0.0.1:%s/internal/controller/identity", port),
-		PublicURL: fmt.Sprintf("http://127.0.0.1:%s", port), ConfigFingerprint: plan.ConfigFingerprint, IdentityToken: identity,
+		ListenHost: bindHost, ListenPort: atoiPort(port), ProbeURL: controllerURL + "/internal/controller/identity",
+		PublicURL: controllerURL, ConfigFingerprint: plan.ConfigFingerprint, IdentityToken: identity,
 	}); err != nil {
 		cancelHandler()
 		_ = listener.Close()
@@ -224,6 +226,17 @@ func isLoopbackHost(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func dashboardControllerHost(desiredHost, bindHost, serviceNetworkMode string) string {
+	if serviceNetworkMode == "bridge" && isLoopbackHost(desiredHost) {
+		return "127.0.0.1"
+	}
+	return bindHost
+}
+
+func localHTTPURL(host, port string) string {
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func atoiPort(port string) int {

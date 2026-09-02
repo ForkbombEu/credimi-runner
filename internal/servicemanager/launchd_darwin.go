@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
+	controller "github.com/forkbombeu/credimi-runner/internal/controller/identity"
 )
 
 const launchAgentLabel = "eu.forkbomb.credimi-runner"
@@ -120,7 +120,7 @@ func (m *LaunchAgentManager) Status(ctx context.Context) (Status, error) {
 	if status.Running {
 		if cfg, cfgErr := runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml")); cfgErr == nil {
 			status.DashboardURL = desiredDashboardURL(cfg)
-			probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			probeCtx, cancel := context.WithTimeout(ctx, controller.ProbeTimeout)
 			if live, liveErr := readLiveController(probeCtx, m.ConfigDir); liveErr == nil {
 				status.DashboardURL = strings.TrimRight(live.PublicURL, "/")
 				wantHost, wantPort, _ := net.SplitHostPort(cfg.Server.DashboardListen)
@@ -131,11 +131,6 @@ func (m *LaunchAgentManager) Status(ctx context.Context) (Status, error) {
 				}
 			}
 			cancel()
-		}
-	}
-	if status.Running {
-		if live := liveDashboardURL(ctx, m.ConfigDir); live != "" {
-			status.DashboardURL = live
 		}
 	}
 	populateRuntimeState(m.ConfigDir, &status)

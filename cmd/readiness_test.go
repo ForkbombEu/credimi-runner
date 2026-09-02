@@ -62,10 +62,18 @@ func TestWaitForRunningControllerRejectsStaleIdentity(t *testing.T) {
 	write("old")
 	result := make(chan controller.Metadata, 1)
 	errCh := make(chan error, 1)
+	observed := make(chan struct{})
+	var observedOnce atomic.Bool
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	go func() {
-		metadata, err := waitForRunningController(ctx, dir, "old")
+		metadata, err := waitForRunningControllerUsing(ctx, dir, "old", func(configDir string) (controller.Metadata, error) {
+			metadata, err := controller.ReadMetadata(configDir)
+			if err == nil && metadata.IdentityToken == "old" && observedOnce.CompareAndSwap(false, true) {
+				close(observed)
+			}
+			return metadata, err
+		}, controller.Probe)
 		if err != nil {
 			errCh <- err
 			return
@@ -77,7 +85,16 @@ func TestWaitForRunningControllerRejectsStaleIdentity(t *testing.T) {
 		t.Fatalf("stale metadata returned: %+v", metadata)
 	case err := <-errCh:
 		t.Fatalf("stale metadata wait failed early: %v", err)
-	case <-time.After(100 * time.Millisecond):
+	case <-observed:
+	case <-time.After(time.Second):
+		t.Fatal("waiter did not observe old metadata")
+	}
+	select {
+	case metadata := <-result:
+		t.Fatalf("stale metadata returned: %+v", metadata)
+	case err := <-errCh:
+		t.Fatalf("stale metadata wait failed early: %v", err)
+	default:
 	}
 	currentToken.Store("new")
 	write("new")

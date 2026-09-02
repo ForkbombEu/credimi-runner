@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
@@ -21,7 +20,7 @@ type controllerClient struct {
 	client         *http.Client
 }
 
-const controllerProbeTimeout = 3 * time.Second
+const controllerProbeTimeout = controller.ProbeTimeout
 
 func verifiedController(ctx context.Context, configDir string) (controller.Metadata, error) {
 	metadata, err := controller.ReadMetadata(configDir)
@@ -41,11 +40,15 @@ func newControllerClient(ctx context.Context, configDir string) (*controllerClie
 	if err != nil {
 		return nil, serviceNotRunningError()
 	}
+	baseURL := strings.TrimRight(metadata.PublicURL, "/")
+	if baseURL == "" {
+		return nil, errors.New("controller metadata has no Dashboard URL")
+	}
 	cfg, err := runnerconfig.LoadFile(filepath.Join(configDir, "config.toml"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("load dashboard authentication configuration: %w", err)
 	}
-	return &controllerClient{metadata: metadata, baseURL: strings.TrimRight(metadata.PublicURL, "/"), token: cfg.Server.DashboardToken, client: http.DefaultClient}, nil
+	return &controllerClient{metadata: metadata, baseURL: baseURL, token: cfg.Server.DashboardToken, client: http.DefaultClient}, nil
 }
 
 func (c *controllerClient) request(ctx context.Context, method, path string, out any) error {
