@@ -26,16 +26,19 @@ import (
 )
 
 type Application struct {
-	configDir                string
-	supervisor               *runtimesupervisor.Supervisor
-	dashboardListener        net.Listener
-	dashboardServer          *http.Server
-	dashboardShutdownTimeout time.Duration
-	operations               *controller.Coordinator
-	lease                    *controller.Lease
-	metadata                 controller.Metadata
-	closeOnce                sync.Once
-	listen                   func(string, string) (net.Listener, error)
+	configDir                   string
+	supervisor                  *runtimesupervisor.Supervisor
+	dashboardListener           net.Listener
+	dashboardServer             *http.Server
+	dashboardShutdownTimeout    time.Duration
+	closeSupervisor             func(context.Context) error
+	shutdownDashboard           func(context.Context) error
+	newDashboardShutdownContext func(time.Duration) (context.Context, context.CancelFunc)
+	operations                  *controller.Coordinator
+	lease                       *controller.Lease
+	metadata                    controller.Metadata
+	closeOnce                   sync.Once
+	listen                      func(string, string) (net.Listener, error)
 }
 
 func (a *Application) Supervisor() *runtimesupervisor.Supervisor { return a.supervisor }
@@ -275,13 +278,25 @@ func atoiPort(port string) int {
 func (a *Application) shutdown() error {
 	var result error
 	a.closeOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), a.dashboardShutdownTimeout)
-		defer cancel()
-		if a.supervisor != nil {
-			result = errors.Join(result, a.supervisor.Close(ctx))
+		if a.closeSupervisor != nil {
+			result = errors.Join(result, a.closeSupervisor(context.Background()))
+		} else if a.supervisor != nil {
+			result = errors.Join(result, a.supervisor.Close(context.Background()))
 		}
 		if a.dashboardServer != nil {
-			result = errors.Join(result, a.dashboardServer.Shutdown(ctx))
+			newContext := a.newDashboardShutdownContext
+			if newContext == nil {
+				newContext = func(timeout time.Duration) (context.Context, context.CancelFunc) {
+					return context.WithTimeout(context.Background(), timeout)
+				}
+			}
+			ctx, cancel := newContext(a.dashboardShutdownTimeout)
+			shutdown := a.shutdownDashboard
+			if shutdown == nil {
+				shutdown = a.dashboardServer.Shutdown
+			}
+			result = errors.Join(result, shutdown(ctx))
+			cancel()
 		} else if a.dashboardListener != nil {
 			result = errors.Join(result, a.dashboardListener.Close())
 		}

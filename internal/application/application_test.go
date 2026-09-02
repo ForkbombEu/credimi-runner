@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -391,6 +392,73 @@ func TestApplicationShutdownIsIdempotent(t *testing.T) {
 	}
 	if err := a.shutdown(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApplicationShutdownSeparatesRuntimeAndDashboardTimeouts(t *testing.T) {
+	runtimeStarted := make(chan struct{})
+	releaseRuntime := make(chan struct{})
+	runtimeFinished := make(chan struct{})
+	dashboardCalled := make(chan struct{})
+	runtimeErr := errors.New("runtime teardown failed")
+	dashboardErr := errors.New("dashboard drain failed")
+	var runtimeContext context.Context
+	var dashboardContextTimeout time.Duration
+
+	a := &Application{
+		dashboardServer:          &http.Server{},
+		dashboardShutdownTimeout: 23 * time.Second,
+		closeSupervisor: func(ctx context.Context) error {
+			runtimeContext = ctx
+			if _, ok := ctx.Deadline(); ok {
+				t.Fatalf("runtime teardown received a Dashboard deadline")
+			}
+			close(runtimeStarted)
+			<-releaseRuntime
+			close(runtimeFinished)
+			return runtimeErr
+		},
+		shutdownDashboard: func(ctx context.Context) error {
+			select {
+			case <-runtimeFinished:
+			default:
+				t.Fatal("Dashboard shutdown started before runtime teardown finished")
+			}
+			if ctx == runtimeContext {
+				t.Fatal("Dashboard reused runtime teardown context")
+			}
+			close(dashboardCalled)
+			return dashboardErr
+		},
+		newDashboardShutdownContext: func(timeout time.Duration) (context.Context, context.CancelFunc) {
+			dashboardContextTimeout = timeout
+			return context.WithCancel(context.Background())
+		},
+	}
+
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- a.shutdown() }()
+	select {
+	case <-runtimeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("runtime teardown did not start")
+	}
+	select {
+	case <-dashboardCalled:
+		t.Fatal("Dashboard shutdown started while runtime teardown was blocked")
+	default:
+	}
+	close(releaseRuntime)
+	select {
+	case err := <-shutdownDone:
+		if dashboardContextTimeout != 23*time.Second {
+			t.Fatalf("Dashboard shutdown timeout=%s; want 23s", dashboardContextTimeout)
+		}
+		if !errors.Is(err, runtimeErr) || !errors.Is(err, dashboardErr) {
+			t.Fatalf("shutdown error=%v; want both teardown errors", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("application shutdown did not complete")
 	}
 }
 

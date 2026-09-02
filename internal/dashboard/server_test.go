@@ -155,6 +155,59 @@ func TestDarwinAppliedServerTimeoutReversionClearsRestart(t *testing.T) {
 	}
 }
 
+func TestDashboardListenCanonicalizesWildcardHosts(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, want string
+	}{
+		{"empty host", "", "127.0.0.1:8051"},
+		{"IPv4 wildcard", "0.0.0.0", "127.0.0.1:8051"},
+		{"IPv6 wildcard", "::", "127.0.0.1:8051"},
+		{"IPv6 loopback", "::1", "[::1]:8051"},
+		{"alternate IPv4", "127.0.0.2", "127.0.0.2:8051"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dashboardListen(dashboardruntime.Values{"DASHBOARD_HOST": tc.host, "DASHBOARD_PORT": "8051"})
+			if got != tc.want {
+				t.Fatalf("dashboardListen(%q)=%q; want %q", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDarwinIPv6WildcardListenerEquivalence(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	for _, tc := range []struct {
+		name, applied, desired string
+		wantRestart            bool
+	}{
+		{"IPv6 wildcard to IPv4 loopback", "[::]:8051", "127.0.0.1:8051", false},
+		{"IPv4 loopback to IPv6 wildcard", "127.0.0.1:8051", "[::]:8051", false},
+		{"IPv4 wildcard to IPv6 wildcard", "0.0.0.0:8051", "[::]:8051", false},
+		{"IPv6 wildcard to IPv4 wildcard", "[::]:8051", "0.0.0.0:8051", false},
+		{"IPv6 loopback remains distinct", "[::1]:8051", "127.0.0.1:8051", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t)
+			appliedCfg := runnerconfig.Bootstrap()
+			appliedCfg.Server.DashboardListen = tc.applied
+			appliedCfg.Server.ReadHeaderTimeout = runnerconfig.Duration(time.Minute)
+			appliedCfg.Server.ShutdownTimeout = runnerconfig.Duration(30 * time.Second)
+			s.appliedServerSettings = persistentServerSettings(appliedCfg)
+			host, port, err := net.SplitHostPort(tc.desired)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.cfg.mu.Lock()
+			s.cfg.values["DASHBOARD_HOST"] = host
+			s.cfg.values["DASHBOARD_PORT"] = port
+			s.cfg.mu.Unlock()
+			if got := s.serviceRestartRequired(); got != tc.wantRestart {
+				t.Fatalf("restart required=%v; want %v", got, tc.wantRestart)
+			}
+		})
+	}
+}
+
 func writeDashboardTestConfig(t *testing.T, dir, dashboardToken string) {
 	t.Helper()
 	cfg := runnerconfig.Config{
