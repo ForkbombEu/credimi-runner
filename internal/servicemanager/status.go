@@ -29,32 +29,36 @@ func populateRuntimeState(dir string, status *Status) {
 }
 
 func desiredDashboardURL(cfg runnerconfig.Config) string {
-	host, port, err := net.SplitHostPort(cfg.Server.DashboardListen)
-	if err != nil || port == "" {
-		host, port = "127.0.0.1", "8051"
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
+	host, port := effectiveDashboardListen(cfg.Server.DashboardListen)
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+func effectiveDashboardListen(listen string) (string, string) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listen))
+	if err != nil || port == "" {
+		return "127.0.0.1", "8051"
+	}
+	return normalizeListenerHost(host), port
 }
 
 func isEquivalentListener(wantHost, wantPort, actualHost, actualPort string) bool {
 	if wantPort != actualPort {
 		return false
 	}
-	wantHost = strings.TrimSpace(wantHost)
-	actualHost = strings.TrimSpace(actualHost)
-	if strings.EqualFold(wantHost, "localhost") {
-		wantHost = "127.0.0.1"
-	}
-	if strings.EqualFold(actualHost, "localhost") {
-		actualHost = "127.0.0.1"
-	}
+	wantHost = normalizeListenerHost(wantHost)
+	actualHost = normalizeListenerHost(actualHost)
 	if strings.EqualFold(wantHost, actualHost) {
 		return true
 	}
 	return false
+}
+
+func normalizeListenerHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" || strings.EqualFold(host, "localhost") {
+		return "127.0.0.1"
+	}
+	return host
 }
 
 func readLiveController(ctx context.Context, dir string) (controller.Metadata, error) {

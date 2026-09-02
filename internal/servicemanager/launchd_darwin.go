@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,21 +116,20 @@ func (m *LaunchAgentManager) Status(ctx context.Context) (Status, error) {
 	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)
 	err := m.command(ctx, "launchctl", "print", target)
 	status := Status{Running: err == nil, DashboardURL: "http://127.0.0.1:8051"}
+	cfg, cfgErr := runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml"))
+	if cfgErr == nil {
+		status.DashboardURL = desiredDashboardURL(cfg)
+	}
 	if status.Running {
-		if cfg, cfgErr := runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml")); cfgErr == nil {
-			status.DashboardURL = desiredDashboardURL(cfg)
-			probeCtx, cancel := context.WithTimeout(ctx, controller.ProbeTimeout)
-			if live, liveErr := readLiveController(probeCtx, m.ConfigDir); liveErr == nil {
-				status.DashboardURL = strings.TrimRight(live.PublicURL, "/")
-				wantHost, wantPort, _ := net.SplitHostPort(cfg.Server.DashboardListen)
-				if isEquivalentListener(wantHost, wantPort, live.ListenHost, strconv.Itoa(live.ListenPort)) {
-					status.ServiceRestartRequired = false
-				} else {
-					status.ServiceRestartRequired = true
-				}
+		probeCtx, cancel := context.WithTimeout(ctx, controller.ProbeTimeout)
+		if live, liveErr := readLiveController(probeCtx, m.ConfigDir); liveErr == nil {
+			status.DashboardURL = strings.TrimRight(live.PublicURL, "/")
+			if cfgErr == nil {
+				wantHost, wantPort := effectiveDashboardListen(cfg.Server.DashboardListen)
+				status.ServiceRestartRequired = !isEquivalentListener(wantHost, wantPort, live.ListenHost, strconv.Itoa(live.ListenPort))
 			}
-			cancel()
 		}
+		cancel()
 	}
 	populateRuntimeState(m.ConfigDir, &status)
 	return status, nil

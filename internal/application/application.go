@@ -151,8 +151,9 @@ func (a *Application) Run(ctx context.Context) error {
 		return err
 	}
 	host, port := dashboardHostPort(values)
+	serviceNetworkMode := os.Getenv(servicemanager.ServiceNetworkModeEnv)
 	bindHost := host
-	if os.Getenv(servicemanager.ServiceNetworkModeEnv) == "bridge" && isLoopbackHost(bindHost) {
+	if serviceNetworkMode == "bridge" {
 		bindHost = "0.0.0.0"
 	}
 	listen := a.listen
@@ -184,7 +185,7 @@ func (a *Application) Run(ctx context.Context) error {
 		listener.Close()
 		return err
 	}
-	controllerHost := dashboardControllerHost(host, bindHost, os.Getenv(servicemanager.ServiceNetworkModeEnv))
+	controllerHost := dashboardControllerHost(host, bindHost, serviceNetworkMode)
 	controllerURL := localHTTPURL(controllerHost, port)
 	if err := lease.Publish(controller.Metadata{
 		ControllerID: fmt.Sprintf("application-%d", os.Getpid()), PID: os.Getpid(), ConfigDir: a.configDir,
@@ -229,7 +230,7 @@ func isLoopbackHost(host string) bool {
 }
 
 func dashboardControllerHost(desiredHost, bindHost, serviceNetworkMode string) string {
-	if serviceNetworkMode == "bridge" && isLoopbackHost(desiredHost) {
+	if serviceNetworkMode == "bridge" {
 		return "127.0.0.1"
 	}
 	return bindHost
@@ -262,8 +263,8 @@ func (a *Application) shutdown() error {
 	return result
 }
 func dashboardHostPort(values map[string]string) (string, string) {
-	host := values["DASHBOARD_HOST"]
-	if host == "" || host == "0.0.0.0" {
+	host := strings.TrimSpace(values["DASHBOARD_HOST"])
+	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "127.0.0.1"
 	}
 	port := values["DASHBOARD_PORT"]
