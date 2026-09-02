@@ -289,14 +289,6 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 	return spec, nil
 }
 
-func WriteServiceCompose(dir string, cfg runnerconfig.Config) error {
-	host, err := ResolveHostContext(dir)
-	if err != nil {
-		return err
-	}
-	return WriteServiceComposeWithHost(dir, cfg, host)
-}
-
 func WriteServiceComposeWithHost(dir string, cfg runnerconfig.Config, host HostContext) error {
 	if strings.TrimSpace(dir) == "" {
 		return fmt.Errorf("service config directory is empty")
@@ -315,18 +307,6 @@ func WriteServiceComposeWithHost(dir string, cfg runnerconfig.Config, host HostC
 		return err
 	}
 	return os.Rename(tmp, filepath.Join(dir, "service-compose.yaml"))
-}
-
-func WriteServiceSpecFingerprint(dir string, cfg runnerconfig.Config) (string, error) {
-	host, err := ResolveHostContext(dir)
-	if err != nil {
-		return "", err
-	}
-	spec, err := BuildServiceSpec(cfg, host)
-	if err != nil {
-		return "", err
-	}
-	return spec.Fingerprint(), nil
 }
 
 func RenderServiceCompose(spec ServiceSpec) string {

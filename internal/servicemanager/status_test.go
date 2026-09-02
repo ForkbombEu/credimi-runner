@@ -12,11 +12,8 @@ import (
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 )
 
-func TestWriteServiceSpecFingerprintAndFactory(t *testing.T) {
+func TestServiceManagerFactory(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := WriteServiceSpecFingerprint(dir, runnerconfig.Bootstrap()); err != nil {
-		t.Fatal(err)
-	}
 	if ForCurrentPlatform(dir) == nil || ForCurrentPlatformWithBootstrap(dir, BootstrapOptions{}) == nil {
 		t.Fatal("factory returned nil")
 	}

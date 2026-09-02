@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"runtime"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
@@ -61,6 +62,21 @@ func TestWaitForDashboardHonorsCancellation(t *testing.T) {
 	_, err := waitForDashboardFunc(ctx)
 	if err == nil {
 		t.Fatal("expected cancellation error")
+	}
+}
+
+func TestDashboardBrowserAvailabilityAndEmptyURL(t *testing.T) {
+	t.Setenv("DISPLAY", "")
+	t.Setenv("WAYLAND_DISPLAY", "")
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" && dashboardCanOpenBrowser() {
+		t.Fatal("headless Linux unexpectedly supports browser opening")
+	}
+	t.Setenv("DISPLAY", ":0")
+	if !dashboardCanOpenBrowser() {
+		t.Fatal("DISPLAY should enable browser opening")
+	}
+	if err := openDashboardBrowser(""); err == nil {
+		t.Fatal("empty dashboard URL accepted")
 	}
 }
 

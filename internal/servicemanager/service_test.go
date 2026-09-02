@@ -18,6 +18,17 @@ import (
 
 type fakeCommandRunner struct{ calls [][]string }
 
+func writeServiceCompose(t *testing.T, dir string, cfg config.Config) {
+	t.Helper()
+	host, err := ResolveHostContext(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteServiceComposeWithHost(dir, cfg, host); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *fakeCommandRunner) Run(_ context.Context, name string, args []string, _ []string) error {
 	f.calls = append(f.calls, append([]string{name}, args...))
 	return nil
@@ -32,9 +43,7 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 	cfg.Android.RunnerImage = "runner:test"
 	cfg.Android.PullPolicy = "never"
 	cfg.Android.Network = "credimi-runner"
-	if err := WriteServiceCompose(dir, cfg); err != nil {
-		t.Fatal(err)
-	}
+	writeServiceCompose(t, dir, cfg)
 	raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -55,9 +64,7 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 func TestWriteServiceComposeUsesComposePullPolicyNames(t *testing.T) {
 	cfg := config.Bootstrap()
 	dir := t.TempDir()
-	if err := WriteServiceCompose(dir, cfg); err != nil {
-		t.Fatal(err)
-	}
+	writeServiceCompose(t, dir, cfg)
 	raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
 	if err != nil {
 		t.Fatal(err)
@@ -654,9 +661,7 @@ func (r *statusRunner) Output(context.Context, string, []string, []string) ([]by
 func TestDockerStatusReadsRuntimeAndFingerprint(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Bootstrap()
-	if err := WriteServiceCompose(dir, cfg); err != nil {
-		t.Fatal(err)
-	}
+	writeServiceCompose(t, dir, cfg)
 	state := `{"desired":"running","actual":"failed","last_error":"offline"}`
 	if err := os.WriteFile(filepath.Join(dir, "runtime-state.json"), []byte(state), 0600); err != nil {
 		t.Fatal(err)
