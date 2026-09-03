@@ -306,6 +306,11 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
 		t.Fatal(err)
 	}
+	cleanup, err := servicecoordination.StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -340,10 +345,16 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 }
 
 func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
+	dir := t.TempDir()
+	cleanup, err := servicecoordination.StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
 	manager := &stage3Manager{logsExitOnce: true, logStarted: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- followAttachedService(ctx, manager, t.TempDir()) }()
+	go func() { done <- followAttachedService(ctx, manager, dir) }()
 	select {
 	case <-manager.logStarted:
 	case <-time.After(time.Second):

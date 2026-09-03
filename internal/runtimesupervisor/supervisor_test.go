@@ -1133,6 +1133,40 @@ func TestRegisterWithRetryRetriesServerErrorButNotPermanentErrors(t *testing.T) 
 			t.Fatalf("err=%v attempts=%d", err, attempts)
 		}
 	})
+	for _, statusCode := range []int{http.StatusTooManyRequests, http.StatusBadRequest, http.StatusForbidden} {
+		statusCode := statusCode
+		t.Run(fmt.Sprintf("status %d", statusCode), func(t *testing.T) {
+			attempts := 0
+			err := registerWithRetry(context.Background(), func(context.Context, config.Config, string) error {
+				attempts++
+				if statusCode == http.StatusTooManyRequests && attempts == 2 {
+					return nil
+				}
+				return &dashboardruntime.CredimiStatusError{StatusCode: statusCode}
+			}, validConfig(), "")
+			wantAttempts := 1
+			if statusCode == http.StatusTooManyRequests {
+				wantAttempts = 2
+			}
+			wantErr := statusCode != http.StatusTooManyRequests
+			if (err != nil) != wantErr || attempts != wantAttempts {
+				t.Fatalf("err=%v attempts=%d want=%d", err, attempts, wantAttempts)
+			}
+		})
+	}
+	t.Run("joined transient and permanent error fails promptly", func(t *testing.T) {
+		attempts := 0
+		err := registerWithRetry(context.Background(), func(context.Context, config.Config, string) error {
+			attempts++
+			return errors.Join(
+				&dashboardruntime.CredimiStatusError{StatusCode: http.StatusServiceUnavailable},
+				&dashboardruntime.CredimiStatusError{StatusCode: http.StatusBadRequest},
+			)
+		}, validConfig(), "")
+		if err == nil || attempts != 1 {
+			t.Fatalf("err=%v attempts=%d", err, attempts)
+		}
+	})
 }
 
 func TestRegisterWithRetryHonorsDeadlineAndCancellation(t *testing.T) {

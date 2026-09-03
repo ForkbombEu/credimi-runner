@@ -44,6 +44,7 @@ var staticFS embed.FS
 var (
 	lookupPath                   = exec.LookPath
 	ensureCandidateEmulatorReady = androidtools.PrepareEmulatorReady
+	dashboardNow                 = time.Now
 	// beforeCandidateCommit is a deterministic test seam for the optimistic
 	// concurrency window; production leaves it nil.
 	beforeCandidateCommit func()
@@ -110,6 +111,8 @@ const (
 const startupLogRetain = 2000
 
 const capabilityProvisionTimeout = 10 * time.Minute
+
+const serviceRestartManualMessage = "Configuration saved. These changes require the Credimi Runner service to restart. Run: credimi-runner service restart"
 
 type startupState struct {
 	Phase     StartupPhase
@@ -1188,20 +1191,55 @@ func (s *Server) requestServiceRestart() error {
 	if err != nil {
 		return fmt.Errorf("load service configuration fingerprint: %w", err)
 	}
-	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	request, err := servicecoordination.NewRestartRequest(fingerprint, dashboardNow())
 	if err != nil {
 		return err
 	}
 	if err := servicecoordination.WriteRestartRequest(s.composeDir, request); err != nil {
 		return fmt.Errorf("write service restart request: %w", err)
 	}
-	active, activeErr := servicecoordination.CoordinatorActive(s.composeDir, time.Now())
+	active, activeErr := servicecoordination.CoordinatorActive(s.composeDir, dashboardNow())
 	if activeErr == nil && active {
 		s.setStartupState(StartupStarting, "Configuration saved. Waiting for the attached Credimi Runner to restart the service.")
 	} else {
-		s.setStartupState(StartupNeedsAttention, "Configuration saved. These changes require the Credimi Runner service to restart. Run: credimi-runner service restart")
+		s.setStartupState(StartupNeedsAttention, serviceRestartManualMessage)
 	}
 	return nil
+}
+
+func (s *Server) recoveryOrigin(request *http.Request) string {
+	values := s.cfg.Snapshot()
+	if request != nil {
+		for _, key := range []string{"DASHBOARD_HOST", "DASHBOARD_PORT"} {
+			if entries := request.PostForm[key]; len(entries) > 0 {
+				values[key] = entries[0]
+			}
+		}
+	}
+	cfg, err := dashboardruntime.TypedConfigFromValues(dashboardruntime.Values(values))
+	if err != nil {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(cfg.Server.DashboardListen)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return ""
+	}
+	host := strings.TrimSpace(request.Host)
+	if parsedHost, _, splitErr := net.SplitHostPort(host); splitErr == nil {
+		host = parsedHost
+	} else {
+		host = strings.Trim(host, "[]")
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	scheme := "http"
+	if request.TLS != nil {
+		scheme = "https"
+	} else if forwarded := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded == "http" || forwarded == "https" {
+		scheme = forwarded
+	}
+	return (&url.URL{Scheme: scheme, Host: net.JoinHostPort(host, port)}).String()
 }
 
 func dashboardListen(values dashboardruntime.Values) string {
@@ -1722,7 +1760,7 @@ func (s *Server) previewSetupDeviceID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runtimeStart(w http.ResponseWriter, r *http.Request) {
-	s.queueDashboardRuntimeAction(w, "start")
+	s.queueDashboardRuntimeAction(w, r, "start")
 }
 
 func (s *Server) controllerStatus(w http.ResponseWriter, r *http.Request) {
@@ -1802,11 +1840,11 @@ func (s *Server) submitRuntimeAction(action string) (controller.Snapshot, error)
 }
 
 func (s *Server) runtimeStop(w http.ResponseWriter, r *http.Request) {
-	s.queueDashboardRuntimeAction(w, "stop")
+	s.queueDashboardRuntimeAction(w, r, "stop")
 }
 
 func (s *Server) runtimeRestart(w http.ResponseWriter, r *http.Request) {
-	s.queueDashboardRuntimeAction(w, "restart")
+	s.queueDashboardRuntimeAction(w, r, "restart")
 }
 
 func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
@@ -1827,19 +1865,24 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 			startup.running = false
 		}
 	}
-	if failure := serviceRestartResultFailure(s.composeDir); failure != "" {
+	restartFailure := serviceRestartResultFailure(s.composeDir)
+	restartApplied := serviceRestartResultApplied(s.composeDir, s.cfg.Path())
+	if restartFailure != "" {
 		startup.Phase = StartupNeedsAttention
-		startup.Message = failure
+		startup.Message = restartFailure
 		if startup.Message == "" {
 			startup.Message = "Service restart failed. Run: credimi-runner service restart"
 		}
 	}
-	if startup.Phase == StartupIdle {
-		if s.serviceRestartRequired() {
-			active, err := servicecoordination.CoordinatorActive(s.composeDir, time.Now())
+	if !startup.running && restartFailure == "" {
+		if s.serviceRestartRequired() && !restartApplied {
+			active, err := servicecoordination.CoordinatorActive(s.composeDir, dashboardNow())
 			if err != nil || !active {
 				startup.Phase = StartupNeedsAttention
-				startup.Message = "Configuration saved. These changes require the Credimi Runner service to restart. Run: credimi-runner service restart"
+				startup.Message = serviceRestartManualMessage
+			} else if startup.Phase == StartupIdle || startup.Phase == StartupStarting {
+				startup.Phase = StartupStarting
+				startup.Message = "Configuration saved. Waiting for the attached Credimi Runner to restart the service."
 			}
 		} else if s.cfg.Exists() {
 			status := s.runtime.Status()
@@ -1850,8 +1893,8 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 				startup.Phase, startup.Message = StartupStarting, "Starting runner services."
 			case status.Actual == runtimesupervisor.ActualFailed:
 				startup.Phase, startup.Message = StartupNeedsAttention, status.LastError
-			case serviceRestartResultApplied(s.composeDir, s.cfg.Path()):
-				startup.Phase, startup.Message = StartupReady, "Service replacement completed."
+			case status.Actual == runtimesupervisor.ActualStopped && restartApplied:
+				startup.Phase, startup.Message = StartupStarting, "Service replacement completed. Waiting for the runner to start."
 			}
 		}
 	}
@@ -1875,13 +1918,13 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, action string) {
+func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, r *http.Request, action string) {
 	snapshot, err := s.submitRuntimeAction(action)
 	if err != nil {
 		s.renderRuntimeActionError(w, "overview", err)
 		return
 	}
-	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action), "/", false)
+	s.writeQueuedRuntimeAction(w, r, snapshot, runtimeActionSuccessMessage(action), "/", false)
 }
 
 func (s *Server) renderRuntimeActionError(w http.ResponseWriter, page string, err error) {
@@ -1896,12 +1939,17 @@ func (s *Server) renderRuntimeActionError(w http.ResponseWriter, page string, er
 	_, _ = w.Write([]byte(html))
 }
 
-func (s *Server) writeQueuedRuntimeAction(w http.ResponseWriter, snapshot controller.Snapshot, success, refresh string, recovery bool) {
+func (s *Server) writeQueuedRuntimeAction(w http.ResponseWriter, r *http.Request, snapshot controller.Snapshot, success, refresh string, recovery bool) {
+	recoveryOrigin := ""
+	if recovery && r != nil {
+		recoveryOrigin = s.recoveryOrigin(r)
+	}
 	trigger, _ := json.Marshal(map[string]any{"runtimeOperation": map[string]string{
-		"id":       snapshot.ID,
-		"success":  success,
-		"refresh":  refresh,
-		"recovery": strconv.FormatBool(recovery),
+		"id":             snapshot.ID,
+		"success":        success,
+		"refresh":        refresh,
+		"recovery":       strconv.FormatBool(recovery),
+		"recoveryOrigin": recoveryOrigin,
 	}})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("HX-Reswap", "none")
@@ -1990,7 +2038,7 @@ func (s *Server) queueConfigMutation(w http.ResponseWriter, r *http.Request, pag
 		s.renderRuntimeActionError(w, page, err)
 		return
 	}
-	s.writeQueuedRuntimeAction(w, snapshot, "Configuration updated.", dashboardRefreshPath(page), true)
+	s.writeQueuedRuntimeAction(w, r, snapshot, "Configuration updated.", dashboardRefreshPath(page), true)
 }
 
 func (s *Server) queueConfigPageSave(w http.ResponseWriter, r *http.Request, page string) {

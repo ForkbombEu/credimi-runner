@@ -26,6 +26,7 @@ const (
 	edgeStartTimeout              = 2 * time.Minute
 	pauseTimeout                  = 5 * time.Second
 	defaultRegistrationRetryDelay = 250 * time.Millisecond
+	maxRegistrationRetryDelay     = 2 * time.Second
 )
 
 var registrationRetryDelay = defaultRegistrationRetryDelay
@@ -376,6 +377,10 @@ func registerWithRetry(ctx context.Context, register func(context.Context, confi
 		ctx = context.Background()
 	}
 	var lastErr error
+	delay := registrationRetryDelay
+	if delay <= 0 {
+		delay = defaultRegistrationRetryDelay
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -386,7 +391,7 @@ func registerWithRetry(ctx context.Context, register func(context.Context, confi
 		if lastErr == nil || !transientRegistrationError(lastErr) {
 			return lastErr
 		}
-		timer := time.NewTimer(registrationRetryDelay)
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			if !timer.Stop() {
@@ -398,12 +403,30 @@ func registerWithRetry(ctx context.Context, register func(context.Context, confi
 			return errors.Join(lastErr, ctx.Err())
 		case <-timer.C:
 		}
+		if delay < maxRegistrationRetryDelay {
+			delay *= 2
+			if delay > maxRegistrationRetryDelay {
+				delay = maxRegistrationRetryDelay
+			}
+		}
 	}
 }
 
 func transientRegistrationError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		children := joined.Unwrap()
+		if len(children) > 0 {
+			for _, child := range children {
+				if permanentRegistrationError(child) || !transientRegistrationError(child) {
+					return false
+				}
+			}
+			return true
+		}
 	}
 	var statusErr *dashboardruntime.CredimiStatusError
 	if errors.As(err, &statusErr) {
@@ -416,6 +439,11 @@ func transientRegistrationError(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) ||
 		errors.Is(err, syscall.ETIMEDOUT)
+}
+
+func permanentRegistrationError(err error) bool {
+	var statusErr *dashboardruntime.CredimiStatusError
+	return errors.As(err, &statusErr) && statusErr.StatusCode >= 400 && statusErr.StatusCode < 500 && statusErr.StatusCode != 429
 }
 
 func (s *Supervisor) rollback(startErr error) error {

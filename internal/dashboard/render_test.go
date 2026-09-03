@@ -385,7 +385,8 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	for _, want := range []string{
 		"const form = document.querySelector('[data-device-add-form]');",
 		"if ($('.app.setup-shell'))",
-		"window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken));",
+		"window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken, recoveryOrigin));",
+		"window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));",
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Fatalf("dashboard script missing %q", want)
@@ -554,12 +555,13 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 		"const runtimeRecoveryMaxDuration = 15 * 60 * 1000;",
 		"const deadline = Date.now() + runtimeRecoveryMaxDuration;",
 		"const candidates = [operation.previousToken, operation.recoveryToken]",
-		"dashboardURL('/startup/status', token)",
+		"dashboardURL('/startup/status', token, origin)",
+		"const origins = [operation.recoveryOrigin, window.location.origin]",
 		"runtimeRecoveryAbort.abort()",
 		"clearTimeout(timeout);",
 		"finishRuntimeRecoveryTimeout()",
 		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
-		"fetch(dashboardURL(url, token), { headers: { Accept: 'application/json' }",
+		"fetch(dashboardURL(url, token, origin), { headers: { Accept: 'application/json' }",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("runtime recovery is missing %q", want)
@@ -605,6 +607,10 @@ func TestStaticDashboardTokenRecoveryDefersRotationUntilReplacementState(t *test
 	if !strings.Contains(content, "const candidates = [operation.previousToken, operation.recoveryToken]") ||
 		!strings.Contains(content, "setDashboardToken(recoveryToken);") {
 		t.Fatal("replacement recovery does not defer token rotation until a usable Dashboard responds")
+	}
+	if !strings.Contains(content, "function dashboardURL(path, tokenOverride, originOverride)") ||
+		!strings.Contains(content, "dashboardURL(url, token, origin)") {
+		t.Fatal("replacement recovery does not support Dashboard origin changes")
 	}
 	if !strings.Contains(content, "operation.recovery !== 'true'") {
 		t.Fatal("runtime-only saves must still apply the accepted token")

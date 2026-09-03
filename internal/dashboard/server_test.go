@@ -581,6 +581,142 @@ func TestServiceTopologyChangeWaitsForAttachedHost(t *testing.T) {
 	}
 }
 
+func TestRecoveryOriginUsesDesiredDashboardPortAndBrowserHost(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_PORT"] = "8052"
+	s.cfg.mu.Unlock()
+	for _, tc := range []struct {
+		name, requestHost, want string
+	}{
+		{"hostname", "runner.example:8051", "http://runner.example:8052"},
+		{"wildcard", "0.0.0.0:8051", "http://127.0.0.1:8052"},
+		{"ipv6", "[::1]:8051", "http://[::1]:8052"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/config", nil)
+			req.Host = tc.requestHost
+			if got := s.recoveryOrigin(req); got != tc.want {
+				t.Fatalf("recovery origin=%q want=%q", got, tc.want)
+			}
+		})
+	}
+	req := httptest.NewRequest(http.MethodPost, "/config", nil)
+	req.Host = "runner.example:8051"
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_PORT"] = "8051"
+	s.cfg.mu.Unlock()
+	req.PostForm = url.Values{"DASHBOARD_PORT": {"8052"}}
+	response := httptest.NewRecorder()
+	s.writeQueuedRuntimeAction(response, req, controller.Snapshot{ID: "operation"}, "saved", "/", true)
+	var trigger map[string]map[string]string
+	if err := json.Unmarshal([]byte(response.Header().Get("HX-Trigger")), &trigger); err != nil {
+		t.Fatal(err)
+	}
+	if got := trigger["runtimeOperation"]["recoveryOrigin"]; got != "http://runner.example:8052" {
+		t.Fatalf("recovery trigger origin=%q", got)
+	}
+}
+
+func TestStartupStatusFallsBackWhenAttachedCoordinatorGoesStale(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	s.setStartupState(StartupStarting, "Configuration saved. Waiting for the attached Credimi Runner to restart the service.")
+	now := time.Unix(1000, 0)
+	oldNow := dashboardNow
+	dashboardNow = func() time.Time { return now }
+	t.Cleanup(func() { dashboardNow = oldNow })
+	if err := servicecoordination.WritePresence(dir, now); err != nil {
+		t.Fatal(err)
+	}
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupStarting) {
+		t.Fatalf("fresh coordinator phase=%v", state["phase"])
+	}
+	if err := servicecoordination.WritePresence(dir, now.Add(-servicecoordination.CoordinatorMaxAge-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	state = map[string]any{}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupNeedsAttention) || state["message"] != serviceRestartManualMessage {
+		t.Fatalf("stale coordinator state=%v", state)
+	}
+}
+
+func TestStartupStatusWaitsForRuntimeAfterSuccessfulServiceReplacement(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Success: true, AppliedFingerprint: fingerprint, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualStopped}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	s.runtime = fake
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupStarting) {
+		t.Fatalf("stopped runtime phase=%v", state["phase"])
+	}
+	fake.mu.Lock()
+	fake.status.Actual = runtimesupervisor.ActualRunning
+	fake.mu.Unlock()
+	response = httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	state = map[string]any{}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupReady) {
+		t.Fatalf("running runtime phase=%v", state["phase"])
+	}
+}
+
 func TestServiceRestartResultStateMatchesCurrentRequest(t *testing.T) {
 	loaded, path := testSavedConfig(t)
 	dir := filepath.Dir(path)

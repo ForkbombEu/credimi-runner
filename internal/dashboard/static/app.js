@@ -72,13 +72,15 @@
   let runtimeRecoveryAbort = null;
   let runtimeRecoveryDeadline = 0;
   let setupRecoveryTokens = [];
+  let setupRecoveryOrigins = [];
   let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
   let currentDashboardToken = new URLSearchParams(window.location.search).get('token') || '';
-  function dashboardURL(path, tokenOverride) {
-    const url = new URL(path, window.location.origin);
+  function dashboardURL(path, tokenOverride, originOverride) {
+    const url = new URL(path, originOverride || window.location.origin);
     const token = tokenOverride === undefined ? currentDashboardToken : tokenOverride;
     if (token) url.searchParams.set('token', token);
+    if (originOverride && url.origin !== window.location.origin) return url.toString();
     return `${url.pathname}${url.search}`;
   }
   function setDashboardToken(token) {
@@ -103,8 +105,8 @@
   });
   document.body.addEventListener('htmx:afterSwap', (event) => preserveDashboardToken(event.target || document));
   preserveDashboardToken();
-	function refreshOverview(path = '/', tokenOverride) {
-		htmx.ajax('GET', dashboardURL(path, tokenOverride), { target: 'main', select: 'main', swap: 'outerHTML' });
+	function refreshOverview(path = '/', tokenOverride, originOverride) {
+		htmx.ajax('GET', dashboardURL(path, tokenOverride, originOverride), { target: 'main', select: 'main', swap: 'outerHTML' });
   }
   function runtimeOperationFailure(snapshot) {
     const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
@@ -122,6 +124,7 @@
     runtimeRecoveryTimer = null;
     runtimeOperationActive = false;
     setupRecoveryTokens = [];
+    setupRecoveryOrigins = [];
     hideBusy();
     toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
   }
@@ -145,18 +148,26 @@
         timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now()));
         const candidates = [operation.previousToken, operation.recoveryToken]
           .filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
+        const tokens = candidates.length ? candidates : [undefined];
+        const origins = [operation.recoveryOrigin, window.location.origin]
+          .filter((origin, index, values) => origin && values.indexOf(origin) === index);
         let recovery;
         let recoveryToken;
-        for (const token of candidates.length ? candidates : [undefined]) {
-          try {
-            const candidate = await fetch(dashboardURL('/startup/status', token), { headers: { Accept: 'application/json' }, signal: controller.signal });
-            if (candidate.status === 401 || candidate.status === 403) continue;
-            recovery = candidate;
-            recoveryToken = token;
-            break;
-          } catch (error) {
-            if (token === candidates[candidates.length - 1]) throw error;
+        let recoveryOrigin;
+        for (const origin of origins.length ? origins : [window.location.origin]) {
+          for (const token of tokens) {
+            try {
+              const candidate = await fetch(dashboardURL('/startup/status', token, origin), { headers: { Accept: 'application/json' }, signal: controller.signal });
+              if (candidate.status === 401 || candidate.status === 403) continue;
+              recovery = candidate;
+              recoveryToken = token;
+              recoveryOrigin = origin;
+              break;
+            } catch (error) {
+              if (origin === origins[origins.length - 1] && token === tokens[tokens.length - 1]) throw error;
+            }
           }
+          if (recovery) break;
         }
         if (!recovery) throw new Error('Dashboard replacement is not reachable');
         if (Date.now() >= deadline) {
@@ -184,9 +195,9 @@
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
         if ($('.app.setup-shell') && state.phase === 'ready') {
-          window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken));
+          window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken, recoveryOrigin));
         } else {
-          refreshOverview(operation.refresh || '/', recoveryToken);
+          refreshOverview(operation.refresh || '/', recoveryToken, recoveryOrigin);
         }
       } catch (_) {
         if (Date.now() >= deadline) finishRuntimeRecoveryTimeout();
@@ -233,10 +244,10 @@
           toast(runtimeOperationFailure(snapshot), 'error');
         }
 			if ($('.app.setup-shell')) {
-				window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken));
+				window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));
 				return;
 			}
-			refreshOverview(operation.refresh || '/', operation.recoveryToken);
+			refreshOverview(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin);
       };
       setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
     } catch (_) {
@@ -254,6 +265,8 @@
     operation.previousToken = currentDashboardToken;
     setupRecoveryTokens = [operation.previousToken, operation.recoveryToken]
       .filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
+    setupRecoveryOrigins = [operation.recoveryOrigin, window.location.origin]
+      .filter((origin, index, values) => origin && values.indexOf(origin) === index);
     if (operation.recovery !== 'true' && operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);
     runtimeOperationActive = true;
     clearTimeout(runtimeOperationTimer);
@@ -320,15 +333,19 @@
       const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
       let res;
       const tokens = setupRecoveryTokens.length ? setupRecoveryTokens : [undefined];
-      for (const token of tokens) {
-        try {
-          const candidate = await fetch(dashboardURL(url, token), { headers: { Accept: 'application/json' }, signal: controller.signal });
-          if (candidate.status === 401 || candidate.status === 403) continue;
-          res = candidate;
-          break;
-        } catch (error) {
-          if (token === tokens[tokens.length - 1]) throw error;
+      const origins = setupRecoveryOrigins.length ? setupRecoveryOrigins : [window.location.origin];
+      for (const origin of origins) {
+        for (const token of tokens) {
+          try {
+            const candidate = await fetch(dashboardURL(url, token, origin), { headers: { Accept: 'application/json' }, signal: controller.signal });
+            if (candidate.status === 401 || candidate.status === 403) continue;
+            res = candidate;
+            break;
+          } catch (error) {
+            if (origin === origins[origins.length - 1] && token === tokens[tokens.length - 1]) throw error;
+          }
         }
+        if (res) break;
       }
       if (res && res.ok) {
         const data = await res.json();
@@ -346,15 +363,17 @@
           appendBusyLog('Waiting for setup job to start.');
         } else if (!startupBusyPhases.has(phase)) {
           terminal = true;
+          const destinationOrigin = setupRecoveryOrigins[0];
           sessionStorage.removeItem(setupBusyKey);
           setupRecoveryTokens = [];
+          setupRecoveryOrigins = [];
           if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
           if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
           clearTimeout(busyStartupTimer);
           busyStartupTimer = null;
           const delay = phase === 'needs_attention' ? 2500 : 1000;
           const destination = phase === 'needs_attention' ? '/setup' : '/';
-          setTimeout(() => { window.location.assign(dashboardURL(destination)); }, delay);
+          setTimeout(() => { window.location.assign(dashboardURL(destination, undefined, destinationOrigin)); }, delay);
         }
       }
     } catch (_) {

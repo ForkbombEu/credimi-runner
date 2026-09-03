@@ -21,6 +21,7 @@ import (
 
 const (
 	CoordinatorFile      = "service-coordinator.json"
+	CoordinatorLockFile  = "service-coordinator.lock"
 	RestartRequestFile   = "service-restart-request.json"
 	RestartResultFile    = "service-restart-result.json"
 	Protocol             = 1
@@ -28,9 +29,12 @@ const (
 	CoordinatorHeartbeat = 5 * time.Second
 )
 
+var coordinatorHeartbeat = CoordinatorHeartbeat
+
 type Presence struct {
 	PID       int       `json:"pid"`
 	Protocol  int       `json:"protocol"`
+	Nonce     string    `json:"nonce,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -40,7 +44,15 @@ func StartPresence(ctx context.Context, configDir string) (func(), error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := WritePresence(configDir, time.Now()); err != nil {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create service coordination directory: %w", err)
+	}
+	nonce, err := acquireCoordinator(configDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := writePresence(configDir, time.Now(), nonce); err != nil {
+		_ = releaseCoordinator(configDir, nonce)
 		return nil, err
 	}
 	done := make(chan struct{})
@@ -51,13 +63,17 @@ func StartPresence(ctx context.Context, configDir string) (func(), error) {
 			close(done)
 		})
 		<-finished
-		if presence, err := ReadPresence(configDir); err == nil && presence.PID == os.Getpid() {
-			_ = RemovePresence(configDir)
+		if ownsCoordinator(configDir, nonce) == nil {
+			presence, err := ReadPresence(configDir)
+			if err == nil && presence.PID == os.Getpid() && presence.Nonce == nonce {
+				_ = RemovePresence(configDir)
+			}
 		}
+		_ = releaseCoordinator(configDir, nonce)
 	}
 	go func() {
 		defer close(finished)
-		ticker := time.NewTicker(CoordinatorHeartbeat)
+		ticker := time.NewTicker(coordinatorHeartbeat)
 		defer ticker.Stop()
 		for {
 			select {
@@ -66,7 +82,7 @@ func StartPresence(ctx context.Context, configDir string) (func(), error) {
 			case <-done:
 				return
 			case now := <-ticker.C:
-				_ = WritePresence(configDir, now)
+				_ = refreshCoordinator(configDir, now, nonce)
 			}
 		}
 	}()
@@ -89,6 +105,113 @@ type RestartResult struct {
 
 func WritePresence(configDir string, now time.Time) error {
 	return writeJSON(filepath.Join(configDir, CoordinatorFile), Presence{PID: os.Getpid(), Protocol: Protocol, UpdatedAt: now.UTC()})
+}
+
+func writePresence(configDir string, now time.Time, nonce string) error {
+	return writeJSON(filepath.Join(configDir, CoordinatorFile), Presence{PID: os.Getpid(), Protocol: Protocol, Nonce: nonce, UpdatedAt: now.UTC()})
+}
+
+func acquireCoordinator(configDir string) (string, error) {
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return "", fmt.Errorf("generate service coordinator nonce: %w", err)
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	path := filepath.Join(configDir, CoordinatorLockFile)
+	for attempt := 0; attempt < 2; attempt++ {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			if _, writeErr := file.WriteString(nonce); writeErr != nil {
+				_ = file.Close()
+				_ = os.Remove(path)
+				return "", fmt.Errorf("write service coordinator lock: %w", writeErr)
+			}
+			if closeErr := file.Close(); closeErr != nil {
+				_ = os.Remove(path)
+				return "", fmt.Errorf("close service coordinator lock: %w", closeErr)
+			}
+			return nonce, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("create service coordinator lock: %w", err)
+		}
+		if _, presenceErr := ReadPresence(configDir); presenceErr == nil {
+			if active, activeErr := CoordinatorActive(configDir, time.Now()); activeErr == nil && active {
+				return "", errors.New("another attached Credimi Runner is already coordinating this config directory")
+			}
+		}
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			return "", fmt.Errorf("inspect service coordinator lock: %w", statErr)
+		}
+		if time.Since(info.ModTime()) <= CoordinatorMaxAge {
+			return "", errors.New("another attached Credimi Runner is already coordinating this config directory")
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("reclaim stale service coordinator lock: %w", err)
+		}
+	}
+	return "", errors.New("another attached Credimi Runner is already coordinating this config directory")
+}
+
+func touchCoordinator(configDir, nonce string) error {
+	path := filepath.Join(configDir, CoordinatorLockFile)
+	if err := ownsCoordinator(configDir, nonce); err != nil {
+		return err
+	}
+	now := time.Now()
+	return os.Chtimes(path, now, now)
+}
+
+func ownsCoordinator(configDir, nonce string) error {
+	contents, err := os.ReadFile(filepath.Join(configDir, CoordinatorLockFile))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(contents)) != nonce {
+		return errors.New("service coordinator ownership was lost")
+	}
+	return nil
+}
+
+func refreshCoordinator(configDir string, now time.Time, nonce string) error {
+	if err := touchCoordinator(configDir, nonce); err != nil {
+		return err
+	}
+	return writePresence(configDir, now, nonce)
+}
+
+// CoordinatorOwned reports whether the current process still owns the
+// attached-coordinator lease. It prevents an old process from continuing to
+// handle requests after a stale lease has been reclaimed.
+func CoordinatorOwned(configDir string) bool {
+	presence, err := ReadPresence(configDir)
+	if err != nil || presence.PID != os.Getpid() || presence.Nonce == "" {
+		return false
+	}
+	return ownsCoordinator(configDir, presence.Nonce) == nil
+}
+
+func releaseCoordinator(configDir, nonce string) error {
+	path := filepath.Join(configDir, CoordinatorLockFile)
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if strings.TrimSpace(string(contents)) != nonce {
+		return nil
+	}
+	err = os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func ReadPresence(configDir string) (Presence, error) {

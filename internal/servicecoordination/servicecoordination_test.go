@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -69,6 +71,105 @@ func TestStartPresenceAcceptsNilContext(t *testing.T) {
 	}
 }
 
+func TestStartPresenceCreatesMissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "runner")
+	cleanup, err := StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCoordinatorOwnershipIsExclusive(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	results := make(chan struct {
+		cleanup func()
+		err     error
+	}, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cleanup, err := StartPresence(ctx, dir)
+			results <- struct {
+				cleanup func()
+				err     error
+			}{cleanup, err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var acquired int
+	for result := range results {
+		if result.err == nil {
+			acquired++
+			result.cleanup()
+		} else if !strings.Contains(result.err.Error(), "already coordinating") {
+			t.Fatalf("unexpected ownership error: %v", result.err)
+		}
+	}
+	if acquired != 1 {
+		t.Fatalf("coordinators acquired=%d, want 1", acquired)
+	}
+}
+
+func TestCoordinatorReclaimsStaleOwnership(t *testing.T) {
+	dir := t.TempDir()
+	stale := time.Now().Add(-CoordinatorMaxAge - time.Second)
+	if err := os.WriteFile(filepath.Join(dir, CoordinatorLockFile), []byte("stale-owner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(dir, CoordinatorLockFile), stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePresence(dir, stale); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+}
+
+func TestCoordinatorCleanupPreservesReclaimedOwner(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cleanup, err := StartPresence(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !CoordinatorOwned(dir) {
+		t.Fatal("new coordinator does not own its lease")
+	}
+	cancel()
+	newNonce := "new-owner"
+	if err := os.WriteFile(filepath.Join(dir, CoordinatorLockFile), []byte(newNonce), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeJSON(filepath.Join(dir, CoordinatorFile), Presence{PID: os.Getpid() + 1, Protocol: Protocol, Nonce: newNonce, UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if CoordinatorOwned(dir) {
+		t.Fatal("replaced coordinator still owns its lease")
+	}
+	cleanup()
+	contents, err := os.ReadFile(filepath.Join(dir, CoordinatorLockFile))
+	if err != nil || string(contents) != newNonce {
+		t.Fatalf("reclaimed lock=%q err=%v", contents, err)
+	}
+	presence, err := ReadPresence(dir)
+	if err != nil || presence.Nonce != newNonce {
+		t.Fatalf("reclaimed presence=%+v err=%v", presence, err)
+	}
+}
+
 func TestRestartProtocolRoundTripAndValidation(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(200, 0)
@@ -88,8 +189,13 @@ func TestRestartProtocolRoundTripAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	gotResult, err := ReadRestartResult(dir)
-	if err != nil || gotResult != result {
+	if err != nil {
 		t.Fatalf("result=%+v err=%v", gotResult, err)
+	}
+	if gotResult.RequestID != result.RequestID || gotResult.Success != result.Success ||
+		gotResult.AppliedFingerprint != result.AppliedFingerprint || gotResult.Error != result.Error ||
+		!gotResult.UpdatedAt.Equal(result.UpdatedAt) {
+		t.Fatalf("result=%+v want=%+v", gotResult, result)
 	}
 	if err := WriteRestartRequest(dir, RestartRequest{}); err == nil {
 		t.Fatal("incomplete request accepted")

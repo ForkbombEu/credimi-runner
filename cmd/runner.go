@@ -71,6 +71,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 func followAttachedService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
 	handled := make(map[string]struct{})
 	for {
+		if !servicecoordination.CoordinatorOwned(configDir) {
+			return errors.New("attached Credimi Runner coordinator ownership was lost")
+		}
 		logsCtx, cancelLogs := context.WithCancel(ctx)
 		logsDone := make(chan error, 1)
 		go func() { logsDone <- manager.Logs(logsCtx, servicemanager.LogOptions{Follow: true, Lines: 200}) }()
@@ -87,6 +90,12 @@ func followAttachedService(ctx context.Context, manager servicemanager.Manager, 
 				// attached command alive and resume following its replacement.
 				restartFollower = true
 			case <-ticker.C:
+				if !servicecoordination.CoordinatorOwned(configDir) {
+					cancelLogs()
+					<-logsDone
+					ticker.Stop()
+					return errors.New("attached Credimi Runner coordinator ownership was lost")
+				}
 				request, err := servicecoordination.ReadRestartRequest(configDir)
 				if err != nil {
 					continue
