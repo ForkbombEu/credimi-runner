@@ -26,6 +26,7 @@ type BootstrapOptions struct {
 
 type Status struct {
 	Running                bool
+	Autostart              bool
 	ServiceRestartRequired bool
 	DashboardURL           string
 	RuntimeDesired         string
@@ -36,6 +37,8 @@ type Manager interface {
 	Start(context.Context) error
 	Stop(context.Context) error
 	Restart(context.Context) error
+	Enable(context.Context) error
+	Disable(context.Context) error
 	Status(context.Context) (Status, error)
 	Logs(context.Context, LogOptions) error
 }

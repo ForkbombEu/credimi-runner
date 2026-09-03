@@ -96,9 +96,18 @@ func TestServiceStatusOutput(t *testing.T) {
 	if err := runServiceStatus(cmd, nil); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Service: running", "Dashboard:", "Runtime desired: running", "Runtime actual: running", "Runtime error: none"} {
+	for _, want := range []string{"Service: running", "Autostart: disabled", "Dashboard:", "Runtime desired: running", "Runtime actual: running", "Runtime error: none"} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output missing %q: %s", want, out.String())
+		}
+	}
+}
+
+func TestServiceCommandsExposeAutostartControls(t *testing.T) {
+	for _, name := range []string{"start", "stop", "restart", "enable", "disable", "status"} {
+		command, _, err := serviceCmd.Find([]string{name})
+		if err != nil || command == serviceCmd {
+			t.Fatalf("service command %q is missing", name)
 		}
 	}
 }
@@ -108,6 +117,8 @@ type statusManagerFake struct{}
 func (*statusManagerFake) Start(context.Context) error                           { return nil }
 func (*statusManagerFake) Stop(context.Context) error                            { return nil }
 func (*statusManagerFake) Restart(context.Context) error                         { return nil }
+func (*statusManagerFake) Enable(context.Context) error                          { return nil }
+func (*statusManagerFake) Disable(context.Context) error                         { return nil }
 func (*statusManagerFake) Logs(context.Context, servicemanager.LogOptions) error { return nil }
 func (*statusManagerFake) Status(context.Context) (servicemanager.Status, error) {
 	return servicemanager.Status{Running: true, DashboardURL: "http://127.0.0.1:9051", RuntimeDesired: "running", RuntimeActual: "running", RuntimeError: "none"}, nil

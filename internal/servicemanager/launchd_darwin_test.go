@@ -32,8 +32,12 @@ func TestLaunchAgentStartCommandSequences(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
+			dir := filepath.Join(home, "config")
+			if err := saveAutostart(dir, true); err != nil {
+				t.Fatal(err)
+			}
 			var calls []string
-			m := &LaunchAgentManager{ConfigDir: filepath.Join(home, "config"), BinaryPath: "/bin/runner", HomeDir: home}
+			m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home}
 			m.Run = func(_ context.Context, name string, args ...string) error {
 				calls = append(calls, name+" "+strings.Join(args, " "))
 				if len(calls) == 1 && tc.printError {
@@ -53,6 +57,88 @@ func TestLaunchAgentStartCommandSequences(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestLaunchAgentDisabledStartUsesTransientPlist(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	var calls []string
+	m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home}
+	m.Run = func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if len(calls) == 1 {
+			return errors.New("not loaded")
+		}
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")); !os.IsNotExist(err) {
+		t.Fatalf("persistent plist error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "service-launchd.plist")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLaunchAgentEnableDisableDoNotChangeRunningService(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	if err := saveAutostart(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home}
+	m.Run = func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil
+	}
+	if err := m.Enable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("enable launchctl calls=%v", calls)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Disable(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || !strings.HasPrefix(calls[0], "launchctl print") {
+		t.Fatalf("disable launchctl calls=%v", calls)
+	}
+	if got, err := loadAutostart(dir); err != nil || got {
+		t.Fatalf("autostart=%v err=%v", got, err)
+	}
+}
+
+func TestLaunchAgentStopPreservesAutostart(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	if err := saveAutostart(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home, Run: func(context.Context, string, ...string) error { return nil }}
+	if err := m.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := loadAutostart(dir); err != nil || !got {
+		t.Fatalf("autostart=%v err=%v", got, err)
+	}
+}
+
+func TestLaunchAgentStatusReportsAutostart(t *testing.T) {
+	dir := t.TempDir()
+	if err := saveAutostart(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	m := &LaunchAgentManager{ConfigDir: dir, Run: func(context.Context, string, ...string) error { return errors.New("not loaded") }}
+	status, err := m.Status(context.Background())
+	if err != nil || !status.Autostart || status.Running {
+		t.Fatalf("status=%+v err=%v", status, err)
 	}
 }
 

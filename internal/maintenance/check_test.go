@@ -214,6 +214,20 @@ func TestCheckerImageStateAndFailures(t *testing.T) {
 	}
 }
 
+func TestCheckerReportsLocalImageAsUnavailableForRegistryTracking(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"credimi-runner:local","image_id":"sha256:local","digest":"","registry_trackable":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var component Component
+	if err := (Checker{ConfigDir: dir}).checkImage(context.Background(), &component); err != nil {
+		t.Fatal(err)
+	}
+	if component.CurrentVersion != "local" || component.LatestVersion != "local" || component.UpdateAvailable {
+		t.Fatalf("component=%+v", component)
+	}
+}
+
 func TestCheckerRejectsIncompleteAppliedImageState(t *testing.T) {
 	for _, raw := range []string{`{"image":"","digest":"sha256:old"}`, `{"image":"repo:latest","digest":""}`} {
 		dir := t.TempDir()

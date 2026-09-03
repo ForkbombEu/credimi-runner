@@ -29,6 +29,8 @@ func (m *darwinUpgradeManager) Restart(context.Context) error {
 	m.restart++
 	return nil
 }
+func (m *darwinUpgradeManager) Enable(context.Context) error  { return nil }
+func (m *darwinUpgradeManager) Disable(context.Context) error { return nil }
 func (m *darwinUpgradeManager) Status(context.Context) (servicemanager.Status, error) {
 	return m.status, nil
 }

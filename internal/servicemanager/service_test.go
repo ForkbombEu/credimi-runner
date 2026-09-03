@@ -35,6 +35,9 @@ func (f *fakeCommandRunner) Run(_ context.Context, name string, args []string, _
 	return nil
 }
 func (f *fakeCommandRunner) Output(_ context.Context, _ string, args []string, _ []string) ([]byte, error) {
+	if containsArgs(args, "-aq") {
+		return nil, nil
+	}
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "image inspect") {
 		return []byte(`["credimi-runner@sha256:test","ghcr.io/forkbombeu/credimi-runner@sha256:test"]`), nil
@@ -57,7 +60,7 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"runner:", "restart: unless-stopped", "internal-service", "CREDIMI_RUNNER_CONFIG_DIR", "pull_policy: never"} {
+	for _, want := range []string{"runner:", "restart: on-failure", "internal-service", "CREDIMI_RUNNER_CONFIG_DIR", "pull_policy: never"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("compose missing %q: %s", want, text)
 		}
@@ -86,8 +89,36 @@ func TestRecordAppliedImagePersistsMatchingRepoDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), `"digest":"sha256:right"`) || strings.Contains(string(raw), "local-config") {
+	state := readImageState(t, dir)
+	if state.Digest != "sha256:right" || state.ImageID != "sha256:local-config" || !state.RegistryTrackable {
 		t.Fatalf("state=%s", raw)
+	}
+}
+
+func TestDockerStartAllowsLocalImageWithoutRepoDigest(t *testing.T) {
+	dir := t.TempDir()
+	cfg := dockerTestConfig()
+	cfg.Android.RunnerImage = "credimi-runner:local"
+	cfg.Android.PullPolicy = "never"
+	r := &scriptedRunner{t: t, steps: []commandStep{
+		{kind: "run", contains: []string{"up", "-d", "runner"}},
+		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+		{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local-image\n")},
+		{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte("[]")},
+	}}
+	m := NewDockerManager(dir, "")
+	m.Runner = r
+	m.LoadConfig = func() (config.Config, error) { return cfg, nil }
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.done()
+	state := readImageState(t, dir)
+	if state.Image != cfg.Android.RunnerImage || state.ImageID != "sha256:local-image" || state.Digest != "" || state.RegistryTrackable {
+		t.Fatalf("state=%+v", state)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "service-image-state.json")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("state permissions: %v, %v", info, err)
 	}
 }
 
@@ -136,6 +167,9 @@ func (r *scriptedRunner) Run(_ context.Context, name string, args []string, _ []
 }
 
 func (r *scriptedRunner) Output(_ context.Context, name string, args []string, _ []string) ([]byte, error) {
+	if containsArgs(args, "-aq") {
+		return nil, nil
+	}
 	step := r.take("output", name, args)
 	return step.output, step.err
 }
@@ -170,6 +204,26 @@ func readAppliedState(t *testing.T, dir string) (image, digest string) {
 		t.Fatal(err)
 	}
 	return state.Image, state.Digest
+}
+
+type appliedImageState struct {
+	Image             string `json:"image"`
+	ImageID           string `json:"image_id"`
+	Digest            string `json:"digest"`
+	RegistryTrackable bool   `json:"registry_trackable"`
+}
+
+func readImageState(t *testing.T, dir string) appliedImageState {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state appliedImageState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatal(err)
+	}
+	return state
 }
 
 func dockerTestConfig() config.Config {
@@ -372,6 +426,31 @@ func TestDockerUpgradeImagePreservesAndUpdatesAppliedState(t *testing.T) {
 			t.Fatalf("state changed from %q to %q", old, got)
 		}
 	})
+}
+
+func TestDockerUpgradeImageNeverSkipsPullForLocalImage(t *testing.T) {
+	dir := t.TempDir()
+	cfg := dockerTestConfig()
+	cfg.Android.RunnerImage = "credimi-runner:local"
+	cfg.Android.PullPolicy = "never"
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &scriptedRunner{t: t, steps: []commandStep{
+		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+		{kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("fingerprint\n")},
+		{kind: "run", contains: []string{"up", "--force-recreate", "runner"}},
+		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("new-container\n")},
+		{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local-image\n")},
+		{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte("[]")},
+	}}
+	m := NewDockerManager(dir, "")
+	m.Runner = r
+	m.LoadConfig = func() (config.Config, error) { return cfg, nil }
+	if err := m.UpgradeImage(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	r.done()
 }
 
 func TestDockerStopRetainsAppliedState(t *testing.T) {

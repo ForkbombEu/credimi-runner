@@ -35,35 +35,40 @@ func (m *LaunchAgentManager) plist() string {
 	logPath := filepath.Join(m.ConfigDir, "service.log")
 	return fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>internal-service</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string><key>EnvironmentVariables</key><dict><key>CREDIMI_RUNNER_CONFIG_DIR</key><string>%s</string></dict></dict></plist>\n", html.EscapeString(launchAgentLabel), html.EscapeString(m.BinaryPath), html.EscapeString(logPath), html.EscapeString(logPath), html.EscapeString(m.ConfigDir))
 }
-func (m *LaunchAgentManager) Start(ctx context.Context) error {
+func (m *LaunchAgentManager) paths() (string, string, string, error) {
 	home := m.HomeDir
 	if home == "" {
 		var err error
 		home, err = os.UserHomeDir()
 		if err != nil {
-			return fmt.Errorf("resolve user home directory: %w", err)
+			return "", "", "", fmt.Errorf("resolve user home directory: %w", err)
 		}
 	}
-	path := filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
 	if m.BinaryPath == "" {
 		binary, err := os.Executable()
 		if err != nil {
-			return fmt.Errorf("resolve executable: %w", err)
+			return "", "", "", fmt.Errorf("resolve executable: %w", err)
 		}
 		m.BinaryPath = binary
 	}
 	var err error
 	m.BinaryPath, err = filepath.Abs(m.BinaryPath)
 	if err != nil {
-		return err
+		return "", "", "", err
 	}
 	m.ConfigDir, err = filepath.Abs(m.ConfigDir)
 	if err != nil {
-		return err
+		return "", "", "", err
 	}
 	if err := os.MkdirAll(m.ConfigDir, 0700); err != nil {
-		return err
+		return "", "", "", err
 	}
+	persistent := filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
+	transient := filepath.Join(m.ConfigDir, "service-launchd.plist")
+	return home, persistent, transient, nil
+}
+
+func (m *LaunchAgentManager) writePlist(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -91,8 +96,39 @@ func (m *LaunchAgentManager) Start(ctx context.Context) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return err
 	}
-	if err := m.command(ctx, "launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)); err == nil {
+	return nil
+}
+
+func launchAgentTarget() string {
+	return fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)
+}
+
+func (m *LaunchAgentManager) loaded(ctx context.Context) bool {
+	return m.command(ctx, "launchctl", "print", launchAgentTarget()) == nil
+}
+
+func (m *LaunchAgentManager) Start(ctx context.Context) error {
+	autostart, err := loadAutostart(m.ConfigDir)
+	if err != nil {
+		return err
+	}
+	_, persistent, transient, err := m.paths()
+	if err != nil {
+		return err
+	}
+	if m.loaded(ctx) {
+		if !autostart {
+			_ = os.Remove(persistent)
+		}
 		return nil
+	}
+	path := persistent
+	if !autostart {
+		_ = os.Remove(persistent)
+		path = transient
+	}
+	if err := m.writePlist(path); err != nil {
+		return err
 	}
 	if err := m.command(ctx, "launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), path); err != nil {
 		return err
@@ -100,9 +136,21 @@ func (m *LaunchAgentManager) Start(ctx context.Context) error {
 	return m.command(ctx, "launchctl", "kickstart", fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel))
 }
 func (m *LaunchAgentManager) Stop(ctx context.Context) error {
-	err := m.command(ctx, "launchctl", "bootout", fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel))
+	autostart, err := loadAutostart(m.ConfigDir)
+	if err != nil {
+		return err
+	}
+	err = m.command(ctx, "launchctl", "bootout", launchAgentTarget())
 	if err != nil && !os.IsNotExist(err) && !strings.Contains(strings.ToLower(err.Error()), "could not find") && !strings.Contains(strings.ToLower(err.Error()), "no such process") {
 		return err
+	}
+	if !autostart {
+		_, persistent, transient, pathErr := m.paths()
+		if pathErr != nil {
+			return pathErr
+		}
+		_ = os.Remove(persistent)
+		_ = os.Remove(transient)
 	}
 	return nil
 }
@@ -112,10 +160,45 @@ func (m *LaunchAgentManager) Restart(ctx context.Context) error {
 	}
 	return m.Start(ctx)
 }
+func (m *LaunchAgentManager) Enable(ctx context.Context) error {
+	if _, err := loadAutostart(m.ConfigDir); err != nil {
+		return err
+	}
+	_, persistent, transient, err := m.paths()
+	if err != nil {
+		return err
+	}
+	if err := m.writePlist(persistent); err != nil {
+		return err
+	}
+	_ = os.Remove(transient)
+	if err := saveAutostart(m.ConfigDir, true); err != nil {
+		return err
+	}
+	return nil
+}
+func (m *LaunchAgentManager) Disable(ctx context.Context) error {
+	if _, err := loadAutostart(m.ConfigDir); err != nil {
+		return err
+	}
+	_, persistent, transient, err := m.paths()
+	if err != nil {
+		return err
+	}
+	loaded := m.loaded(ctx)
+	_ = os.Remove(persistent)
+	if !loaded {
+		_ = os.Remove(transient)
+	}
+	return saveAutostart(m.ConfigDir, false)
+}
 func (m *LaunchAgentManager) Status(ctx context.Context) (Status, error) {
-	target := fmt.Sprintf("gui/%d/%s", os.Getuid(), launchAgentLabel)
-	err := m.command(ctx, "launchctl", "print", target)
-	status := Status{Running: err == nil, DashboardURL: "http://127.0.0.1:8051"}
+	autostart, err := loadAutostart(m.ConfigDir)
+	if err != nil {
+		return Status{}, err
+	}
+	err = m.command(ctx, "launchctl", "print", launchAgentTarget())
+	status := Status{Autostart: autostart, Running: err == nil, DashboardURL: "http://127.0.0.1:8051"}
 	cfg, cfgErr := runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml"))
 	if cfgErr == nil {
 		status.DashboardURL = desiredDashboardURL(cfg)

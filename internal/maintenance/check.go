@@ -63,9 +63,27 @@ func (c Checker) Check(ctx context.Context, currentVersion string, currentBuiltA
 }
 
 type ServiceImageState struct {
-	Image     string    `json:"image"`
-	Digest    string    `json:"digest"`
-	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	Image                string    `json:"image"`
+	ImageID              string    `json:"image_id,omitempty"`
+	Digest               string    `json:"digest"`
+	RegistryTrackable    bool      `json:"registry_trackable"`
+	UpdatedAt            time.Time `json:"updated_at,omitempty"`
+	registryTrackableSet bool
+}
+
+func (s *ServiceImageState) UnmarshalJSON(raw []byte) error {
+	type plain ServiceImageState
+	var decoded plain
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	*s = ServiceImageState(decoded)
+	_, s.registryTrackableSet = fields["registry_trackable"]
+	return nil
 }
 
 func ReadImageState(configDir string) (ServiceImageState, error) {
@@ -87,6 +105,11 @@ func (c Checker) checkImage(ctx context.Context, component *Component) error {
 	}
 	if strings.TrimSpace(state.Image) == "" {
 		return fmt.Errorf("applied image reference unavailable")
+	}
+	if state.registryTrackableSet && !state.RegistryTrackable {
+		component.CurrentVersion = "local"
+		component.LatestVersion = "local"
+		return nil
 	}
 	component.CurrentVersion = state.Digest
 	if !validDigest(state.Digest) {

@@ -15,6 +15,8 @@ type rootManagerFake struct{ started, stopped, restarted, logs int }
 func (m *rootManagerFake) Start(context.Context) error   { m.started++; return nil }
 func (m *rootManagerFake) Stop(context.Context) error    { m.stopped++; return nil }
 func (m *rootManagerFake) Restart(context.Context) error { m.restarted++; return nil }
+func (m *rootManagerFake) Enable(context.Context) error  { return nil }
+func (m *rootManagerFake) Disable(context.Context) error { return nil }
 func (m *rootManagerFake) Status(context.Context) (servicemanager.Status, error) {
 	return servicemanager.Status{Running: true, DashboardURL: "http://127.0.0.1:8051"}, nil
 }

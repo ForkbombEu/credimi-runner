@@ -102,6 +102,10 @@ type ServiceSpec struct {
 // capabilities. Slice order is normalized so equivalent specs remain stable.
 func (s ServiceSpec) Fingerprint() string {
 	canonical := s
+	// Restart policy is host lifecycle state. Enable and disable update it on
+	// the live container without recreating the service, so it is not part of
+	// the capability fingerprint used to detect topology changes.
+	canonical.RestartPolicy = ""
 	canonical.Command = append([]string(nil), s.Command...)
 	canonical.BindMounts = append([]BindMount(nil), s.BindMounts...)
 	canonical.Volumes = append([]NamedVolume(nil), s.Volumes...)
@@ -127,6 +131,10 @@ func (s ServiceSpec) Fingerprint() string {
 }
 
 func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, error) {
+	return BuildServiceSpecWithAutostart(cfg, host, false)
+}
+
+func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, autostart bool) (ServiceSpec, error) {
 	if host.OS == "" {
 		host.OS = runtime.GOOS
 	}
@@ -151,12 +159,15 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 		PullPolicy:    composePullPolicy(cfg.Android.PullPolicy),
 		NetworkMode:   "bridge",
 		Environment:   map[string]string{},
-		RestartPolicy: "unless-stopped",
+		RestartPolicy: "on-failure",
 		Command:       []string{"internal-service"},
 		Labels: map[string]string{
 			serviceManagedLabel: "true",
 			serviceProjectLabel: ProjectName(host.ConfigDir, host.UID),
 		},
+	}
+	if autostart {
+		spec.RestartPolicy = "unless-stopped"
 	}
 	configuredNetwork := strings.TrimSpace(cfg.Android.Network)
 	if strings.EqualFold(configuredNetwork, "host") {
@@ -290,11 +301,15 @@ func BuildServiceSpec(cfg runnerconfig.Config, host HostContext) (ServiceSpec, e
 }
 
 func WriteServiceComposeWithHost(dir string, cfg runnerconfig.Config, host HostContext) error {
+	return WriteServiceComposeWithHostAndAutostart(dir, cfg, host, false)
+}
+
+func WriteServiceComposeWithHostAndAutostart(dir string, cfg runnerconfig.Config, host HostContext, autostart bool) error {
 	if strings.TrimSpace(dir) == "" {
 		return fmt.Errorf("service config directory is empty")
 	}
 	host.ConfigDir = dir
-	spec, err := BuildServiceSpec(cfg, host)
+	spec, err := BuildServiceSpecWithAutostart(cfg, host, autostart)
 	if err != nil {
 		return err
 	}

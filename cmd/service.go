@@ -14,6 +14,8 @@ func init() {
 		serviceAction("start", func(ctx context.Context, m servicemanager.Manager) error { return m.Start(ctx) }),
 		serviceAction("stop", func(ctx context.Context, m servicemanager.Manager) error { return m.Stop(ctx) }),
 		serviceAction("restart", func(ctx context.Context, m servicemanager.Manager) error { return m.Restart(ctx) }),
+		serviceAction("enable", func(ctx context.Context, m servicemanager.Manager) error { return m.Enable(ctx) }),
+		serviceAction("disable", func(ctx context.Context, m servicemanager.Manager) error { return m.Disable(ctx) }),
 		&cobra.Command{Use: "status", RunE: runServiceStatus},
 	)
 	rootCmd.AddCommand(serviceCmd)
@@ -34,7 +36,11 @@ func runServiceStatus(cmd *cobra.Command, _ []string) error {
 	if status.Running {
 		state = "running"
 	}
-	cmd.Printf("Service: %s\nDashboard: %s\nRuntime desired: %s\nRuntime actual: %s\nService restart required: %t\n", state, status.DashboardURL, status.RuntimeDesired, status.RuntimeActual, status.ServiceRestartRequired)
+	autostart := "disabled"
+	if status.Autostart {
+		autostart = "enabled"
+	}
+	cmd.Printf("Service: %s\nAutostart: %s\nDashboard: %s\nRuntime desired: %s\nRuntime actual: %s\nService restart required: %t\n", state, autostart, status.DashboardURL, status.RuntimeDesired, status.RuntimeActual, status.ServiceRestartRequired)
 	if status.RuntimeError != "" {
 		cmd.Printf("Runtime error: %s\n", status.RuntimeError)
 	}
