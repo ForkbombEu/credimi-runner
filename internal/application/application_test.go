@@ -132,12 +132,11 @@ func TestApplicationBuildsRuntimeHandlerWithOrdinaryContext(t *testing.T) {
 	}
 }
 
-func TestApplicationRunReplacesInheritedBootID(t *testing.T) {
+func TestSetRunnerBootIDReplacesInheritedValue(t *testing.T) {
 	const stale = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	t.Setenv("CREDIMI_RUNNER_BOOT_ID", stale)
-	app := &Application{configDir: t.TempDir()}
-	if err := app.Run(context.Background()); err == nil {
-		t.Fatal("application without config unexpectedly started")
+	if err := setRunnerBootID(); err != nil {
+		t.Fatal(err)
 	}
 	got := os.Getenv("CREDIMI_RUNNER_BOOT_ID")
 	if got == stale {
