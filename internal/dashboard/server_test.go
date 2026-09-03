@@ -590,12 +590,16 @@ func TestRecoveryOriginUsesDesiredDashboardPortAndBrowserHost(t *testing.T) {
 		name, requestHost, want string
 	}{
 		{"hostname", "runner.example:8051", "http://runner.example:8052"},
+		{"forwarded scheme", "runner.example", "https://runner.example:8052"},
 		{"wildcard", "0.0.0.0:8051", "http://127.0.0.1:8052"},
 		{"ipv6", "[::1]:8051", "http://[::1]:8052"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/config", nil)
 			req.Host = tc.requestHost
+			if tc.name == "forwarded scheme" {
+				req.Header.Set("X-Forwarded-Proto", "https, http")
+			}
 			if got := s.recoveryOrigin(req); got != tc.want {
 				t.Fatalf("recovery origin=%q want=%q", got, tc.want)
 			}
@@ -714,6 +718,78 @@ func TestStartupStatusWaitsForRuntimeAfterSuccessfulServiceReplacement(t *testin
 	}
 	if state["phase"] != string(StartupReady) {
 		t.Fatalf("running runtime phase=%v", state["phase"])
+	}
+}
+
+func TestStartupStatusReflectsStartingAndFailedRuntime(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(typedConfig, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualStarting}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	s.runtime = fake
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupStarting) {
+		t.Fatalf("starting runtime phase=%v", state["phase"])
+	}
+	fake.mu.Lock()
+	fake.status.Actual = runtimesupervisor.ActualFailed
+	fake.status.LastError = "registration failed"
+	fake.mu.Unlock()
+	response = httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	state = map[string]any{}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupNeedsAttention) || state["message"] != "registration failed" {
+		t.Fatalf("failed runtime state=%v", state)
+	}
+}
+
+func TestStartupStatusPreservesServiceRestartFailure(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Error: "replacement failed", UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupNeedsAttention) || state["message"] != "replacement failed" {
+		t.Fatalf("service failure state=%v", state)
 	}
 }
 

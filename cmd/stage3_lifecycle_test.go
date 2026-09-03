@@ -380,6 +380,39 @@ func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
 	}
 }
 
+func TestAttachedHostStopsAfterCoordinatorOwnershipIsReplaced(t *testing.T) {
+	dir := t.TempDir()
+	cleanup, err := servicecoordination.StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	manager := &stage3Manager{logStarted: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- followAttachedService(ctx, manager, dir) }()
+	select {
+	case <-manager.logStarted:
+	case <-time.After(time.Second):
+		t.Fatal("attached log follower did not start")
+	}
+	if err := os.WriteFile(filepath.Join(dir, servicecoordination.CoordinatorLockFile), []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, servicecoordination.CoordinatorFile), []byte(`{"pid":999999,"protocol":1,"nonce":"replacement","updated_at":"2026-09-03T00:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "ownership was lost") {
+			t.Fatalf("ownership loss error=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("attached host did not stop after ownership loss")
+	}
+}
+
 func nowForTest() time.Time {
 	return time.Now().UTC()
 }

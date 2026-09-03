@@ -83,6 +83,47 @@ func TestStartPresenceCreatesMissingDirectory(t *testing.T) {
 	}
 }
 
+func TestStartPresenceReportsDirectoryCreationFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartPresence(context.Background(), path); err == nil {
+		t.Fatal("presence started below a regular file")
+	}
+}
+
+func TestStartPresenceReleasesLockWhenPresenceWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, CoordinatorFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartPresence(context.Background(), dir); err == nil {
+		t.Fatal("presence started with an unusable state path")
+	}
+	if _, err := os.Stat(filepath.Join(dir, CoordinatorLockFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("coordinator lock after failed start: %v", err)
+	}
+}
+
+func TestStartPresenceReportsUnreclaimableStaleLock(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, CoordinatorLockFile)
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockPath, "owner"), []byte("active"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-CoordinatorMaxAge - time.Second)
+	if err := os.Chtimes(lockPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartPresence(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "reclaim stale service coordinator lock") {
+		t.Fatalf("unreclaimable lock error=%v", err)
+	}
+}
+
 func TestCoordinatorOwnershipIsExclusive(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -138,6 +179,17 @@ func TestCoordinatorReclaimsStaleOwnership(t *testing.T) {
 	cleanup()
 }
 
+func TestCoordinatorRejectsFreshLockWithoutPresence(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, CoordinatorLockFile)
+	if err := os.WriteFile(lockPath, []byte("active-owner"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StartPresence(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "already coordinating") {
+		t.Fatalf("fresh lock error=%v", err)
+	}
+}
+
 func TestCoordinatorCleanupPreservesReclaimedOwner(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -167,6 +219,36 @@ func TestCoordinatorCleanupPreservesReclaimedOwner(t *testing.T) {
 	presence, err := ReadPresence(dir)
 	if err != nil || presence.Nonce != newNonce {
 		t.Fatalf("reclaimed presence=%+v err=%v", presence, err)
+	}
+}
+
+func TestCoordinatorRefreshUpdatesPresenceOnlyWhileOwned(t *testing.T) {
+	dir := t.TempDir()
+	cleanup, err := StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	presence, err := ReadPresence(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTime := time.Now().Add(time.Second).UTC()
+	if err := refreshCoordinator(dir, wantTime, presence.Nonce); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := ReadPresence(dir)
+	if err != nil || !updated.UpdatedAt.Equal(wantTime) {
+		t.Fatalf("updated presence=%+v err=%v", updated, err)
+	}
+	cleanup()
+	if err := refreshCoordinator(dir, time.Now(), presence.Nonce); err == nil {
+		t.Fatal("refresh after cleanup succeeded")
+	}
+}
+
+func TestCoordinatorReleaseIsIdempotentWhenLockIsMissing(t *testing.T) {
+	if err := releaseCoordinator(t.TempDir(), "owner"); err != nil {
+		t.Fatalf("release missing lock: %v", err)
 	}
 }
 
