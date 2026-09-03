@@ -257,19 +257,38 @@ func TestLegacyPreflightUsesCustomPublishedPort(t *testing.T) {
 	}
 }
 
-func TestLegacyPreflightUsesCustomHostNetworkPort(t *testing.T) {
-	dir := t.TempDir()
-	container := historicalContainer("legacy", "/old-runner", historicalPhoneImage+":latest", []string{"--host-adb", "--usb"}, historicalLabels(filepath.Join(dir, "other"), "runner"))
-	hostNetwork(&container)
-	container.Config.Env = []string{"PORT=9123"}
-	r := &legacyContainerRunner{containers: []inspectedContainer{container}}
-	m := NewDockerManager(dir, "")
-	m.Runner = r
-	cfg := config.Bootstrap()
-	cfg.Server.APIListen = "127.0.0.1:9123"
-	err := m.preflightLegacy(context.Background(), cfg, desiredService("host"))
-	if err == nil || !strings.Contains(err.Error(), "legacy") {
-		t.Fatalf("error=%v, want custom host-port conflict", err)
+func TestLegacyPreflightUsesExplicitHostNetworkPort(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      []string
+		desired  string
+		conflict bool
+	}{
+		{name: "PORT matches desired", env: []string{"PORT=9123"}, desired: "9123", conflict: true},
+		{name: "PORT does not activate fallback", env: []string{"PORT=9123"}, desired: "8050"},
+		{name: "no explicit port uses fallback", desired: "8050", conflict: true},
+		{name: "RUNNER_PORT matches desired", env: []string{"RUNNER_PORT=9123"}, desired: "9123", conflict: true},
+		{name: "RUNNER_PORT does not activate fallback", env: []string{"RUNNER_PORT=9123"}, desired: "8050"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			container := historicalContainer("legacy", "/old-runner", historicalPhoneImage+":latest", []string{"--host-adb", "--usb"}, historicalLabels(filepath.Join(dir, "other"), "runner"))
+			hostNetwork(&container)
+			container.Config.Env = tc.env
+			r := &legacyContainerRunner{containers: []inspectedContainer{container}}
+			m := NewDockerManager(dir, "")
+			m.Runner = r
+			cfg := config.Bootstrap()
+			cfg.Server.APIListen = "127.0.0.1:" + tc.desired
+			err := m.preflightLegacy(context.Background(), cfg, desiredService("host"))
+			if tc.conflict && (err == nil || !strings.Contains(err.Error(), "legacy")) {
+				t.Fatalf("error=%v, want custom host-port conflict", err)
+			}
+			if !tc.conflict && err != nil {
+				t.Fatalf("error=%v, want no conflict", err)
+			}
+		})
 	}
 }
 

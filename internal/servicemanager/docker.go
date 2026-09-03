@@ -371,18 +371,30 @@ func containerConflictsWithService(container inspectedContainer, cfg runnerconfi
 }
 
 func legacyRunnerPorts(container inspectedContainer) map[string]struct{} {
-	ports := map[string]struct{}{"8050": {}}
+	var port, runnerPort string
 	for _, value := range container.Config.Env {
 		key, value, ok := strings.Cut(value, "=")
 		if !ok || (key != "PORT" && key != "RUNNER_PORT") {
 			continue
 		}
 		value = strings.TrimSpace(value)
-		if value != "" {
-			ports[value] = struct{}{}
+		if value == "" {
+			continue
+		}
+		switch key {
+		case "PORT":
+			port = value
+		case "RUNNER_PORT":
+			runnerPort = value
 		}
 	}
-	return ports
+	if port != "" {
+		return map[string]struct{}{port: {}}
+	}
+	if runnerPort != "" {
+		return map[string]struct{}{runnerPort: {}}
+	}
+	return map[string]struct{}{"8050": {}}
 }
 
 func serviceHostPorts(spec ServiceSpec) map[string]struct{} {
