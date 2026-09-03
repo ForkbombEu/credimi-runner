@@ -68,6 +68,7 @@ func (m *DockerManager) Start(ctx context.Context) error {
 		return err
 	} else {
 		m.host = host
+		m.host.Bootstrap = m.Bootstrap
 		m.hostErr = nil
 	}
 	if m.hostErr != nil {

@@ -553,12 +553,13 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 	for _, want := range []string{
 		"const runtimeRecoveryMaxDuration = 15 * 60 * 1000;",
 		"const deadline = Date.now() + runtimeRecoveryMaxDuration;",
-		"dashboardURL('/startup/status', operation.recoveryToken)",
+		"const candidates = [operation.previousToken, operation.recoveryToken]",
+		"dashboardURL('/startup/status', token)",
 		"runtimeRecoveryAbort.abort()",
 		"clearTimeout(timeout);",
 		"finishRuntimeRecoveryTimeout()",
 		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
-		"fetch(dashboardURL(url), { headers: { Accept: 'application/json' } })",
+		"fetch(dashboardURL(url, token), { headers: { Accept: 'application/json' }",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("runtime recovery is missing %q", want)
@@ -580,7 +581,8 @@ func TestStaticDashboardTokenHasOneCurrentSource(t *testing.T) {
 		"function setDashboardToken(token)",
 		"history.replaceState",
 		"else url.searchParams.delete('token');",
-		"if (operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);",
+		"operation.previousToken = currentDashboardToken;",
+		"if (operation.recovery !== 'true' && operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("dashboard token source is missing %q", want)
@@ -588,6 +590,24 @@ func TestStaticDashboardTokenHasOneCurrentSource(t *testing.T) {
 	}
 	if strings.Contains(content, "new URLSearchParams(window.location.search).get('token') : tokenOverride") {
 		t.Fatal("dashboard URL helper must not repeatedly restore a stale query token")
+	}
+}
+
+func TestStaticDashboardTokenRecoveryDefersRotationUntilReplacementState(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	if strings.Contains(content, "if (token) setDashboardToken(token);") {
+		t.Fatal("configuration responses must not rotate the browser token before operation acceptance")
+	}
+	if !strings.Contains(content, "const candidates = [operation.previousToken, operation.recoveryToken]") ||
+		!strings.Contains(content, "setDashboardToken(recoveryToken);") {
+		t.Fatal("replacement recovery does not defer token rotation until a usable Dashboard responds")
+	}
+	if !strings.Contains(content, "operation.recovery !== 'true'") {
+		t.Fatal("runtime-only saves must still apply the accepted token")
 	}
 }
 

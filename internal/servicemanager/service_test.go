@@ -498,8 +498,17 @@ func TestDockerManagerAppliesBootstrapOptionsBeforeConfigExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "image: credimi-runner:local") || !strings.Contains(text, "pull_policy: never") {
-		t.Fatalf("bootstrap compose = %s", text)
+	for _, want := range []string{
+		"image: credimi-runner:local",
+		"pull_policy: never",
+		"CREDIMI_BOOTSTRAP_IMAGE:",
+		"CREDIMI_BOOTSTRAP_PULL_POLICY:",
+		"ANDROID_RUNNER_IMAGE:",
+		"ANDROID_PULL_POLICY:",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("bootstrap compose missing %q: %s", want, text)
+		}
 	}
 }
 

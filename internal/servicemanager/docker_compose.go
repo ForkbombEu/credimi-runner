@@ -58,6 +58,7 @@ type HostContext struct {
 	HasKVM          bool
 	OS              string
 	BeforeSetup     bool
+	Bootstrap       BootstrapOptions
 }
 
 type BindMount struct {
@@ -193,6 +194,16 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	setEnv(ContainerAndroidEnv, ContainerAndroidDir)
 	setEnv(ContainerAVDHomeEnv, ContainerAVDHome)
 	setEnv(ContainerGoldenEnv, ContainerGoldenRoot)
+	if host.BeforeSetup {
+		if image := strings.TrimSpace(host.Bootstrap.Image); image != "" {
+			setEnv("CREDIMI_BOOTSTRAP_IMAGE", image)
+			setEnv("ANDROID_RUNNER_IMAGE", image)
+		}
+		if policy := strings.TrimSpace(host.Bootstrap.PullPolicy); policy != "" {
+			setEnv("CREDIMI_BOOTSTRAP_PULL_POLICY", policy)
+			setEnv("ANDROID_PULL_POLICY", policy)
+		}
+	}
 
 	needsAndroid, needsEmulator, needsUSB, usesHostADB := false, false, false, host.BeforeSetup
 	knownHosts := map[string]struct{}{}

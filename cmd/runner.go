@@ -2,13 +2,18 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	stdlog "log"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/buildinfo"
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
+	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/dashboard"
+	"github.com/forkbombeu/credimi-runner/internal/servicecoordination"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/spf13/cobra"
 )
@@ -37,6 +42,11 @@ var waitForDashboardFunc = func(ctx context.Context) (string, error) {
 }
 
 func runRoot(cmd *cobra.Command, _ []string) error {
+	coordinationCleanup, err := servicecoordination.StartPresence(cmd.Context(), effectiveConfigDir())
+	if err != nil {
+		return fmt.Errorf("publish attached host presence: %w", err)
+	}
+	defer coordinationCleanup()
 	manager := currentServiceManager()
 	status, err := manager.Status(cmd.Context())
 	if err != nil || !status.Running {
@@ -55,11 +65,110 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 	} else {
 		cmd.Printf("Dashboard: %s\n", url)
 	}
-	err = manager.Logs(cmd.Context(), servicemanager.LogOptions{Follow: true, Lines: 200})
-	if err == nil || cmd.Context().Err() != nil {
-		return nil
+	return followAttachedService(cmd.Context(), manager, effectiveConfigDir())
+}
+
+func followAttachedService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
+	handled := make(map[string]struct{})
+	for {
+		logsCtx, cancelLogs := context.WithCancel(ctx)
+		logsDone := make(chan error, 1)
+		go func() { logsDone <- manager.Logs(logsCtx, servicemanager.LogOptions{Follow: true, Lines: 200}) }()
+		ticker := time.NewTicker(500 * time.Millisecond)
+		restartFollower := false
+		for !restartFollower {
+			select {
+			case <-ctx.Done():
+				cancelLogs()
+				<-logsDone
+				return nil
+			case <-logsDone:
+				// A container can disappear while it is being replaced. Keep the
+				// attached command alive and resume following its replacement.
+				restartFollower = true
+			case <-ticker.C:
+				request, err := servicecoordination.ReadRestartRequest(configDir)
+				if err != nil {
+					continue
+				}
+				if _, alreadyHandled := handled[request.RequestID]; alreadyHandled {
+					continue
+				}
+				if result, resultErr := servicecoordination.ReadRestartResult(configDir); resultErr == nil && result.RequestID == request.RequestID {
+					handled[request.RequestID] = struct{}{}
+					continue
+				}
+				cancelLogs()
+				<-logsDone
+				ticker.Stop()
+				handled[request.RequestID] = struct{}{}
+				if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
+					return err
+				}
+				restartFollower = true
+			}
+		}
+		ticker.Stop()
+		cancelLogs()
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
 	}
-	return err
+}
+
+func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Manager, configDir string, request servicecoordination.RestartRequest) error {
+	writeResult := func(success bool, fingerprint, message string) error {
+		return servicecoordination.WriteRestartResult(configDir, servicecoordination.RestartResult{
+			RequestID: request.RequestID, Success: success, AppliedFingerprint: fingerprint,
+			Error: sanitizeServiceError(message, configDir), UpdatedAt: time.Now().UTC(),
+		})
+	}
+	cfg, err := runnerconfig.LoadFile(filepath.Join(configDir, "config.toml"))
+	if err != nil {
+		resultErr := writeResult(false, "", fmt.Sprintf("load saved service configuration: %v", err))
+		return errors.Join(err, resultErr)
+	}
+	expected := servicemanager.ServiceConfigFingerprint(cfg, true)
+	if request.RequestedFingerprint != expected {
+		return writeResult(false, "", "service restart request was superseded by a newer configuration")
+	}
+	if status, statusErr := manager.Status(ctx); statusErr == nil && status.Running && !status.ServiceRestartRequired {
+		return writeResult(true, expected, "")
+	}
+	previous, _ := controller.ReadMetadata(configDir)
+	if err := manager.Restart(ctx); err != nil {
+		resultErr := writeResult(false, "", fmt.Sprintf("service restart failed: %v", err))
+		return errors.Join(err, resultErr)
+	}
+	if _, err := waitForRunningControllerUsingWithTimeout(ctx, configDir, previous.IdentityToken, "", serviceApplyTimeout, controller.ReadMetadata, controller.Probe); err != nil {
+		resultErr := writeResult(false, "", fmt.Sprintf("replacement service did not become ready: %v", err))
+		return errors.Join(err, resultErr)
+	}
+	status, err := manager.Status(ctx)
+	if err != nil {
+		resultErr := writeResult(false, "", fmt.Sprintf("verify replacement service configuration: %v", err))
+		return errors.Join(err, resultErr)
+	}
+	if !status.Running || status.ServiceRestartRequired {
+		err := errors.New("replacement service is not running with the requested configuration")
+		resultErr := writeResult(false, "", err.Error())
+		return errors.Join(err, resultErr)
+	}
+	return writeResult(true, expected, "")
+}
+
+func sanitizeServiceError(message, configDir string) string {
+	cfg, err := runnerconfig.LoadFile(filepath.Join(configDir, "config.toml"))
+	if err == nil {
+		for _, secret := range []string{cfg.Server.DashboardToken, cfg.Credimi.UserAPIKey, cfg.Credimi.InternalAdminKey, cfg.Exposure.CloudflareToken} {
+			if secret != "" {
+				message = strings.ReplaceAll(message, secret, "[redacted]")
+			}
+		}
+	}
+	return message
 }
 
 func Execute() {

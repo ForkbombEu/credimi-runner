@@ -23,6 +23,7 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
+	"github.com/forkbombeu/credimi-runner/internal/servicecoordination"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
@@ -33,13 +34,14 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 }
 
 type fakeRuntimeController struct {
-	mu           sync.Mutex
-	status       runtimesupervisor.Status
-	starts       int
-	stops        int
-	restarts     int
-	reconciles   int
-	reconcileErr error
+	mu            sync.Mutex
+	status        runtimesupervisor.Status
+	starts        int
+	stops         int
+	restarts      int
+	reconciles    int
+	requestStarts int
+	reconcileErr  error
 }
 
 func persistentServerSettingsFromTestValues(values map[string]string) appliedServerSettings {
@@ -71,6 +73,14 @@ func (f *fakeRuntimeController) Restart(context.Context) error {
 	return nil
 }
 
+func (f *fakeRuntimeController) RequestStart() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requestStarts++
+	f.status.Desired = runtimesupervisor.DesiredRunning
+	return nil
+}
+
 func (f *fakeRuntimeController) Reconcile(context.Context, runnerconfig.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -88,6 +98,12 @@ func (f *fakeRuntimeController) counts() (int, int, int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.starts, f.stops, f.restarts, f.reconciles
+}
+
+func (f *fakeRuntimeController) requestedStarts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requestStarts
 }
 
 func newTestServer(t *testing.T) *Server {
@@ -460,7 +476,7 @@ func testSavedConfig(t *testing.T) (*Config, string) {
 func TestDashboardTokenOnlySaveDoesNotReconcileRuntime(t *testing.T) {
 	loaded, _ := testSavedConfig(t)
 	fake := &fakeRuntimeController{}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues["DASHBOARD_TOKEN"] = "new-token"
@@ -480,7 +496,7 @@ func TestDashboardTokenOnlySaveDoesNotReconcileRuntime(t *testing.T) {
 func TestDashboardRuntimeConfigChangeReconcilesSupervisor(t *testing.T) {
 	loaded, _ := testSavedConfig(t)
 	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues["CREDIMI_RUNNER_DESCRIPTION"] = "updated"
@@ -502,6 +518,101 @@ func TestServiceTopologyChangeDoesNotCallRuntime(t *testing.T) {
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "linux")
 	if len(diff.Classes) != 1 || diff.Classes[0] != dashboardruntime.ApplyServiceRestartRequired {
 		t.Fatalf("service diff = %+v", diff)
+	}
+}
+
+func TestServiceTopologyChangeRequestsAttachedHostRestart(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	newValues := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
+	newValues["ANDROID_RUNNER_IMAGE"] = "credimi-runner:replacement"
+	s := newTestServer(t)
+	s.cfg = persistDashboardValues(t, path, newValues)
+	s.composeDir = filepath.Dir(path)
+	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(loaded.Snapshot()), newValues, "linux")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	request, err := servicecoordination.ReadRestartRequest(s.composeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequestedFingerprint != servicemanager.ServiceConfigFingerprint(want, true) {
+		t.Fatalf("request fingerprint=%q", request.RequestedFingerprint)
+	}
+	if got := s.startupSnapshot(); got.Phase != StartupNeedsAttention || !strings.Contains(got.Message, "credimi-runner service restart") {
+		t.Fatalf("detached startup state=%+v", got)
+	}
+	if got := s.runtime.(*fakeRuntimeController).requestedStarts(); got != 0 {
+		t.Fatalf("runtime start requests=%d, want 0 for an ordinary config edit", got)
+	}
+}
+
+func TestServiceTopologyChangeWaitsForAttachedHost(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	newValues := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
+	newValues["ANDROID_RUNNER_IMAGE"] = "credimi-runner:replacement"
+	s := newTestServer(t)
+	s.cfg = persistDashboardValues(t, path, newValues)
+	s.composeDir = filepath.Dir(path)
+	if err := servicecoordination.WritePresence(s.composeDir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(loaded.Snapshot()), newValues, "linux")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	got := s.startupSnapshot()
+	if got.Phase != StartupStarting || !strings.Contains(got.Message, "attached") {
+		t.Fatalf("attached startup state=%+v", got)
+	}
+}
+
+func TestServiceRestartResultStateMatchesCurrentRequest(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	fingerprint := servicemanager.ServiceConfigFingerprint(func() runnerconfig.Config {
+		cfg, err := runnerconfig.LoadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}(), true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Success: true, AppliedFingerprint: fingerprint, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !serviceRestartResultApplied(dir, path) || serviceRestartResultFailure(dir) != "" {
+		t.Fatal("successful service restart result was not recognized")
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Error: "replacement failed", UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := serviceRestartResultFailure(dir); got != "replacement failed" || serviceRestartResultApplied(dir, loaded.Path()) {
+		t.Fatalf("failed service restart result: failure=%q applied=%t", got, serviceRestartResultApplied(dir, loaded.Path()))
 	}
 }
 
@@ -529,7 +640,7 @@ func TestServiceStaleSaveDoesNotReconcileOrPartiallyApply(t *testing.T) {
 	}
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
 	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues["ANDROID_RUNNER_IMAGE"] = "runner:new"
@@ -559,7 +670,7 @@ func TestPureServiceSaveDoesNotReconcileRunningRuntime(t *testing.T) {
 	}
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
 	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues["ANDROID_RUNNER_IMAGE"] = "runner:new"
@@ -583,7 +694,7 @@ func TestRuntimeOnlySaveReconcilesWhenRunning(t *testing.T) {
 	}
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
 	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"
@@ -745,7 +856,7 @@ func TestRuntimeOnlySaveWhileStoppedDoesNotCreateRuntime(t *testing.T) {
 	}
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
 	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped}}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"
@@ -770,7 +881,7 @@ func TestRevertingStaleTopologyAppliesAccumulatedRuntimeChange(t *testing.T) {
 	}
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
 	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	serviceValues := dashboardruntime.Values(loaded.Snapshot())
 	serviceValues["ANDROID_RUNNER_IMAGE"] = "runner:new"
@@ -807,7 +918,7 @@ func TestFailedRuntimeReconcileRetainsPendingChange(t *testing.T) {
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
 	want := errors.New("reconcile failed")
 	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}, reconcileErr: want}
-	s := &Server{cfg: loaded, runtime: fake}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
 	oldValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues := dashboardruntime.Values(loaded.Snapshot())
 	newValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"

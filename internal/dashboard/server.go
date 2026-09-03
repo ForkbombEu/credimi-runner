@@ -27,6 +27,8 @@ import (
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
+	"github.com/forkbombeu/credimi-runner/internal/servicecoordination"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,6 +58,10 @@ type RuntimeController interface {
 	Restart(context.Context) error
 	Reconcile(context.Context, runnerconfig.Config) error
 	Status() runtimesupervisor.Status
+}
+
+type runtimeStartRequester interface {
+	RequestStart() error
 }
 
 type Server struct {
@@ -1141,6 +1147,63 @@ func (s *Server) serviceRestartRequiredFor(pending dashboardruntime.ConfigDiff) 
 	return dashboardruntime.ServiceRestartRequired(dashboardruntime.Values(s.cfg.Snapshot()), s.cfg.Exists())
 }
 
+func (s *Server) serviceRestartFingerprint() (string, error) {
+	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
+	if err != nil {
+		return "", err
+	}
+	return servicemanager.ServiceConfigFingerprint(cfg, true), nil
+}
+
+func serviceRestartResultApplied(configDir, configPath string) bool {
+	request, err := servicecoordination.ReadRestartRequest(configDir)
+	if err != nil {
+		return false
+	}
+	result, err := servicecoordination.ReadRestartResult(configDir)
+	if err != nil || !result.Success || result.RequestID != request.RequestID {
+		return false
+	}
+	cfg, err := runnerconfig.LoadFile(configPath)
+	return err == nil && result.AppliedFingerprint == servicemanager.ServiceConfigFingerprint(cfg, true)
+}
+
+func serviceRestartResultFailure(configDir string) string {
+	request, err := servicecoordination.ReadRestartRequest(configDir)
+	if err != nil {
+		return ""
+	}
+	result, err := servicecoordination.ReadRestartResult(configDir)
+	if err != nil || result.Success || result.RequestID != request.RequestID {
+		return ""
+	}
+	return strings.TrimSpace(result.Error)
+}
+
+func (s *Server) requestServiceRestart() error {
+	if strings.TrimSpace(s.composeDir) == "" {
+		return errors.New("service coordination directory is empty")
+	}
+	fingerprint, err := s.serviceRestartFingerprint()
+	if err != nil {
+		return fmt.Errorf("load service configuration fingerprint: %w", err)
+	}
+	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	if err != nil {
+		return err
+	}
+	if err := servicecoordination.WriteRestartRequest(s.composeDir, request); err != nil {
+		return fmt.Errorf("write service restart request: %w", err)
+	}
+	active, activeErr := servicecoordination.CoordinatorActive(s.composeDir, time.Now())
+	if activeErr == nil && active {
+		s.setStartupState(StartupStarting, "Configuration saved. Waiting for the attached Credimi Runner to restart the service.")
+	} else {
+		s.setStartupState(StartupNeedsAttention, "Configuration saved. These changes require the Credimi Runner service to restart. Run: credimi-runner service restart")
+	}
+	return nil
+}
+
 func dashboardListen(values dashboardruntime.Values) string {
 	cfg, err := dashboardruntime.TypedConfigFromValues(values)
 	if err != nil {
@@ -1202,7 +1265,7 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 	pending := mergeConfigDiff(s.currentPendingDiff(), pendingDiffForPlatform(diff, runtimeGOOS()))
 	if s.serviceRestartRequiredFor(pending) {
 		s.setPendingDiff(pending)
-		return nil
+		return s.requestServiceRestart()
 	}
 	if runtimeGOOS() == "darwin" {
 		pending = withoutServiceClass(pending)
@@ -1299,8 +1362,15 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
 	if s.serviceRestartRequiredFor(diff) {
+		if requester, ok := s.runtime.(runtimeStartRequester); ok {
+			if err := requester.RequestStart(); err != nil {
+				return fmt.Errorf("persist runtime start request: %w", err)
+			}
+		}
 		s.setPendingDiff(pendingDiffForPlatform(diff, runtimeGOOS()))
-		s.setStartupState(StartupNeedsAttention, "Setup saved. Restart the Credimi Runner service to activate it: credimi-runner service restart")
+		if err := s.requestServiceRestart(); err != nil {
+			return err
+		}
 		return nil
 	}
 	if deferStart {
@@ -1757,6 +1827,34 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 			startup.running = false
 		}
 	}
+	if failure := serviceRestartResultFailure(s.composeDir); failure != "" {
+		startup.Phase = StartupNeedsAttention
+		startup.Message = failure
+		if startup.Message == "" {
+			startup.Message = "Service restart failed. Run: credimi-runner service restart"
+		}
+	}
+	if startup.Phase == StartupIdle {
+		if s.serviceRestartRequired() {
+			active, err := servicecoordination.CoordinatorActive(s.composeDir, time.Now())
+			if err != nil || !active {
+				startup.Phase = StartupNeedsAttention
+				startup.Message = "Configuration saved. These changes require the Credimi Runner service to restart. Run: credimi-runner service restart"
+			}
+		} else if s.cfg.Exists() {
+			status := s.runtime.Status()
+			switch {
+			case status.Actual == runtimesupervisor.ActualRunning:
+				startup.Phase, startup.Message = StartupReady, "Runner is ready."
+			case status.Actual == runtimesupervisor.ActualStarting:
+				startup.Phase, startup.Message = StartupStarting, "Starting runner services."
+			case status.Actual == runtimesupervisor.ActualFailed:
+				startup.Phase, startup.Message = StartupNeedsAttention, status.LastError
+			case serviceRestartResultApplied(s.composeDir, s.cfg.Path()):
+				startup.Phase, startup.Message = StartupReady, "Service replacement completed."
+			}
+		}
+	}
 	lines := startup.Logs
 	if since, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("since")), 10, 64); err == nil && since > 0 {
 		start := 0
@@ -1783,7 +1881,7 @@ func (s *Server) queueDashboardRuntimeAction(w http.ResponseWriter, action strin
 		s.renderRuntimeActionError(w, "overview", err)
 		return
 	}
-	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action), "/")
+	s.writeQueuedRuntimeAction(w, snapshot, runtimeActionSuccessMessage(action), "/", false)
 }
 
 func (s *Server) renderRuntimeActionError(w http.ResponseWriter, page string, err error) {
@@ -1798,11 +1896,12 @@ func (s *Server) renderRuntimeActionError(w http.ResponseWriter, page string, er
 	_, _ = w.Write([]byte(html))
 }
 
-func (s *Server) writeQueuedRuntimeAction(w http.ResponseWriter, snapshot controller.Snapshot, success, refresh string) {
+func (s *Server) writeQueuedRuntimeAction(w http.ResponseWriter, snapshot controller.Snapshot, success, refresh string, recovery bool) {
 	trigger, _ := json.Marshal(map[string]any{"runtimeOperation": map[string]string{
-		"id":      snapshot.ID,
-		"success": success,
-		"refresh": refresh,
+		"id":       snapshot.ID,
+		"success":  success,
+		"refresh":  refresh,
+		"recovery": strconv.FormatBool(recovery),
 	}})
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("HX-Reswap", "none")
@@ -1891,7 +1990,7 @@ func (s *Server) queueConfigMutation(w http.ResponseWriter, r *http.Request, pag
 		s.renderRuntimeActionError(w, page, err)
 		return
 	}
-	s.writeQueuedRuntimeAction(w, snapshot, "Configuration updated.", dashboardRefreshPath(page))
+	s.writeQueuedRuntimeAction(w, snapshot, "Configuration updated.", dashboardRefreshPath(page), true)
 }
 
 func (s *Server) queueConfigPageSave(w http.ResponseWriter, r *http.Request, page string) {

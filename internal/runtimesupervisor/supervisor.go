@@ -5,24 +5,30 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/edge"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 )
 
 const (
-	startTimeout     = 2 * time.Minute
-	stopTimeout      = 30 * time.Second
-	cleanupTimeout   = 30 * time.Second
-	edgeStartTimeout = 2 * time.Minute
-	pauseTimeout     = 5 * time.Second
+	startTimeout                  = 2 * time.Minute
+	stopTimeout                   = 30 * time.Second
+	cleanupTimeout                = 30 * time.Second
+	edgeStartTimeout              = 2 * time.Minute
+	pauseTimeout                  = 5 * time.Second
+	defaultRegistrationRetryDelay = 250 * time.Millisecond
 )
+
+var registrationRetryDelay = defaultRegistrationRetryDelay
 
 type LifecycleClient interface {
 	Pause(context.Context, string) error
@@ -115,6 +121,19 @@ func (s *Supervisor) Status() Status {
 		status.HeartbeatRunning = s.generation.heartbeatRunning()
 	}
 	return status
+}
+
+// RequestStart persists the desired-running state without constructing a
+// generation. The Dashboard uses this before a host-owned service replacement
+// so the replacement process can start the runtime after its topology is live.
+func (s *Supervisor) RequestStart() error {
+	return s.updateState(func(st *PersistentState) {
+		st.Desired = DesiredRunning
+		if st.Actual == ActualFailed {
+			st.Actual = ActualStopped
+		}
+		st.LastError = ""
+	})
 }
 func (s *Supervisor) updateState(fn func(*PersistentState)) error {
 	s.mu.Lock()
@@ -305,7 +324,7 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		return err
 	}
 	if s.deps.Register != nil {
-		if err := s.deps.Register(ctx, cfg, g.publicURL); err != nil {
+		if err := registerWithRetry(ctx, s.deps.Register, cfg, g.publicURL); err != nil {
 			return fmt.Errorf("register runtime: %w", err)
 		}
 	}
@@ -350,6 +369,53 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 	}
 	g.setExecuting(true)
 	return nil
+}
+
+func registerWithRetry(ctx context.Context, register func(context.Context, config.Config, string) error, cfg config.Config, publicURL string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var lastErr error
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		lastErr = register(ctx, cfg, publicURL)
+		if lastErr == nil || !transientRegistrationError(lastErr) {
+			return lastErr
+		}
+		timer := time.NewTimer(registrationRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return errors.Join(lastErr, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func transientRegistrationError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var statusErr *dashboardruntime.CredimiStatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.StatusCode == 429 || statusErr.StatusCode >= 500
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EHOSTUNREACH) || errors.Is(err, syscall.ENETUNREACH) ||
+		errors.Is(err, syscall.ETIMEDOUT)
 }
 
 func (s *Supervisor) rollback(startErr error) error {

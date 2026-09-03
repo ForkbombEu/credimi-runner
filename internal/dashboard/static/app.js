@@ -70,6 +70,8 @@
   let runtimeOperationTimer = null;
   let runtimeRecoveryTimer = null;
   let runtimeRecoveryAbort = null;
+  let runtimeRecoveryDeadline = 0;
+  let setupRecoveryTokens = [];
   let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
   let currentDashboardToken = new URLSearchParams(window.location.search).get('token') || '';
@@ -99,15 +101,6 @@
     const detail = event.detail || {};
     if (typeof detail.path === 'string' && detail.path.startsWith('/')) detail.path = dashboardURL(detail.path);
   });
-  document.body.addEventListener('htmx:afterRequest', (event) => {
-    const detail = event.detail || {};
-    if (!detail.successful) return;
-    const path = detail.path || (detail.requestConfig && detail.requestConfig.path) || '';
-    if (!String(path).startsWith('/config')) return;
-    const form = event.target && event.target.closest && event.target.closest('[data-config-form]');
-    const token = form && form.querySelector('[name="DASHBOARD_TOKEN"]');
-    if (token) setDashboardToken(token.value);
-  });
   document.body.addEventListener('htmx:afterSwap', (event) => preserveDashboardToken(event.target || document));
   preserveDashboardToken();
 	function refreshOverview(path = '/', tokenOverride) {
@@ -128,6 +121,7 @@
     clearTimeout(runtimeRecoveryTimer);
     runtimeRecoveryTimer = null;
     runtimeOperationActive = false;
+    setupRecoveryTokens = [];
     hideBusy();
     toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
   }
@@ -136,6 +130,7 @@
     clearTimeout(runtimeOperationTimer);
     runtimeOperationTimer = null;
     const deadline = Date.now() + runtimeRecoveryMaxDuration;
+    runtimeRecoveryDeadline = deadline;
     clearTimeout(runtimeRecoveryTimer);
     if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
     const poll = async () => {
@@ -148,7 +143,22 @@
         const controller = new AbortController();
         runtimeRecoveryAbort = controller;
         timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now()));
-        const recovery = await fetch(dashboardURL('/startup/status', operation.recoveryToken), { headers: { Accept: 'application/json' }, signal: controller.signal });
+        const candidates = [operation.previousToken, operation.recoveryToken]
+          .filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
+        let recovery;
+        let recoveryToken;
+        for (const token of candidates.length ? candidates : [undefined]) {
+          try {
+            const candidate = await fetch(dashboardURL('/startup/status', token), { headers: { Accept: 'application/json' }, signal: controller.signal });
+            if (candidate.status === 401 || candidate.status === 403) continue;
+            recovery = candidate;
+            recoveryToken = token;
+            break;
+          } catch (error) {
+            if (token === candidates[candidates.length - 1]) throw error;
+          }
+        }
+        if (!recovery) throw new Error('Dashboard replacement is not reachable');
         if (Date.now() >= deadline) {
           finishRuntimeRecoveryTimeout();
           return;
@@ -167,12 +177,17 @@
         runtimeRecoveryAbort = null;
         runtimeOperationActive = false;
         hideBusy();
+        setDashboardToken(recoveryToken);
         if (state.phase === 'ready') {
           toast(operation.success || 'Runner operation completed successfully.');
         } else {
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
-        refreshOverview(operation.refresh || '/', operation.recoveryToken);
+        if ($('.app.setup-shell') && state.phase === 'ready') {
+          window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken));
+        } else {
+          refreshOverview(operation.refresh || '/', recoveryToken);
+        }
       } catch (_) {
         if (Date.now() >= deadline) finishRuntimeRecoveryTimeout();
         else if (runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
@@ -205,6 +220,10 @@
       if (phase === 'queued' || phase === 'running') return;
       clearTimeout(runtimeOperationTimer);
       runtimeOperationTimer = null;
+      if (phase === 'succeeded' && operation.recovery === 'true') {
+        startRuntimeRecovery(operation);
+        return;
+      }
       const finish = () => {
         runtimeOperationActive = false;
         hideBusy();
@@ -232,7 +251,10 @@
       const tokenField = document.querySelector('[name="DASHBOARD_TOKEN"]');
       if (tokenField) operation.recoveryToken = tokenField.value.trim();
     }
-    if (operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);
+    operation.previousToken = currentDashboardToken;
+    setupRecoveryTokens = [operation.previousToken, operation.recoveryToken]
+      .filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
+    if (operation.recovery !== 'true' && operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);
     runtimeOperationActive = true;
     clearTimeout(runtimeOperationTimer);
     runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
@@ -286,10 +308,29 @@
 	}
   async function pollBusyStartupStatus() {
     let terminal = false;
+    if (runtimeRecoveryDeadline > 0 && Date.now() >= runtimeRecoveryDeadline) {
+      sessionStorage.removeItem(setupBusyKey);
+      hideBusy();
+      toast('Runner service apply timed out. Run credimi-runner service restart and check runtime status.', 'error');
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, Math.max(1, runtimeRecoveryDeadline - Date.now())));
     try {
       const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
-      const res = await fetch(dashboardURL(url), { headers: { Accept: 'application/json' } });
-      if (res.ok) {
+      let res;
+      const tokens = setupRecoveryTokens.length ? setupRecoveryTokens : [undefined];
+      for (const token of tokens) {
+        try {
+          const candidate = await fetch(dashboardURL(url, token), { headers: { Accept: 'application/json' }, signal: controller.signal });
+          if (candidate.status === 401 || candidate.status === 403) continue;
+          res = candidate;
+          break;
+        } catch (error) {
+          if (token === tokens[tokens.length - 1]) throw error;
+        }
+      }
+      if (res && res.ok) {
         const data = await res.json();
         const phase = String(data.phase || '');
         const message = String(data.message || '');
@@ -306,6 +347,7 @@
         } else if (!startupBusyPhases.has(phase)) {
           terminal = true;
           sessionStorage.removeItem(setupBusyKey);
+          setupRecoveryTokens = [];
           if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
           if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
           clearTimeout(busyStartupTimer);
@@ -315,7 +357,16 @@
           setTimeout(() => { window.location.assign(dashboardURL(destination)); }, delay);
         }
       }
-    } catch (_) {}
+    } catch (_) {
+      if (Date.now() >= runtimeRecoveryDeadline) {
+        terminal = true;
+        sessionStorage.removeItem(setupBusyKey);
+        hideBusy();
+        toast('Runner service apply timed out. Run credimi-runner service restart and check runtime status.', 'error');
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!terminal && busyStartupTimer !== null && !busyOverlay()?.hidden) busyStartupTimer = setTimeout(pollBusyStartupStatus, 1500);
   }
   function showBusy(message, options = {}) {
@@ -356,6 +407,7 @@
   }
   function showSetupBusy(message) {
     showBusy(message || 'Writing runner config and starting services. You may close this page safely.');
+    runtimeRecoveryDeadline = Date.now() + runtimeRecoveryMaxDuration;
     clearTimeout(busyStartupTimer);
     busyStartupTimer = null;
     busyStartupTimer = 0;

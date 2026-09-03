@@ -18,6 +18,8 @@ import (
 
 var downloadLatestBinary = maintenance.DownloadLatestBinary
 
+const serviceApplyTimeout = 15 * time.Minute
+
 var upgradeBinaryCmd = &cobra.Command{Use: "upgrade-binary", Short: "Upgrade the host Credimi Runner CLI binary", RunE: runUpgradeBinary}
 var upgradeImageCmd = &cobra.Command{Use: "upgrade-image", Short: "Upgrade the persistent Docker service image", RunE: runUpgradeImage}
 
@@ -115,14 +117,27 @@ func waitForRunningControllerUsing(
 	readMetadata func(string) (controller.Metadata, error),
 	probe func(context.Context, controller.Metadata) error,
 ) (controller.Metadata, error) {
-	deadline, cancel := context.WithTimeout(ctx, 30*time.Second)
+	return waitForRunningControllerUsingWithTimeout(ctx, configDir, previousIdentityToken, "", 30*time.Second, readMetadata, probe)
+}
+
+func waitForRunningControllerUsingWithTimeout(
+	ctx context.Context,
+	configDir, previousIdentityToken, expectedFingerprint string,
+	maximum time.Duration,
+	readMetadata func(string) (controller.Metadata, error),
+	probe func(context.Context, controller.Metadata) error,
+) (controller.Metadata, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline, cancel := context.WithTimeout(ctx, maximum)
 	defer cancel()
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	var lastErr error
 	for {
 		metadata, err := readMetadata(configDir)
-		if err == nil && (previousIdentityToken == "" || metadata.IdentityToken != previousIdentityToken) {
+		if err == nil && (previousIdentityToken == "" || metadata.IdentityToken != previousIdentityToken) && (expectedFingerprint == "" || metadata.ConfigFingerprint == expectedFingerprint) {
 			probeCtx, probeCancel := context.WithTimeout(deadline, controller.ProbeTimeout)
 			err = probe(probeCtx, metadata)
 			probeCancel()

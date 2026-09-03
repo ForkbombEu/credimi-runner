@@ -3,16 +3,21 @@ package runtimesupervisor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/edge"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 )
@@ -1075,6 +1080,117 @@ func TestVerifyPublicEndpointUsesManualPublicPort(t *testing.T) {
 	}
 	if requestedPath != "/readyz" {
 		t.Fatalf("verification path=%q; want /readyz", requestedPath)
+	}
+}
+
+func TestRegisterWithRetryRetriesTransientFailures(t *testing.T) {
+	originalDelay := registrationRetryDelay
+	registrationRetryDelay = time.Millisecond
+	t.Cleanup(func() { registrationRetryDelay = originalDelay })
+
+	transient := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
+	attempts := 0
+	err := registerWithRetry(context.Background(), func(context.Context, config.Config, string) error {
+		attempts++
+		if attempts <= 2 {
+			return fmt.Errorf("register: %w", transient)
+		}
+		return nil
+	}, validConfig(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("registration attempts=%d, want 3", attempts)
+	}
+}
+
+func TestRegisterWithRetryRetriesServerErrorButNotPermanentErrors(t *testing.T) {
+	originalDelay := registrationRetryDelay
+	registrationRetryDelay = time.Millisecond
+	t.Cleanup(func() { registrationRetryDelay = originalDelay })
+
+	t.Run("server error then success", func(t *testing.T) {
+		attempts := 0
+		err := registerWithRetry(context.Background(), func(context.Context, config.Config, string) error {
+			attempts++
+			if attempts == 1 {
+				return &dashboardruntime.CredimiStatusError{Status: "503 Service Unavailable", StatusCode: http.StatusServiceUnavailable}
+			}
+			return nil
+		}, validConfig(), "")
+		if err != nil || attempts != 2 {
+			t.Fatalf("err=%v attempts=%d", err, attempts)
+		}
+	})
+	t.Run("unauthorized fails promptly", func(t *testing.T) {
+		attempts := 0
+		err := registerWithRetry(context.Background(), func(context.Context, config.Config, string) error {
+			attempts++
+			return &dashboardruntime.CredimiStatusError{Status: "401 Unauthorized", StatusCode: http.StatusUnauthorized}
+		}, validConfig(), "")
+		if err == nil || attempts != 1 {
+			t.Fatalf("err=%v attempts=%d", err, attempts)
+		}
+	})
+}
+
+func TestRegisterWithRetryHonorsDeadlineAndCancellation(t *testing.T) {
+	originalDelay := registrationRetryDelay
+	registrationRetryDelay = time.Second
+	t.Cleanup(func() { registrationRetryDelay = originalDelay })
+	transient := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	attempts := 0
+	err := registerWithRetry(ctx, func(context.Context, config.Config, string) error {
+		attempts++
+		return transient
+	}, validConfig(), "")
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error=%v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("deadline attempts=%d, want 1", attempts)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	err = registerWithRetry(ctx, func(context.Context, config.Config, string) error {
+		t.Fatal("registration called after cancellation")
+		return nil
+	}, validConfig(), "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error=%v", err)
+	}
+}
+
+func TestSupervisorRequestStartPersistsDesiredRunning(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir, func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) {
+			return &testAPI{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.updateState(func(state *PersistentState) {
+		state.Desired = DesiredStopped
+		state.Actual = ActualStopped
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RequestStart(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := (StateStore{Path: filepath.Join(dir, "runtime-state.json")}).Load(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Desired != DesiredRunning {
+		t.Fatalf("persisted desired state=%q", state.Desired)
 	}
 }
 
