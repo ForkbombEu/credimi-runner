@@ -117,8 +117,13 @@ func (m *LaunchAgentManager) Start(ctx context.Context) error {
 		return err
 	}
 	if m.loaded(ctx) {
-		if !autostart {
+		if autostart {
+			if err := m.writePlist(persistent); err != nil {
+				return err
+			}
+		} else {
 			_ = os.Remove(persistent)
+			_ = os.Remove(transient)
 		}
 		return nil
 	}

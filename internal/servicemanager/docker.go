@@ -39,13 +39,14 @@ func (execRunner) Output(ctx context.Context, name string, args []string, env []
 }
 
 type DockerManager struct {
-	ConfigDir  string
-	BinaryPath string
-	Bootstrap  BootstrapOptions
-	Runner     CommandRunner
-	LoadConfig func() (runnerconfig.Config, error)
-	host       HostContext
-	hostErr    error
+	ConfigDir    string
+	BinaryPath   string
+	Bootstrap    BootstrapOptions
+	Runner       CommandRunner
+	LoadConfig   func() (runnerconfig.Config, error)
+	saveSettings func(string, bool) error
+	host         HostContext
+	hostErr      error
 }
 
 func NewDockerManager(dir, binary string) *DockerManager {
@@ -91,10 +92,14 @@ func (m *DockerManager) Start(ctx context.Context) error {
 			cfg.Android.PullPolicy = policy
 		}
 	}
+	spec, err := BuildServiceSpecWithAutostart(cfg, m.host, autostart)
+	if err != nil {
+		return err
+	}
 	if err := WriteServiceComposeWithHostAndAutostart(m.ConfigDir, cfg, m.host, autostart); err != nil {
 		return err
 	}
-	if err := m.preflightLegacy(ctx); err != nil {
+	if err := m.preflightLegacy(ctx, cfg, spec); err != nil {
 		return err
 	}
 	if err := m.compose(ctx, "up", "-d", "runner"); err != nil {
@@ -127,21 +132,35 @@ func (m *DockerManager) Disable(ctx context.Context) error {
 }
 
 func (m *DockerManager) setAutostart(ctx context.Context, enabled bool) error {
-	if _, err := loadAutostart(m.ConfigDir); err != nil {
+	previous, err := loadAutostart(m.ConfigDir)
+	if err != nil {
 		return err
 	}
-	if containerID, err := m.runningContainerID(ctx); err != nil {
+	containerID, err := m.runningContainerID(ctx)
+	if err != nil {
 		return err
-	} else if containerID != "" {
+	}
+	save := m.saveSettings
+	if save == nil {
+		save = saveAutostart
+	}
+	if err := save(m.ConfigDir, enabled); err != nil {
+		return fmt.Errorf("save autostart setting: %w", err)
+	}
+	if containerID != "" {
 		policy := "on-failure"
 		if enabled {
 			policy = "unless-stopped"
 		}
 		if err := m.Runner.Run(ctx, "docker", []string{"update", "--restart", policy, containerID}, os.Environ()); err != nil {
+			rollbackErr := save(m.ConfigDir, previous)
+			if rollbackErr != nil {
+				return fmt.Errorf("update runner restart policy: %w (restore autostart setting: %v)", err, rollbackErr)
+			}
 			return fmt.Errorf("update runner restart policy: %w", err)
 		}
 	}
-	return saveAutostart(m.ConfigDir, enabled)
+	return nil
 }
 
 func (m *DockerManager) runningContainerID(ctx context.Context) (string, error) {
@@ -174,8 +193,9 @@ func (m *DockerManager) compose(ctx context.Context, args ...string) error {
 }
 
 type inspectedContainer struct {
-	ID     string `json:"Id"`
-	Name   string `json:"Name"`
+	ID     string         `json:"Id"`
+	Name   string         `json:"Name"`
+	State  containerState `json:"State"`
 	Config struct {
 		Image      string            `json:"Image"`
 		Cmd        []string          `json:"Cmd"`
@@ -183,10 +203,26 @@ type inspectedContainer struct {
 		Env        []string          `json:"Env"`
 		Labels     map[string]string `json:"Labels"`
 	} `json:"Config"`
-	Mounts []struct {
-		Source      string `json:"Source"`
-		Destination string `json:"Destination"`
-	} `json:"Mounts"`
+	HostConfig      containerHostConfig      `json:"HostConfig"`
+	NetworkSettings containerNetworkSettings `json:"NetworkSettings"`
+}
+
+type containerState struct {
+	Running bool `json:"Running"`
+}
+
+type containerPortBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+
+type containerHostConfig struct {
+	NetworkMode  string                            `json:"NetworkMode"`
+	PortBindings map[string][]containerPortBinding `json:"PortBindings"`
+}
+
+type containerNetworkSettings struct {
+	Ports map[string][]containerPortBinding `json:"Ports"`
 }
 
 const (
@@ -194,11 +230,13 @@ const (
 	historicalEmulatorImage = "ghcr.io/forkbombeu/credimi-runner-emulator"
 )
 
-// preflightLegacy protects the generated service from the pre-unified runner
-// containers. History shows those services used the phone/emulator images and
-// the --inventory command. Those traits identify a likely old runner; the
-// config-dir mount or current project label identifies this installation.
-func (m *DockerManager) preflightLegacy(ctx context.Context) error {
+// preflightLegacy protects the generated service from runner containers made
+// by the old installer and pre-unified Compose files. The installer history
+// contains phone/emulator images with --usb, --emulator, and --no-device;
+// later Compose files use --host-adb with those modes or Wi-Fi address args.
+// The earlier shared-inventory Compose form also used --inventory, so it is
+// retained as one additional historical command shape.
+func (m *DockerManager) preflightLegacy(ctx context.Context, cfg runnerconfig.Config, desired ServiceSpec) error {
 	if m.Runner == nil {
 		m.Runner = execRunner{}
 	}
@@ -232,6 +270,12 @@ func (m *DockerManager) preflightLegacy(ctx context.Context) error {
 		if !isHistoricalRunner(container) {
 			continue
 		}
+		if !container.State.Running {
+			continue
+		}
+		if !containerConflictsWithService(container, cfg, desired) {
+			continue
+		}
 		if containerBelongsToInstallation(container, m.ConfigDir, project) {
 			id := strings.TrimSpace(container.ID)
 			if id == "" {
@@ -244,7 +288,7 @@ func (m *DockerManager) preflightLegacy(ctx context.Context) error {
 			continue
 		}
 		id := strings.TrimSpace(container.ID)
-		return fmt.Errorf("existing container %s (%s) appears to conflict with the Credimi Runner service but could not be proven to belong to this installation; inspect it with `docker inspect %s` and remove it manually if appropriate", id, displayContainerName(container), id)
+		return fmt.Errorf("existing container %s (%s) conflicts with the Credimi Runner service but could not be proven to belong to this installation; inspect it with `docker inspect %s` and remove it manually if appropriate", id, displayContainerName(container), id)
 	}
 	return nil
 }
@@ -255,27 +299,90 @@ func isHistoricalRunner(container inspectedContainer) bool {
 		!strings.HasPrefix(image, historicalPhoneImage+":") && !strings.HasPrefix(image, historicalEmulatorImage+":") {
 		return false
 	}
-	command := strings.Join(append(append([]string{}, container.Config.Entrypoint...), container.Config.Cmd...), " ")
-	return strings.Contains(command, "--inventory")
+	args := append(append([]string{}, container.Config.Entrypoint...), container.Config.Cmd...)
+	for _, arg := range args {
+		if arg == "--usb" || arg == "--emulator" || arg == "--no-device" || arg == "--inventory" {
+			return true
+		}
+	}
+	for _, arg := range args {
+		if strings.Contains(arg, ":") && !strings.HasPrefix(arg, "-") {
+			return true
+		}
+	}
+	return false
 }
 
 func containerBelongsToInstallation(container inspectedContainer, configDir, project string) bool {
-	if container.Config.Labels[serviceProjectLabel] == project {
-		return true
+	labels := container.Config.Labels
+	if labels[serviceProjectLabel] == project && labels[serviceManagedLabel] == "true" {
+		return false
 	}
 	want := normalizedPath(configDir)
-	for _, mount := range container.Mounts {
-		if normalizedPath(mount.Source) == want {
+	if normalizedPath(labels["com.docker.compose.project.working_dir"]) == want && historicalComposeService(labels["com.docker.compose.service"]) {
+		return true
+	}
+	for _, path := range strings.Split(labels["com.docker.compose.project.config_files"], ",") {
+		path = normalizedPath(path)
+		if path == filepath.Join(want, "docker-compose.yml") || path == filepath.Join(want, "docker-compose.yaml") {
 			return true
 		}
 	}
 	for _, value := range container.Config.Env {
 		key, value, ok := strings.Cut(value, "=")
-		if ok && key == "CREDIMI_RUNNER_CONFIG_DIR" && normalizedPath(value) == want {
+		if ok && key == "CREDIMI_RUNNER_CONFIG_DIR" && value != "/app" && normalizedPath(value) == want {
 			return true
 		}
 	}
 	return false
+}
+
+func historicalComposeService(service string) bool {
+	return service == "runner" || service == "runner_emulator"
+}
+
+func containerConflictsWithService(container inspectedContainer, cfg runnerconfig.Config, desired ServiceSpec) bool {
+	if !container.State.Running {
+		return false
+	}
+	desiredPorts := serviceHostPorts(desired)
+	if desired.NetworkMode == "host" {
+		if _, port := listenPort(cfg.Server.APIListen, "8050"); port != "" && port != "0" {
+			desiredPorts[port] = struct{}{}
+		}
+	}
+	if strings.EqualFold(container.HostConfig.NetworkMode, "host") {
+		for port := range desiredPorts {
+			if port == "8050" {
+				return true
+			}
+		}
+	}
+	for _, bindings := range []map[string][]containerPortBinding{container.HostConfig.PortBindings, container.NetworkSettings.Ports} {
+		for port, entries := range bindings {
+			port = strings.TrimSuffix(port, "/tcp")
+			port = strings.TrimSuffix(port, "/udp")
+			for _, entry := range entries {
+				if _, ok := desiredPorts[entry.HostPort]; ok {
+					return true
+				}
+				if _, ok := desiredPorts[port]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func serviceHostPorts(spec ServiceSpec) map[string]struct{} {
+	ports := make(map[string]struct{}, len(spec.Ports))
+	for _, port := range spec.Ports {
+		if value := strings.TrimSpace(port.HostPort); value != "" {
+			ports[value] = struct{}{}
+		}
+	}
+	return ports
 }
 
 func normalizedPath(path string) string {

@@ -83,6 +83,64 @@ func TestLaunchAgentDisabledStartUsesTransientPlist(t *testing.T) {
 	}
 }
 
+func TestLaunchAgentLoadedStartRepairsMissingPersistentPlist(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	if err := saveAutostart(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home}
+	m.Run = func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || !strings.HasPrefix(calls[0], "launchctl print") {
+		t.Fatalf("calls=%v", calls)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range calls {
+		if strings.Contains(call, "bootstrap") || strings.Contains(call, "kickstart") || strings.Contains(call, "bootout") {
+			t.Fatalf("loaded service was restarted: %v", calls)
+		}
+	}
+}
+
+func TestLaunchAgentLoadedDisabledStartRemovesPersistentPlist(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	if err := saveAutostart(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	persistent := filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
+	if err := os.MkdirAll(filepath.Dir(persistent), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(persistent, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calls []string
+	m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home}
+	m.Run = func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || !strings.HasPrefix(calls[0], "launchctl print") {
+		t.Fatalf("calls=%v", calls)
+	}
+	if _, err := os.Stat(persistent); !os.IsNotExist(err) {
+		t.Fatalf("persistent plist still exists: %v", err)
+	}
+}
+
 func TestLaunchAgentEnableDisableDoNotChangeRunningService(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, "config")

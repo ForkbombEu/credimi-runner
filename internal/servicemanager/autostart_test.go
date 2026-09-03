@@ -4,6 +4,7 @@ package servicemanager
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -153,6 +154,53 @@ func TestEnableDisableRunningUpdatesPolicyWithoutRecreation(t *testing.T) {
 			r.done()
 		})
 	}
+}
+
+func TestAutostartSaveFailureDoesNotUpdateRunningPolicy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	r := &scriptedRunner{t: t, steps: []commandStep{
+		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+	}}
+	m := NewDockerManager(dir, "")
+	m.Runner = r
+	m.saveSettings = func(string, bool) error {
+		called = true
+		return errors.New("settings filesystem is read-only")
+	}
+	if err := m.Enable(context.Background()); err == nil {
+		t.Fatal("Enable succeeded despite settings save failure")
+	}
+	if !called {
+		t.Fatal("settings save was not attempted")
+	}
+	r.done()
+}
+
+func TestAutostartUpdateFailureRollsBackPersistedSetting(t *testing.T) {
+	dir := t.TempDir()
+	if err := saveAutostart(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := &scriptedRunner{t: t, steps: []commandStep{
+		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+		{kind: "run", contains: []string{"update", "unless-stopped", "container123"}, err: errors.New("docker update failed")},
+	}}
+	m := NewDockerManager(dir, "")
+	m.Runner = r
+	if err := m.Enable(context.Background()); err == nil {
+		t.Fatal("Enable succeeded despite Docker update failure")
+	}
+	if got, err := loadAutostart(dir); err != nil || got {
+		t.Fatalf("autostart=%v err=%v, want rolled back disabled", got, err)
+	}
+	r.done()
 }
 
 func TestStatusReportsAutostart(t *testing.T) {
