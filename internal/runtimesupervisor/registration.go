@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,12 +108,19 @@ func registrationEndpoint(cfg config.Config, publicURL string) (string, string, 
 // VerifyPublicEndpoint waits until the URL served by the current edge belongs
 // to the current runner generation.
 func VerifyPublicEndpoint(ctx context.Context, cfg config.Config, publicURL string) error {
-	if strings.TrimSpace(publicURL) == "" {
+	baseURL := strings.TrimSpace(publicURL)
+	if cfg.Exposure.Mode == "manual" {
+		baseURL = strings.TrimSpace(cfg.Exposure.PublicURL)
+	}
+	if baseURL == "" {
 		return nil
 	}
 	deadline, cancel := context.WithTimeout(ctx, endpointVerificationTimeout)
 	defer cancel()
-	endpoint := strings.TrimRight(strings.TrimSpace(publicURL), "/") + "/readyz"
+	endpoint, err := publicEndpointVerificationURL(cfg, baseURL)
+	if err != nil {
+		return err
+	}
 	var lastErr error
 	for {
 		req, err := http.NewRequestWithContext(deadline, http.MethodGet, endpoint, nil)
@@ -146,6 +156,39 @@ func VerifyPublicEndpoint(ctx context.Context, cfg config.Config, publicURL stri
 		case <-timer.C:
 		}
 	}
+}
+
+func publicEndpointVerificationURL(cfg config.Config, publicURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil {
+		return "", fmt.Errorf("parse public endpoint URL %q: %w", publicURL, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" || parsed.Hostname() == "" {
+		return "", fmt.Errorf("public endpoint URL %q must be absolute", publicURL)
+	}
+	if port := parsed.Port(); port != "" {
+		parsedPort, err := strconv.Atoi(port)
+		if err != nil || parsedPort < 1 || parsedPort > 65535 {
+			return "", fmt.Errorf("public endpoint URL %q has invalid port %q", publicURL, port)
+		}
+	} else if strings.HasSuffix(parsed.Host, ":") {
+		return "", fmt.Errorf("public endpoint URL %q has an empty port", publicURL)
+	}
+	if cfg.Exposure.Mode == "manual" && parsed.Port() == "" {
+		port := strings.TrimSpace(cfg.Exposure.PublicPort)
+		if port != "" {
+			parsedPort, err := strconv.Atoi(port)
+			if err != nil || parsedPort < 1 || parsedPort > 65535 {
+				return "", fmt.Errorf("invalid manual public port %q", port)
+			}
+			parsed.Host = net.JoinHostPort(parsed.Hostname(), port)
+		}
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/readyz"
+	if parsed.RawPath != "" {
+		parsed.RawPath = strings.TrimRight(parsed.RawPath, "/") + "/readyz"
+	}
+	return parsed.String(), nil
 }
 
 func boolPointer(value bool) *bool { return &value }

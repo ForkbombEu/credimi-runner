@@ -184,7 +184,7 @@ func (s *Supervisor) startLocked(ctx context.Context, restoreOnPersistenceFailur
 	if err := config.ValidateForPlatform(cfg, runtime.GOOS); err != nil {
 		return s.fail(DesiredRunning, err)
 	}
-	g, err := s.newGeneration(cfg)
+	g, err := s.newGeneration(ctx, cfg)
 	if err != nil {
 		return s.fail(DesiredRunning, err)
 	}
@@ -199,14 +199,17 @@ func (s *Supervisor) startLocked(ctx context.Context, restoreOnPersistenceFailur
 	return nil
 }
 
-func (s *Supervisor) newGeneration(cfg config.Config) (result *generation, resultErr error) {
+func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (result *generation, resultErr error) {
 	if s.deps.NewAPI == nil {
 		return nil, errors.New("runtime API constructor is required")
 	}
 	// Generation lifetime is owned by the supervisor, not by the bounded
 	// transition context. The latter is canceled as soon as Start/Reconcile
 	// returns and must never tear down a successfully activated generation.
-	ctx, cancel := context.WithCancel(context.Background())
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	g := &generation{cfg: cfg, ctx: ctx, cancel: cancel, fatal: make(chan error, 1), workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
 	created := false
 	defer func() {
@@ -496,7 +499,7 @@ func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 	if err := s.updateState(func(st *PersistentState) { st.Actual = ActualStopped; st.LastError = "" }); err != nil {
 		return s.fail(desired, err)
 	}
-	g, err := s.newGeneration(cfg)
+	g, err := s.newGeneration(ctx, cfg)
 	if err != nil {
 		return s.fail(desired, err)
 	}

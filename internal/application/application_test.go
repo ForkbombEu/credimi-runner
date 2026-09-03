@@ -17,6 +17,7 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
+	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	cluelog "goa.design/clue/log"
 )
 
@@ -34,22 +35,90 @@ func TestDashboardHostPortDefaults(t *testing.T) {
 func TestExecutionAPIBindAddressFollowsServiceNetwork(t *testing.T) {
 	for _, tc := range []struct {
 		name, desired, mode, want string
+		wantErr                   bool
 	}{
-		{"bridge loopback", "127.0.0.1:8050", "bridge", "0.0.0.0:8050"},
-		{"bridge alternate loopback", "127.0.0.2:8050", "bridge", "0.0.0.0:8050"},
-		{"bridge non-loopback", "192.0.2.10:8050", "bridge", "0.0.0.0:8050"},
-		{"bridge ipv6 loopback", "[::1]:8050", "bridge", "0.0.0.0:8050"},
-		{"bridge ipv6 wildcard", "[::]:8050", "bridge", "0.0.0.0:8050"},
-		{"host alternate loopback", "127.0.0.2:8050", "host", "127.0.0.2:8050"},
-		{"host ipv6 loopback", "[::1]:8050", "host", "[::1]:8050"},
-		{"native", "[::1]:8050", "", "[::1]:8050"},
+		{"bridge loopback", "127.0.0.1:8050", "bridge", "0.0.0.0:8050", false},
+		{"bridge alternate loopback", "127.0.0.2:8050", "bridge", "0.0.0.0:8050", false},
+		{"bridge non-loopback", "192.0.2.10:8050", "bridge", "0.0.0.0:8050", false},
+		{"bridge ipv6 loopback", "[::1]:8050", "bridge", "0.0.0.0:8050", false},
+		{"bridge ipv6 wildcard", "[::]:8050", "bridge", "0.0.0.0:8050", false},
+		{"host alternate loopback", "127.0.0.2:8050", "host", "0.0.0.0:8050", false},
+		{"host ipv6 loopback", "[::1]:8050", "host", "0.0.0.0:8050", false},
+		{"host wildcard", "0.0.0.0:8050", "host", "0.0.0.0:8050", false},
+		{"native", "[::1]:8050", "", "[::1]:8050", false},
+		{"invalid listen", "bad", "host", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := executionAPIBindAddress(tc.desired, tc.mode)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("executionAPIBindAddress(%q, %q) unexpectedly succeeded with %q", tc.desired, tc.mode, got)
+				}
+				return
+			}
 			if err != nil || got != tc.want {
 				t.Fatalf("executionAPIBindAddress(%q, %q)=%q, %v; want %q", tc.desired, tc.mode, got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestApplicationBuildsRuntimeHandlerWithOrdinaryContext(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal:7233"
+	cfg.Devices = []runnerconfig.DeviceConfig{{
+		ID: "org/runner/device", Name: "Device", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "no_device"},
+	}}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := (runtimesupervisor.StateStore{Path: filepath.Join(dir, "runtime-state.json")}).Save(runtimesupervisor.PersistentState{Desired: runtimesupervisor.DesiredRunning}); err != nil {
+		t.Fatal(err)
+	}
+	built := make(chan struct{})
+	handlerResult := make(chan error, 1)
+	deps := runtimesupervisor.Dependencies{
+		NewAPI: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (api runtimesupervisor.API, err error) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = fmt.Errorf("handler construction panicked: %v", recovered)
+				}
+				close(built)
+				handlerResult <- err
+			}()
+			_ = server.NewHTTPHandlerWithReadiness(ctx, server.NewRunnerService(store, utils.Instance{}), false, server.NewReadinessService())
+			return &countingApplicationAPI{}, nil
+		},
+	}
+	s, err := runtimesupervisor.New(dir, nil, deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &Application{configDir: dir, supervisor: s, listen: func(string, string) (net.Listener, error) { return newTestListener(), nil }}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	select {
+	case <-built:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("runtime handler was not constructed")
+	}
+	if err := <-handlerResult; err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("application did not shut down")
 	}
 }
 

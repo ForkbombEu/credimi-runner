@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -1020,6 +1021,60 @@ func TestRegistrationAndPublicEndpointVerification(t *testing.T) {
 	cancel()
 	if err := VerifyPublicEndpoint(canceled, cfg, "http://[::1"); err == nil {
 		t.Fatal("invalid endpoint unexpectedly verified")
+	}
+}
+
+func TestPublicEndpointVerificationURLUsesManualPortAndBasePath(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, publicURL, publicPort, want string
+	}{
+		{"manual IPv4", "manual", "http://192.0.2.10", "8050", "http://192.0.2.10:8050/readyz"},
+		{"manual DNS base path", "manual", "https://runner.example/base/", "8050", "https://runner.example:8050/base/readyz"},
+		{"manual explicit port wins", "manual", "http://runner.example:9000", "8050", "http://runner.example:9000/readyz"},
+		{"manual IPv6", "manual", "http://[2001:db8::10]", "8050", "http://[2001:db8::10]:8050/readyz"},
+		{"quick tunnel ignores public port", "quick_tunnel", "https://quick.example/base", "8050", "https://quick.example/base/readyz"},
+		{"malformed URL", "manual", "http://[::1", "8050", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Config{Exposure: config.ExposureConfig{Mode: tc.mode, PublicPort: tc.publicPort}}
+			if tc.name == "malformed URL" {
+				cfg.Exposure.PublicURL = tc.publicURL
+				if _, err := publicEndpointVerificationURL(cfg, tc.publicURL); err == nil {
+					t.Fatal("malformed public URL unexpectedly succeeded")
+				}
+				return
+			}
+			got, err := publicEndpointVerificationURL(cfg, tc.publicURL)
+			if err != nil || got != tc.want {
+				t.Fatalf("publicEndpointVerificationURL()=%q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestVerifyPublicEndpointUsesManualPublicPort(t *testing.T) {
+	var requestedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		if r.URL.Path != "/readyz" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"runner_id":"org/runner"}`))
+	}))
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := validConfig()
+	cfg.Exposure.PublicURL = "http://" + parsed.Hostname()
+	cfg.Exposure.PublicPort = parsed.Port()
+	if err := VerifyPublicEndpoint(context.Background(), cfg, cfg.Exposure.PublicURL); err != nil {
+		t.Fatal(err)
+	}
+	if requestedPath != "/readyz" {
+		t.Fatalf("verification path=%q; want /readyz", requestedPath)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/forkbombeu/credimi-runner/pkg/server"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
+	cluelog "goa.design/clue/log"
 )
 
 type Application struct {
@@ -152,6 +153,11 @@ func (a *Application) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	format := cluelog.FormatJSON
+	if cluelog.IsTerminal() {
+		format = cluelog.FormatTerminal
+	}
+	ctx = cluelog.Context(ctx, cluelog.WithFormat(format))
 	cfg, err := dashboard.LoadConfig(a.configDir)
 	if err != nil {
 		return err
@@ -263,7 +269,7 @@ func executionAPIBindAddress(desiredListen, serviceNetworkMode string) (string, 
 	if err != nil {
 		return "", fmt.Errorf("parse execution API listen address %q: %w", desiredListen, err)
 	}
-	if serviceNetworkMode == "bridge" {
+	if serviceNetworkMode == "bridge" || serviceNetworkMode == "host" {
 		host = "0.0.0.0"
 	}
 	return net.JoinHostPort(host, port), nil
