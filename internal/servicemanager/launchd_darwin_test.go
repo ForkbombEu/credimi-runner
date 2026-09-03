@@ -173,6 +173,64 @@ func TestLaunchAgentEnableDisableDoNotChangeRunningService(t *testing.T) {
 	}
 }
 
+func TestLaunchAgentEnablePropagatesAutostartSaveFailure(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home}
+	m.saveSettings = func(string, bool) error { return errors.New("settings unavailable") }
+	if err := m.Enable(context.Background()); err == nil || !strings.Contains(err.Error(), "settings unavailable") {
+		t.Fatalf("Enable error=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")); !os.IsNotExist(err) {
+		t.Fatalf("persistent plist was written after save failure: %v", err)
+	}
+}
+
+func TestLaunchAgentEnableWriteFailureRollsBackAutostart(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	if err := saveAutostart(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, "Library"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "Library", "LaunchAgents"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &LaunchAgentManager{ConfigDir: dir, BinaryPath: "/bin/runner", HomeDir: home}
+	if err := m.Enable(context.Background()); err == nil {
+		t.Fatal("Enable succeeded despite plist write failure")
+	}
+	if got, err := loadAutostart(dir); err != nil || got {
+		t.Fatalf("autostart=%v err=%v, want rollback", got, err)
+	}
+}
+
+func TestLaunchAgentDisablePropagatesPersistenceRemovalFailure(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "config")
+	if err := saveAutostart(dir, true); err != nil {
+		t.Fatal(err)
+	}
+	persistent := filepath.Join(home, "Library", "LaunchAgents", launchAgentLabel+".plist")
+	if err := os.MkdirAll(persistent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(persistent, "keep"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &LaunchAgentManager{ConfigDir: dir, HomeDir: home, Run: func(context.Context, string, ...string) error {
+		return errors.New("not loaded")
+	}}
+	if err := m.Disable(context.Background()); err == nil {
+		t.Fatal("Disable succeeded despite plist removal failure")
+	}
+	if got, err := loadAutostart(dir); err != nil || !got {
+		t.Fatalf("autostart=%v err=%v, want rollback", got, err)
+	}
+}
+
 func TestLaunchAgentStopPreservesAutostart(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, "config")

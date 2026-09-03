@@ -35,7 +35,7 @@ func (f *fakeCommandRunner) Run(_ context.Context, name string, args []string, _
 	return nil
 }
 func (f *fakeCommandRunner) Output(_ context.Context, _ string, args []string, _ []string) ([]byte, error) {
-	if containsArgs(args, "-aq") {
+	if containsArgs(args, "-aq") && !containsArgs(args, "runner") {
 		return nil, nil
 	}
 	joined := strings.Join(args, " ")
@@ -167,7 +167,7 @@ func (r *scriptedRunner) Run(_ context.Context, name string, args []string, _ []
 }
 
 func (r *scriptedRunner) Output(_ context.Context, name string, args []string, _ []string) ([]byte, error) {
-	if containsArgs(args, "-aq") {
+	if containsArgs(args, "-aq") && !containsArgs(args, "runner") {
 		return nil, nil
 	}
 	step := r.take("output", name, args)
@@ -459,7 +459,7 @@ func TestDockerStopRetainsAppliedState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := &scriptedRunner{t: t, steps: []commandStep{{kind: "run", contains: []string{"down", "--timeout", "30"}}}}
+	r := &scriptedRunner{t: t, steps: []commandStep{{kind: "run", contains: []string{"stop", "--timeout", "30", "runner"}}}}
 	m := NewDockerManager(dir, "")
 	m.Runner = r
 	if err := m.Stop(context.Background()); err != nil {
@@ -918,7 +918,7 @@ func TestServiceSpecFingerprintIncludesCapabilityFields(t *testing.T) {
 }
 
 func TestRenderServiceComposeDeclaresNamedVolumes(t *testing.T) {
-	spec := ServiceSpec{Image: "runner:test", PullPolicy: "never", NetworkMode: "bridge", RestartPolicy: "unless-stopped", Command: []string{"internal-service"}, Environment: map[string]string{}, Volumes: []NamedVolume{{Name: "state", Target: "/state"}, {Name: "tools", Target: "/tools"}}}
+	spec := ServiceSpec{Image: "runner:test", PullPolicy: "never", NetworkMode: "bridge", RestartPolicy: "always", Command: []string{"internal-service"}, Environment: map[string]string{}, Volumes: []NamedVolume{{Name: "state", Target: "/state"}, {Name: "tools", Target: "/tools"}}}
 	content := RenderServiceCompose(spec)
 	var document struct {
 		Services map[string]struct {

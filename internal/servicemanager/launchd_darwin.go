@@ -19,10 +19,11 @@ import (
 const launchAgentLabel = "eu.forkbomb.credimi-runner"
 
 type LaunchAgentManager struct {
-	ConfigDir  string
-	BinaryPath string
-	HomeDir    string
-	Run        func(context.Context, string, ...string) error
+	ConfigDir    string
+	BinaryPath   string
+	HomeDir      string
+	Run          func(context.Context, string, ...string) error
+	saveSettings func(string, bool) error
 }
 
 func (m *LaunchAgentManager) command(ctx context.Context, args ...string) error {
@@ -107,6 +108,21 @@ func (m *LaunchAgentManager) loaded(ctx context.Context) bool {
 	return m.command(ctx, "launchctl", "print", launchAgentTarget()) == nil
 }
 
+func removeLaunchAgentFile(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func (m *LaunchAgentManager) saveAutostart(enabled bool) error {
+	if m.saveSettings != nil {
+		return m.saveSettings(m.ConfigDir, enabled)
+	}
+	return saveAutostart(m.ConfigDir, enabled)
+}
+
 func (m *LaunchAgentManager) Start(ctx context.Context) error {
 	autostart, err := loadAutostart(m.ConfigDir)
 	if err != nil {
@@ -122,14 +138,20 @@ func (m *LaunchAgentManager) Start(ctx context.Context) error {
 				return err
 			}
 		} else {
-			_ = os.Remove(persistent)
-			_ = os.Remove(transient)
+			if err := removeLaunchAgentFile(persistent); err != nil {
+				return err
+			}
+			if err := removeLaunchAgentFile(transient); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 	path := persistent
 	if !autostart {
-		_ = os.Remove(persistent)
+		if err := removeLaunchAgentFile(persistent); err != nil {
+			return err
+		}
 		path = transient
 	}
 	if err := m.writePlist(path); err != nil {
@@ -154,8 +176,12 @@ func (m *LaunchAgentManager) Stop(ctx context.Context) error {
 		if pathErr != nil {
 			return pathErr
 		}
-		_ = os.Remove(persistent)
-		_ = os.Remove(transient)
+		if err := removeLaunchAgentFile(persistent); err != nil {
+			return err
+		}
+		if err := removeLaunchAgentFile(transient); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -166,36 +192,47 @@ func (m *LaunchAgentManager) Restart(ctx context.Context) error {
 	return m.Start(ctx)
 }
 func (m *LaunchAgentManager) Enable(ctx context.Context) error {
-	if _, err := loadAutostart(m.ConfigDir); err != nil {
+	previous, err := loadAutostart(m.ConfigDir)
+	if err != nil {
 		return err
 	}
 	_, persistent, transient, err := m.paths()
 	if err != nil {
 		return err
 	}
-	if err := m.writePlist(persistent); err != nil {
+	if err := m.saveAutostart(true); err != nil {
 		return err
 	}
-	_ = os.Remove(transient)
-	if err := saveAutostart(m.ConfigDir, true); err != nil {
+	if err := m.writePlist(persistent); err != nil {
+		_ = m.saveAutostart(previous)
+		return err
+	}
+	if err := removeLaunchAgentFile(transient); err != nil {
 		return err
 	}
 	return nil
 }
 func (m *LaunchAgentManager) Disable(ctx context.Context) error {
-	if _, err := loadAutostart(m.ConfigDir); err != nil {
+	previous, err := loadAutostart(m.ConfigDir)
+	if err != nil {
 		return err
 	}
 	_, persistent, transient, err := m.paths()
 	if err != nil {
 		return err
 	}
-	loaded := m.loaded(ctx)
-	_ = os.Remove(persistent)
-	if !loaded {
-		_ = os.Remove(transient)
+	_ = m.loaded(ctx)
+	if err := m.saveAutostart(false); err != nil {
+		return err
 	}
-	return saveAutostart(m.ConfigDir, false)
+	if err := removeLaunchAgentFile(persistent); err != nil {
+		_ = m.saveAutostart(previous)
+		return err
+	}
+	if err := removeLaunchAgentFile(transient); err != nil {
+		return err
+	}
+	return nil
 }
 func (m *LaunchAgentManager) Status(ctx context.Context) (Status, error) {
 	autostart, err := loadAutostart(m.ConfigDir)

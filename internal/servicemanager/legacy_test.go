@@ -229,6 +229,76 @@ func TestLegacyPreflightDetectsPublishedPortFromNetworkSettings(t *testing.T) {
 	}
 }
 
+func TestLegacyPreflightUsesCustomPublishedPort(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		legacyPort string
+		desired    string
+		conflict   bool
+	}{
+		{"custom port conflict", "9123", "9123", true},
+		{"different port is safe", "8050", "9123", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			container := historicalContainer("legacy", "/old-runner", historicalEmulatorImage+":latest", []string{"--emulator"}, historicalLabels(filepath.Join(dir, "other"), "runner"))
+			publishedPort(&container, tc.legacyPort)
+			r := &legacyContainerRunner{containers: []inspectedContainer{container}}
+			m := NewDockerManager(dir, "")
+			m.Runner = r
+			err := m.preflightLegacy(context.Background(), config.Bootstrap(), desiredService("bridge", tc.desired))
+			if tc.conflict && (err == nil || !strings.Contains(err.Error(), "legacy")) {
+				t.Fatalf("error=%v, want conflict", err)
+			}
+			if !tc.conflict && err != nil {
+				t.Fatalf("error=%v, want no conflict", err)
+			}
+		})
+	}
+}
+
+func TestLegacyPreflightUsesCustomHostNetworkPort(t *testing.T) {
+	dir := t.TempDir()
+	container := historicalContainer("legacy", "/old-runner", historicalPhoneImage+":latest", []string{"--host-adb", "--usb"}, historicalLabels(filepath.Join(dir, "other"), "runner"))
+	hostNetwork(&container)
+	container.Config.Env = []string{"PORT=9123"}
+	r := &legacyContainerRunner{containers: []inspectedContainer{container}}
+	m := NewDockerManager(dir, "")
+	m.Runner = r
+	cfg := config.Bootstrap()
+	cfg.Server.APIListen = "127.0.0.1:9123"
+	err := m.preflightLegacy(context.Background(), cfg, desiredService("host"))
+	if err == nil || !strings.Contains(err.Error(), "legacy") {
+		t.Fatalf("error=%v, want custom host-port conflict", err)
+	}
+}
+
+func TestLegacyPreflightCleansOwnedHistoricalModes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		image   string
+		command []string
+	}{
+		{"emulator", historicalEmulatorImage + ":latest", []string{"--emulator"}},
+		{"no device", historicalPhoneImage + ":latest", []string{"--no-device"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			container := historicalContainer("legacy-"+tc.name, "/old-runner", tc.image, tc.command, historicalLabels(dir, "runner"))
+			publishedPort(&container, "8050")
+			r := &legacyContainerRunner{containers: []inspectedContainer{container}}
+			m := NewDockerManager(dir, "")
+			m.Runner = r
+			if err := m.preflightLegacy(context.Background(), config.Bootstrap(), desiredService("bridge", "8050")); err != nil {
+				t.Fatal(err)
+			}
+			if len(r.calls) != 1 || !containsArgs(r.calls[0], "rm") || !containsArgs(r.calls[0], "-f") || !containsArgs(r.calls[0], container.ID) {
+				t.Fatalf("cleanup calls=%v", r.calls)
+			}
+		})
+	}
+}
+
 func TestLegacyOwnershipRequiresInstallationEvidence(t *testing.T) {
 	dir := t.TempDir()
 	project := ProjectName(dir, 1000)

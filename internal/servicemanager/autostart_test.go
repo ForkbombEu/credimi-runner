@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
@@ -25,7 +26,7 @@ func TestBuildServiceSpecUsesAutostartRestartPolicy(t *testing.T) {
 		want      string
 	}{
 		{"disabled", false, "on-failure"},
-		{"enabled", true, "unless-stopped"},
+		{"enabled", true, "always"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			spec, err := BuildServiceSpecWithAutostart(cfg, host, tc.autostart)
@@ -50,7 +51,7 @@ func TestServiceLifecyclePreservesAutostart(t *testing.T) {
 			cfg.Android.RunnerImage = "credimi-runner:local"
 			cfg.Android.PullPolicy = "never"
 			r := &scriptedRunner{t: t, steps: []commandStep{
-				{kind: "run", contains: []string{"down", "--timeout", "30"}},
+				{kind: "run", contains: []string{"stop", "--timeout", "30", "runner"}},
 				{kind: "run", contains: []string{"up", "-d", "runner"}},
 				{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
 				{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local\n")},
@@ -81,7 +82,7 @@ func TestStartDoesNotEnableAndStopDoesNotDisable(t *testing.T) {
 		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
 		{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local\n")},
 		{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte(`[]`)},
-		{kind: "run", contains: []string{"down", "--timeout", "30"}},
+		{kind: "run", contains: []string{"stop", "--timeout", "30", "runner"}},
 	}}
 	m := NewDockerManager(dir, "")
 	m.Runner = r
@@ -129,7 +130,7 @@ func TestEnableDisableRunningUpdatesPolicyWithoutRecreation(t *testing.T) {
 		enable bool
 		policy string
 	}{
-		{"enable", true, "unless-stopped"},
+		{"enable", true, "always"},
 		{"disable", false, "on-failure"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,6 +153,124 @@ func TestEnableDisableRunningUpdatesPolicyWithoutRecreation(t *testing.T) {
 				t.Fatal(err)
 			}
 			r.done()
+		})
+	}
+}
+
+func TestEnableDisableStoppedContainerUpdatesPolicyWithoutStarting(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		enable bool
+		policy string
+	}{
+		{"enable", true, "always"},
+		{"disable", false, "on-failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := saveAutostart(dir, !tc.enable); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := &scriptedRunner{t: t, steps: []commandStep{
+				{kind: "output", contains: []string{"ps", "-aq", "runner"}, output: []byte("stopped-container\n")},
+				{kind: "run", contains: []string{"update", "--restart", tc.policy, "stopped-container"}},
+			}}
+			m := NewDockerManager(dir, "")
+			m.Runner = r
+			if tc.enable {
+				if err := m.Enable(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := m.Disable(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := loadAutostart(dir); err != nil || got != tc.enable {
+				t.Fatalf("autostart=%v err=%v", got, err)
+			}
+			r.done()
+		})
+	}
+}
+
+func TestStopRetainsContainerAndAutostartPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		enable bool
+		policy string
+	}{
+		{"enabled", true, "always"},
+		{"disabled", false, "on-failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := saveAutostart(dir, tc.enable); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Bootstrap()
+			host, err := ResolveHostContext(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteServiceComposeWithHostAndAutostart(dir, cfg, host, tc.enable); err != nil {
+				t.Fatal(err)
+			}
+			r := &scriptedRunner{t: t, steps: []commandStep{
+				{kind: "run", contains: []string{"stop", "--timeout", "30", "runner"}},
+			}}
+			m := NewDockerManager(dir, "")
+			m.Runner = r
+			if err := m.Stop(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			r.done()
+			if got, err := loadAutostart(dir); err != nil || got != tc.enable {
+				t.Fatalf("autostart=%v err=%v", got, err)
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
+			if err != nil || !strings.Contains(string(raw), "restart: "+tc.policy) {
+				t.Fatalf("compose policy missing: %q err=%v", raw, err)
+			}
+		})
+	}
+}
+
+func TestStartUsesSavedAutostartRestartPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		enable bool
+		policy string
+	}{
+		{"enabled", true, "always"},
+		{"disabled", false, "on-failure"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := saveAutostart(dir, tc.enable); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Bootstrap()
+			cfg.Android.RunnerImage = "credimi-runner:local"
+			cfg.Android.PullPolicy = "never"
+			r := &scriptedRunner{t: t, steps: []commandStep{
+				{kind: "run", contains: []string{"up", "-d", "runner"}},
+				{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
+				{kind: "output", contains: []string{"inspect", ".Image"}, output: []byte("sha256:local\n")},
+				{kind: "output", contains: []string{"image", "inspect", ".RepoDigests"}, output: []byte(`[]`)},
+			}}
+			m := NewDockerManager(dir, "")
+			m.Runner = r
+			m.LoadConfig = func() (config.Config, error) { return cfg, nil }
+			if err := m.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			r.done()
+			raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
+			if err != nil || !strings.Contains(string(raw), "restart: "+tc.policy) {
+				t.Fatalf("compose policy missing: %q err=%v", raw, err)
+			}
 		})
 	}
 }
@@ -190,7 +309,7 @@ func TestAutostartUpdateFailureRollsBackPersistedSetting(t *testing.T) {
 	}
 	r := &scriptedRunner{t: t, steps: []commandStep{
 		{kind: "output", contains: []string{"ps", "runner"}, output: []byte("container123\n")},
-		{kind: "run", contains: []string{"update", "unless-stopped", "container123"}, err: errors.New("docker update failed")},
+		{kind: "run", contains: []string{"update", "always", "container123"}, err: errors.New("docker update failed")},
 	}}
 	m := NewDockerManager(dir, "")
 	m.Runner = r
@@ -219,7 +338,7 @@ func TestStatusReportsAutostart(t *testing.T) {
 func TestRestartPolicyDoesNotMakeFingerprintStale(t *testing.T) {
 	base := ServiceSpec{Image: "runner", PullPolicy: "never", NetworkMode: "bridge", RestartPolicy: "on-failure"}
 	other := base
-	other.RestartPolicy = "unless-stopped"
+	other.RestartPolicy = "always"
 	if base.Fingerprint() != other.Fingerprint() {
 		t.Fatal("restart policy unexpectedly changes topology fingerprint")
 	}

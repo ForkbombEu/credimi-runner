@@ -114,7 +114,7 @@ func (m *DockerManager) Stop(ctx context.Context) error {
 		}
 		return err
 	}
-	return m.compose(ctx, "down", "--timeout", "30")
+	return m.compose(ctx, "stop", "--timeout", "30", "runner")
 }
 func (m *DockerManager) Restart(ctx context.Context) error {
 	if err := m.Stop(ctx); err != nil {
@@ -150,7 +150,7 @@ func (m *DockerManager) setAutostart(ctx context.Context, enabled bool) error {
 	if containerID != "" {
 		policy := "on-failure"
 		if enabled {
-			policy = "unless-stopped"
+			policy = "always"
 		}
 		if err := m.Runner.Run(ctx, "docker", []string{"update", "--restart", policy, containerID}, os.Environ()); err != nil {
 			rollbackErr := save(m.ConfigDir, previous)
@@ -173,7 +173,7 @@ func (m *DockerManager) runningContainerID(ctx context.Context) (string, error) 
 	if m.Runner == nil {
 		m.Runner = execRunner{}
 	}
-	args := []string{"compose", "--project-name", ProjectName(m.ConfigDir, m.host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "ps", "-q", "runner"}
+	args := []string{"compose", "--project-name", ProjectName(m.ConfigDir, m.host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "ps", "-aq", "runner"}
 	out, err := m.Runner.Output(ctx, "docker", args, os.Environ())
 	if err != nil {
 		return "", err
@@ -352,27 +352,37 @@ func containerConflictsWithService(container inspectedContainer, cfg runnerconfi
 		}
 	}
 	if strings.EqualFold(container.HostConfig.NetworkMode, "host") {
-		for port := range desiredPorts {
-			if port == "8050" {
+		for port := range legacyRunnerPorts(container) {
+			if _, ok := desiredPorts[port]; ok {
 				return true
 			}
 		}
 	}
 	for _, bindings := range []map[string][]containerPortBinding{container.HostConfig.PortBindings, container.NetworkSettings.Ports} {
-		for port, entries := range bindings {
-			port = strings.TrimSuffix(port, "/tcp")
-			port = strings.TrimSuffix(port, "/udp")
+		for _, entries := range bindings {
 			for _, entry := range entries {
 				if _, ok := desiredPorts[entry.HostPort]; ok {
-					return true
-				}
-				if _, ok := desiredPorts[port]; ok {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+func legacyRunnerPorts(container inspectedContainer) map[string]struct{} {
+	ports := map[string]struct{}{"8050": {}}
+	for _, value := range container.Config.Env {
+		key, value, ok := strings.Cut(value, "=")
+		if !ok || (key != "PORT" && key != "RUNNER_PORT") {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value != "" {
+			ports[value] = struct{}{}
+		}
+	}
+	return ports
 }
 
 func serviceHostPorts(spec ServiceSpec) map[string]struct{} {

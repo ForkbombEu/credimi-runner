@@ -167,7 +167,7 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 		},
 	}
 	if autostart {
-		spec.RestartPolicy = "unless-stopped"
+		spec.RestartPolicy = "always"
 	}
 	configuredNetwork := strings.TrimSpace(cfg.Android.Network)
 	if strings.EqualFold(configuredNetwork, "host") {
