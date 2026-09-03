@@ -49,6 +49,17 @@ func TestReadinessReportsIdentityAndExactDevice(t *testing.T) {
 	}
 }
 
+func TestReadinessRejectsEmptyBootID(t *testing.T) {
+	service := &ReadinessService{Environment: func(key string) string {
+		return map[string]string{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_BOOT_ID": ""}[key]
+	}}
+	recorder := httptest.NewRecorder()
+	service.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestReadinessUsesTypedDeviceInventoryWithoutDeviceEnvironment(t *testing.T) {
 	service := &ReadinessService{
 		Environment: func(key string) string {

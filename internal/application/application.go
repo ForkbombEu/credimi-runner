@@ -2,6 +2,8 @@ package application
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -153,6 +155,9 @@ func (a *Application) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := setRunnerBootID(); err != nil {
+		return err
+	}
 	format := cluelog.FormatJSON
 	if cluelog.IsTerminal() {
 		format = cluelog.FormatTerminal
@@ -242,6 +247,17 @@ func (a *Application) Run(ctx context.Context) error {
 		}
 		return a.shutdown()
 	}
+}
+
+func setRunnerBootID() error {
+	bootID := make([]byte, 16)
+	if _, err := rand.Read(bootID); err != nil {
+		return fmt.Errorf("generate runner boot ID: %w", err)
+	}
+	if err := os.Setenv("CREDIMI_RUNNER_BOOT_ID", hex.EncodeToString(bootID)); err != nil {
+		return fmt.Errorf("set runner boot ID: %w", err)
+	}
+	return nil
 }
 
 func isLoopbackHost(host string) bool {

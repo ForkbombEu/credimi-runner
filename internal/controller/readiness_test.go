@@ -128,3 +128,15 @@ func TestValidateReadinessRejectsMismatchedOrUnavailableRunner(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestValidateReadinessRejectsEmptyBootID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":""}`))
+	}))
+	defer server.Close()
+	_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1"})
+	if !errors.Is(err, ErrRunnerIdentityMismatch) {
+		t.Fatalf("err = %v, want %v", err, ErrRunnerIdentityMismatch)
+	}
+}

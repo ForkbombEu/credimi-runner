@@ -2,10 +2,12 @@ package application
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -65,6 +67,7 @@ func TestExecutionAPIBindAddressFollowsServiceNetwork(t *testing.T) {
 
 func TestApplicationBuildsRuntimeHandlerWithOrdinaryContext(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "")
 	cfg := runnerconfig.Bootstrap()
 	cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
 	cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
@@ -90,6 +93,13 @@ func TestApplicationBuildsRuntimeHandlerWithOrdinaryContext(t *testing.T) {
 				close(built)
 				handlerResult <- err
 			}()
+			bootID := os.Getenv("CREDIMI_RUNNER_BOOT_ID")
+			if len(bootID) != 32 {
+				return nil, fmt.Errorf("runner boot ID length=%d, want 32", len(bootID))
+			}
+			if _, err := hex.DecodeString(bootID); err != nil {
+				return nil, fmt.Errorf("runner boot ID is not hexadecimal: %w", err)
+			}
 			_ = server.NewHTTPHandlerWithReadiness(ctx, server.NewRunnerService(store, utils.Instance{}), false, server.NewReadinessService())
 			return &countingApplicationAPI{}, nil
 		},
@@ -119,6 +129,29 @@ func TestApplicationBuildsRuntimeHandlerWithOrdinaryContext(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("application did not shut down")
+	}
+}
+
+func TestApplicationRunReplacesInheritedBootID(t *testing.T) {
+	const stale = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", stale)
+	app := &Application{configDir: t.TempDir()}
+	if err := app.Run(context.Background()); err == nil {
+		t.Fatal("application without config unexpectedly started")
+	}
+	got := os.Getenv("CREDIMI_RUNNER_BOOT_ID")
+	if got == stale {
+		t.Fatal("runner boot ID reused inherited value")
+	}
+	if len(got) != 32 {
+		t.Fatalf("runner boot ID length=%d, want 32", len(got))
+	}
+	decoded, err := hex.DecodeString(got)
+	if err != nil {
+		t.Fatalf("runner boot ID is not hexadecimal: %v", err)
+	}
+	if len(decoded) != 16 {
+		t.Fatalf("decoded runner boot ID length=%d, want 16", len(decoded))
 	}
 }
 
