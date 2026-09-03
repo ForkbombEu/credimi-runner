@@ -422,6 +422,49 @@ func TestDashboardRemainsReachableWhenRuntimeStops(t *testing.T) {
 	}
 }
 
+func TestDashboardRecoveryCORSAllowsSameHostPortChangeWithoutBypassingAuth(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_TOKEN"] = "replacement-token"
+	s.cfg.mu.Unlock()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /startup/status", s.startupStatus)
+	handler := recoveryCORS(s.auth(mux))
+
+	req := httptest.NewRequest(http.MethodGet, "/startup/status?token=replacement-token", nil)
+	req.Host = "runner.example:8052"
+	req.Header.Set("Origin", "http://runner.example:8051")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recovery status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://runner.example:8051" {
+		t.Fatalf("allow origin=%q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/startup/status", nil)
+	req.Host = "runner.example:8052"
+	req.Header.Set("Origin", "http://runner.example:8051")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated recovery status=%d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://runner.example:8051" {
+		t.Fatalf("unauthenticated allow origin=%q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/startup/status?token=replacement-token", nil)
+	req.Host = "runner.example:8052"
+	req.Header.Set("Origin", "http://other.example:8051")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("foreign allow origin=%q", got)
+	}
+}
+
 func TestDashboardMapsSupervisorStatus(t *testing.T) {
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()
@@ -718,6 +761,46 @@ func TestStartupStatusWaitsForRuntimeAfterSuccessfulServiceReplacement(t *testin
 	}
 	if state["phase"] != string(StartupReady) {
 		t.Fatalf("running runtime phase=%v", state["phase"])
+	}
+}
+
+func TestStartupStatusCompletesForStoppedRuntimeAfterServiceReplacement(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Success: true, AppliedFingerprint: fingerprint, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped, Actual: runtimesupervisor.ActualStopped}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	s.runtime = fake
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupReady) {
+		t.Fatalf("stopped runtime phase=%v", state["phase"])
+	}
+	if starts, _, _, _ := fake.counts(); starts != 0 {
+		t.Fatalf("runtime starts=%d, want 0", starts)
 	}
 }
 

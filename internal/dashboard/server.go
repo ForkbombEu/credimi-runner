@@ -188,11 +188,55 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 	mux := http.NewServeMux()
 	srv.routes(mux)
 	srv.startHub()
-	return srv.auth(mux), func() {
+	handler := recoveryCORS(srv.auth(mux))
+	return handler, func() {
 		cancel()
 		srv.systemMonitor.Close()
 		srv.hubWG.Wait()
 	}, nil
+}
+
+// recoveryCORS permits the old Dashboard origin to read the replacement
+// startup status when only the Dashboard port changes. It is deliberately
+// limited to that status endpoint and to the same host and scheme.
+func recoveryCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/startup/status" {
+			if origin := sameDashboardOrigin(r); origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Add("Vary", "Origin")
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func sameDashboardOrigin(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return ""
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	} else if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]); forwarded == "http" || forwarded == "https" {
+		scheme = forwarded
+	}
+	if !strings.EqualFold(parsed.Scheme, scheme) || !strings.EqualFold(parsed.Hostname(), requestHostName(r.Host)) {
+		return ""
+	}
+	return origin
+}
+
+func requestHostName(host string) string {
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		return name
+	}
+	return strings.Trim(host, "[]")
 }
 
 func (s *Server) startHub() {
@@ -1893,7 +1937,9 @@ func (s *Server) startupStatus(w http.ResponseWriter, r *http.Request) {
 				startup.Phase, startup.Message = StartupStarting, "Starting runner services."
 			case status.Actual == runtimesupervisor.ActualFailed:
 				startup.Phase, startup.Message = StartupNeedsAttention, status.LastError
-			case status.Actual == runtimesupervisor.ActualStopped && restartApplied:
+			case status.Desired == runtimesupervisor.DesiredStopped && status.Actual == runtimesupervisor.ActualStopped && restartApplied:
+				startup.Phase, startup.Message = StartupReady, "Service replacement completed."
+			case status.Desired == runtimesupervisor.DesiredRunning && status.Actual == runtimesupervisor.ActualStopped && restartApplied:
 				startup.Phase, startup.Message = StartupStarting, "Service replacement completed. Waiting for the runner to start."
 			}
 		}
