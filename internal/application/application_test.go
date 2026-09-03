@@ -400,7 +400,7 @@ func TestRuntimeDependenciesCreateCloudflaredEdge(t *testing.T) {
 	}
 }
 
-func TestRuntimeConfigLoaderKeepsGenerationSnapshot(t *testing.T) {
+func TestRuntimeConfigLoaderReadsCurrentPersistedInventory(t *testing.T) {
 	dir := t.TempDir()
 	cfgA := runnerconfig.Bootstrap()
 	cfgA.SchemaVersion = runnerconfig.SchemaVersion
@@ -413,7 +413,11 @@ func TestRuntimeConfigLoaderKeepsGenerationSnapshot(t *testing.T) {
 		ID: "org/runner/device-a", Name: "A", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
 		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "A"},
 	}}
-	loaderA := runtimeConfigLoader(cfgA)
+	configPath := filepath.Join(dir, "config.toml")
+	if err := runnerconfig.WriteFile(configPath, cfgA); err != nil {
+		t.Fatal(err)
+	}
+	loaderA := runtimeConfigLoader(dir)
 	first, err := loaderA()
 	if err != nil {
 		t.Fatal(err)
@@ -427,7 +431,6 @@ func TestRuntimeConfigLoaderKeepsGenerationSnapshot(t *testing.T) {
 		ID: "org/runner/device-b", Name: "B", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
 		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10", WiFiPort: "5555"},
 	}}
-	configPath := filepath.Join(dir, "config.toml")
 	if err := runnerconfig.WriteFile(configPath, cfgB); err != nil {
 		t.Fatal(err)
 	}
@@ -435,11 +438,11 @@ func TestRuntimeConfigLoaderKeepsGenerationSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Devices) != 1 || second.Devices[0].ID != "org/runner/device-a" {
-		t.Fatalf("generation A changed after desired config write: %+v", second.Devices)
+	if len(second.Devices) != 1 || second.Devices[0].ID != "org/runner/device-b" {
+		t.Fatalf("current inventory was not refreshed after config write: %+v", second.Devices)
 	}
 
-	loaderB := runtimeConfigLoader(cfgB)
+	loaderB := runtimeConfigLoader(dir)
 	generationB, err := loaderB()
 	if err != nil {
 		t.Fatal(err)

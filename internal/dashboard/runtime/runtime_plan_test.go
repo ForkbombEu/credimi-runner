@@ -242,6 +242,49 @@ func TestServiceConfigFingerprintUsesCapabilityUnion(t *testing.T) {
 	}
 }
 
+func TestDeviceCapabilityShrinksDoNotRequireImmediateServiceRestart(t *testing.T) {
+	base := runnerconfig.Bootstrap()
+	base.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	base.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	base.Server.APIListen = "127.0.0.1:8050"
+	base.Server.DashboardListen = "127.0.0.1:8051"
+	base.Devices = []runnerconfig.DeviceConfig{
+		{ID: "org/runner/phone", Name: "Phone", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "one"}},
+		{ID: "org/runner/emulator", Name: "Emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "emu"}},
+	}
+	shrunk := base
+	shrunk.Devices = shrunk.Devices[:1]
+	if !servicemanager.ServiceConfigsCompatible(base, shrunk, true) {
+		t.Fatal("applied capability superset was not compatible")
+	}
+	if diff := DiffValuesForOS(ValuesFromTypedConfig(base), ValuesFromTypedConfig(shrunk), "linux"); hasClass(diff, ApplyServiceRestartRequired) {
+		t.Fatalf("capability shrink unexpectedly requires service restart: %+v", diff)
+	}
+	withoutEmulator := base
+	withoutEmulator.Devices = withoutEmulator.Devices[:1]
+	withFirstEmulator := withoutEmulator
+	withFirstEmulator.Devices = append(withFirstEmulator.Devices, base.Devices[1])
+	if diff := DiffValuesForOS(ValuesFromTypedConfig(withoutEmulator), ValuesFromTypedConfig(withFirstEmulator), "linux"); !hasClass(diff, ApplyServiceRestartRequired) {
+		t.Fatalf("capability expansion did not require service restart: %+v", diff)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(base, true))
+	t.Setenv(servicemanager.AppliedServiceNeedsHostADBEnv, "true")
+	t.Setenv(servicemanager.AppliedServiceNeedsUSBEnv, "true")
+	t.Setenv(servicemanager.AppliedServiceNeedsEmulatorEnv, "true")
+	if ServiceRestartRequired(ValuesFromTypedConfig(shrunk), true) {
+		t.Fatal("applied service capability superset was reported stale")
+	}
+	t.Setenv(servicemanager.AppliedServiceNeedsUSBEnv, "invalid")
+	if !ServiceRestartRequired(ValuesFromTypedConfig(shrunk), true) {
+		t.Fatal("invalid applied capability metadata was accepted")
+	}
+	expanded := base
+	expanded.Devices = append(expanded.Devices, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{Host: "redroid", AVDCTLSSHKnownHostsPath: "/tmp/known_hosts"}})
+	if servicemanager.ServiceConfigsCompatible(base, expanded, true) {
+		t.Fatal("new persistent Redroid capability was treated as compatible")
+	}
+}
+
 func TestDiffValuesForOSClassifiesNativeRuntimeSettings(t *testing.T) {
 	runnerDiff := DiffValuesForOS(Values{"RUNNER_HOST": "127.0.0.1", "RUNNER_PORT": "8050"}, Values{"RUNNER_HOST": "0.0.0.0", "RUNNER_PORT": "9050"}, "darwin")
 	if !hasClass(runnerDiff, ApplyRuntimeReconcile) || hasClass(runnerDiff, ApplyServiceRestartRequired) {

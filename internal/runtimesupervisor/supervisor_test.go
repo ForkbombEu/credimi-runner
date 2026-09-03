@@ -2,6 +2,7 @@ package runtimesupervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -965,6 +966,38 @@ func TestSupervisorCapabilityFailureRollsBackBeforeWorkers(t *testing.T) {
 	}
 }
 
+func TestSupervisorApplyInventoryKeepsGenerationRunning(t *testing.T) {
+	api := &testAPI{}
+	workers := &testWorkers{}
+	life := &testLife{}
+	registrations := 0
+	cfg := validConfig()
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		Register:           func(context.Context, config.Config, string) error { registrations++; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	generation := s.currentGeneration()
+	updated := cfg
+	updated.Runner.Description = "updated"
+	if err := s.ApplyInventory(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	if s.currentGeneration() != generation || workers.stops != 0 || life.pauses != 0 || registrations != 2 {
+		t.Fatalf("inventory apply disrupted generation: same=%t worker stops=%d pauses=%d registrations=%d", s.currentGeneration() == generation, workers.stops, life.pauses, registrations)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRegistrationAndPublicEndpointVerification(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1026,6 +1059,53 @@ func TestRegistrationAndPublicEndpointVerification(t *testing.T) {
 	cancel()
 	if err := VerifyPublicEndpoint(canceled, cfg, "http://[::1"); err == nil {
 		t.Fatal("invalid endpoint unexpectedly verified")
+	}
+}
+
+func TestRegistrationUsesCurrentExposureEndpoint(t *testing.T) {
+	var requests []dashboardruntime.RegisterRunnerRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/mobile-runner" {
+			var request dashboardruntime.RegisterRunnerRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			requests = append(requests, request)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	for _, tc := range []struct {
+		name, mode, persistedURL, persistedPort, domain, activeURL, wantIP, wantPort string
+	}{
+		{"manual to auto", "quick_tunnel", "https://old-manual.example", "9443", "", "https://new.trycloudflare.com", "https://new.trycloudflare.com", ""},
+		{"auto to manual", "manual", "https://manual-new.example", "9443", "", "https://old.trycloudflare.com", "https://manual-new.example", "9443"},
+		{"auto to named", "named_tunnel", "", "", "runner.example", "https://old.trycloudflare.com", "https://runner.example", ""},
+		{"named to auto", "quick_tunnel", "", "", "old.example", "https://new.trycloudflare.com", "https://new.trycloudflare.com", ""},
+		{"manual URL change", "manual", "https://manual-b.example", "443", "", "https://ignored.example", "https://manual-b.example", "443"},
+		{"manual port change", "manual", "https://manual.example", "9443", "", "https://ignored.example", "https://manual.example", "9443"},
+		{"named domain change", "named_tunnel", "", "", "runner-b.example", "https://old.trycloudflare.com", "https://runner-b.example", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Credimi.URL = server.URL
+			cfg.Exposure.Mode = tc.mode
+			cfg.Exposure.PublicURL = tc.persistedURL
+			cfg.Exposure.PublicPort = tc.persistedPort
+			cfg.Exposure.Domain = tc.domain
+			if err := Register(context.Background(), cfg, tc.activeURL); err != nil {
+				t.Fatal(err)
+			}
+			if len(requests) == 0 {
+				t.Fatal("registration request was not sent")
+			}
+			got := requests[len(requests)-1]
+			if got.IP != tc.wantIP || got.Port != tc.wantPort {
+				t.Fatalf("registered endpoint = %q:%q, want %q:%q", got.IP, got.Port, tc.wantIP, tc.wantPort)
+			}
+		})
 	}
 }
 

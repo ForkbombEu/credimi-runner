@@ -6,6 +6,7 @@ import (
 	"os"
 	goruntime "runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
@@ -116,7 +117,41 @@ func ServiceRestartRequired(values Values, configured bool) bool {
 	if err != nil {
 		return true
 	}
-	return applied != servicemanager.ServiceConfigFingerprint(cfg, configured)
+	if applied == servicemanager.ServiceConfigFingerprint(cfg, configured) {
+		return false
+	}
+	capabilities, present, valid := appliedServiceCapabilities()
+	if !present || !valid {
+		return true
+	}
+	return !servicemanager.ServiceConfigCompatibleWithFingerprint(cfg, configured, applied, capabilities)
+}
+
+func appliedServiceCapabilities() (servicemanager.ServiceCapabilities, bool, bool) {
+	capabilities := servicemanager.ServiceCapabilities{}
+	present := false
+	valid := true
+	for _, entry := range []struct {
+		key   string
+		value *bool
+	}{
+		{servicemanager.AppliedServiceNeedsHostADBEnv, &capabilities.NeedsHostADB},
+		{servicemanager.AppliedServiceNeedsUSBEnv, &capabilities.NeedsUSB},
+		{servicemanager.AppliedServiceNeedsEmulatorEnv, &capabilities.NeedsEmulator},
+	} {
+		raw := os.Getenv(entry.key)
+		if raw == "" {
+			continue
+		}
+		present = true
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			valid = false
+			continue
+		}
+		*entry.value = parsed
+	}
+	return capabilities, present, valid
 }
 
 func configFingerprint(configDir string, values Values) string {
@@ -257,7 +292,7 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 	if goos != "darwin" {
 		if oldCfg, oldErr := TypedConfigFromValues(oldValues); oldErr == nil {
 			if newCfg, newErr := TypedConfigFromValues(newValues); newErr == nil {
-				if servicemanager.ServiceConfigFingerprint(oldCfg, true) != servicemanager.ServiceConfigFingerprint(newCfg, true) {
+				if !servicemanager.ServiceConfigsCompatible(oldCfg, newCfg, true) {
 					classSet[ApplyServiceRestartRequired] = struct{}{}
 				}
 			} else if serviceFallbackChanged(diff.ChangedKeys) {

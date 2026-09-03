@@ -58,6 +58,7 @@ type RuntimeController interface {
 	Stop(context.Context) error
 	Restart(context.Context) error
 	Reconcile(context.Context, runnerconfig.Config) error
+	ApplyInventory(context.Context, runnerconfig.Config) error
 	Status() runtimesupervisor.Status
 }
 
@@ -1365,12 +1366,29 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 		s.setPendingDiff(pending)
 		return fmt.Errorf("load typed configuration: %w", err)
 	}
-	if err := s.runtime.Reconcile(ctx, cfg); err != nil {
+	apply := s.runtime.Reconcile
+	if inventoryOnlyDiff(pending) {
+		apply = s.runtime.ApplyInventory
+	}
+	if err := apply(ctx, cfg); err != nil {
 		s.setPendingDiff(pending)
 		return err
 	}
 	s.setPendingDiff(dashboardruntime.ConfigDiff{})
 	return nil
+}
+
+func inventoryOnlyDiff(diff dashboardruntime.ConfigDiff) bool {
+	if len(diff.ChangedKeys) == 0 {
+		return false
+	}
+	for _, key := range diff.ChangedKeys {
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") || key == "CREDIMI_RUNNER_DESCRIPTION" || key == "RUNNER_PUBLIC_URL" || key == "RUNNER_PUBLIC_PORT" || key == "RUNNER_DOMAIN" {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {

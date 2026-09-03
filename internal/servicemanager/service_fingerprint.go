@@ -10,7 +10,21 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/config"
 )
 
-const AppliedServiceConfigFingerprintEnv = "CREDIMI_APPLIED_SERVICE_CONFIG_FINGERPRINT"
+const (
+	AppliedServiceConfigFingerprintEnv = "CREDIMI_APPLIED_SERVICE_CONFIG_FINGERPRINT"
+	AppliedServiceNeedsHostADBEnv      = "CREDIMI_APPLIED_SERVICE_NEEDS_HOST_ADB"
+	AppliedServiceNeedsUSBEnv          = "CREDIMI_APPLIED_SERVICE_NEEDS_USB"
+	AppliedServiceNeedsEmulatorEnv     = "CREDIMI_APPLIED_SERVICE_NEEDS_EMULATOR"
+)
+
+// ServiceCapabilities describes capabilities that may safely be retained when
+// a desired configuration removes them. Expanding any of these capabilities
+// still requires service recreation.
+type ServiceCapabilities struct {
+	NeedsHostADB  bool
+	NeedsUSB      bool
+	NeedsEmulator bool
+}
 
 type serviceConfigProjection struct {
 	Configured        bool                     `json:"configured"`
@@ -45,6 +59,11 @@ func ServiceConfigFingerprint(cfg config.Config, configured bool) string {
 	// Persisted TOML is normally loaded with defaults applied. Applying them
 	// here as well keeps callers that hold a freshly assembled Config on the
 	// same canonical projection.
+	_ = config.ApplyDefaults(&cfg)
+	return fingerprintServiceProjection(serviceConfigProjectionFor(cfg, configured))
+}
+
+func serviceConfigProjectionFor(cfg config.Config, configured bool) serviceConfigProjection {
 	_ = config.ApplyDefaults(&cfg)
 	projection := serviceConfigProjection{
 		Configured:        configured,
@@ -100,9 +119,53 @@ func ServiceConfigFingerprint(cfg config.Config, configured bool) string {
 		projection.RedroidKnownHosts = append(projection.RedroidKnownHosts, path)
 	}
 	sort.Strings(projection.RedroidKnownHosts)
+	return projection
+}
+
+func fingerprintServiceProjection(projection serviceConfigProjection) string {
 	payload, _ := json.Marshal(projection)
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+func ServiceCapabilitiesForConfig(cfg config.Config) ServiceCapabilities {
+	projection := serviceConfigProjectionFor(cfg, true)
+	return ServiceCapabilities{NeedsHostADB: projection.NeedsHostADB, NeedsUSB: projection.NeedsUSB, NeedsEmulator: projection.NeedsEmulator}
+}
+
+// ServiceConfigsCompatible reports whether an already applied service can
+// satisfy desired configuration. Extra USB, ADB, or KVM capability is a safe
+// superset; all other service topology fields must remain equal.
+func ServiceConfigsCompatible(applied, desired config.Config, configured bool) bool {
+	appliedProjection := serviceConfigProjectionFor(applied, configured)
+	desiredProjection := serviceConfigProjectionFor(desired, configured)
+	if appliedProjection.NeedsHostADB {
+		desiredProjection.NeedsHostADB = true
+	}
+	if appliedProjection.NeedsUSB {
+		desiredProjection.NeedsUSB = true
+	}
+	if appliedProjection.NeedsEmulator {
+		desiredProjection.NeedsEmulator = true
+	}
+	return fingerprintServiceProjection(appliedProjection) == fingerprintServiceProjection(desiredProjection)
+}
+
+// ServiceConfigCompatibleWithFingerprint applies the same compatibility rule
+// when only the applied service fingerprint and its exported capabilities are
+// available to the Dashboard process.
+func ServiceConfigCompatibleWithFingerprint(cfg config.Config, configured bool, appliedFingerprint string, capabilities ServiceCapabilities) bool {
+	desiredProjection := serviceConfigProjectionFor(cfg, configured)
+	if capabilities.NeedsHostADB {
+		desiredProjection.NeedsHostADB = true
+	}
+	if capabilities.NeedsUSB {
+		desiredProjection.NeedsUSB = true
+	}
+	if capabilities.NeedsEmulator {
+		desiredProjection.NeedsEmulator = true
+	}
+	return fingerprintServiceProjection(desiredProjection) == appliedFingerprint
 }
 
 func serviceExposureClass(mode string) string {

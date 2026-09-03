@@ -40,6 +40,7 @@ type fakeRuntimeController struct {
 	stops         int
 	restarts      int
 	reconciles    int
+	inventories   int
 	requestStarts int
 	reconcileErr  error
 }
@@ -88,6 +89,13 @@ func (f *fakeRuntimeController) Reconcile(context.Context, runnerconfig.Config) 
 	return f.reconcileErr
 }
 
+func (f *fakeRuntimeController) ApplyInventory(context.Context, runnerconfig.Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inventories++
+	return f.reconcileErr
+}
+
 func (f *fakeRuntimeController) Status() runtimesupervisor.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -104,6 +112,12 @@ func (f *fakeRuntimeController) requestedStarts() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.requestStarts
+}
+
+func (f *fakeRuntimeController) inventoryCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inventories
 }
 
 func newTestServer(t *testing.T) *Server {
@@ -550,8 +564,8 @@ func TestDashboardRuntimeConfigChangeReconcilesSupervisor(t *testing.T) {
 	if err := s.applySavedConfig(context.Background(), diff); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, reconciles := fake.counts(); reconciles != 1 {
-		t.Fatalf("reconcile calls = %d", reconciles)
+	if _, _, _, reconciles := fake.counts(); reconciles != 0 || fake.inventoryCount() != 1 {
+		t.Fatalf("runtime apply calls: reconcile=%d inventory=%d", reconciles, fake.inventoryCount())
 	}
 }
 

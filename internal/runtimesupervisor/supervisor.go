@@ -558,6 +558,30 @@ func (s *Supervisor) Restart(ctx context.Context) error {
 	return s.startLocked(ctx, false)
 }
 
+// ApplyInventory publishes the current persisted inventory without replacing
+// the active runtime generation. Callers use this only when service
+// capabilities and runtime components are already compatible with the change.
+func (s *Supervisor) ApplyInventory(ctx context.Context, cfg config.Config) error {
+	ctx, cancel := boundedContext(ctx, startTimeout)
+	defer cancel()
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	g := s.currentGeneration()
+	if g == nil || !g.isExecuting() {
+		return errors.New("runtime generation is not running")
+	}
+	publicURL, _ := g.snapshot()
+	if s.deps.Register != nil {
+		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
+			return fmt.Errorf("register inventory: %w", err)
+		}
+	}
+	g.mu.Lock()
+	g.cfg = cfg
+	g.mu.Unlock()
+	return nil
+}
+
 func (s *Supervisor) Reconcile(ctx context.Context, cfg config.Config) error {
 	ctx, cancel := boundedContext(ctx, startTimeout)
 	defer cancel()
