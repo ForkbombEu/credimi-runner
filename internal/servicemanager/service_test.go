@@ -82,7 +82,7 @@ func TestRecordAppliedImagePersistsMatchingRepoDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.host = host
-	if err := m.recordAppliedImage(context.Background(), "ghcr.io/forkbombeu/credimi-runner:latest"); err != nil {
+	if err := m.recordAppliedImageWithPolicy(context.Background(), "ghcr.io/forkbombeu/credimi-runner:latest", ""); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "service-image-state.json"))
@@ -242,7 +242,7 @@ func TestRecordAppliedImageRejectsMalformedRepoDigestsAndPreservesState(t *testi
 	}}
 	m := NewDockerManager(dir, "")
 	m.Runner = r
-	err := m.recordAppliedImage(context.Background(), dockerTestConfig().Android.RunnerImage)
+	err := m.recordAppliedImageWithPolicy(context.Background(), dockerTestConfig().Android.RunnerImage, "")
 	if err == nil || !strings.Contains(err.Error(), "RepoDigests") {
 		t.Fatalf("error=%v", err)
 	}
@@ -265,7 +265,7 @@ func TestRecordAppliedImageRejectsEmptyAndUnmatchedRepoDigests(t *testing.T) {
 			}}
 			m := NewDockerManager(dir, "")
 			m.Runner = r
-			if err := m.recordAppliedImage(context.Background(), dockerTestConfig().Android.RunnerImage); err == nil {
+			if err := m.recordAppliedImageWithPolicy(context.Background(), dockerTestConfig().Android.RunnerImage, ""); err == nil {
 				t.Fatal("expected RepoDigest error")
 			}
 			r.done()
@@ -637,17 +637,12 @@ func TestServiceSpecFingerprintIgnoresObservedHostAddresses(t *testing.T) {
 		Image:       "runner",
 		NetworkMode: "bridge",
 		Environment: map[string]string{
-			AppliedServiceHostAddressesEnv: "[\"192.168.178.120\"]",
 			AppliedServiceResolvedHostsEnv: "{\"credimi.example\":\"\"}",
 			ServiceNetworkModeEnv:          "bridge",
 		},
 	}
 	changed := base
 	changed.Environment = cloneStringMap(base.Environment)
-	changed.Environment[AppliedServiceHostAddressesEnv] = "[\"192.168.178.120\",\"172.22.0.1\"]"
-	if base.Fingerprint() != changed.Fingerprint() {
-		t.Fatal("observed host addresses changed the service fingerprint")
-	}
 	changed.Environment[AppliedServiceResolvedHostsEnv] = "{\"credimi.example\":\"192.168.178.120\"}"
 	if base.Fingerprint() != changed.Fingerprint() {
 		t.Fatal("observed hostname resolution changed the service fingerprint")

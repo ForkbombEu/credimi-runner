@@ -117,7 +117,6 @@ func (s ServiceSpec) Fingerprint() string {
 	canonical.ExtraHosts = append([]string(nil), s.ExtraHosts...)
 	canonical.Networks = append([]string(nil), s.Networks...)
 	canonical.Environment = cloneStringMap(s.Environment)
-	delete(canonical.Environment, AppliedServiceHostAddressesEnv)
 	delete(canonical.Environment, AppliedServiceResolvedHostsEnv)
 	canonical.Labels = cloneStringMap(s.Labels)
 	sort.Slice(canonical.BindMounts, func(i, j int) bool {
@@ -191,8 +190,6 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	setEnv(AppliedServiceNeedsEmulatorEnv, strconv.FormatBool(capabilities.NeedsEmulator))
 	knownHostsMetadata, _ := json.Marshal(ServiceRedroidKnownHostsForConfig(cfg))
 	setEnv(AppliedServiceRedroidKnownHostsEnv, string(knownHostsMetadata))
-	hostAddresses, _ := json.Marshal(host.HostAddresses)
-	setEnv(AppliedServiceHostAddressesEnv, string(hostAddresses))
 	resolvedHosts, _ := json.Marshal(cloneResolvedHostLocality(host.ResolvedHostLocality))
 	setEnv(AppliedServiceResolvedHostsEnv, string(resolvedHosts))
 	setEnv(HostHomeEnv, host.HomeDir)
@@ -268,7 +265,6 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 		spec.BindMounts = appendBindMount(spec.BindMounts, BindMount{Source: host.GoldenRoot, Target: ContainerGoldenRoot})
 	}
 	if host.OS == "linux" && needsEmulator {
-		spec.BindMounts = appendBindMount(spec.BindMounts, BindMount{Source: host.GoldenRoot, Target: ContainerGoldenRoot})
 		if host.HasKVM {
 			spec.Devices = appendDevice(spec.Devices, DeviceMapping{Source: "/dev/kvm", Target: "/dev/kvm"})
 		}

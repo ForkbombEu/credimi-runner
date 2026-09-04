@@ -99,10 +99,7 @@ func (m *DockerManager) startWithConfig(ctx context.Context, cfg runnerconfig.Co
 		return err
 	}
 	m.host.Bootstrap = m.Bootstrap
-	m.host, err = ResolveServiceHostContext(cfg, m.host)
-	if err != nil {
-		return err
-	}
+	m.host = ResolveServiceHostContext(cfg, m.host)
 	spec, err := BuildServiceSpecWithAutostart(cfg, m.host, autostart)
 	if err != nil {
 		return err
@@ -152,10 +149,7 @@ func (m *DockerManager) ServiceMatchesConfig(ctx context.Context, cfg runnerconf
 		return false, err
 	}
 	host.Bootstrap = m.Bootstrap
-	host, err = ResolveServiceHostContext(cfg, host)
-	if err != nil {
-		return false, err
-	}
+	host = ResolveServiceHostContext(cfg, host)
 	spec, err := BuildServiceSpec(cfg, host)
 	if err != nil {
 		return false, err
@@ -518,15 +512,19 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	if cfg, cfgErr := m.config(); cfgErr == nil {
 		if baseHost, hostErr := ResolveHostContext(m.ConfigDir); hostErr == nil {
 			baseHost.Bootstrap = m.Bootstrap
-			if resolvedHost, resolveErr := ResolveServiceHostContext(cfg, baseHost); resolveErr == nil {
-				m.host = resolvedHost
-			}
+			m.host = ResolveServiceHostContext(cfg, baseHost)
 		}
 		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
 			status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
 			desired := desiredSpec.Fingerprint()
-			if running, runErr := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{ index .Config.Labels \"io.credimi.runner.service-fingerprint\" }}", strings.TrimSpace(string(out))}, os.Environ()); runErr == nil {
-				status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desired
+			id := strings.TrimSpace(string(out))
+			if running, environment, envErr := m.containerMetadata(ctx, id); envErr == nil {
+				if capabilities, present, valid := ServiceCapabilitiesFromEnvironment(environment); present && valid {
+					applied := strings.TrimSpace(environment[AppliedServiceConfigFingerprintEnv])
+					status.ServiceRestartRequired = applied == "" || !ServiceConfigCompatibleWithFingerprint(cfg, true, applied, capabilities)
+				} else {
+					status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desired
+				}
 			}
 		} else {
 			status.DashboardURL = desiredDashboardURL(cfg)
@@ -541,6 +539,30 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	}
 	populateRuntimeState(m.ConfigDir, &status)
 	return status, nil
+}
+
+func (m *DockerManager) containerMetadata(ctx context.Context, id string) ([]byte, map[string]string, error) {
+	raw, err := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{ index .Config.Labels \"io.credimi.runner.service-fingerprint\" }}{{printf \"\\n\"}}{{json .Config.Env}}", id}, os.Environ())
+	if err != nil {
+		return nil, nil, err
+	}
+	parts := strings.SplitN(string(raw), "\n", 2)
+	label := []byte(parts[0])
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return label, map[string]string{}, nil
+	}
+	var entries []string
+	if err := json.Unmarshal([]byte(parts[1]), &entries); err != nil {
+		return label, map[string]string{}, nil
+	}
+	values := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	return label, values, nil
 }
 
 func (m *DockerManager) UpgradeImage(ctx context.Context, progress func(string)) error {
@@ -577,10 +599,6 @@ func (m *DockerManager) UpgradeImage(ctx context.Context, progress func(string))
 		return err
 	}
 	return m.recordAppliedImageWithPolicy(ctx, cfg.Android.RunnerImage, cfg.Android.PullPolicy)
-}
-
-func (m *DockerManager) recordAppliedImage(ctx context.Context, configured string) error {
-	return m.recordAppliedImageWithPolicy(ctx, configured, "")
 }
 
 func (m *DockerManager) recordAppliedImageWithPolicy(ctx context.Context, configured, pullPolicy string) error {

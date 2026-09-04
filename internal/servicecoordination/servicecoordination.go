@@ -104,10 +104,6 @@ type RestartResult struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-func WritePresence(configDir string, now time.Time) error {
-	return writeJSON(filepath.Join(configDir, CoordinatorFile), Presence{PID: os.Getpid(), Protocol: Protocol, UpdatedAt: now.UTC()})
-}
-
 func writePresence(configDir string, now time.Time, nonce string) error {
 	return writeJSON(filepath.Join(configDir, CoordinatorFile), Presence{PID: os.Getpid(), Protocol: Protocol, Nonce: nonce, UpdatedAt: now.UTC()})
 }

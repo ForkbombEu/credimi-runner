@@ -1065,6 +1065,75 @@ func TestSupervisorApplyInventoryAdvancesActiveConfigOnlyAfterRegistration(t *te
 	}
 }
 
+func TestSupervisorApplyInventoryValidatesChangedPhysicalDeviceBeforeRegistration(t *testing.T) {
+	cfg := validConfig()
+	cfg.Devices = []config.DeviceConfig{{ID: "org/runner/usb-a", Name: "USB A", Enabled: true, Type: config.DeviceAndroidPhysical, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "A"}}}
+	api, workers, life := &testAPI{}, &testWorkers{}, &testLife{}
+	validated, registrations := 0, 0
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		Register:           func(context.Context, config.Config, string) error { registrations++; return nil },
+		ValidatePhysicalDevices: func(_ context.Context, candidate config.Config) error {
+			validated++
+			if len(candidate.Devices) != 1 || candidate.Devices[0].ID != "org/runner/usb-b" {
+				t.Fatalf("validated devices=%+v", candidate.Devices)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	generation := s.currentGeneration()
+	updated := cfg
+	updated.Devices = append(updated.Devices, config.DeviceConfig{ID: "org/runner/usb-b", Name: "USB B", Enabled: true, Type: config.DeviceAndroidPhysical, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "B"}})
+	if err := s.ApplyInventory(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	if validated != 1 || registrations != 2 || s.currentGeneration() != generation || workers.stops != 0 || life.pauses != 0 {
+		t.Fatalf("validated=%d registrations=%d same=%t stops=%d pauses=%d", validated, registrations, s.currentGeneration() == generation, workers.stops, life.pauses)
+	}
+	if got := generation.activeConfig.Load(); len(got.Devices) != 2 {
+		t.Fatalf("active devices=%+v", got.Devices)
+	}
+}
+
+func TestSupervisorApplyInventoryRejectsInvalidPhysicalDeviceWithoutAdvancingActiveConfig(t *testing.T) {
+	cfg := validConfig()
+	cfg.Devices = []config.DeviceConfig{{ID: "org/runner/usb-a", Name: "USB A", Enabled: true, Type: config.DeviceAndroidPhysical, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "A"}}}
+	api, workers, life := &testAPI{}, &testWorkers{}, &testLife{}
+	validationErr := errors.New("USB B unavailable")
+	registrations := 0
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI: func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil }, NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return workers }, NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		Register:                func(context.Context, config.Config, string) error { registrations++; return nil },
+		ValidatePhysicalDevices: func(context.Context, config.Config) error { return validationErr },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	generation := s.currentGeneration()
+	updated := cfg
+	updated.Devices = append(updated.Devices, config.DeviceConfig{ID: "org/runner/usb-b", Name: "USB B", Enabled: true, Type: config.DeviceAndroidPhysical, AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "B"}})
+	if err := s.ApplyInventory(context.Background(), updated); !errors.Is(err, validationErr) {
+		t.Fatalf("apply error=%v", err)
+	}
+	if registrations != 1 || s.currentGeneration() != generation || workers.stops != 0 || life.pauses != 0 {
+		t.Fatalf("registrations=%d same=%t stops=%d pauses=%d", registrations, s.currentGeneration() == generation, workers.stops, life.pauses)
+	}
+	if got := generation.activeConfig.Load(); len(got.Devices) != 1 || got.Devices[0].ID != "org/runner/usb-a" {
+		t.Fatalf("active devices=%+v", got.Devices)
+	}
+}
+
 func TestSupervisorReconcileRegistersTheNewEdgeURL(t *testing.T) {
 	api := &testAPI{}
 	edgeImpl := &testEdge{startURLs: []string{"https://tunnel-a.trycloudflare.com", "https://tunnel-b.trycloudflare.com"}}

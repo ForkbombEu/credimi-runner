@@ -20,21 +20,33 @@ var adbGetState = func(ctx context.Context, serial string) (string, error) {
 
 const adbStateTimeout = 10 * time.Second
 
-// ValidateConfiguredUSBDevices is the post-topology-expansion readiness gate
-// for physical USB devices. The dashboard may save a serial before the old
-// service can discover it, but the replacement service must prove that the
-// configured device is usable before activation succeeds.
-func ValidateConfiguredUSBDevices(ctx context.Context, cfg runnerconfig.Config) error {
+// ValidateConfiguredPhysicalDevices prepares configured Wi-Fi phones and
+// proves every enabled physical Android target is usable before activation.
+func ValidateConfiguredPhysicalDevices(ctx context.Context, cfg runnerconfig.Config) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ConnectConfiguredWiFiDevices(ctx, cfg); err != nil {
+		return err
+	}
 	for _, device := range cfg.Devices {
-		if !device.Enabled || device.Type != runnerconfig.DeviceAndroidPhysical || device.AndroidPhysical == nil || device.AndroidPhysical.Transport != "usb" {
+		if !device.Enabled || device.Type != runnerconfig.DeviceAndroidPhysical || device.AndroidPhysical == nil {
 			continue
 		}
+		transport := strings.TrimSpace(device.AndroidPhysical.Transport)
 		serial := strings.TrimSpace(device.AndroidPhysical.Serial)
-		if serial == "" {
-			return fmt.Errorf("USB device %q has no serial", device.ID)
+		switch transport {
+		case "usb":
+			if serial == "" {
+				return fmt.Errorf("USB device %q has no serial", device.ID)
+			}
+		case "wifi":
+			serial = runnerconfig.AndroidWiFiSerial(device.AndroidPhysical.WiFiIP, device.AndroidPhysical.WiFiPort)
+			if serial == "" {
+				return fmt.Errorf("Wi-Fi device %q has no endpoint", device.ID)
+			}
+		default:
+			continue
 		}
 		stateCtx, cancel := context.WithTimeout(ctx, adbStateTimeout)
 		state, err := adbGetState(stateCtx, serial)
@@ -44,11 +56,23 @@ func ValidateConfiguredUSBDevices(ctx context.Context, cfg runnerconfig.Config) 
 			if message == "" {
 				message = err.Error()
 			}
-			return fmt.Errorf("validate USB device %q (%s): %s", device.ID, serial, message)
+			return fmt.Errorf("validate %s device %q (%s): %s", transport, device.ID, serial, message)
 		}
 		if strings.TrimSpace(state) != "device" {
-			return fmt.Errorf("validate USB device %q (%s): adb state is %q", device.ID, serial, strings.TrimSpace(state))
+			return fmt.Errorf("validate %s device %q (%s): adb state is %q", transport, device.ID, serial, strings.TrimSpace(state))
 		}
 	}
 	return nil
+}
+
+// ValidateConfiguredUSBDevices preserves the focused USB readiness API.
+func ValidateConfiguredUSBDevices(ctx context.Context, cfg runnerconfig.Config) error {
+	usbOnly := cfg
+	usbOnly.Devices = nil
+	for _, device := range cfg.Devices {
+		if device.Enabled && device.Type == runnerconfig.DeviceAndroidPhysical && device.AndroidPhysical != nil && strings.TrimSpace(device.AndroidPhysical.Transport) == "usb" {
+			usbOnly.Devices = append(usbOnly.Devices, device)
+		}
+	}
+	return ValidateConfiguredPhysicalDevices(ctx, usbOnly)
 }

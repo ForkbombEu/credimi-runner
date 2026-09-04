@@ -109,10 +109,11 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 			if err := androidtools.EnsureEmulatorReady(ctx, cfg, runtime.GOOS, nil); err != nil {
 				return err
 			}
-			return androidtools.ValidateConfiguredUSBDevices(ctx, cfg)
+			return androidtools.ValidateConfiguredPhysicalDevices(ctx, cfg)
 		},
-		Register:             runtimesupervisor.Register,
-		VerifyPublicEndpoint: runtimesupervisor.VerifyPublicEndpoint,
+		ValidatePhysicalDevices: androidtools.ValidateConfiguredPhysicalDevices,
+		Register:                runtimesupervisor.Register,
+		VerifyPublicEndpoint:    runtimesupervisor.VerifyPublicEndpoint,
 	}
 }
 

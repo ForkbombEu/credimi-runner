@@ -14,7 +14,7 @@ var lookupServiceHostIPs = net.LookupIP
 
 // ResolveServiceHostContext enriches host metadata with the host process's
 // authoritative answers for names that affect persistent service networking.
-func ResolveServiceHostContext(cfg config.Config, host HostContext) (HostContext, error) {
+func ResolveServiceHostContext(cfg config.Config, host HostContext) HostContext {
 	resolved := map[string]string{}
 	for _, name := range serviceDependencyHostnames(cfg) {
 		name = normalizeHostname(name)
@@ -36,7 +36,7 @@ func ResolveServiceHostContext(cfg config.Config, host HostContext) (HostContext
 		resolved[name] = serviceHostIP(ips, host.HostAddresses)
 	}
 	host.ResolvedHostLocality = resolved
-	return host, nil
+	return host
 }
 
 func serviceHostIP(ips []net.IP, addresses []string) string {

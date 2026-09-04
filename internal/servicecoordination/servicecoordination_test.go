@@ -14,7 +14,7 @@ import (
 func TestPresenceIsAtomicPrivateAndExpires(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(100, 0)
-	if err := WritePresence(dir, now); err != nil {
+	if err := writePresence(dir, now, "test-nonce"); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(dir, CoordinatorFile))
@@ -169,7 +169,7 @@ func TestCoordinatorReclaimsStaleOwnership(t *testing.T) {
 	if err := os.Chtimes(filepath.Join(dir, CoordinatorLockFile), stale, stale); err != nil {
 		t.Fatal(err)
 	}
-	if err := WritePresence(dir, stale); err != nil {
+	if err := writePresence(dir, stale, "stale-nonce"); err != nil {
 		t.Fatal(err)
 	}
 	cleanup, err := StartPresence(context.Background(), dir)

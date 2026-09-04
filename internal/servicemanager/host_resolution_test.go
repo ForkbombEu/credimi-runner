@@ -34,10 +34,7 @@ func TestResolveServiceHostContextUsesHostAuthoritativeDNS(t *testing.T) {
 	cfg := config.Bootstrap()
 	cfg.Credimi.URL = "http://runner-host.example:8090"
 	cfg.Temporal.Address = "remote.example:7233"
-	host, err := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"192.168.178.120"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	host := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"192.168.178.120"}})
 	if host.ResolvedHostLocality["runner-host.example"] != "192.168.178.120" || host.ResolvedHostLocality["remote.example"] != "" {
 		t.Fatalf("resolved locality = %#v", host.ResolvedHostLocality)
 	}
@@ -55,10 +52,7 @@ func TestResolveServiceHostContextTreatsLoopbackAliasesAsLocal(t *testing.T) {
 	cfg := config.Bootstrap()
 	cfg.Credimi.URL = "http://runner-host.example:8090"
 	cfg.Temporal.Address = "[::1]:7233"
-	host, err := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"127.0.0.1", "192.168.178.120"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	host := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"127.0.0.1", "192.168.178.120"}})
 	if host.ResolvedHostLocality["runner-host.example"] != "127.0.1.1" {
 		t.Fatalf("resolved locality = %#v", host.ResolvedHostLocality)
 	}
@@ -100,10 +94,7 @@ func TestResolveServiceHostContextEvaluatesLiteralIPLocality(t *testing.T) {
 			}
 			cfg.Credimi.URL = "http://" + address + ":8090"
 			cfg.Temporal.Address = "203.0.113.11:7233"
-			host, err := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"192.168.178.121"}})
-			if err != nil {
-				t.Fatal(err)
-			}
+			host := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"192.168.178.121"}})
 			if host.ResolvedHostLocality[tc.address] != tc.wantValue {
 				t.Fatalf("resolved locality = %#v", host.ResolvedHostLocality)
 			}
@@ -134,10 +125,7 @@ func TestResolveServiceHostContextRecordsDockerOnlyNamesAsNonLocal(t *testing.T)
 	cfg.Android.Network = "credimi-stack"
 	cfg.Credimi.URL = "http://credimi:8090"
 	cfg.Temporal.Address = "temporal:7233"
-	host, err := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"192.168.178.120"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	host := ResolveServiceHostContext(cfg, HostContext{OS: "linux", HostAddresses: []string{"192.168.178.120"}})
 	if _, ok := host.ResolvedHostLocality["credimi"]; !ok {
 		t.Fatalf("credimi locality was not evaluated: %#v", host.ResolvedHostLocality)
 	}

@@ -88,10 +88,7 @@ func TestDockerServiceMatchesExplicitConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			host, err = ResolveServiceHostContext(cfg, host)
-			if err != nil {
-				t.Fatal(err)
-			}
+			host = ResolveServiceHostContext(cfg, host)
 			spec, err := BuildServiceSpec(cfg, host)
 			if err != nil {
 				t.Fatal(err)

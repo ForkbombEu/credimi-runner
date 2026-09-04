@@ -1224,17 +1224,15 @@ func serviceRestartResultFailure(configDir string) string {
 	return strings.TrimSpace(result.Error)
 }
 
+var loadDashboardConfigSnapshot = runnerconfig.LoadFileSnapshot
+
 func (s *Server) requestServiceRestart() error {
 	if strings.TrimSpace(s.composeDir) == "" {
 		return errors.New("service coordination directory is empty")
 	}
-	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
+	cfg, digest, err := loadDashboardConfigSnapshot(s.cfg.Path())
 	if err != nil {
 		return fmt.Errorf("load service configuration: %w", err)
-	}
-	digest, err := runnerconfig.ConfigFileDigest(s.cfg.Path())
-	if err != nil {
-		return fmt.Errorf("digest persisted service configuration: %w", err)
 	}
 	forceRestart := servicemanager.ServiceHostLocalityUnknown(cfg, dashboardruntime.AppliedServiceHostContext())
 	request, err := servicecoordination.NewRestartRequest(digest, forceRestart, dashboardNow())

@@ -273,8 +273,8 @@ func TestServiceRestartRequiredTracksHostResolvedNetworkMode(t *testing.T) {
 	applied := servicemanager.ServiceConfigFingerprintForHost(base, true, host)
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, applied)
 	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
-	addresses, _ := json.Marshal(host.HostAddresses)
-	t.Setenv(servicemanager.AppliedServiceHostAddressesEnv, string(addresses))
+	resolved, _ := json.Marshal(map[string]string{"credimi.io": "", "temporal.credimi.io": "", "192.168.178.120": "192.168.178.120"})
+	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
 	if !ServiceRestartRequired(ValuesFromTypedConfig(local), true) {
 		t.Fatal("host-local dependency did not require service replacement")
 	}
@@ -284,9 +284,7 @@ func TestServiceRestartRequiredTracksHostResolvedNetworkMode(t *testing.T) {
 }
 
 func TestAppliedServiceHostContextUsesExportedResolutionWithoutDNS(t *testing.T) {
-	addresses, _ := json.Marshal([]string{"192.168.178.120"})
 	resolved, _ := json.Marshal(map[string]string{"runner-host.example": "192.168.178.120", "remote.example": ""})
-	t.Setenv(servicemanager.AppliedServiceHostAddressesEnv, string(addresses))
 	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
 	host := AppliedServiceHostContext()
 	if host.ResolvedHostLocality["runner-host.example"] != "192.168.178.120" || host.ResolvedHostLocality["remote.example"] != "" {
@@ -322,8 +320,6 @@ func TestFirstUSBExpansionRequiresServiceReplacement(t *testing.T) {
 	}
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprintForHost(base, true, host))
 	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
-	addresses, _ := json.Marshal(host.HostAddresses)
-	t.Setenv(servicemanager.AppliedServiceHostAddressesEnv, string(addresses))
 	diff := DiffValuesForOS(ValuesFromTypedConfig(base), ValuesFromTypedConfig(desired), "linux")
 	if !hasClass(diff, ApplyServiceRestartRequired) {
 		t.Fatalf("first USB configuration change was not classified as service replacement: %+v", diff)

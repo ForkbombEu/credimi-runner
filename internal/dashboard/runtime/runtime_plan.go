@@ -7,7 +7,6 @@ import (
 	"os"
 	goruntime "runtime"
 	"sort"
-	"strconv"
 	"strings"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
@@ -136,52 +135,13 @@ func ServiceConfigFingerprintForCurrentHost(cfg runnerconfig.Config, configured 
 }
 
 func appliedServiceCapabilities() (servicemanager.ServiceCapabilities, bool, bool) {
-	capabilities := servicemanager.ServiceCapabilities{}
-	present := false
-	valid := true
-	for _, entry := range []struct {
-		key   string
-		value *bool
-	}{
-		{servicemanager.AppliedServiceNeedsHostADBEnv, &capabilities.NeedsHostADB},
-		{servicemanager.AppliedServiceNeedsUSBEnv, &capabilities.NeedsUSB},
-		{servicemanager.AppliedServiceNeedsEmulatorEnv, &capabilities.NeedsEmulator},
-	} {
-		raw := os.Getenv(entry.key)
-		if raw == "" {
-			continue
-		}
-		present = true
-		parsed, err := strconv.ParseBool(raw)
-		if err != nil {
-			valid = false
-			continue
-		}
-		*entry.value = parsed
-	}
-	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceRedroidKnownHostsEnv); ok {
-		present = true
-		if err := json.Unmarshal([]byte(raw), &capabilities.RedroidKnownHosts); err != nil {
-			valid = false
+	values := map[string]string{}
+	for _, key := range []string{servicemanager.AppliedServiceNeedsHostADBEnv, servicemanager.AppliedServiceNeedsUSBEnv, servicemanager.AppliedServiceNeedsEmulatorEnv, servicemanager.AppliedServiceRedroidKnownHostsEnv, servicemanager.ServiceNetworkModeEnv, servicemanager.AppliedServiceResolvedHostsEnv} {
+		if raw, ok := os.LookupEnv(key); ok {
+			values[key] = raw
 		}
 	}
-	if raw := strings.TrimSpace(os.Getenv(servicemanager.ServiceNetworkModeEnv)); raw != "" {
-		present = true
-		capabilities.NetworkMode = raw
-	}
-	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceHostAddressesEnv); ok {
-		present = true
-		if err := json.Unmarshal([]byte(raw), &capabilities.HostAddresses); err != nil {
-			valid = false
-		}
-	}
-	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceResolvedHostsEnv); ok {
-		present = true
-		if err := json.Unmarshal([]byte(raw), &capabilities.ResolvedHostLocality); err != nil {
-			valid = false
-		}
-	}
-	return capabilities, present, valid
+	return servicemanager.ServiceCapabilitiesFromEnvironment(values)
 }
 
 func configFingerprint(configDir string, values Values) string {
@@ -349,16 +309,12 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 }
 
 func AppliedServiceHostContext() servicemanager.HostContext {
-	addresses := []string{}
-	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceHostAddressesEnv); ok {
-		_ = json.Unmarshal([]byte(raw), &addresses)
-	}
 	var resolved map[string]string
 	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceResolvedHostsEnv); ok {
 		resolved = map[string]string{}
 		_ = json.Unmarshal([]byte(raw), &resolved)
 	}
-	return servicemanager.HostContext{OS: "linux", HostAddresses: addresses, ResolvedHostLocality: resolved}
+	return servicemanager.HostContext{OS: "linux", ResolvedHostLocality: resolved}
 }
 
 func appliedServiceHostContext() servicemanager.HostContext { return AppliedServiceHostContext() }

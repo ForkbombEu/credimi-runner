@@ -3,6 +3,7 @@ package androidtools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
@@ -48,5 +49,26 @@ func TestValidateConfiguredUSBDevicesSkipsDisabledAndNonUSB(t *testing.T) {
 	}}
 	if err := ValidateConfiguredUSBDevices(context.Background(), cfg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateConfiguredPhysicalDevicesConnectsWiFiBeforeStateValidation(t *testing.T) {
+	oldConnect, oldState := adbConnect, adbGetState
+	t.Cleanup(func() { adbConnect, adbGetState = oldConnect, oldState })
+	var calls []string
+	adbConnect = func(_ context.Context, endpoint string) (string, error) {
+		calls = append(calls, "connect "+endpoint)
+		return "connected", nil
+	}
+	adbGetState = func(_ context.Context, serial string) (string, error) {
+		calls = append(calls, "state "+serial)
+		return "device", nil
+	}
+	cfg := runnerconfig.Config{Devices: []runnerconfig.DeviceConfig{{ID: "wifi", Enabled: true, Type: runnerconfig.DeviceAndroidPhysical, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", WiFiIP: "192.0.2.10", WiFiPort: "5555"}}}}
+	if err := ValidateConfiguredPhysicalDevices(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(calls, ","), "connect 192.0.2.10:5555,state 192.0.2.10:5555"; got != want {
+		t.Fatalf("calls=%q want=%q", got, want)
 	}
 }

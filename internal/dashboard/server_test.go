@@ -33,6 +33,14 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 	return f(request)
 }
 
+func writeCoordinatorPresenceFixture(dir string, updatedAt time.Time) error {
+	raw, err := json.Marshal(servicecoordination.Presence{PID: os.Getpid(), Protocol: servicecoordination.Protocol, UpdatedAt: updatedAt.UTC()})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, servicecoordination.CoordinatorFile), raw, 0o600)
+}
+
 type fakeRuntimeController struct {
 	mu            sync.Mutex
 	status        runtimesupervisor.Status
@@ -756,6 +764,48 @@ func TestServiceRestartRequestForUnknownHostnameForcesHostEvaluation(t *testing.
 	}
 }
 
+func TestServiceRestartRequestBindsDigestAndForceRestartToOneSnapshot(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	first, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Credimi.URL = "http://new-host.example:8090"
+	if err := runnerconfig.WriteFile(path, first); err != nil {
+		t.Fatal(err)
+	}
+	_, firstDigest, err := runnerconfig.LoadFileSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Credimi.URL = "https://credimi.example"
+	previousLoader := loadDashboardConfigSnapshot
+	loadDashboardConfigSnapshot = func(snapshotPath string) (runnerconfig.Config, string, error) {
+		cfg, digest, snapshotErr := runnerconfig.LoadFileSnapshot(snapshotPath)
+		if snapshotErr == nil {
+			snapshotErr = runnerconfig.WriteFile(snapshotPath, second)
+		}
+		return cfg, digest, snapshotErr
+	}
+	t.Cleanup(func() { loadDashboardConfigSnapshot = previousLoader })
+	resolved, _ := json.Marshal(map[string]string{"credimi.example": ""})
+	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = filepath.Dir(path)
+	if err := s.requestServiceRestart(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := servicecoordination.ReadRestartRequest(s.composeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequestedConfigDigest != firstDigest || !request.ForceRestart {
+		t.Fatalf("request=%+v, want digest=%q force=true", request, firstDigest)
+	}
+}
+
 func TestServiceTopologyChangeWaitsForAttachedHost(t *testing.T) {
 	loaded, path := testSavedConfig(t)
 	oldTyped, err := runnerconfig.LoadFile(path)
@@ -768,7 +818,7 @@ func TestServiceTopologyChangeWaitsForAttachedHost(t *testing.T) {
 	s := newTestServer(t)
 	s.cfg = persistDashboardValues(t, path, newValues)
 	s.composeDir = filepath.Dir(path)
-	if err := servicecoordination.WritePresence(s.composeDir, time.Now()); err != nil {
+	if err := writeCoordinatorPresenceFixture(s.composeDir, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(loaded.Snapshot()), newValues, "linux")
@@ -834,7 +884,7 @@ func TestStartupStatusFallsBackWhenAttachedCoordinatorGoesStale(t *testing.T) {
 	oldNow := dashboardNow
 	dashboardNow = func() time.Time { return now }
 	t.Cleanup(func() { dashboardNow = oldNow })
-	if err := servicecoordination.WritePresence(dir, now); err != nil {
+	if err := writeCoordinatorPresenceFixture(dir, now); err != nil {
 		t.Fatal(err)
 	}
 	typedConfig, err := runnerconfig.LoadFile(path)
@@ -858,7 +908,7 @@ func TestStartupStatusFallsBackWhenAttachedCoordinatorGoesStale(t *testing.T) {
 	if state["phase"] != string(StartupStarting) {
 		t.Fatalf("fresh coordinator phase=%v", state["phase"])
 	}
-	if err := servicecoordination.WritePresence(dir, now.Add(-servicecoordination.CoordinatorMaxAge-time.Second)); err != nil {
+	if err := writeCoordinatorPresenceFixture(dir, now.Add(-servicecoordination.CoordinatorMaxAge-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	response = httptest.NewRecorder()

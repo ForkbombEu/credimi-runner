@@ -28,11 +28,19 @@ func (m *rootManagerFake) Logs(ctx context.Context, _ servicemanager.LogOptions)
 
 type rootStoppedManager struct{ rootManagerFake }
 
+func isolateRootConfig(t *testing.T) {
+	t.Helper()
+	old := dashboardConfigDir
+	dashboardConfigDir = t.TempDir()
+	t.Cleanup(func() { dashboardConfigDir = old })
+}
+
 func (m *rootStoppedManager) Status(context.Context) (servicemanager.Status, error) {
 	return servicemanager.Status{Running: false, DashboardURL: "http://127.0.0.1:8051"}, nil
 }
 
 func TestRootStartsStoppedService(t *testing.T) {
+	isolateRootConfig(t)
 	oldFactory, oldWait, oldOpen := serviceManagerFactory, waitForDashboardFunc, dashboardOpen
 	t.Cleanup(func() { serviceManagerFactory, waitForDashboardFunc, dashboardOpen = oldFactory, oldWait, oldOpen })
 	fake := &rootStoppedManager{}
@@ -100,6 +108,7 @@ func (m *noURLManager) Status(context.Context) (servicemanager.Status, error) {
 }
 
 func TestRootCtrlCOnlyStopsLogFollower(t *testing.T) {
+	isolateRootConfig(t)
 	oldFactory, oldWait, oldOpen := serviceManagerFactory, waitForDashboardFunc, dashboardOpen
 	t.Cleanup(func() { serviceManagerFactory, waitForDashboardFunc, dashboardOpen = oldFactory, oldWait, oldOpen })
 	fake := &rootManagerFake{}
@@ -128,6 +137,7 @@ func (m *rootStatusErrorManager) Status(context.Context) (servicemanager.Status,
 }
 
 func TestRootStartsServiceOnceWhenStatusUnavailable(t *testing.T) {
+	isolateRootConfig(t)
 	oldFactory, oldWait, oldOpen := serviceManagerFactory, waitForDashboardFunc, dashboardOpen
 	t.Cleanup(func() { serviceManagerFactory, waitForDashboardFunc, dashboardOpen = oldFactory, oldWait, oldOpen })
 	fake := &rootStatusErrorManager{}
@@ -152,6 +162,7 @@ func TestRootStartsServiceOnceWhenStatusUnavailable(t *testing.T) {
 }
 
 func TestRootPassesBootstrapOptionsToServiceManager(t *testing.T) {
+	isolateRootConfig(t)
 	oldFactory, oldWait, oldOpen, oldImage, oldPolicy := serviceManagerFactory, waitForDashboardFunc, dashboardOpen, bootstrapImage, bootstrapPullPolicy
 	t.Cleanup(func() {
 		serviceManagerFactory, waitForDashboardFunc, dashboardOpen, bootstrapImage, bootstrapPullPolicy = oldFactory, oldWait, oldOpen, oldImage, oldPolicy

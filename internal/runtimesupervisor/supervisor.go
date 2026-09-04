@@ -69,6 +69,7 @@ type Dependencies struct {
 	NewLifecycleClient          func(config.Config, *server.ProcessStore) LifecycleClient
 	InitObservability           func(context.Context, config.Config) (func(context.Context) error, error)
 	ValidateRuntimeCapabilities func(context.Context, config.Config) error
+	ValidatePhysicalDevices     func(context.Context, config.Config) error
 	Register                    func(context.Context, config.Config, string) error
 	VerifyPublicEndpoint        func(context.Context, config.Config, string) error
 	NewProcessStore             func() *server.ProcessStore
@@ -578,6 +579,16 @@ func (s *Supervisor) ApplyInventory(ctx context.Context, cfg config.Config) erro
 	if g == nil || !g.isExecuting() {
 		return errors.New("runtime generation is not running")
 	}
+	if s.deps.ValidatePhysicalDevices != nil {
+		active := g.activeConfig.Load()
+		if candidates := changedEnabledPhysicalDevices(active, cfg); len(candidates) > 0 {
+			validationCfg := cfg
+			validationCfg.Devices = candidates
+			if err := s.deps.ValidatePhysicalDevices(ctx, validationCfg); err != nil {
+				return fmt.Errorf("validate inventory devices: %w", err)
+			}
+		}
+	}
 	publicURL, _ := g.snapshot()
 	if s.deps.Register != nil {
 		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
@@ -589,6 +600,24 @@ func (s *Supervisor) ApplyInventory(ctx context.Context, cfg config.Config) erro
 	g.cfg = config.WithActiveConfig(cfg, g.activeConfig)
 	g.mu.Unlock()
 	return nil
+}
+
+func changedEnabledPhysicalDevices(active, candidate config.Config) []config.DeviceConfig {
+	previous := make(map[string]config.DeviceConfig, len(active.Devices))
+	for _, device := range active.Devices {
+		previous[device.ID] = device
+	}
+	var changed []config.DeviceConfig
+	for _, device := range candidate.Devices {
+		if !device.Enabled || device.Type != config.DeviceAndroidPhysical || device.AndroidPhysical == nil {
+			continue
+		}
+		old, exists := previous[device.ID]
+		if !exists || !old.Enabled || old.Type != config.DeviceAndroidPhysical || old.AndroidPhysical == nil || old.AndroidPhysical.Transport != device.AndroidPhysical.Transport || old.AndroidPhysical.Serial != device.AndroidPhysical.Serial || old.AndroidPhysical.WiFiIP != device.AndroidPhysical.WiFiIP || old.AndroidPhysical.WiFiPort != device.AndroidPhysical.WiFiPort {
+			changed = append(changed, device)
+		}
+	}
+	return changed
 }
 
 // ApplyEndpoint verifies and publishes a new active manual endpoint without

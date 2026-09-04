@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
@@ -19,7 +20,6 @@ const (
 	AppliedServiceNeedsUSBEnv          = "CREDIMI_APPLIED_SERVICE_NEEDS_USB"
 	AppliedServiceNeedsEmulatorEnv     = "CREDIMI_APPLIED_SERVICE_NEEDS_EMULATOR"
 	AppliedServiceRedroidKnownHostsEnv = "CREDIMI_APPLIED_SERVICE_REDROID_KNOWN_HOSTS"
-	AppliedServiceHostAddressesEnv     = "CREDIMI_APPLIED_SERVICE_HOST_ADDRESSES"
 	AppliedServiceResolvedHostsEnv     = "CREDIMI_APPLIED_SERVICE_RESOLVED_HOSTS"
 )
 
@@ -33,8 +33,51 @@ type ServiceCapabilities struct {
 	NeedsEmulator        bool
 	RedroidKnownHosts    []string
 	NetworkMode          string
-	HostAddresses        []string
 	ResolvedHostLocality map[string]string
+}
+
+// ServiceCapabilitiesFromEnvironment decodes the non-secret applied-service
+// metadata exported by the running container for compatibility decisions.
+func ServiceCapabilitiesFromEnvironment(values map[string]string) (ServiceCapabilities, bool, bool) {
+	capabilities := ServiceCapabilities{}
+	present, valid := false, true
+	for _, entry := range []struct {
+		key string
+		out *bool
+	}{
+		{AppliedServiceNeedsHostADBEnv, &capabilities.NeedsHostADB},
+		{AppliedServiceNeedsUSBEnv, &capabilities.NeedsUSB},
+		{AppliedServiceNeedsEmulatorEnv, &capabilities.NeedsEmulator},
+	} {
+		raw, ok := values[entry.key]
+		if !ok {
+			continue
+		}
+		present = true
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			valid = false
+			continue
+		}
+		*entry.out = parsed
+	}
+	if raw, ok := values[AppliedServiceRedroidKnownHostsEnv]; ok {
+		present = true
+		if err := json.Unmarshal([]byte(raw), &capabilities.RedroidKnownHosts); err != nil {
+			valid = false
+		}
+	}
+	if raw, ok := values[ServiceNetworkModeEnv]; ok && strings.TrimSpace(raw) != "" {
+		present = true
+		capabilities.NetworkMode = raw
+	}
+	if raw, ok := values[AppliedServiceResolvedHostsEnv]; ok {
+		present = true
+		if err := json.Unmarshal([]byte(raw), &capabilities.ResolvedHostLocality); err != nil {
+			valid = false
+		}
+	}
+	return capabilities, present, valid
 }
 
 type serviceConfigProjection struct {
@@ -199,10 +242,10 @@ func ServiceConfigsCompatibleWithHost(applied, desired config.Config, configured
 // when only the applied service fingerprint and its exported capabilities are
 // available to the Dashboard process.
 func ServiceConfigCompatibleWithFingerprint(cfg config.Config, configured bool, appliedFingerprint string, capabilities ServiceCapabilities) bool {
-	if ServiceHostLocalityUnknown(cfg, HostContext{OS: runtime.GOOS, HostAddresses: capabilities.HostAddresses, ResolvedHostLocality: capabilities.ResolvedHostLocality}) {
+	if ServiceHostLocalityUnknown(cfg, HostContext{OS: runtime.GOOS, ResolvedHostLocality: capabilities.ResolvedHostLocality}) {
 		return false
 	}
-	desiredProjection := serviceConfigProjectionForHost(cfg, configured, HostContext{OS: runtime.GOOS, HostAddresses: capabilities.HostAddresses, ResolvedHostLocality: capabilities.ResolvedHostLocality})
+	desiredProjection := serviceConfigProjectionForHost(cfg, configured, HostContext{OS: runtime.GOOS, ResolvedHostLocality: capabilities.ResolvedHostLocality})
 	if capabilities.NetworkMode != "" && desiredProjection.NetworkMode != capabilities.NetworkMode {
 		return false
 	}

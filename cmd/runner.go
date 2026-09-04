@@ -79,7 +79,6 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 }
 
 func followAttachedService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
-	handled := make(map[string]struct{})
 	for {
 		if !servicecoordination.CoordinatorOwned(configDir) {
 			return errors.New("attached Credimi Runner coordinator ownership was lost")
@@ -110,17 +109,12 @@ func followAttachedService(ctx context.Context, manager servicemanager.Manager, 
 				if err != nil {
 					continue
 				}
-				if _, alreadyHandled := handled[request.RequestID]; alreadyHandled {
-					continue
-				}
 				if result, resultErr := servicecoordination.ReadRestartResult(configDir); resultErr == nil && result.RequestID == request.RequestID {
-					handled[request.RequestID] = struct{}{}
 					continue
 				}
 				cancelLogs()
 				<-logsDone
 				ticker.Stop()
-				handled[request.RequestID] = struct{}{}
 				if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
 					return err
 				}
@@ -157,10 +151,7 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 	if hostErr != nil {
 		return writeResult(false, "", fmt.Sprintf("resolve host service configuration: %v", hostErr))
 	}
-	host, hostErr = servicemanager.ResolveServiceHostContext(cfg, host)
-	if hostErr != nil {
-		return writeResult(false, "", fmt.Sprintf("resolve service hostnames: %v", hostErr))
-	}
+	host = servicemanager.ResolveServiceHostContext(cfg, host)
 	expected := servicemanager.ServiceConfigFingerprintForHost(cfg, true, host)
 	if !request.ForceRestart {
 		if matcher, ok := manager.(snapshotServiceMatcher); ok {
