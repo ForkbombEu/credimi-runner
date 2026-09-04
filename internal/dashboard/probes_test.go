@@ -178,7 +178,7 @@ esac
 func TestConnectedAndroidDevicesEndpointReturnsLiveProbe(t *testing.T) {
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "adb"), `#!/bin/sh
-printf '%s\n' 'List of devices attached' 'USB123 device product:pixel model:Pixel_8 device:husky transport_id:1'
+	printf '%s\n' 'List of devices attached' 'USB123 device product:pixel model:Pixel_8 device:husky transport_id:1' '192.0.2.2:5555 device model:WiFi_Phone' 'emulator-5554 device model:Emulator'
 `)
 	server := newTestServer(t)
 	t.Setenv("PATH", bin)

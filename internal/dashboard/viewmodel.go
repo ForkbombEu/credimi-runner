@@ -84,6 +84,20 @@ func (d PageData) AndroidPhoneDevices() []Device {
 	return d.AndroidDevices()
 }
 
+// AndroidUSBPhoneDevices returns only online physical phones reachable over
+// USB. Wi-Fi phones and virtual Android targets are not valid USB picker
+// candidates; the form provides a serial fallback when this list is empty.
+func (d PageData) AndroidUSBPhoneDevices() []Device {
+	devices := d.AndroidDevices()
+	filtered := make([]Device, 0, len(devices))
+	for _, device := range devices {
+		if device.Status == Online && device.Type == "android_phone" && device.Mode == "usb" {
+			filtered = append(filtered, device)
+		}
+	}
+	return filtered
+}
+
 func (d PageData) SupportsDeviceType(deviceType string) bool {
 	return deviceType != "ios_simulator" || currentGOOS() == "darwin"
 }

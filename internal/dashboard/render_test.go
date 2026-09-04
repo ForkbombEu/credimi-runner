@@ -558,7 +558,7 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 	}
 	content := string(script)
 	for _, want := range []string{
-		"const runtimeRecoveryMaxDuration = 15 * 60 * 1000;",
+		"const runtimeRecoveryMaxDuration = 18 * 60 * 1000;",
 		"const deadline = Date.now() + runtimeRecoveryMaxDuration;",
 		"const candidates = [operation.previousToken, operation.recoveryToken]",
 		"dashboardURL('/startup/status', token, origin)",
@@ -568,6 +568,7 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 		"finishRuntimeRecoveryTimeout()",
 		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
 		"fetch(dashboardURL(url, token, origin), { headers: { Accept: 'application/json' }",
+		"else refreshOverview('/setup', recoveryToken, recoveryOrigin);",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("runtime recovery is missing %q", want)
@@ -755,6 +756,14 @@ func TestPageData_ViewModels(t *testing.T) {
 	}
 	if devices := d.AndroidPhoneDevices(); len(devices) != 1 {
 		t.Fatalf("AndroidPhoneDevices = %#v", devices)
+	}
+	d.Snapshot.Devices = []Device{
+		{Serial: "usb", Type: "android_phone", Mode: "usb", Status: Online},
+		{Serial: "wifi", Type: "android_phone", Mode: "wifi", Status: Online},
+		{Serial: "emu", Type: "android_emulator", Mode: "emulator", Status: Online},
+	}
+	if devices := d.AndroidUSBPhoneDevices(); len(devices) != 1 || devices[0].Serial != "usb" {
+		t.Fatalf("AndroidUSBPhoneDevices = %#v", devices)
 	}
 	if field := d.FieldWithLabel("CREDIMI_URL", "Platform"); field.Label != "Platform" {
 		t.Fatalf("FieldWithLabel = %#v", field)

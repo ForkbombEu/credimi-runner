@@ -114,7 +114,8 @@
   }
   // Candidate provisioning allows ten minutes and launcher quick-tunnel
   // resolution another two; retain a small reconnect margin for replacement.
-  const runtimeRecoveryMaxDuration = 15 * 60 * 1000;
+  // Must exceed the backend's 15-minute activation budget.
+  const runtimeRecoveryMaxDuration = 18 * 60 * 1000;
   const runtimeRecoveryRequestTimeout = 10000;
   function finishRuntimeRecoveryTimeout() {
     if (!runtimeOperationActive) return;
@@ -194,11 +195,10 @@
         } else {
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
-        if ($('.app.setup-shell') && state.phase === 'ready') {
-          window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken, recoveryOrigin));
-        } else {
-          refreshOverview(operation.refresh || '/', recoveryToken, recoveryOrigin);
-        }
+		if ($('.app.setup-shell')) {
+			if (state.phase === 'ready') window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken, recoveryOrigin));
+			else refreshOverview('/setup', recoveryToken, recoveryOrigin);
+		} else refreshOverview(operation.refresh || '/', recoveryToken, recoveryOrigin);
       } catch (_) {
         if (Date.now() >= deadline) finishRuntimeRecoveryTimeout();
         else if (runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
@@ -1624,7 +1624,7 @@
     try {
       const response = await fetch(dashboardURL('/devices/android/connected'), { headers: { Accept: 'application/json' } });
       if (!response.ok) return;
-      const devices = (await response.json()).filter((device) => device && device.status === 'online');
+      const devices = (await response.json()).filter((device) => device && device.status === 'online' && device.type === 'android_phone' && device.mode === 'usb');
       root.querySelectorAll('[data-android-phone-device-select]').forEach((select) => {
         const card = select.closest('[data-device-provision]');
         const serialField = card?.querySelector('[data-android-phone-serial]');

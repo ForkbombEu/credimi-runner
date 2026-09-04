@@ -283,6 +283,26 @@ func TestServiceRestartRequiredTracksHostResolvedNetworkMode(t *testing.T) {
 	}
 }
 
+func TestAppliedServiceHostContextUsesExportedResolutionWithoutDNS(t *testing.T) {
+	addresses, _ := json.Marshal([]string{"192.168.178.120"})
+	resolved, _ := json.Marshal(map[string]bool{"runner-host.example": true, "remote.example": false})
+	t.Setenv(servicemanager.AppliedServiceHostAddressesEnv, string(addresses))
+	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
+	host := AppliedServiceHostContext()
+	if !host.ResolvedHostLocality["runner-host.example"] || host.ResolvedHostLocality["remote.example"] {
+		t.Fatalf("host metadata = %#v", host)
+	}
+	cfg := runnerconfig.Bootstrap()
+	cfg.Credimi.URL = "http://runner-host.example:8090"
+	if got := servicemanager.ServiceNetworkModeForConfig(cfg, host); got != "host" {
+		t.Fatalf("host-local hostname network mode = %q", got)
+	}
+	cfg.Credimi.URL = "http://remote.example:8090"
+	if got := servicemanager.ServiceNetworkModeForConfig(cfg, host); got != "bridge" {
+		t.Fatalf("remote hostname network mode = %q", got)
+	}
+}
+
 func TestFirstUSBExpansionRequiresServiceReplacement(t *testing.T) {
 	host := servicemanager.HostContext{OS: "linux", HostAddresses: []string{"192.168.178.120"}}
 	base := runnerconfig.Bootstrap()

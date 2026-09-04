@@ -24,7 +24,9 @@ const (
 	// endpoint verification, capability preparation, registration and worker
 	// startup). Its budget must encompass that sequence rather than equal one
 	// child timeout.
-	startTimeout                  = 15 * time.Minute
+	ActivationTimeout             = 15 * time.Minute
+	ActivationWaitTimeout         = 18 * time.Minute
+	startTimeout                  = ActivationTimeout
 	stopTimeout                   = 30 * time.Second
 	cleanupTimeout                = 30 * time.Second
 	edgeStartTimeout              = 2 * time.Minute
@@ -317,14 +319,14 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 			return err
 		}
 	}
-	if s.deps.VerifyPublicEndpoint != nil {
-		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, g.publicURL); err != nil {
-			return fmt.Errorf("verify public endpoint: %w", err)
-		}
-	}
 	if s.deps.ValidateRuntimeCapabilities != nil {
 		if err := s.deps.ValidateRuntimeCapabilities(ctx, cfg); err != nil {
 			return fmt.Errorf("validate runtime capabilities: %w", err)
+		}
+	}
+	if s.deps.VerifyPublicEndpoint != nil {
+		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, g.publicURL); err != nil {
+			return fmt.Errorf("verify public endpoint: %w", err)
 		}
 	}
 	if err := g.fatalError(); err != nil {

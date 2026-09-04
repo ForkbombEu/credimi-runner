@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/controller"
+	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +30,7 @@ func runRuntimeAPIAction(cmd *cobra.Command, action string) error {
 	if err := client.postJSON(cmd.Context(), "/api/controller/runtime/"+action, &snap); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(cmd.Context(), runtimesupervisor.ActivationWaitTimeout)
 	defer cancel()
 	done, err := waitForLifecycleOperation(ctx, client, snap.ID)
 	if err != nil {

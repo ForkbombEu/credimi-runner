@@ -983,6 +983,23 @@ func TestBuildServiceSpecExportsRedroidKnownHostsMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildServiceSpecExportsResolvedHostLocality(t *testing.T) {
+	home := t.TempDir()
+	host := testHost(home)
+	host.ResolvedHostLocality = map[string]bool{"runner-host.example": true, "remote.example": false}
+	spec, err := BuildServiceSpec(config.Bootstrap(), host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]bool
+	if err := json.Unmarshal([]byte(spec.Environment[AppliedServiceResolvedHostsEnv]), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got["runner-host.example"] || got["remote.example"] {
+		t.Fatalf("resolved-host metadata = %#v", got)
+	}
+}
+
 func TestServiceCompatibilityMatchesAppliedSupersets(t *testing.T) {
 	redroid := func(path string) config.DeviceConfig {
 		return config.DeviceConfig{Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{AVDCTLSSHTarget: "root@redroid", ADBPort: 5555, AVDCTLSSHKnownHostsPath: path}}

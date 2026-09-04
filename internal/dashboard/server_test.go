@@ -505,7 +505,7 @@ func TestDashboardRemainingControllerAndMutationHandlers(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("identity status = %d", recorder.Code)
 	}
-	if got := dashboardRefreshPath("devices"); got != "/devices" || dashboardRefreshPath("other") != "/" {
+	if got := dashboardRefreshPath("devices"); got != "/devices" || dashboardRefreshPath("setup") != "/setup" || dashboardRefreshPath("other") != "/" {
 		t.Fatalf("refresh paths = %q", got)
 	}
 	recorder = httptest.NewRecorder()
@@ -713,18 +713,46 @@ func TestServiceTopologyChangeRequestsAttachedHostRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := runnerconfig.LoadFile(path)
+	digest, err := runnerconfig.ConfigFileDigest(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.RequestedFingerprint != servicemanager.ServiceConfigFingerprint(want, true) {
-		t.Fatalf("request fingerprint=%q", request.RequestedFingerprint)
+	if request.RequestedConfigDigest != digest {
+		t.Fatalf("request config digest=%q, want %q", request.RequestedConfigDigest, digest)
 	}
 	if got := s.startupSnapshot(); got.Phase != StartupNeedsAttention || !strings.Contains(got.Message, "credimi-runner service restart") {
 		t.Fatalf("detached startup state=%+v", got)
 	}
 	if got := s.runtime.(*fakeRuntimeController).requestedStarts(); got != 0 {
 		t.Fatalf("runtime start requests=%d, want 0 for an ordinary config edit", got)
+	}
+}
+
+func TestServiceRestartRequestForUnknownHostnameForcesHostEvaluation(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	values := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
+	values["CREDIMI_URL"] = "http://new-host.example:8090"
+	s := newTestServer(t)
+	s.cfg = persistDashboardValues(t, path, values)
+	s.composeDir = filepath.Dir(path)
+	resolved, _ := json.Marshal(map[string]bool{"credimi.example": false})
+	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
+	if err := s.requestServiceRestart(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := servicecoordination.ReadRestartRequest(s.composeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !request.ForceRestart || request.RequestedConfigDigest == "" {
+		t.Fatalf("request = %+v", request)
+	}
+	want, err := runnerconfig.ConfigFileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequestedConfigDigest != want {
+		t.Fatalf("request digest = %q, want %q", request.RequestedConfigDigest, want)
 	}
 }
 
@@ -814,7 +842,7 @@ func TestStartupStatusFallsBackWhenAttachedCoordinatorGoesStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
-	request, err := servicecoordination.NewRestartRequest(fingerprint, now)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -852,7 +880,7 @@ func TestStartupStatusWaitsForRuntimeAfterSuccessfulServiceReplacement(t *testin
 		t.Fatal(err)
 	}
 	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
-	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -901,7 +929,7 @@ func TestStartupStatusCompletesForStoppedRuntimeAfterServiceReplacement(t *testi
 		t.Fatal(err)
 	}
 	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
-	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -978,7 +1006,7 @@ func TestStartupStatusPreservesServiceRestartFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
-	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1043,7 @@ func TestServiceRestartResultStateMatchesCurrentRequest(t *testing.T) {
 		}
 		return cfg
 	}(), true)
-	request, err := servicecoordination.NewRestartRequest(fingerprint, time.Now())
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

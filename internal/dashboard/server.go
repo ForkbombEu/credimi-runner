@@ -28,6 +28,7 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/forkbombeu/credimi-runner/internal/servicecoordination"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -328,10 +329,13 @@ func (s *Server) routes(mux *http.ServeMux) {
 
 func (s *Server) connectedAndroidDevices(w http.ResponseWriter, r *http.Request) {
 	devices := probeAndroid(r.Context())
-	if devices == nil {
-		devices = []Device{}
+	filtered := make([]Device, 0, len(devices))
+	for _, device := range devices {
+		if device.Status == Online && device.Type == "android_phone" && device.Mode == "usb" {
+			filtered = append(filtered, device)
+		}
 	}
-	writeJSON(w, devices)
+	writeJSON(w, filtered)
 }
 
 func (s *Server) deviceEnable(w http.ResponseWriter, r *http.Request) { s.setDeviceEnabled(w, r, true) }
@@ -1195,14 +1199,6 @@ func (s *Server) serviceRestartRequiredFor(pending dashboardruntime.ConfigDiff) 
 	return dashboardruntime.ServiceRestartRequired(dashboardruntime.Values(s.cfg.Snapshot()), s.cfg.Exists())
 }
 
-func (s *Server) serviceRestartFingerprint() (string, error) {
-	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
-	if err != nil {
-		return "", err
-	}
-	return dashboardruntime.ServiceConfigFingerprintForCurrentHost(cfg, true), nil
-}
-
 func serviceRestartResultApplied(configDir, configPath string) bool {
 	request, err := servicecoordination.ReadRestartRequest(configDir)
 	if err != nil {
@@ -1232,11 +1228,16 @@ func (s *Server) requestServiceRestart() error {
 	if strings.TrimSpace(s.composeDir) == "" {
 		return errors.New("service coordination directory is empty")
 	}
-	fingerprint, err := s.serviceRestartFingerprint()
+	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
 	if err != nil {
-		return fmt.Errorf("load service configuration fingerprint: %w", err)
+		return fmt.Errorf("load service configuration: %w", err)
 	}
-	request, err := servicecoordination.NewRestartRequest(fingerprint, dashboardNow())
+	digest, err := runnerconfig.ConfigFileDigest(s.cfg.Path())
+	if err != nil {
+		return fmt.Errorf("digest persisted service configuration: %w", err)
+	}
+	forceRestart := servicemanager.ServiceHostLocalityUnknown(cfg, dashboardruntime.AppliedServiceHostContext())
+	request, err := servicecoordination.NewRestartRequest(digest, forceRestart, dashboardNow())
 	if err != nil {
 		return err
 	}
@@ -2157,6 +2158,8 @@ func (s *Server) queueConfigPageSave(w http.ResponseWriter, r *http.Request, pag
 
 func dashboardRefreshPath(page string) string {
 	switch page {
+	case "setup":
+		return "/setup"
 	case "devices":
 		return "/devices"
 	case "config":

@@ -89,6 +89,15 @@ func stage3Config(t *testing.T, dir string) runnerconfig.Config {
 	return cfg
 }
 
+func stage3ConfigDigest(t *testing.T, dir string) string {
+	t.Helper()
+	digest, err := runnerconfig.ConfigFileDigest(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
 func TestApplyServiceRestartRequestWaitsForReplacementAndVerifiesFingerprint(t *testing.T) {
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()
@@ -130,7 +139,11 @@ func TestApplyServiceRestartRequestWaitsForReplacementAndVerifiesFingerprint(t *
 			t.Fatal(err)
 		}
 	}
-	request, err := servicecoordination.NewRestartRequest(servicemanager.ServiceConfigFingerprint(cfg, true), nowForTest())
+	digest, err := runnerconfig.ConfigFileDigest(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := servicecoordination.NewRestartRequest(digest, false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +158,7 @@ func TestApplyServiceRestartRequestWaitsForReplacementAndVerifiesFingerprint(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Success || result.AppliedFingerprint != request.RequestedFingerprint {
+	if !result.Success || result.AppliedFingerprint == "" {
 		t.Fatalf("restart result=%+v", result)
 	}
 	if manager.restarts != 1 {
@@ -156,7 +169,7 @@ func TestApplyServiceRestartRequestWaitsForReplacementAndVerifiesFingerprint(t *
 func TestApplyServiceRestartRequestRejectsSupersededConfig(t *testing.T) {
 	dir := t.TempDir()
 	stage3Config(t, dir)
-	request, err := servicecoordination.NewRestartRequest("obsolete-fingerprint", nowForTest())
+	request, err := servicecoordination.NewRestartRequest("obsolete-fingerprint", false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,8 +191,8 @@ func TestApplyServiceRestartRequestRejectsSupersededConfig(t *testing.T) {
 
 func TestApplyServiceRestartRequestRecordsRestartFailure(t *testing.T) {
 	dir := t.TempDir()
-	cfg := stage3Config(t, dir)
-	request, err := servicecoordination.NewRestartRequest(servicemanager.ServiceConfigFingerprint(cfg, true), nowForTest())
+	stage3Config(t, dir)
+	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +216,7 @@ func TestApplyServiceRestartRequestDoesNotRestartAlreadyAppliedService(t *testin
 	dir := t.TempDir()
 	cfg := stage3Config(t, dir)
 	fingerprint := servicemanager.ServiceConfigFingerprint(cfg, true)
-	request, err := servicecoordination.NewRestartRequest(fingerprint, nowForTest())
+	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +238,7 @@ func TestApplyServiceRestartRequestDoesNotRestartAlreadyAppliedService(t *testin
 
 func TestApplyServiceRestartRequestRecordsConfigurationLoadFailure(t *testing.T) {
 	dir := t.TempDir()
-	request, err := servicecoordination.NewRestartRequest("fingerprint", nowForTest())
+	request, err := servicecoordination.NewRestartRequest("fingerprint", false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +259,8 @@ func TestApplyServiceRestartRequestRecordsConfigurationLoadFailure(t *testing.T)
 
 func TestApplyServiceRestartRequestRecordsReplacementReadinessFailure(t *testing.T) {
 	dir := t.TempDir()
-	cfg := stage3Config(t, dir)
-	request, err := servicecoordination.NewRestartRequest(servicemanager.ServiceConfigFingerprint(cfg, true), nowForTest())
+	stage3Config(t, dir)
+	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +312,7 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	request, err := servicecoordination.NewRestartRequest(servicemanager.ServiceConfigFingerprint(cfg, true), nowForTest())
+	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,6 +20,7 @@ const (
 	AppliedServiceNeedsEmulatorEnv     = "CREDIMI_APPLIED_SERVICE_NEEDS_EMULATOR"
 	AppliedServiceRedroidKnownHostsEnv = "CREDIMI_APPLIED_SERVICE_REDROID_KNOWN_HOSTS"
 	AppliedServiceHostAddressesEnv     = "CREDIMI_APPLIED_SERVICE_HOST_ADDRESSES"
+	AppliedServiceResolvedHostsEnv     = "CREDIMI_APPLIED_SERVICE_RESOLVED_HOSTS"
 )
 
 // ServiceCapabilities describes capabilities that may safely be retained when
@@ -27,12 +28,13 @@ const (
 // still requires service recreation. RedroidKnownHosts is the applied set of
 // read-only mounts and follows the same safe-superset rule.
 type ServiceCapabilities struct {
-	NeedsHostADB      bool
-	NeedsUSB          bool
-	NeedsEmulator     bool
-	RedroidKnownHosts []string
-	NetworkMode       string
-	HostAddresses     []string
+	NeedsHostADB         bool
+	NeedsUSB             bool
+	NeedsEmulator        bool
+	RedroidKnownHosts    []string
+	NetworkMode          string
+	HostAddresses        []string
+	ResolvedHostLocality map[string]bool
 }
 
 type serviceConfigProjection struct {
@@ -171,6 +173,9 @@ func ServiceConfigsCompatible(applied, desired config.Config, configured bool) b
 // an actual host-resolved service topology. Network namespace changes remain
 // exact because host networking changes isolation and Docker DNS behavior.
 func ServiceConfigsCompatibleWithHost(applied, desired config.Config, configured bool, host HostContext) bool {
+	if ServiceHostLocalityUnknown(desired, host) {
+		return false
+	}
 	appliedProjection := serviceConfigProjectionForHost(applied, configured, host)
 	desiredProjection := serviceConfigProjectionForHost(desired, configured, host)
 	if appliedProjection.NeedsHostADB {
@@ -194,7 +199,10 @@ func ServiceConfigsCompatibleWithHost(applied, desired config.Config, configured
 // when only the applied service fingerprint and its exported capabilities are
 // available to the Dashboard process.
 func ServiceConfigCompatibleWithFingerprint(cfg config.Config, configured bool, appliedFingerprint string, capabilities ServiceCapabilities) bool {
-	desiredProjection := serviceConfigProjectionForHost(cfg, configured, HostContext{OS: runtime.GOOS, HostAddresses: capabilities.HostAddresses})
+	if ServiceHostLocalityUnknown(cfg, HostContext{OS: runtime.GOOS, HostAddresses: capabilities.HostAddresses, ResolvedHostLocality: capabilities.ResolvedHostLocality}) {
+		return false
+	}
+	desiredProjection := serviceConfigProjectionForHost(cfg, configured, HostContext{OS: runtime.GOOS, HostAddresses: capabilities.HostAddresses, ResolvedHostLocality: capabilities.ResolvedHostLocality})
 	if capabilities.NetworkMode != "" && desiredProjection.NetworkMode != capabilities.NetworkMode {
 		return false
 	}
@@ -251,6 +259,44 @@ func hostLocalDependencies(cfg config.Config, host HostContext) bool {
 	return serviceExposureClass(cfg.Exposure.Mode) == "manual" && hostIsLocalURL(cfg.Exposure.PublicURL, host)
 }
 
+// ServiceHostLocalityUnknown reports whether a hostname relevant to the
+// service topology has not been resolved by the authoritative host process.
+func ServiceHostLocalityUnknown(cfg config.Config, host HostContext) bool {
+	if host.OS == "" {
+		return false
+	}
+	if host.ResolvedHostLocality == nil {
+		return false
+	}
+	if host.OS != "linux" {
+		return false
+	}
+	for _, name := range serviceDependencyHostnames(cfg) {
+		if _, known := hostNameLocality(name, host); !known {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceDependencyHostnames(cfg config.Config) []string {
+	names := make([]string, 0, 3)
+	if parsed, err := url.Parse(strings.TrimSpace(cfg.Credimi.URL)); err == nil && parsed.Hostname() != "" {
+		names = append(names, parsed.Hostname())
+	}
+	if name, _, err := net.SplitHostPort(strings.TrimSpace(cfg.Temporal.Address)); err == nil && name != "" {
+		names = append(names, name)
+	} else if name := strings.Trim(strings.TrimSpace(cfg.Temporal.Address), "[]"); name != "" {
+		names = append(names, name)
+	}
+	if serviceExposureClass(cfg.Exposure.Mode) == "manual" {
+		if parsed, err := url.Parse(strings.TrimSpace(cfg.Exposure.PublicURL)); err == nil && parsed.Hostname() != "" {
+			names = append(names, parsed.Hostname())
+		}
+	}
+	return names
+}
+
 func hostIsLocalURL(raw string, host HostContext) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || parsed.Hostname() == "" {
@@ -269,37 +315,40 @@ func hostIsLocalAddress(raw string, host HostContext) bool {
 }
 
 func hostNameIsLocal(name string, host HostContext) bool {
+	local, _ := hostNameLocality(name, host)
+	return local
+}
+
+// hostNameLocality deliberately has three states. An unrecorded hostname is
+// unknown to the Dashboard and must not be silently treated as remote.
+func hostNameLocality(name string, host HostContext) (local, known bool) {
 	name = strings.Trim(strings.ToLower(strings.TrimSpace(name)), "[]")
 	if name == "localhost" {
-		return true
+		return true, true
 	}
 	ip := net.ParseIP(name)
 	if ip != nil {
 		if ip.IsLoopback() {
-			return true
+			return true, true
 		}
 		for _, address := range host.HostAddresses {
 			if candidate := net.ParseIP(strings.Trim(address, "[]")); candidate != nil && candidate.Equal(ip) {
-				return true
+				return true, true
 			}
 		}
-		return false
+		return false, true
 	}
-	if len(host.HostAddresses) == 0 {
-		return false
+	name = normalizeHostname(name)
+	if local, ok := host.ResolvedHostLocality[name]; ok {
+		return local, true
 	}
-	resolved, err := net.LookupIP(name)
-	if err != nil {
-		return false
-	}
-	for _, candidate := range resolved {
-		for _, address := range host.HostAddresses {
-			if own := net.ParseIP(strings.Trim(address, "[]")); own != nil && own.Equal(candidate) {
-				return true
-			}
-		}
-	}
-	return false
+	return false, false
+}
+
+func normalizeHostname(name string) string {
+	name = strings.TrimSpace(strings.ToLower(name))
+	name = strings.Trim(name, "[]")
+	return strings.TrimSuffix(name, ".")
 }
 
 func isStringSetSuperset(have, want []string) bool {

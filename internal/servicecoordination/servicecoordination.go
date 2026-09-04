@@ -90,9 +90,10 @@ func StartPresence(ctx context.Context, configDir string) (func(), error) {
 }
 
 type RestartRequest struct {
-	RequestID            string    `json:"request_id"`
-	RequestedFingerprint string    `json:"requested_fingerprint"`
-	CreatedAt            time.Time `json:"created_at"`
+	RequestID             string    `json:"request_id"`
+	RequestedConfigDigest string    `json:"requested_config_digest"`
+	ForceRestart          bool      `json:"force_restart,omitempty"`
+	CreatedAt             time.Time `json:"created_at"`
 }
 
 type RestartResult struct {
@@ -244,20 +245,21 @@ func RemovePresence(configDir string) error {
 	return err
 }
 
-func NewRestartRequest(fingerprint string, now time.Time) (RestartRequest, error) {
+func NewRestartRequest(configDigest string, forceRestart bool, now time.Time) (RestartRequest, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
 		return RestartRequest{}, fmt.Errorf("generate service restart request ID: %w", err)
 	}
 	return RestartRequest{
-		RequestID:            hex.EncodeToString(bytes),
-		RequestedFingerprint: strings.TrimSpace(fingerprint),
-		CreatedAt:            now.UTC(),
+		RequestID:             hex.EncodeToString(bytes),
+		RequestedConfigDigest: strings.TrimSpace(configDigest),
+		ForceRestart:          forceRestart,
+		CreatedAt:             now.UTC(),
 	}, nil
 }
 
 func WriteRestartRequest(configDir string, request RestartRequest) error {
-	if strings.TrimSpace(request.RequestID) == "" || strings.TrimSpace(request.RequestedFingerprint) == "" || request.CreatedAt.IsZero() {
+	if strings.TrimSpace(request.RequestID) == "" || strings.TrimSpace(request.RequestedConfigDigest) == "" || request.CreatedAt.IsZero() {
 		return errors.New("service restart request is incomplete")
 	}
 	return writeJSON(filepath.Join(configDir, RestartRequestFile), request)
@@ -268,7 +270,7 @@ func ReadRestartRequest(configDir string) (RestartRequest, error) {
 	if err := readJSON(filepath.Join(configDir, RestartRequestFile), &request); err != nil {
 		return request, err
 	}
-	if strings.TrimSpace(request.RequestID) == "" || strings.TrimSpace(request.RequestedFingerprint) == "" || request.CreatedAt.IsZero() {
+	if strings.TrimSpace(request.RequestID) == "" || strings.TrimSpace(request.RequestedConfigDigest) == "" || request.CreatedAt.IsZero() {
 		return RestartRequest{}, errors.New("service restart request is invalid")
 	}
 	return request, nil

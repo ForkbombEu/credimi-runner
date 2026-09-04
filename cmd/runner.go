@@ -134,7 +134,16 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 			Error: sanitizeServiceError(message, configDir), UpdatedAt: time.Now().UTC(),
 		})
 	}
-	cfg, err := runnerconfig.LoadFile(filepath.Join(configDir, "config.toml"))
+	configPath := filepath.Join(configDir, "config.toml")
+	digest, err := runnerconfig.ConfigFileDigest(configPath)
+	if err != nil {
+		resultErr := writeResult(false, "", fmt.Sprintf("read saved configuration digest: %v", err))
+		return errors.Join(err, resultErr)
+	}
+	if digest != request.RequestedConfigDigest {
+		return writeResult(false, "", "service restart request was superseded by a newer configuration")
+	}
+	cfg, err := runnerconfig.LoadFile(configPath)
 	if err != nil {
 		resultErr := writeResult(false, "", fmt.Sprintf("load saved service configuration: %v", err))
 		return errors.Join(err, resultErr)
@@ -143,12 +152,15 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 	if hostErr != nil {
 		return writeResult(false, "", fmt.Sprintf("resolve host service configuration: %v", hostErr))
 	}
-	expected := servicemanager.ServiceConfigFingerprintForHost(cfg, true, host)
-	if request.RequestedFingerprint != expected {
-		return writeResult(false, "", "service restart request was superseded by a newer configuration")
+	host, hostErr = servicemanager.ResolveServiceHostContext(cfg, host)
+	if hostErr != nil {
+		return writeResult(false, "", fmt.Sprintf("resolve service hostnames: %v", hostErr))
 	}
-	if status, statusErr := manager.Status(ctx); statusErr == nil && status.Running && !status.ServiceRestartRequired {
-		return writeResult(true, expected, "")
+	expected := servicemanager.ServiceConfigFingerprintForHost(cfg, true, host)
+	if !request.ForceRestart {
+		if status, statusErr := manager.Status(ctx); statusErr == nil && status.Running && !status.ServiceRestartRequired {
+			return writeResult(true, expected, "")
+		}
 	}
 	previous, _ := controller.ReadMetadata(configDir)
 	if err := manager.Restart(ctx); err != nil {

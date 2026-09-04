@@ -93,6 +93,11 @@ func (m *DockerManager) Start(ctx context.Context) error {
 			cfg.Android.PullPolicy = policy
 		}
 	}
+	m.host.Bootstrap = m.Bootstrap
+	m.host, err = ResolveServiceHostContext(cfg, m.host)
+	if err != nil {
+		return err
+	}
 	spec, err := BuildServiceSpecWithAutostart(cfg, m.host, autostart)
 	if err != nil {
 		return err
@@ -460,6 +465,12 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	}
 	status := Status{Autostart: autostart, Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
 	if cfg, cfgErr := m.config(); cfgErr == nil {
+		if baseHost, hostErr := ResolveHostContext(m.ConfigDir); hostErr == nil {
+			baseHost.Bootstrap = m.Bootstrap
+			if resolvedHost, resolveErr := ResolveServiceHostContext(cfg, baseHost); resolveErr == nil {
+				m.host = resolvedHost
+			}
+		}
 		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
 			status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
 			desired := desiredSpec.Fingerprint()

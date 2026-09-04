@@ -255,7 +255,7 @@ func TestCoordinatorReleaseIsIdempotentWhenLockIsMissing(t *testing.T) {
 func TestRestartProtocolRoundTripAndValidation(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(200, 0)
-	request, err := NewRestartRequest("fingerprint", now)
+	request, err := NewRestartRequest("config-digest", true, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +265,9 @@ func TestRestartProtocolRoundTripAndValidation(t *testing.T) {
 	got, err := ReadRestartRequest(dir)
 	if err != nil || got != request {
 		t.Fatalf("request=%+v err=%v", got, err)
+	}
+	if got.RequestedConfigDigest != "config-digest" || !got.ForceRestart {
+		t.Fatalf("request schema=%+v", got)
 	}
 	result := RestartResult{RequestID: request.RequestID, Success: true, AppliedFingerprint: "fingerprint", UpdatedAt: now.Add(time.Second)}
 	if err := WriteRestartResult(dir, result); err != nil {
@@ -306,7 +309,7 @@ func TestProtocolRejectsCorruptAndIncompleteState(t *testing.T) {
 		t.Fatal("malformed presence accepted")
 	}
 	if err := WriteRestartRequest(dir, RestartRequest{RequestID: "id", CreatedAt: time.Now()}); err == nil {
-		t.Fatal("request without fingerprint accepted")
+		t.Fatal("request without config digest accepted")
 	}
 	if err := WriteRestartResult(dir, RestartResult{Success: true, UpdatedAt: time.Now()}); err == nil {
 		t.Fatal("result without request ID accepted")

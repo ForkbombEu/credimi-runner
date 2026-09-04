@@ -926,11 +926,20 @@ func TestSupervisorValidatesCapabilitiesBeforeActivationCompletes(t *testing.T) 
 	if err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := "api-start,edge-start,verify,runtime-capabilities,register,workers-start,resume,heartbeat,heartbeat-loop"
+	want := "api-start,edge-start,runtime-capabilities,verify,register,workers-start,resume,heartbeat,heartbeat-loop"
 	if got := strings.Join(events, ","); got != want {
 		t.Fatalf("activation order = %q, want %q", got, want)
 	}
 	_ = s.Stop(context.Background())
+}
+
+func TestActivationWaitBudgetExceedsActivationBudget(t *testing.T) {
+	if ActivationTimeout != 15*time.Minute {
+		t.Fatalf("activation timeout = %s, want 15m", ActivationTimeout)
+	}
+	if ActivationWaitTimeout <= ActivationTimeout {
+		t.Fatalf("wait timeout %s does not exceed activation timeout %s", ActivationWaitTimeout, ActivationTimeout)
+	}
 }
 
 func TestSupervisorCapabilityFailureRollsBackBeforeWorkers(t *testing.T) {

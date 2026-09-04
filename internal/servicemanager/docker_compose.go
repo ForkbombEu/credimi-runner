@@ -47,19 +47,20 @@ const (
 )
 
 type HostContext struct {
-	ConfigDir       string
-	HomeDir         string
-	UID             int
-	GID             int
-	AndroidDir      string
-	AVDHome         string
-	GoldenRoot      string
-	ADBServerSocket string
-	HasKVM          bool
-	OS              string
-	BeforeSetup     bool
-	Bootstrap       BootstrapOptions
-	HostAddresses   []string
+	ConfigDir            string
+	HomeDir              string
+	UID                  int
+	GID                  int
+	AndroidDir           string
+	AVDHome              string
+	GoldenRoot           string
+	ADBServerSocket      string
+	HasKVM               bool
+	OS                   string
+	BeforeSetup          bool
+	Bootstrap            BootstrapOptions
+	HostAddresses        []string
+	ResolvedHostLocality map[string]bool
 }
 
 type BindMount struct {
@@ -190,6 +191,8 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	setEnv(AppliedServiceRedroidKnownHostsEnv, string(knownHostsMetadata))
 	hostAddresses, _ := json.Marshal(host.HostAddresses)
 	setEnv(AppliedServiceHostAddressesEnv, string(hostAddresses))
+	resolvedHosts, _ := json.Marshal(cloneBoolMap(host.ResolvedHostLocality))
+	setEnv(AppliedServiceResolvedHostsEnv, string(resolvedHosts))
 	setEnv(HostHomeEnv, host.HomeDir)
 	setEnv(HostAndroidDirEnv, host.AndroidDir)
 	setEnv(HostGoldenRootEnv, host.GoldenRoot)

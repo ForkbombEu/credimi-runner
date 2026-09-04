@@ -175,6 +175,12 @@ func appliedServiceCapabilities() (servicemanager.ServiceCapabilities, bool, boo
 			valid = false
 		}
 	}
+	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceResolvedHostsEnv); ok {
+		present = true
+		if err := json.Unmarshal([]byte(raw), &capabilities.ResolvedHostLocality); err != nil {
+			valid = false
+		}
+	}
 	return capabilities, present, valid
 }
 
@@ -342,13 +348,20 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 	return diff
 }
 
-func appliedServiceHostContext() servicemanager.HostContext {
+func AppliedServiceHostContext() servicemanager.HostContext {
 	addresses := []string{}
 	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceHostAddressesEnv); ok {
 		_ = json.Unmarshal([]byte(raw), &addresses)
 	}
-	return servicemanager.HostContext{OS: "linux", HostAddresses: addresses}
+	var resolved map[string]bool
+	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceResolvedHostsEnv); ok {
+		resolved = map[string]bool{}
+		_ = json.Unmarshal([]byte(raw), &resolved)
+	}
+	return servicemanager.HostContext{OS: "linux", HostAddresses: addresses, ResolvedHostLocality: resolved}
 }
+
+func appliedServiceHostContext() servicemanager.HostContext { return AppliedServiceHostContext() }
 
 func containsStringValue(values []string, want string) bool {
 	for _, value := range values {

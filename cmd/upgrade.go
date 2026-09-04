@@ -12,13 +12,14 @@ import (
 
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
+	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/spf13/cobra"
 )
 
 var downloadLatestBinary = maintenance.DownloadLatestBinary
 
-const serviceApplyTimeout = 15 * time.Minute
+const serviceApplyTimeout = runtimesupervisor.ActivationWaitTimeout
 
 var upgradeBinaryCmd = &cobra.Command{Use: "upgrade-binary", Short: "Upgrade the host Credimi Runner CLI binary", RunE: runUpgradeBinary}
 var upgradeImageCmd = &cobra.Command{Use: "upgrade-image", Short: "Upgrade the persistent Docker service image", RunE: runUpgradeImage}
