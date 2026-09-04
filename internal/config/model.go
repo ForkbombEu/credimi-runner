@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -42,7 +43,39 @@ type Config struct {
 	Storage       StorageConfig       `toml:"storage"`
 	Android       AndroidConfig       `toml:"android"`
 	Devices       []DeviceConfig      `toml:"devices"`
+	active        *ActiveConfig
 }
+
+// ActiveConfig is the runtime generation's activated configuration. The
+// persisted Config remains the desired state; a generation advances this
+// projection only after its live apply succeeds.
+type ActiveConfig struct {
+	mu  sync.RWMutex
+	cfg Config
+}
+
+func NewActiveConfig(cfg Config) *ActiveConfig {
+	return &ActiveConfig{cfg: cfg}
+}
+
+func (a *ActiveConfig) Load() Config {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.cfg
+}
+
+func (a *ActiveConfig) Store(cfg Config) {
+	a.mu.Lock()
+	a.cfg = cfg
+	a.mu.Unlock()
+}
+
+func WithActiveConfig(cfg Config, active *ActiveConfig) Config {
+	cfg.active = active
+	return cfg
+}
+
+func ActiveConfigOf(cfg Config) *ActiveConfig { return cfg.active }
 
 // Bootstrap is used by the first-run dashboard before a TOML file exists.
 func Bootstrap() Config {

@@ -230,7 +230,9 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (r
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
-	g := &generation{cfg: cfg, ctx: ctx, cancel: cancel, fatal: make(chan error, 1), workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
+	activeConfig := config.NewActiveConfig(cfg)
+	cfg = config.WithActiveConfig(cfg, activeConfig)
+	g := &generation{cfg: cfg, activeConfig: activeConfig, ctx: ctx, cancel: cancel, fatal: make(chan error, 1), workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
 	created := false
 	defer func() {
 		if created {
@@ -576,8 +578,46 @@ func (s *Supervisor) ApplyInventory(ctx context.Context, cfg config.Config) erro
 			return fmt.Errorf("register inventory: %w", err)
 		}
 	}
+	g.activeConfig.Store(cfg)
 	g.mu.Lock()
-	g.cfg = cfg
+	g.cfg = config.WithActiveConfig(cfg, g.activeConfig)
+	g.mu.Unlock()
+	return nil
+}
+
+// ApplyEndpoint verifies and publishes a new active manual endpoint without
+// replacing the runtime generation. The generation advances only after both
+// endpoint verification and Credimi registration succeed.
+func (s *Supervisor) ApplyEndpoint(ctx context.Context, cfg config.Config) error {
+	ctx, cancel := boundedContext(ctx, startTimeout)
+	defer cancel()
+	s.transitionMu.Lock()
+	defer s.transitionMu.Unlock()
+	g := s.currentGeneration()
+	if g == nil || !g.isExecuting() {
+		return errors.New("runtime generation is not running")
+	}
+	publicURL, _ := g.snapshot()
+	if s.deps.VerifyPublicEndpoint != nil {
+		candidate := publicURL
+		if cfg.Exposure.Mode == "manual" {
+			candidate = cfg.Exposure.PublicURL
+		}
+		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, candidate); err != nil {
+			return fmt.Errorf("verify public endpoint: %w", err)
+		}
+	}
+	if s.deps.Register != nil {
+		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
+			return fmt.Errorf("register endpoint: %w", err)
+		}
+	}
+	if cfg.Exposure.Mode == "manual" {
+		g.setPublicURL(cfg.Exposure.PublicURL)
+	}
+	g.activeConfig.Store(cfg)
+	g.mu.Lock()
+	g.cfg = config.WithActiveConfig(cfg, g.activeConfig)
 	g.mu.Unlock()
 	return nil
 }
@@ -728,6 +768,7 @@ func (s *Supervisor) teardownGeneration(ctx context.Context, g *generation, reas
 type generation struct {
 	mu                                                              sync.RWMutex
 	cfg                                                             config.Config
+	activeConfig                                                    *config.ActiveConfig
 	ctx                                                             context.Context
 	cancel                                                          context.CancelFunc
 	api                                                             API

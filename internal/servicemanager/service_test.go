@@ -877,6 +877,71 @@ func TestBuildServiceSpecPreservesRedroidKnownHostsResolution(t *testing.T) {
 	}
 }
 
+func TestBuildServiceSpecExportsRedroidKnownHostsMetadata(t *testing.T) {
+	home := t.TempDir()
+	a := filepath.Join(home, "known-a")
+	b := filepath.Join(home, "known-b")
+	for _, path := range []string{a, b} {
+		if err := os.WriteFile(path, []byte("known"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := configForDevices(
+		config.DeviceConfig{ID: "org/runner/a", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{AVDCTLSSHTarget: "root@a", AVDCTLSSHKnownHostsPath: a}},
+		config.DeviceConfig{ID: "org/runner/b", Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{AVDCTLSSHTarget: "root@b", AVDCTLSSHKnownHostsPath: b}},
+	)
+	spec, err := BuildServiceSpec(cfg, testHost(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	if err := json.Unmarshal([]byte(spec.Environment[AppliedServiceRedroidKnownHostsEnv]), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := ServiceRedroidKnownHostsForConfig(cfg)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("known-host metadata = %#v, want %#v", got, want)
+	}
+}
+
+func TestServiceCompatibilityMatchesAppliedSupersets(t *testing.T) {
+	redroid := func(path string) config.DeviceConfig {
+		return config.DeviceConfig{Type: config.DeviceRedroid, Enabled: true, Redroid: &config.RedroidConfig{AVDCTLSSHTarget: "root@redroid", ADBPort: 5555, AVDCTLSSHKnownHostsPath: path}}
+	}
+	applied := config.Bootstrap()
+	if err := config.ApplyDefaults(&applied); err != nil {
+		t.Fatal(err)
+	}
+	applied.Devices = []config.DeviceConfig{redroid("/known/a"), redroid("/known/b")}
+	desired := applied
+	desired.Devices = []config.DeviceConfig{redroid("/known/a")}
+	if !ServiceConfigsCompatible(applied, desired, true) {
+		t.Fatal("applied Redroid mount superset was not accepted")
+	}
+	missing := applied
+	missing.Devices = []config.DeviceConfig{redroid("/known/c")}
+	if ServiceConfigsCompatible(applied, missing, true) {
+		t.Fatal("missing Redroid mount was accepted")
+	}
+
+	applied.Devices = []config.DeviceConfig{{Type: config.DeviceAndroidEmulator, Enabled: true}}
+	desired.Devices = nil
+	if !ServiceConfigsCompatible(applied, desired, true) {
+		t.Fatal("applied emulator capability was not retained")
+	}
+	capabilities := ServiceCapabilitiesForConfig(applied)
+	fingerprint := ServiceConfigFingerprint(applied, true)
+	if !ServiceConfigCompatibleWithFingerprint(desired, true, fingerprint, capabilities) {
+		t.Fatal("fingerprint compatibility rejected an applied capability superset")
+	}
+	capabilities.RedroidKnownHosts = []string{"/known/a"}
+	missing = applied
+	missing.Devices = []config.DeviceConfig{redroid("/known/b")}
+	if ServiceConfigCompatibleWithFingerprint(missing, true, fingerprint, capabilities) {
+		t.Fatal("fingerprint compatibility accepted a missing Redroid mount")
+	}
+}
+
 func TestServiceSpecFingerprintIncludesCapabilityFields(t *testing.T) {
 	home := t.TempDir()
 	knownHostsPath := filepath.Join(home, ".ssh", "known_hosts")

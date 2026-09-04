@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -104,6 +106,86 @@ func TestRuntimePlanDeviceDiffAndNoop(t *testing.T) {
 	added := DiffValuesForOS(Values{}, Values{"CREDIMI_DEVICE_2_NAME": "new"}, "linux")
 	if len(added.ChangedKeys) != 1 || hasClass(added, ApplyServiceRestartRequired) {
 		t.Fatalf("added device diff = %+v", added)
+	}
+}
+
+func TestServiceCompatibilityRetainsRedroidKnownHostsSuperset(t *testing.T) {
+	redroid := func(path string) runnerconfig.DeviceConfig {
+		return runnerconfig.DeviceConfig{ID: "org/runner/" + path, Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{
+			Host: "redroid", Image: "redroid:latest", DataDir: "/data", DataArchive: "/data.tar", ADBPort: 5555,
+			AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: path,
+		}}
+	}
+	applied := runnerconfig.Bootstrap()
+	if err := runnerconfig.ApplyDefaults(&applied); err != nil {
+		t.Fatal(err)
+	}
+	applied.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	applied.Devices = []runnerconfig.DeviceConfig{redroid("/known/a"), redroid("/known/b")}
+	shrunk := applied
+	shrunk.Devices = []runnerconfig.DeviceConfig{redroid("/known/a")}
+	if !servicemanager.ServiceConfigsCompatible(applied, shrunk, true) {
+		t.Fatal("removing an applied Redroid known-host mount requires an unnecessary restart")
+	}
+	expanded := applied
+	expanded.Devices = append(expanded.Devices, redroid("/known/c"))
+	if servicemanager.ServiceConfigsCompatible(applied, expanded, true) {
+		t.Fatal("adding a Redroid known-host mount did not require a restart")
+	}
+	replaced := applied
+	replaced.Devices = []runnerconfig.DeviceConfig{redroid("/known/c"), redroid("/known/b")}
+	if servicemanager.ServiceConfigsCompatible(applied, replaced, true) {
+		t.Fatal("replacing a Redroid known-host mount did not require a restart")
+	}
+}
+
+func TestServiceRestartRequiredUsesAppliedRedroidKnownHosts(t *testing.T) {
+	old := map[string]string{}
+	for _, key := range []string{
+		servicemanager.AppliedServiceConfigFingerprintEnv,
+		servicemanager.AppliedServiceNeedsHostADBEnv,
+		servicemanager.AppliedServiceNeedsUSBEnv,
+		servicemanager.AppliedServiceNeedsEmulatorEnv,
+		servicemanager.AppliedServiceRedroidKnownHostsEnv,
+	} {
+		old[key] = os.Getenv(key)
+		_ = os.Unsetenv(key)
+	}
+	t.Cleanup(func() {
+		for key, value := range old {
+			if value == "" {
+				_ = os.Unsetenv(key)
+			} else {
+				_ = os.Setenv(key, value)
+			}
+		}
+	})
+	redroid := func(path string) runnerconfig.DeviceConfig {
+		return runnerconfig.DeviceConfig{ID: "org/runner/" + path, Type: runnerconfig.DeviceRedroid, Enabled: true, Redroid: &runnerconfig.RedroidConfig{Host: "redroid", ADBPort: 5555, AVDCTLSSHTarget: "root@redroid", AVDCTLSSHKnownHostsPath: path}}
+	}
+	applied := runnerconfig.Bootstrap()
+	if err := runnerconfig.ApplyDefaults(&applied); err != nil {
+		t.Fatal(err)
+	}
+	applied.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	applied.Devices = []runnerconfig.DeviceConfig{redroid("/known/a"), redroid("/known/b")}
+	shrunk := applied
+	shrunk.Devices = []runnerconfig.DeviceConfig{redroid("/known/a")}
+	_ = os.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(applied, true))
+	for key, value := range map[string]string{
+		servicemanager.AppliedServiceNeedsHostADBEnv:  "false",
+		servicemanager.AppliedServiceNeedsUSBEnv:      "false",
+		servicemanager.AppliedServiceNeedsEmulatorEnv: "false",
+	} {
+		_ = os.Setenv(key, value)
+	}
+	knownHosts, err := json.Marshal(servicemanager.ServiceRedroidKnownHostsForConfig(applied))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Setenv(servicemanager.AppliedServiceRedroidKnownHostsEnv, string(knownHosts))
+	if ServiceRestartRequired(ValuesFromTypedConfig(shrunk), true) {
+		t.Fatal("Redroid shrink was incorrectly marked as requiring service restart")
 	}
 }
 

@@ -59,6 +59,7 @@ type RuntimeController interface {
 	Restart(context.Context) error
 	Reconcile(context.Context, runnerconfig.Config) error
 	ApplyInventory(context.Context, runnerconfig.Config) error
+	ApplyEndpoint(context.Context, runnerconfig.Config) error
 	Status() runtimesupervisor.Status
 }
 
@@ -1366,8 +1367,14 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 		s.setPendingDiff(pending)
 		return fmt.Errorf("load typed configuration: %w", err)
 	}
+	if inactiveExposureOnlyDiff(pending, cfg) {
+		s.setPendingDiff(dashboardruntime.ConfigDiff{})
+		return nil
+	}
 	apply := s.runtime.Reconcile
-	if inventoryOnlyDiff(pending) {
+	if activeManualEndpointDiff(pending, cfg) {
+		apply = s.runtime.ApplyEndpoint
+	} else if inventoryOnlyDiff(pending, cfg) {
 		apply = s.runtime.ApplyInventory
 	}
 	if err := apply(ctx, cfg); err != nil {
@@ -1378,17 +1385,52 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 	return nil
 }
 
-func inventoryOnlyDiff(diff dashboardruntime.ConfigDiff) bool {
+func inventoryOnlyDiff(diff dashboardruntime.ConfigDiff, cfg runnerconfig.Config) bool {
 	if len(diff.ChangedKeys) == 0 {
 		return false
 	}
 	for _, key := range diff.ChangedKeys {
-		if strings.HasPrefix(key, "CREDIMI_DEVICE_") || key == "CREDIMI_RUNNER_DESCRIPTION" || key == "RUNNER_PUBLIC_URL" || key == "RUNNER_PUBLIC_PORT" || key == "RUNNER_DOMAIN" {
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") || key == "CREDIMI_RUNNER_DESCRIPTION" || inactiveExposureKey(key, cfg.Exposure.Mode) {
 			continue
 		}
 		return false
 	}
 	return true
+}
+
+func activeManualEndpointDiff(diff dashboardruntime.ConfigDiff, cfg runnerconfig.Config) bool {
+	if cfg.Exposure.Mode != "manual" {
+		return false
+	}
+	for _, key := range diff.ChangedKeys {
+		if key == "RUNNER_PUBLIC_URL" || key == "RUNNER_PUBLIC_PORT" {
+			return true
+		}
+	}
+	return false
+}
+
+func inactiveExposureOnlyDiff(diff dashboardruntime.ConfigDiff, cfg runnerconfig.Config) bool {
+	if len(diff.ChangedKeys) == 0 {
+		return false
+	}
+	for _, key := range diff.ChangedKeys {
+		if !inactiveExposureKey(key, cfg.Exposure.Mode) {
+			return false
+		}
+	}
+	return true
+}
+
+func inactiveExposureKey(key, mode string) bool {
+	switch {
+	case key == "RUNNER_PUBLIC_URL" || key == "RUNNER_PUBLIC_PORT":
+		return mode != "manual"
+	case key == "RUNNER_DOMAIN":
+		return mode != "cloudflare-managed"
+	default:
+		return false
+	}
 }
 
 func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {

@@ -400,7 +400,7 @@ func TestRuntimeDependenciesCreateCloudflaredEdge(t *testing.T) {
 	}
 }
 
-func TestRuntimeConfigLoaderReadsCurrentPersistedInventory(t *testing.T) {
+func TestRuntimeConfigLoaderUsesActiveGenerationConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgA := runnerconfig.Bootstrap()
 	cfgA.SchemaVersion = runnerconfig.SchemaVersion
@@ -413,11 +413,16 @@ func TestRuntimeConfigLoaderReadsCurrentPersistedInventory(t *testing.T) {
 		ID: "org/runner/device-a", Name: "A", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
 		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "A"},
 	}}
+	active := runnerconfig.NewActiveConfig(cfgA)
+	attached := runnerconfig.WithActiveConfig(cfgA, active)
+	if runnerconfig.ActiveConfigOf(attached) == nil {
+		t.Fatal("active config was not attached")
+	}
+	loaderA := runtimeConfigLoader(attached)
 	configPath := filepath.Join(dir, "config.toml")
 	if err := runnerconfig.WriteFile(configPath, cfgA); err != nil {
 		t.Fatal(err)
 	}
-	loaderA := runtimeConfigLoader(dir)
 	first, err := loaderA()
 	if err != nil {
 		t.Fatal(err)
@@ -434,21 +439,20 @@ func TestRuntimeConfigLoaderReadsCurrentPersistedInventory(t *testing.T) {
 	if err := runnerconfig.WriteFile(configPath, cfgB); err != nil {
 		t.Fatal(err)
 	}
+	beforeApply, err := loaderA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeApply.Devices) != 1 || beforeApply.Devices[0].ID != "org/runner/device-a" {
+		t.Fatalf("pending persisted inventory leaked into active generation: %+v", beforeApply.Devices)
+	}
+	active.Store(cfgB)
 	second, err := loaderA()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(second.Devices) != 1 || second.Devices[0].ID != "org/runner/device-b" {
-		t.Fatalf("current inventory was not refreshed after config write: %+v", second.Devices)
-	}
-
-	loaderB := runtimeConfigLoader(dir)
-	generationB, err := loaderB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(generationB.Devices) != 1 || generationB.Devices[0].ID != "org/runner/device-b" {
-		t.Fatalf("generation B inventory = %+v", generationB.Devices)
+		t.Fatalf("active inventory was not refreshed after apply: %+v", second.Devices)
 	}
 }
 

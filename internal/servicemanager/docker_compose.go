@@ -192,6 +192,8 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	setEnv(AppliedServiceNeedsHostADBEnv, strconv.FormatBool(capabilities.NeedsHostADB || host.BeforeSetup))
 	setEnv(AppliedServiceNeedsUSBEnv, strconv.FormatBool(capabilities.NeedsUSB))
 	setEnv(AppliedServiceNeedsEmulatorEnv, strconv.FormatBool(capabilities.NeedsEmulator))
+	knownHostsMetadata, _ := json.Marshal(ServiceRedroidKnownHostsForConfig(cfg))
+	setEnv(AppliedServiceRedroidKnownHostsEnv, string(knownHostsMetadata))
 	setEnv(HostHomeEnv, host.HomeDir)
 	setEnv(HostAndroidDirEnv, host.AndroidDir)
 	setEnv(HostGoldenRootEnv, host.GoldenRoot)

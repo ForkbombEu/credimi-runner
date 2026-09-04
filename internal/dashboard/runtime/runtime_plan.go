@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -150,6 +151,12 @@ func appliedServiceCapabilities() (servicemanager.ServiceCapabilities, bool, boo
 			continue
 		}
 		*entry.value = parsed
+	}
+	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceRedroidKnownHostsEnv); ok {
+		present = true
+		if err := json.Unmarshal([]byte(raw), &capabilities.RedroidKnownHosts); err != nil {
+			valid = false
+		}
 	}
 	return capabilities, present, valid
 }

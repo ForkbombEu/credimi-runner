@@ -70,6 +70,7 @@ type testEdge struct {
 	startHook                   func()
 	failures                    chan error
 	origins                     []string
+	startURLs                   []string
 }
 
 func (e *testEdge) Start(_ context.Context, origin string) (string, error) {
@@ -83,6 +84,11 @@ func (e *testEdge) Start(_ context.Context, origin string) (string, error) {
 	e.running = true
 	if e.startHook != nil {
 		e.startHook()
+	}
+	if len(e.startURLs) > 0 {
+		url := e.startURLs[0]
+		e.startURLs = e.startURLs[1:]
+		return url, nil
 	}
 	return "https://runner.example", nil
 }
@@ -992,6 +998,209 @@ func TestSupervisorApplyInventoryKeepsGenerationRunning(t *testing.T) {
 	}
 	if s.currentGeneration() != generation || workers.stops != 0 || life.pauses != 0 || registrations != 2 {
 		t.Fatalf("inventory apply disrupted generation: same=%t worker stops=%d pauses=%d registrations=%d", s.currentGeneration() == generation, workers.stops, life.pauses, registrations)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorApplyInventoryAdvancesActiveConfigOnlyAfterRegistration(t *testing.T) {
+	oldDelay := registrationRetryDelay
+	registrationRetryDelay = time.Millisecond
+	t.Cleanup(func() { registrationRetryDelay = oldDelay })
+	api := &testAPI{}
+	workers := &testWorkers{}
+	life := &testLife{}
+	registrationErr := errors.New("Credimi unavailable")
+	shouldFail := false
+	var active *config.ActiveConfig
+	cfg := validConfig()
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		Register: func(_ context.Context, candidate config.Config, _ string) error {
+			if active == nil {
+				active = config.ActiveConfigOf(candidate)
+			}
+			if shouldFail {
+				return registrationErr
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updated := cfg
+	updated.Runner.Description = "new desired description"
+	shouldFail = true
+	if err := s.ApplyInventory(context.Background(), updated); !errors.Is(err, registrationErr) {
+		t.Fatalf("failed inventory apply error = %v", err)
+	}
+	if got := active.Load().Runner.Description; got != cfg.Runner.Description {
+		t.Fatalf("failed apply advanced active config to %q", got)
+	}
+	shouldFail = false
+	if err := s.ApplyInventory(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	if got := active.Load().Runner.Description; got != updated.Runner.Description {
+		t.Fatalf("successful apply active description = %q", got)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorReconcileRegistersTheNewEdgeURL(t *testing.T) {
+	api := &testAPI{}
+	edgeImpl := &testEdge{startURLs: []string{"https://tunnel-a.trycloudflare.com", "https://tunnel-b.trycloudflare.com"}}
+	workers := &testWorkers{}
+	life := &testLife{}
+	var registered []string
+	cfg := validConfig()
+	cfg.Exposure.Mode = "manual"
+	cfg.Exposure.PublicURL = "https://manual.example"
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		Register: func(_ context.Context, cfg config.Config, publicURL string) error {
+			endpoint, _, err := registrationEndpoint(cfg, publicURL)
+			if err != nil {
+				return err
+			}
+			registered = append(registered, endpoint)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	auto := cfg
+	auto.Exposure.Mode = "quick_tunnel"
+	auto.Exposure.PublicURL = "https://stale-manual.example"
+	if err := s.Reconcile(context.Background(), auto); err != nil {
+		t.Fatal(err)
+	}
+	if len(registered) != 2 || registered[0] != "https://manual.example" || registered[1] != "https://tunnel-b.trycloudflare.com" {
+		t.Fatalf("registered endpoints = %#v", registered)
+	}
+	if s.Status().PublicURL != "https://tunnel-b.trycloudflare.com" {
+		t.Fatalf("active public URL = %q", s.Status().PublicURL)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorApplyEndpointVerifiesBeforeActivating(t *testing.T) {
+	api := &testAPI{}
+	edgeImpl := &testEdge{startURLs: []string{"https://old.example"}}
+	workers := &testWorkers{}
+	life := &testLife{}
+	var events []string
+	cfg := validConfig()
+	cfg.Exposure.Mode = "manual"
+	cfg.Exposure.PublicURL = "https://old.example"
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		VerifyPublicEndpoint: func(_ context.Context, cfg config.Config, publicURL string) error {
+			events = append(events, "verify:"+cfg.Exposure.PublicURL+":"+publicURL)
+			return nil
+		},
+		Register: func(_ context.Context, cfg config.Config, _ string) error {
+			events = append(events, "register:"+cfg.Exposure.PublicURL+":"+cfg.Exposure.PublicPort)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	events = nil
+	updated := cfg
+	updated.Exposure.PublicURL = "https://new.example"
+	updated.Exposure.PublicPort = "9443"
+	if err := s.ApplyEndpoint(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(events, "|"), "verify:https://new.example:https://new.example|register:https://new.example:9443"; got != want {
+		t.Fatalf("apply events = %q, want %q", got, want)
+	}
+	if s.Status().PublicURL != "https://new.example" {
+		t.Fatalf("active public URL = %q", s.Status().PublicURL)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorApplyEndpointFailureKeepsActiveEndpoint(t *testing.T) {
+	oldDelay := registrationRetryDelay
+	registrationRetryDelay = time.Millisecond
+	t.Cleanup(func() { registrationRetryDelay = oldDelay })
+	api := &testAPI{}
+	edgeImpl := &testEdge{startURLs: []string{"https://old.example"}}
+	workers := &testWorkers{}
+	life := &testLife{}
+	verifyErr := errors.New("new endpoint is not ready")
+	registerErr := errors.New("Credimi registration failed")
+	verifyFails := true
+	cfg := validConfig()
+	cfg.Exposure.Mode = "manual"
+	cfg.Exposure.PublicURL = "https://old.example"
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		VerifyPublicEndpoint: func(_ context.Context, cfg config.Config, _ string) error {
+			if verifyFails && cfg.Exposure.PublicURL == "https://new.example" {
+				return verifyErr
+			}
+			return nil
+		},
+		Register: func(_ context.Context, cfg config.Config, _ string) error {
+			if cfg.Exposure.PublicURL == "https://new.example" {
+				return registerErr
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updated := cfg
+	updated.Exposure.PublicURL = "https://new.example"
+	if err := s.ApplyEndpoint(context.Background(), updated); !errors.Is(err, verifyErr) {
+		t.Fatalf("apply error = %v", err)
+	}
+	if got := s.Status().PublicURL; got != "https://old.example" {
+		t.Fatalf("failed apply changed active public URL to %q", got)
+	}
+	verifyFails = false
+	if err := s.ApplyEndpoint(context.Background(), updated); !errors.Is(err, registerErr) {
+		t.Fatalf("registration failure = %v", err)
+	}
+	if got := s.Status().PublicURL; got != "https://old.example" {
+		t.Fatalf("registration failure changed active public URL to %q", got)
 	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)

@@ -90,7 +90,7 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 				return nil, err
 			}
 			apiCfg.Server.APIListen = listen
-			loader := runtimeConfigLoader(configDir)
+			loader := runtimeConfigLoader(cfg)
 			svc := server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: loader})
 			readiness := server.NewReadinessService()
 			readiness.RuntimeConfig = loader
@@ -98,11 +98,11 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 		},
 		NewWorkers: func(cfg runnerconfig.Config, store *server.ProcessStore) runtimesupervisor.WorkerSet {
 			applyEnvironment(cfg)
-			return &workerSet{service: server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: runtimeConfigLoader(configDir)}), store: store}
+			return &workerSet{service: server.NewRunnerServiceWithDeps(store, utils.LoadInstance(), server.Deps{RuntimeConfigLoader: runtimeConfigLoader(cfg)}), store: store}
 		},
 		NewLifecycleClient: func(cfg runnerconfig.Config, store *server.ProcessStore) runtimesupervisor.LifecycleClient {
 			applyEnvironment(cfg)
-			loader := runtimeConfigLoader(configDir)
+			loader := runtimeConfigLoader(cfg)
 			return server.NewRunnerLifecycleClient(server.LoadRunnerLifecycleConfig(utils.LoadInstance(), loader), http.DefaultClient, store, loader)
 		},
 		ValidateRuntimeCapabilities: func(ctx context.Context, cfg runnerconfig.Config) error {
@@ -113,13 +113,13 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 	}
 }
 
-func runtimeConfigLoader(configDir string) server.RuntimeConfigLoader {
+func runtimeConfigLoader(cfg runnerconfig.Config) server.RuntimeConfigLoader {
 	return func() (dashboardruntime.RunnerRuntimeConfig, error) {
-		cfg, err := runnerconfig.LoadFile(filepath.Join(configDir, "config.toml"))
-		if err != nil {
-			return dashboardruntime.RunnerRuntimeConfig{}, err
+		current := cfg
+		if active := runnerconfig.ActiveConfigOf(cfg); active != nil {
+			current = active.Load()
 		}
-		return dashboardruntime.ParseRuntimeConfig(dashboardruntime.ValuesFromTypedConfig(cfg))
+		return dashboardruntime.ParseRuntimeConfig(dashboardruntime.ValuesFromTypedConfig(current))
 	}
 }
 

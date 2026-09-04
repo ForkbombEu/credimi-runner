@@ -15,15 +15,18 @@ const (
 	AppliedServiceNeedsHostADBEnv      = "CREDIMI_APPLIED_SERVICE_NEEDS_HOST_ADB"
 	AppliedServiceNeedsUSBEnv          = "CREDIMI_APPLIED_SERVICE_NEEDS_USB"
 	AppliedServiceNeedsEmulatorEnv     = "CREDIMI_APPLIED_SERVICE_NEEDS_EMULATOR"
+	AppliedServiceRedroidKnownHostsEnv = "CREDIMI_APPLIED_SERVICE_REDIROID_KNOWN_HOSTS"
 )
 
 // ServiceCapabilities describes capabilities that may safely be retained when
 // a desired configuration removes them. Expanding any of these capabilities
-// still requires service recreation.
+// still requires service recreation. RedroidKnownHosts is the applied set of
+// read-only mounts and follows the same safe-superset rule.
 type ServiceCapabilities struct {
-	NeedsHostADB  bool
-	NeedsUSB      bool
-	NeedsEmulator bool
+	NeedsHostADB      bool
+	NeedsUSB          bool
+	NeedsEmulator     bool
+	RedroidKnownHosts []string
 }
 
 type serviceConfigProjection struct {
@@ -130,7 +133,11 @@ func fingerprintServiceProjection(projection serviceConfigProjection) string {
 
 func ServiceCapabilitiesForConfig(cfg config.Config) ServiceCapabilities {
 	projection := serviceConfigProjectionFor(cfg, true)
-	return ServiceCapabilities{NeedsHostADB: projection.NeedsHostADB, NeedsUSB: projection.NeedsUSB, NeedsEmulator: projection.NeedsEmulator}
+	return ServiceCapabilities{NeedsHostADB: projection.NeedsHostADB, NeedsUSB: projection.NeedsUSB, NeedsEmulator: projection.NeedsEmulator, RedroidKnownHosts: append([]string(nil), projection.RedroidKnownHosts...)}
+}
+
+func ServiceRedroidKnownHostsForConfig(cfg config.Config) []string {
+	return append([]string(nil), serviceConfigProjectionFor(cfg, true).RedroidKnownHosts...)
 }
 
 // ServiceConfigsCompatible reports whether an already applied service can
@@ -148,6 +155,11 @@ func ServiceConfigsCompatible(applied, desired config.Config, configured bool) b
 	if appliedProjection.NeedsEmulator {
 		desiredProjection.NeedsEmulator = true
 	}
+	if !isStringSetSuperset(appliedProjection.RedroidKnownHosts, desiredProjection.RedroidKnownHosts) {
+		return false
+	}
+	desiredProjection.RedroidKnownHosts = append([]string(nil), appliedProjection.RedroidKnownHosts...)
+	sort.Strings(desiredProjection.RedroidKnownHosts)
 	return fingerprintServiceProjection(appliedProjection) == fingerprintServiceProjection(desiredProjection)
 }
 
@@ -165,7 +177,25 @@ func ServiceConfigCompatibleWithFingerprint(cfg config.Config, configured bool, 
 	if capabilities.NeedsEmulator {
 		desiredProjection.NeedsEmulator = true
 	}
+	if !isStringSetSuperset(capabilities.RedroidKnownHosts, desiredProjection.RedroidKnownHosts) {
+		return false
+	}
+	desiredProjection.RedroidKnownHosts = append([]string(nil), capabilities.RedroidKnownHosts...)
+	sort.Strings(desiredProjection.RedroidKnownHosts)
 	return fingerprintServiceProjection(desiredProjection) == appliedFingerprint
+}
+
+func isStringSetSuperset(have, want []string) bool {
+	set := make(map[string]struct{}, len(have))
+	for _, value := range have {
+		set[value] = struct{}{}
+	}
+	for _, value := range want {
+		if _, ok := set[value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func serviceExposureClass(mode string) string {

@@ -41,6 +41,7 @@ type fakeRuntimeController struct {
 	restarts      int
 	reconciles    int
 	inventories   int
+	endpoints     int
 	requestStarts int
 	reconcileErr  error
 }
@@ -96,6 +97,13 @@ func (f *fakeRuntimeController) ApplyInventory(context.Context, runnerconfig.Con
 	return f.reconcileErr
 }
 
+func (f *fakeRuntimeController) ApplyEndpoint(context.Context, runnerconfig.Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.endpoints++
+	return f.reconcileErr
+}
+
 func (f *fakeRuntimeController) Status() runtimesupervisor.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,6 +126,32 @@ func (f *fakeRuntimeController) inventoryCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.inventories
+}
+
+func (f *fakeRuntimeController) endpointCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.endpoints
+}
+
+func TestExposureApplyClassificationUsesActiveMode(t *testing.T) {
+	manual := runnerconfig.Config{Exposure: runnerconfig.ExposureConfig{Mode: "manual"}}
+	quick := runnerconfig.Config{Exposure: runnerconfig.ExposureConfig{Mode: "quick_tunnel"}}
+	named := runnerconfig.Config{Exposure: runnerconfig.ExposureConfig{Mode: "named_tunnel"}}
+	endpoint := dashboardruntime.ConfigDiff{ChangedKeys: []string{"RUNNER_PUBLIC_URL"}}
+	if !activeManualEndpointDiff(endpoint, manual) || inventoryOnlyDiff(endpoint, manual) {
+		t.Fatal("manual endpoint change was not classified as an endpoint apply")
+	}
+	if !inactiveExposureOnlyDiff(endpoint, quick) || !inactiveExposureOnlyDiff(endpoint, named) {
+		t.Fatal("inactive manual URL change was not ignored")
+	}
+	domain := dashboardruntime.ConfigDiff{ChangedKeys: []string{"RUNNER_DOMAIN"}}
+	if !inactiveExposureOnlyDiff(domain, manual) || !inactiveExposureOnlyDiff(domain, quick) {
+		t.Fatal("inactive named-domain change was not ignored")
+	}
+	if !inventoryOnlyDiff(dashboardruntime.ConfigDiff{ChangedKeys: []string{"CREDIMI_RUNNER_DESCRIPTION"}}, manual) {
+		t.Fatal("description change was not classified as inventory-only")
+	}
 }
 
 func newTestServer(t *testing.T) *Server {
