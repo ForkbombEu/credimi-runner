@@ -280,6 +280,9 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	spec.NetworkMode = ServiceNetworkModeForConfig(cfg, host)
 	for _, name := range serviceDependencyHostnames(cfg) {
 		name = normalizeHostname(name)
+		if net.ParseIP(name) != nil {
+			continue
+		}
 		if address := net.ParseIP(host.ResolvedHostLocality[name]); address != nil {
 			spec.ExtraHosts = appendUniqueString(spec.ExtraHosts, name+":"+address.String())
 		}

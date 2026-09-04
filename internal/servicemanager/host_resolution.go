@@ -18,7 +18,11 @@ func ResolveServiceHostContext(cfg config.Config, host HostContext) (HostContext
 	resolved := map[string]string{}
 	for _, name := range serviceDependencyHostnames(cfg) {
 		name = normalizeHostname(name)
-		if name == "" || net.ParseIP(name) != nil || name == "localhost" {
+		if name == "" || name == "localhost" {
+			continue
+		}
+		if ip := net.ParseIP(name); ip != nil {
+			resolved[name] = serviceHostIP([]net.IP{ip}, host.HostAddresses)
 			continue
 		}
 		ips, err := lookupServiceHostIPs(name)
@@ -38,6 +42,10 @@ func ResolveServiceHostContext(cfg config.Config, host HostContext) (HostContext
 func serviceHostIP(ips []net.IP, addresses []string) string {
 	var matches []string
 	for _, ip := range ips {
+		if ip.IsLoopback() {
+			matches = append(matches, ip.String())
+			continue
+		}
 		for _, address := range addresses {
 			if own := net.ParseIP(strings.Trim(strings.TrimSpace(address), "[]")); own != nil && own.Equal(ip) {
 				matches = append(matches, own.String())

@@ -64,6 +64,26 @@ func (m *DockerManager) config() (runnerconfig.Config, error) {
 	return runnerconfig.LoadFile(filepath.Join(m.ConfigDir, "config.toml"))
 }
 func (m *DockerManager) Start(ctx context.Context) error {
+	cfg, err := m.config()
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		cfg = runnerconfig.Bootstrap()
+		if image := strings.TrimSpace(m.Bootstrap.Image); image != "" {
+			cfg.Android.RunnerImage = image
+		}
+		if policy := strings.TrimSpace(m.Bootstrap.PullPolicy); policy != "" {
+			if policy != "always" && policy != "if-not-present" && policy != "never" {
+				return fmt.Errorf("invalid bootstrap pull policy %q: use always, if-not-present, or never", policy)
+			}
+			cfg.Android.PullPolicy = policy
+		}
+	}
+	return m.startWithConfig(ctx, cfg)
+}
+
+func (m *DockerManager) startWithConfig(ctx context.Context, cfg runnerconfig.Config) error {
 	if host, err := ResolveHostContext(m.ConfigDir); err != nil {
 		return err
 	} else {
@@ -77,21 +97,6 @@ func (m *DockerManager) Start(ctx context.Context) error {
 	autostart, err := loadAutostart(m.ConfigDir)
 	if err != nil {
 		return err
-	}
-	cfg, err := m.config()
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		if image := strings.TrimSpace(m.Bootstrap.Image); image != "" {
-			cfg.Android.RunnerImage = image
-		}
-		if policy := strings.TrimSpace(m.Bootstrap.PullPolicy); policy != "" {
-			if policy != "always" && policy != "if-not-present" && policy != "never" {
-				return fmt.Errorf("invalid bootstrap pull policy %q: use always, if-not-present, or never", policy)
-			}
-			cfg.Android.PullPolicy = policy
-		}
 	}
 	m.host.Bootstrap = m.Bootstrap
 	m.host, err = ResolveServiceHostContext(cfg, m.host)
@@ -127,6 +132,52 @@ func (m *DockerManager) Restart(ctx context.Context) error {
 		return err
 	}
 	return m.Start(ctx)
+}
+
+// RestartWithConfig applies an already parsed configuration snapshot. It is
+// intentionally outside Manager: only attached-host restart coordination
+// needs to bind a service replacement to verified config bytes.
+func (m *DockerManager) RestartWithConfig(ctx context.Context, cfg runnerconfig.Config) error {
+	if err := m.Stop(ctx); err != nil {
+		return err
+	}
+	return m.startWithConfig(ctx, cfg)
+}
+
+// ServiceMatchesConfig verifies the running service against an explicit
+// configuration snapshot rather than whatever config.toml currently contains.
+func (m *DockerManager) ServiceMatchesConfig(ctx context.Context, cfg runnerconfig.Config) (bool, error) {
+	host, err := ResolveHostContext(m.ConfigDir)
+	if err != nil {
+		return false, err
+	}
+	host.Bootstrap = m.Bootstrap
+	host, err = ResolveServiceHostContext(cfg, host)
+	if err != nil {
+		return false, err
+	}
+	spec, err := BuildServiceSpec(cfg, host)
+	if err != nil {
+		return false, err
+	}
+	if m.Runner == nil {
+		m.Runner = execRunner{}
+	}
+	composeArgs := []string{"compose", "--project-name", ProjectName(m.ConfigDir, host.UID), "-f", filepath.Join(m.ConfigDir, "service-compose.yaml"), "ps", "-q", "runner"}
+	out, err := m.Runner.Output(ctx, "docker", composeArgs, os.Environ())
+	if err != nil {
+		return false, err
+	}
+	id := strings.TrimSpace(string(out))
+	if id == "" {
+		return false, nil
+	}
+	label, err := m.Runner.Output(ctx, "docker", []string{"inspect", "--format", "{{ index .Config.Labels \"io.credimi.runner.service-fingerprint\" }}", id}, os.Environ())
+	if err != nil {
+		return false, err
+	}
+	m.host = host
+	return strings.TrimSpace(string(label)) == spec.Fingerprint(), nil
 }
 
 func (m *DockerManager) Enable(ctx context.Context) error {

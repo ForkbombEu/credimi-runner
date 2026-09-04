@@ -31,6 +31,14 @@ var serviceManagerFactory = func(configDir string, bootstrap servicemanager.Boot
 
 var loadServiceConfigSnapshot = runnerconfig.LoadFileSnapshot
 
+type snapshotServiceRestarter interface {
+	RestartWithConfig(context.Context, runnerconfig.Config) error
+}
+
+type snapshotServiceMatcher interface {
+	ServiceMatchesConfig(context.Context, runnerconfig.Config) (bool, error)
+}
+
 func currentServiceManager() servicemanager.Manager {
 	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy})
 }
@@ -155,28 +163,51 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 	}
 	expected := servicemanager.ServiceConfigFingerprintForHost(cfg, true, host)
 	if !request.ForceRestart {
-		if status, statusErr := manager.Status(ctx); statusErr == nil && status.Running && !status.ServiceRestartRequired {
+		if matcher, ok := manager.(snapshotServiceMatcher); ok {
+			if matches, matchErr := matcher.ServiceMatchesConfig(ctx, cfg); matchErr == nil && matches {
+				return writeResult(true, expected, "")
+			}
+		} else if status, statusErr := manager.Status(ctx); statusErr == nil && status.Running && !status.ServiceRestartRequired {
 			return writeResult(true, expected, "")
 		}
 	}
 	previous, _ := controller.ReadMetadata(configDir)
-	if err := manager.Restart(ctx); err != nil {
-		resultErr := writeResult(false, "", fmt.Sprintf("service restart failed: %v", err))
-		return errors.Join(err, resultErr)
+	var restartErr error
+	if restarter, ok := manager.(snapshotServiceRestarter); ok {
+		restartErr = restarter.RestartWithConfig(ctx, cfg)
+	} else {
+		restartErr = manager.Restart(ctx)
+	}
+	if restartErr != nil {
+		resultErr := writeResult(false, "", fmt.Sprintf("service restart failed: %v", restartErr))
+		return errors.Join(restartErr, resultErr)
 	}
 	if _, err := waitForRunningControllerUsingWithTimeout(ctx, configDir, previous.IdentityToken, "", serviceApplyTimeout, controller.ReadMetadata, controller.Probe); err != nil {
 		resultErr := writeResult(false, "", fmt.Sprintf("replacement service did not become ready: %v", err))
 		return errors.Join(err, resultErr)
 	}
-	status, err := manager.Status(ctx)
-	if err != nil {
-		resultErr := writeResult(false, "", fmt.Sprintf("verify replacement service configuration: %v", err))
-		return errors.Join(err, resultErr)
-	}
-	if !status.Running || status.ServiceRestartRequired {
-		err := errors.New("replacement service is not running with the requested configuration")
-		resultErr := writeResult(false, "", err.Error())
-		return errors.Join(err, resultErr)
+	if matcher, ok := manager.(snapshotServiceMatcher); ok {
+		matches, matchErr := matcher.ServiceMatchesConfig(ctx, cfg)
+		if matchErr != nil {
+			resultErr := writeResult(false, "", fmt.Sprintf("verify replacement service configuration: %v", matchErr))
+			return errors.Join(matchErr, resultErr)
+		}
+		if !matches {
+			err := errors.New("replacement service is not running with the requested configuration")
+			resultErr := writeResult(false, "", err.Error())
+			return errors.Join(err, resultErr)
+		}
+	} else {
+		status, statusErr := manager.Status(ctx)
+		if statusErr != nil {
+			resultErr := writeResult(false, "", fmt.Sprintf("verify replacement service configuration: %v", statusErr))
+			return errors.Join(statusErr, resultErr)
+		}
+		if !status.Running || status.ServiceRestartRequired {
+			err := errors.New("replacement service is not running with the requested configuration")
+			resultErr := writeResult(false, "", err.Error())
+			return errors.Join(err, resultErr)
+		}
 	}
 	return writeResult(true, expected, "")
 }

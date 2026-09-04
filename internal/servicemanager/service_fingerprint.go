@@ -331,6 +331,12 @@ func hostNameLocality(name string, host HostContext) (local, known bool) {
 		if ip.IsLoopback() {
 			return true, true
 		}
+		if host.ResolvedHostLocality != nil {
+			if address, ok := host.ResolvedHostLocality[ip.String()]; ok {
+				return address != "", true
+			}
+			return false, false
+		}
 		for _, address := range host.HostAddresses {
 			if candidate := net.ParseIP(strings.Trim(address, "[]")); candidate != nil && candidate.Equal(ip) {
 				return true, true
