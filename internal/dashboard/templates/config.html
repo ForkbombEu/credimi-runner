@@ -4,15 +4,16 @@
     <div>
       <span class="eyebrow">API &amp; configuration</span>
       <h1>API &amp; Config</h1>
-      <p>Everything written to <span class="tag mono">~/.config/credimi/runner/.env</span>. Changes are validated before they reach the running service.</p>
+      <p>Everything is written to the typed <span class="tag mono">config.toml</span>. Changes are validated before they reach the running service.</p>
     </div>
-    <a class="btn btn-out btn-sm" href="/config/raw" target="_blank" rel="noopener">View .env</a>
+    <a class="btn btn-out btn-sm" href="/config/raw" target="_blank" rel="noopener">View config</a>
   </div>
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
   {{if .HasErrors}}<div class="callout danger" style="margin-bottom:16px">{{icon "warn"}}<div>Some fields need attention — see the highlighted inputs below.</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runner restart required before the latest changes take effect.</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime recreate required before the latest changes take effect.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime restart required before the latest changes take effect.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingReconcile}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime reconciliation is pending.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingServiceRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Service restart required before topology changes take effect.</div></div>{{end}}
   {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Credimi registration update required before the latest metadata is reflected remotely.</div></div>{{end}}
 
   <form hx-post="/config" hx-target="main" hx-select="main" hx-swap="outerHTML" autocomplete="off" data-config-form data-busy-message="Applying configuration changes to the runner in the background.">
@@ -26,11 +27,19 @@
             <input class="inp mono" value="{{.Runner.Get "CREDIMI_RUNNER_ID"}}" readonly autocomplete="off" spellcheck="false">
             <p class="hint">Derived from the runner name and organization through Credimi.</p>
           </div>
-          {{template "field" .Field "CREDIMI_RUNNER_NAME"}}
+          <div class="field">
+            <label><span class="lbtx">Runner name</span><span class="envkey">CREDIMI_RUNNER_NAME</span></label>
+            <input class="inp mono" name="CREDIMI_RUNNER_NAME" value="{{.Runner.Get "CREDIMI_RUNNER_NAME"}}" readonly autocomplete="off" spellcheck="false">
+            <p class="hint">Runner identity is immutable after setup.</p>
+          </div>
         </div>
         <div class="field-row">
           {{if eq .Runner.AuthMode "admin"}}
-            {{template "field" .Field "CREDIMI_RUNNER_ORGANIZATION"}}
+            <div class="field">
+              <label><span class="lbtx">Organization</span><span class="envkey">CREDIMI_RUNNER_ORGANIZATION</span></label>
+              <input class="inp mono" name="CREDIMI_RUNNER_ORGANIZATION" value="{{.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" readonly autocomplete="off" spellcheck="false">
+              <p class="hint">Runner identity is immutable after setup.</p>
+            </div>
           {{else}}
             <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}">
             <div class="field">
@@ -39,12 +48,11 @@
               <p class="hint">User-scoped runners use the organization connected to the API key.</p>
             </div>
           {{end}}
-          {{template "field" .Field "TEMPORAL_ADDRESS"}}
         </div>
         {{template "field" .Field "CREDIMI_RUNNER_DESCRIPTION"}}
         <details class="gear-panel">
-          <summary>{{icon "gear"}} Credimi platform defaults</summary>
-          {{template "field" .Field "CREDIMI_URL"}}
+          <summary>{{icon "gear"}} Credimi platform connection</summary>
+          <div class="field-row">{{template "field" .Field "CREDIMI_URL"}}{{template "field" .Field "TEMPORAL_ADDRESS"}}</div>
         </details>
       </div>
     </section>
@@ -61,7 +69,9 @@
         </div>
         <div data-auth-field="user" {{if eq .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_USER_API_KEY"}}</div>
         <div data-auth-field="admin" {{if ne .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_INTERNAL_ADMIN_KEY"}}</div>
-        <div class="callout warn">{{icon "warn"}}<div>Keys are stored in <b>plaintext</b> in <span class="tag mono">.env</span> with <span class="tag mono">chmod 600</span>. Anyone with read access to this file can act as this runner.</div></div>
+        <div class="divline"></div>
+        {{template "field" .Field "DASHBOARD_TOKEN"}}
+        <div class="callout warn">{{icon "warn"}}<div>Keys are stored in <b>plaintext</b> in private <span class="tag mono">config.toml</span> with <span class="tag mono">chmod 600</span>. Anyone with read access to this file can act as this runner.</div></div>
       </div>
     </section>
 
@@ -77,17 +87,19 @@
     </section>
 
     <section class="card">
-      <header class="card-h">{{icon "server"}}<div><h3>Advanced</h3><div class="sub">Paths, temp dir &amp; emulator golden image</div></div></header>
+      <header class="card-h">{{icon "server"}}<div><h3>Advanced</h3><div class="sub">Shared Android runtime and persistent tooling</div></div></header>
       <div class="card-b">
         <details class="gear-panel">
           <summary>{{icon "gear"}} Runtime defaults</summary>
           {{template "field" .Field "CREDIMI_TEMP_DIR"}}
+          <div class="field-row">{{template "field" .Field "ANDROID_RUNNER_IMAGE"}}{{template "field" .Field "ANDROID_PULL_POLICY"}}</div>
+          {{template "field" .Field "ADB_SCREEN_RECORD_SIZE"}}
         </details>
       </div>
     </section>
 
     <div class="savebar" data-savebar hidden>
-      <span class="msg">{{icon "warn"}} Save writes <b>.env</b> and applies the required restart, recreate, or Credimi registration update.</span>
+      <span class="msg">{{icon "warn"}} Save writes <b>config.toml</b> and applies the required restart, recreate, or Credimi registration update.</span>
       <div class="sp"></div>
       <button type="button" class="btn btn-out btn-sm" data-discard>Discard</button>
       <button type="submit" class="btn btn-pri">{{icon "check"}} Save</button>

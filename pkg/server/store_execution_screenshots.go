@@ -16,12 +16,15 @@ import (
 
 type storeExecutionScreenshotsPayload struct {
 	RunIdentifier    string   `json:"run_identifier"`
-	RunnerIdentifier string   `json:"runner_identifier"`
+	DeviceIdentifier string   `json:"device_identifier"`
 	StepID           string   `json:"step_id"`
 	ScreenshotPaths  []string `json:"screenshot_paths"`
 }
 
 func (s *runnerService) storeExecutionScreenshotsLogic(payload storeExecutionScreenshotsPayload) ([]byte, *runner.APIError) {
+	if _, apiErr := s.configuredDevice(payload.DeviceIdentifier); apiErr != nil {
+		return nil, apiErr
+	}
 	if field := missingExecutionScreenshotField(payload); field != "" {
 		return nil, &runner.APIError{
 			Code:    http.StatusBadRequest,
@@ -31,7 +34,15 @@ func (s *runnerService) storeExecutionScreenshotsLogic(payload storeExecutionScr
 		}
 	}
 
-	screenshotPaths, apiErr := validateScreenshotPaths(payload.ScreenshotPaths, s.Deps.ManagedWorkflowRoot, s.Deps.FileStore)
+	root := s.Deps.ManagedWorkflowRoot
+	if _, configErr := s.currentRuntimeConfig(); configErr == nil {
+		var err error
+		root, err = deviceArtifactRoot(root, payload.DeviceIdentifier, payload.RunIdentifier)
+		if err != nil {
+			return nil, badScreenshotPathError(err.Error())
+		}
+	}
+	screenshotPaths, apiErr := validateScreenshotPaths(payload.ScreenshotPaths, root, s.Deps.FileStore)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -40,7 +51,7 @@ func (s *runnerService) storeExecutionScreenshotsLogic(payload storeExecutionScr
 	writer := multipart.NewWriter(&body)
 	for name, value := range map[string]string{
 		"run_identifier":    payload.RunIdentifier,
-		"runner_identifier": payload.RunnerIdentifier,
+		"device_identifier": payload.DeviceIdentifier,
 		"step_id":           payload.StepID,
 	} {
 		if err := writer.WriteField(name, value); err != nil {
@@ -100,8 +111,8 @@ func missingExecutionScreenshotField(payload storeExecutionScreenshotsPayload) s
 	switch {
 	case strings.TrimSpace(payload.RunIdentifier) == "":
 		return "run_identifier"
-	case strings.TrimSpace(payload.RunnerIdentifier) == "":
-		return "runner_identifier"
+	case strings.TrimSpace(payload.DeviceIdentifier) == "":
+		return "device_identifier"
 	case strings.TrimSpace(payload.StepID) == "":
 		return "step_id"
 	case len(payload.ScreenshotPaths) == 0:

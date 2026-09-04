@@ -47,8 +47,9 @@ func (t *trackingFileStore) RemoveAll(path string) error {
 func TestStorePipelineResult_MissingVideoPath(t *testing.T) {
 	server := NewRunnerService(nil, utils.Instance{})
 	payload := storePipelineResultPayload{
-		VideoPath: "",
-		Platform:  "android",
+		DeviceIdentifier: "device",
+		VideoPath:        "",
+		Platform:         "android",
 	}
 
 	result, apiErr := server.storePipelineResultLogic(payload)
@@ -130,7 +131,7 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 		LastFramePath:    lastFramePath,
 		LogPath:          logPath,
 		RunIdentifier:    "run-1",
-		RunnerIdentifier: "runner-1",
+		DeviceIdentifier: "runner-1",
 		Platform:         "android",
 	}
 
@@ -139,7 +140,7 @@ func TestStorePipelineResult_MultipartAndCleanup(t *testing.T) {
 	require.Nil(t, apiErr)
 	require.JSONEq(t, `{"status":"stored","maestro_screenshot_urls":["https://example.test/one.png"]}`, string(result))
 	require.NoError(t, capture.err)
-	require.Equal(t, "runner-1", capture.fields["runner_identifier"])
+	require.Equal(t, "runner-1", capture.fields["device_identifier"])
 	require.Equal(t, "run-1", capture.fields["run_identifier"])
 	require.Equal(t, "android", capture.fields["platform"])
 	require.Equal(t, []capturedMultipartFile{{name: "video.mp4", data: "video"}}, capture.files["result_video"])
@@ -215,7 +216,7 @@ func TestStorePipelineResult_IOSMultipartIncludesLogFile(t *testing.T) {
 		LastFramePath:    lastFramePath,
 		LogPath:          logPath,
 		RunIdentifier:    "run-1",
-		RunnerIdentifier: "runner-1",
+		DeviceIdentifier: "runner-1",
 		Platform:         "ios",
 	})
 
@@ -315,7 +316,7 @@ func TestStorePipelineResult_UpstreamError(t *testing.T) {
 		LastFramePath:    "results/run-1/last.png",
 		LogPath:          "results/run-1/log.txt",
 		RunIdentifier:    "run-1",
-		RunnerIdentifier: "runner-1",
+		DeviceIdentifier: "runner-1",
 		Platform:         "android",
 	}
 
@@ -368,7 +369,7 @@ func TestStorePipelineResult_UpstreamWrappedError(t *testing.T) {
 		LastFramePath:    "results/run-1/last.png",
 		LogPath:          "results/run-1/log.txt",
 		RunIdentifier:    "run-1",
-		RunnerIdentifier: "runner-1",
+		DeviceIdentifier: "runner-1",
 		Platform:         "android",
 	})
 
@@ -418,7 +419,7 @@ func TestStorePipelineResult_UpstreamConcatenatedErrorFallsBackGracefully(t *tes
 		LastFramePath:    "results/run-1/last.png",
 		LogPath:          "results/run-1/log.txt",
 		RunIdentifier:    "run-1",
-		RunnerIdentifier: "runner-1",
+		DeviceIdentifier: "runner-1",
 		Platform:         "android",
 	})
 
@@ -450,10 +451,11 @@ func TestStorePipelineResult_MissingCredentials(t *testing.T) {
 	})
 
 	_, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		VideoPath:     "results/run-1/video.mp4",
-		LastFramePath: "results/run-1/last.png",
-		LogPath:       "results/run-1/log.txt",
-		Platform:      "android",
+		DeviceIdentifier: "device",
+		VideoPath:        "results/run-1/video.mp4",
+		LastFramePath:    "results/run-1/last.png",
+		LogPath:          "results/run-1/log.txt",
+		Platform:         "android",
 	})
 
 	require.Equal(t, &runner.APIError{
@@ -500,10 +502,11 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		}
 
 		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
-			VideoPath:     "results/run-1/video.mp4",
-			LastFramePath: "results/run-1/last.png",
-			LogPath:       "results/run-1/log.txt",
-			Platform:      "android",
+			DeviceIdentifier: "device",
+			VideoPath:        "results/run-1/video.mp4",
+			LastFramePath:    "results/run-1/last.png",
+			LogPath:          "results/run-1/log.txt",
+			Platform:         "android",
 		})
 
 		require.Equal(t, "request failed", apiErr.Reason)
@@ -525,10 +528,11 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		}
 
 		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
-			VideoPath:     "results/run-1/video.mp4",
-			LastFramePath: "results/run-1/last.png",
-			LogPath:       "results/run-1/log.txt",
-			Platform:      "android",
+			DeviceIdentifier: "device",
+			VideoPath:        "results/run-1/video.mp4",
+			LastFramePath:    "results/run-1/last.png",
+			LogPath:          "results/run-1/log.txt",
+			Platform:         "android",
 		})
 
 		require.Equal(t, "request failed", apiErr.Reason)
@@ -545,10 +549,11 @@ func TestStorePipelineResult_RequestFailures(t *testing.T) {
 		}
 
 		_, apiErr := newServer(client).storePipelineResultLogic(storePipelineResultPayload{
-			VideoPath:     "results/run-1/video.mp4",
-			LastFramePath: "results/run-1/last.png",
-			LogPath:       "results/run-1/log.txt",
-			Platform:      "android",
+			DeviceIdentifier: "device",
+			VideoPath:        "results/run-1/video.mp4",
+			LastFramePath:    "results/run-1/last.png",
+			LogPath:          "results/run-1/log.txt",
+			Platform:         "android",
 		})
 
 		require.Equal(t, "request failed", apiErr.Reason)
@@ -582,9 +587,10 @@ func TestStorePipelineResult_InvalidPlatform(t *testing.T) {
 	server := NewRunnerService(nil, utils.Instance{})
 
 	result, apiErr := server.storePipelineResultLogic(storePipelineResultPayload{
-		VideoPath:     "results/run-1/video.mp4",
-		LastFramePath: "results/run-1/last.png",
-		Platform:      "desktop",
+		DeviceIdentifier: "device",
+		VideoPath:        "results/run-1/video.mp4",
+		LastFramePath:    "results/run-1/last.png",
+		Platform:         "desktop",
 	})
 
 	require.Nil(t, result)

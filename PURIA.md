@@ -263,7 +263,7 @@ Absence of any:
 
 ```toml
 [tools]
-go = "1.26.5"
+go = "1.26.6"
 task = "latest"
 ```
 
@@ -468,7 +468,7 @@ Every Go project using `Taskfile.yml` MUST declare both Go and Task:
 
 ```toml
 [tools]
-go = "1.26.2"
+go = "1.26.6"
 task = "latest"
 ```
 

@@ -1,21 +1,6 @@
 version: "3"
 
 vars:
-  # Images
-  PHONE_IMAGE: ghcr.io/forkbombeu/credimi-runner-phone:latest
-  EMULATOR_IMAGE: ghcr.io/forkbombeu/credimi-runner-emulator:latest
-  LOCAL_PHONE_IMAGE: credimi-runner-phone
-  LOCAL_EMULATOR_IMAGE: credimi-runner-emulator
-  LOCAL_IMAGE: "{{.LOCAL_EMULATOR_IMAGE}}"
-
-  # Runtime defaults
-  ADBKEYS_VOL: adbkeys
-  # Override like: task dev:phone PHONE=192.168.1.42:38349
-  PHONE: 192.168.1.42:38349
-  RUNNER_HOST: 0.0.0.0
-  RUNNER_PORT: "8050"
-
-  # Build and test outputs
   APP_NAME: credimi-runner
   BIN_DIR: bin
   BIN_PATH: "./{{.BIN_DIR}}/{{.APP_NAME}}"
@@ -25,20 +10,16 @@ vars:
     sh: date -u +%Y-%m-%dT%H:%M:%SZ
   COVERAGE_FILE: coverage.out
   COVERAGE_MIN: "85"
+  GO_TAGS: credimi_extra
+  LOCAL_DOCKER_IMAGE: credimi-runner:local
   GO_LDFLAGS: >-
     -s -w
     -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version={{.BUILD_VERSION}}
     -X github.com/forkbombeu/credimi-runner/internal/buildinfo.BuildTime={{.BUILD_TIME}}
 
-  # Shared command fragments
-  DOCKER_RUN_TTY: docker run --rm -it
-  ADB_KEYS_MOUNT: -v {{.ADBKEYS_VOL}}:/root/.android
-  HOST_NETWORK: --network host
-  LOCAL_TUNNEL_SCRIPT: ./scripts/run-local-cloudflare-tunnel.sh
-
 tasks:
   build:
-    desc: Build the Goa app binary locally
+    desc: Build the native Credimi Runner binary locally
     deps: ["go:gen"]
     sources:
       - main.go
@@ -57,11 +38,17 @@ tasks:
         -o {{.BIN_PATH}}
         .
 
-  dashboard:
-    desc: Build and start the dashboard supervisor (http://0.0.0.0:8051)
-    deps: ["build"]
+  "docker:build-local":
+    desc: Build the unified local runner image with a BuildKit secret
     cmds:
-      - ./bin/credimi-runner
+      - >-
+        test -n "${CREDIMI_EXTRA_PAT:-}" ||
+        (echo "CREDIMI_EXTRA_PAT is required to build the local runner image" >&2; exit 1)
+      - >-
+        docker build
+        --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT
+        -t {{.LOCAL_DOCKER_IMAGE}}
+        .
 
   format:
     desc: Format Go code
@@ -81,13 +68,13 @@ tasks:
         test -z "$(gofmt -l .)" || (echo "gofmt: files need formatting:" && gofmt -l . && exit 1)
 
   "lint:design":
-    desc: Validate DESIGN.md
+    desc: Validate DESIGN.md when present
     cmds:
       - if [ -f DESIGN.md ]; then npx --yes @google/design.md lint DESIGN.md; fi
 
   "go:gen":
     internal: true
-    desc: Run code generation (Goa)
+    desc: Run Goa generation
     sources:
       - pkg/design/**/*.go
       - go.mod
@@ -98,174 +85,27 @@ tasks:
       - go generate ./...
 
   test:
-    desc: Run tests with coverage excluding Goa generated code (fails below {{.COVERAGE_MIN}}%)
+    desc: Run tests with strict aggregate coverage (> {{.COVERAGE_MIN}}%)
     deps: ["go:gen"]
     vars:
       TEST_PKGS:
         sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
     cmds:
-      - go test {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
+      - go test -tags={{.GO_TAGS}} {{.TEST_PKGS}} -covermode=atomic -coverprofile={{.COVERAGE_FILE}}
       - >-
         go tool cover -func={{.COVERAGE_FILE}} |
-        awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: %s%%)\n", $3, min); if (($3 + 0) < (min + 0)) exit 1 }'
+        awk -v min="{{.COVERAGE_MIN}}" '/^total:/ { gsub("%","",$3); printf("Total coverage: %s%% (required: > %s%%)\n", $3, min); if (($3 + 0) <= (min + 0)) exit 1 }'
+
+  "test:race":
+    desc: Run all non-generated tests with the race detector
+    deps: ["go:gen"]
+    vars:
+      TEST_PKGS:
+        sh: go list ./... | grep -v '/pkg/gen' | grep -v '/pkg/design' | tr '\n' ' '
+    cmds:
+      - go test -tags={{.GO_TAGS}} -race {{.TEST_PKGS}}
 
   clean:
-    desc: Remove Goa generated code and local build artifacts
+    desc: Remove generated Go code and local build artifacts
     cmds:
       - rm -rf pkg/gen {{.BIN_DIR}} {{.COVERAGE_FILE}}
-
-  # Recommended development flows (`task --list`)
-  "dev:phone":
-    desc: Run the published phone image against a Wi-Fi ADB device
-    cmds:
-      - >-
-        {{.DOCKER_RUN_TTY}}
-        {{.HOST_NETWORK}}
-        {{.ADB_KEYS_MOUNT}}
-        {{.PHONE_IMAGE}}
-        {{.PHONE}}
-
-  "dev:usb":
-    desc: Run the published phone image with USB passthrough
-    cmds:
-      - >-
-        {{.DOCKER_RUN_TTY}}
-        --privileged
-        -v /dev/bus/usb:/dev/bus/usb
-        {{.ADB_KEYS_MOUNT}}
-        {{.PHONE_IMAGE}}
-        --usb
-
-  "dev:emulator":
-    desc: Run the published Android emulator image
-    cmds:
-      - >-
-        {{.DOCKER_RUN_TTY}}
-        --device /dev/kvm
-        {{.HOST_NETWORK}}
-        {{.ADB_KEYS_MOUNT}}
-        {{.EMULATOR_IMAGE}}
-
-  "service:phone":
-    desc: Run the published phone service behind a quick Cloudflare tunnel
-    cmds:
-      - docker compose up runner caddy tunnel
-
-  "service:local":
-    desc: Build the local binary and expose it with Dockerized caddy + quick Cloudflare tunnel
-    deps: ["build"]
-    cmds:
-      - >-
-        BIN_PATH={{.BIN_PATH}}
-        RUNNER_HOST={{.RUNNER_HOST}}
-        RUNNER_PORT={{.RUNNER_PORT}}
-        {{.LOCAL_TUNNEL_SCRIPT}}
-        quick
-
-  "service:emulator":
-    desc: Build the local emulator image and run the emulator service
-    deps: ["build:emulator"]
-    cmds:
-      - >-
-        LOCAL_IMAGE={{.LOCAL_IMAGE}}
-        ANDROID_KEYS_DIR=/home/puria/.android
-        docker compose --profile emulator up runner_emulator
-
-  # Advanced and low-level flows (`task -a`)
-  "build:phone":
-    cmds:
-      - >-
-        docker buildx build
-        --target phone
-        --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT
-        --build-arg VERSION={{.BUILD_VERSION}}
-        -t {{.LOCAL_PHONE_IMAGE}}
-        .
-
-  "build:emulator":
-    cmds:
-      - >-
-        docker buildx build
-        --target emulator
-        --secret id=credimi_extra_pat,env=CREDIMI_EXTRA_PAT
-        --build-arg ADB_PRIVATE_KEY="${ADB_PRIVATE_KEY:-}"
-        --build-arg ADB_PUBLIC_KEY="${ADB_PUBLIC_KEY:-}"
-        --build-arg VERSION={{.BUILD_VERSION}}
-        -t {{.LOCAL_EMULATOR_IMAGE}}
-        .
-
-  "dev:phone:local":
-    cmds:
-      - >-
-        {{.DOCKER_RUN_TTY}}
-        {{.HOST_NETWORK}}
-        {{.LOCAL_PHONE_IMAGE}}
-        {{.PHONE}}
-
-  "dev:emulator:local":
-    cmds:
-      - >-
-        {{.DOCKER_RUN_TTY}}
-        --device /dev/kvm
-        {{.HOST_NETWORK}}
-        {{.ADB_KEYS_MOUNT}}
-        {{.LOCAL_EMULATOR_IMAGE}}
-
-  "service:phone:named":
-    cmds:
-      - docker compose up runner caddy tunnel_named
-
-  "service:phone:local":
-    cmds:
-      - >-
-        RUNNER_IMAGE={{.LOCAL_PHONE_IMAGE}}
-        docker compose up runner caddy tunnel
-
-  "service:phone:local:named":
-    cmds:
-      - >-
-        RUNNER_IMAGE={{.LOCAL_PHONE_IMAGE}}
-        docker compose up runner caddy tunnel_named
-
-  "service:local:named":
-    deps: ["build"]
-    cmds:
-      - >-
-        BIN_PATH={{.BIN_PATH}}
-        RUNNER_HOST={{.RUNNER_HOST}}
-        RUNNER_PORT={{.RUNNER_PORT}}
-        {{.LOCAL_TUNNEL_SCRIPT}}
-        named
-
-  "test:entrypoint":
-    cmds:
-      - ./scripts/test-entrypoint-args.sh
-
-  "run:service:phone":
-    desc: Launch runner + caddy + quick Cloudflare tunnel
-    cmds:
-      - docker compose --profile phone up
-
-  "run:service:local":
-    desc: Build local binary and expose it with Dockerized caddy + quick Cloudflare tunnel
-    deps: ["build"]
-    cmds:
-      - BIN_PATH=./{{.BIN_DIR}}/{{.APP_NAME}} RUNNER_HOST={{.RUNNER_HOST}} RUNNER_PORT={{.RUNNER_PORT}} ./scripts/run-local-cloudflare-tunnel.sh quick
-
-  "run:service:local:named":
-    desc: Build local binary and expose it with Dockerized caddy + named Cloudflare tunnel
-    deps: ["build"]
-    cmds:
-      - BIN_PATH=./{{.BIN_DIR}}/{{.APP_NAME}} RUNNER_HOST={{.RUNNER_HOST}} RUNNER_PORT={{.RUNNER_PORT}} ./scripts/run-local-cloudflare-tunnel.sh named
-  
-  "run:service:emulator":
-    desc: Build local emulator image and run local runner service
-    deps: ["build:emulator"]
-    cmds:
-      - >-
-        LOCAL_IMAGE={{.LOCAL_IMAGE}}
-        ANDROID_KEYS_DIR=/home/puria/.android
-        HOST_AVD_HOME_PATH=${HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}
-        HOST_AVD_GOLDEN_PATH=${HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}
-        GOLDEN_PATH=${GOLDEN_PATH:-/avd-golden/credimi-golden}
-        docker compose --profile emulator up runner_emulator

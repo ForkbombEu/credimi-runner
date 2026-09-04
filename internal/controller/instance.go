@@ -7,28 +7,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
+	controlleridentity "github.com/forkbombeu/credimi-runner/internal/controller/identity"
 )
 
 var ErrAlreadyRunning = errors.New("credimi runner dashboard is already running")
 
-type Metadata struct {
-	Schema            int       `json:"schema"`
-	ControllerID      string    `json:"controller_id"`
-	PID               int       `json:"pid"`
-	StartedAt         time.Time `json:"started_at"`
-	ConfigDir         string    `json:"config_dir"`
-	ListenHost        string    `json:"listen_host"`
-	ListenPort        int       `json:"listen_port"`
-	ProbeURL          string    `json:"probe_url"`
-	PublicURL         string    `json:"public_url"`
-	ConfigFingerprint string    `json:"config_fingerprint"`
-	IdentityToken     string    `json:"identity_token"`
-}
+type Metadata = controlleridentity.Metadata
+
+const ProbeTimeout = controlleridentity.ProbeTimeout
 
 func NewIdentityToken() (string, error) {
 	bytes := make([]byte, 32)
@@ -58,6 +51,10 @@ func Acquire(configDir string) (*Lease, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open controller lock: %w", err)
 	}
+	if err := atomicfile.RepairOwnership(path, atomicfile.FromEnvironment()); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("set controller lock owner: %w", err)
+	}
 	if err := lockFile(file); err != nil {
 		_ = file.Close()
 		if errors.Is(err, errLockBusy) {
@@ -83,57 +80,20 @@ func (l *Lease) Publish(metadata Metadata) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	tmp := l.metadata + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return fmt.Errorf("write controller metadata: %w", err)
-	}
-	if err := os.Rename(tmp, l.metadata); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("publish controller metadata: %w", err)
-	}
-	return nil
+	return atomicfile.WriteAtomic(l.metadata, 0o600, atomicfile.FromEnvironment(), func(writer io.Writer) error {
+		if _, err := writer.Write(raw); err != nil {
+			return fmt.Errorf("write controller metadata: %w", err)
+		}
+		return nil
+	})
 }
 
 func ReadMetadata(configDir string) (Metadata, error) {
-	var metadata Metadata
-	raw, err := os.ReadFile(filepath.Join(configDir, "controller.json"))
-	if err != nil {
-		return metadata, err
-	}
-	if err := json.Unmarshal(raw, &metadata); err != nil {
-		return metadata, fmt.Errorf("decode controller metadata: %w", err)
-	}
-	if metadata.Schema != 1 || metadata.ListenPort < 1 || metadata.ListenPort > 65535 || metadata.ProbeURL == "" || metadata.ControllerID == "" || metadata.IdentityToken == "" {
-		return metadata, errors.New("controller metadata is invalid")
-	}
-	return metadata, nil
+	return controlleridentity.ReadMetadata(configDir)
 }
 
 func Probe(ctx context.Context, metadata Metadata) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, metadata.ProbeURL, nil)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("X-Credimi-Controller-Token", metadata.IdentityToken)
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("controller probe returned %s", response.Status)
-	}
-	var identity struct {
-		ControllerID      string `json:"controller_id"`
-		ConfigFingerprint string `json:"config_fingerprint"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&identity); err != nil {
-		return fmt.Errorf("decode controller identity: %w", err)
-	}
-	if identity.ControllerID != metadata.ControllerID || identity.ConfigFingerprint != metadata.ConfigFingerprint {
-		return errors.New("controller identity does not match metadata")
-	}
-	return nil
+	return controlleridentity.Probe(ctx, metadata)
 }
 
 func (l *Lease) Close() error {

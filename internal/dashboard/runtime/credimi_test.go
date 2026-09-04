@@ -13,6 +13,7 @@ import (
 
 func TestCredimiClient(t *testing.T) {
 	var registerPayload RegisterRunnerRequest
+	var devicePayload RegisterDeviceRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/organizations/my":
@@ -21,6 +22,11 @@ func TestCredimiClient(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(RunnerPreview{Organization: "acme", RunnerID: "acme/runner"})
 		case "/api/mobile-runner":
 			_ = json.NewDecoder(r.Body).Decode(&registerPayload)
+			w.WriteHeader(http.StatusOK)
+		case "/api/mobile-device/preview-id":
+			_ = json.NewEncoder(w).Encode(DevicePreview{RunnerID: "acme/runner", DeviceID: "acme/runner/pixel", CanonifiedName: "pixel"})
+		case "/api/mobile-device":
+			_ = json.NewDecoder(r.Body).Decode(&devicePayload)
 			w.WriteHeader(http.StatusOK)
 		default:
 			http.NotFound(w, r)
@@ -39,14 +45,86 @@ func TestCredimiClient(t *testing.T) {
 	}
 	published := true
 	err = client.RegisterMobileRunner(context.Background(), RegisterRunnerRequest{
-		RunnerID: "acme/runner", Type: "android_phone", Serial: "device-1", Port: "443",
+		RunnerID: "acme/runner", Port: "443",
 		Published: &published,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registerPayload.Type != "android_phone" || registerPayload.Serial != "device-1" || registerPayload.Port != "443" || registerPayload.Published == nil || !*registerPayload.Published {
+	if registerPayload.Port != "443" || registerPayload.Published == nil || !*registerPayload.Published {
 		t.Fatalf("payload = %#v", registerPayload)
+	}
+	device, err := client.PreviewDeviceID(context.Background(), "acme/runner", "Pixel", "acme")
+	if err != nil || device.DeviceID != "acme/runner/pixel" {
+		t.Fatalf("device preview = %#v err=%v", device, err)
+	}
+	err = client.RegisterMobileDevice(context.Background(), RegisterDeviceRequest{RunnerID: "acme/runner", DeviceID: "acme/runner/pixel", Name: "Pixel", Type: "android_phone", Serial: "usb-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devicePayload.Serial != "usb-1" || devicePayload.DeviceID != "acme/runner/pixel" {
+		t.Fatalf("device payload = %#v", devicePayload)
+	}
+}
+
+func TestCredimiClientManagesRunnerDeviceLifecycle(t *testing.T) {
+	var pause PauseRunnerRequest
+	var deleted DeleteDeviceRequest
+	var reconciled ReconcileDevicesRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/mobile-runner/lifecycle/pause":
+			if r.Method != http.MethodPost || r.Header.Get("Credimi-Api-Key") != "key" {
+				t.Fatalf("pause request = %s headers=%v", r.Method, r.Header)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&pause)
+		case "/api/mobile-device":
+			if r.Method != http.MethodDelete {
+				t.Fatalf("delete method = %s", r.Method)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&deleted)
+		case "/api/mobile-device/reconcile":
+			if r.Method != http.MethodPost {
+				t.Fatalf("reconcile method = %s", r.Method)
+			}
+			_ = json.NewDecoder(r.Body).Decode(&reconciled)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+	ctx := context.Background()
+	if err := client.PauseMobileRunner(ctx, PauseRunnerRequest{RunnerID: "acme/runner", Reason: "restart"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.DeleteMobileDevice(ctx, DeleteDeviceRequest{Organization: "acme", RunnerID: "acme/runner", DeviceID: "acme/runner/old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ReconcileMobileDevices(ctx, ReconcileDevicesRequest{Organization: "acme", RunnerID: "acme/runner", DeviceIDs: []string{"acme/runner/new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if pause.RunnerID != "acme/runner" || pause.Reason != "restart" || deleted.DeviceID != "acme/runner/old" || strings.Join(reconciled.DeviceIDs, ",") != "acme/runner/new" {
+		t.Fatalf("lifecycle payloads pause=%#v deleted=%#v reconciled=%#v", pause, deleted, reconciled)
+	}
+}
+
+func TestCredimiClientReportsLifecycleFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "lifecycle rejected", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+	ctx := context.Background()
+	for _, err := range []error{
+		client.PauseMobileRunner(ctx, PauseRunnerRequest{RunnerID: "acme/runner"}),
+		client.DeleteMobileDevice(ctx, DeleteDeviceRequest{RunnerID: "acme/runner", DeviceID: "acme/runner/device"}),
+		client.ReconcileMobileDevices(ctx, ReconcileDevicesRequest{RunnerID: "acme/runner"}),
+	} {
+		if err == nil || !strings.Contains(err.Error(), "lifecycle rejected") {
+			t.Fatalf("lifecycle error = %v", err)
+		}
 	}
 }
 
@@ -63,6 +141,24 @@ func TestCredimiClientIncludesResponseBodyInErrors(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "name is required") {
 		t.Fatalf("RegisterMobileRunner error = %v", err)
+	}
+}
+
+func TestCredimiClientRejectsInvalidDeviceResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-device/preview-id" {
+			_, _ = w.Write([]byte("not-json"))
+			return
+		}
+		http.Error(w, "device rejected", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+	if _, err := client.PreviewDeviceID(context.Background(), "acme/runner", "Pixel", "acme"); err == nil || !strings.Contains(err.Error(), "invalid JSON") {
+		t.Fatalf("PreviewDeviceID error = %v", err)
+	}
+	if err := client.RegisterMobileDevice(context.Background(), RegisterDeviceRequest{RunnerID: "acme/runner", DeviceID: "acme/runner/pixel", Name: "Pixel", Type: "android_phone"}); err == nil || !strings.Contains(err.Error(), "device rejected") {
+		t.Fatalf("RegisterMobileDevice error = %v", err)
 	}
 }
 
@@ -179,5 +275,50 @@ func TestCredimiHelpers(t *testing.T) {
 	resp := &http.Response{Status: "502 Bad Gateway", StatusCode: http.StatusBadGateway, Body: io.NopCloser(strings.NewReader("upstream bad"))}
 	if got := credimiResponseError("lookup failed", resp).Error(); !strings.Contains(got, "upstream bad") {
 		t.Fatalf("credimiResponseError = %q", got)
+	}
+}
+
+func TestCredimiClientPreviewFallbackAndVisibleRunnerLookup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/mobile-runner/preview-id":
+			_, _ = w.Write([]byte(`{}`))
+		case "/api/mobile-runners":
+			_, _ = w.Write([]byte(`{"runners":[{"name":"Saved Runner","path":"/acme/runner"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+	preview, err := client.PreviewRunnerID(context.Background(), "Runner Name", "acme")
+	if err != nil || preview.RunnerID != "acme/runner-name" || preview.Organization != "acme" {
+		t.Fatalf("preview fallback = %#v, %v", preview, err)
+	}
+	name, err := client.MobileRunnerName(context.Background(), "/acme/runner")
+	if err != nil || name != "Saved Runner" {
+		t.Fatalf("visible runner name = %q, %v", name, err)
+	}
+}
+
+func TestCredimiClientReportsLookupFailuresWithResponseContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/organizations/my":
+			http.Error(w, "credential expired", http.StatusUnauthorized)
+		case "/api/mobile-runners":
+			_, _ = w.Write([]byte(`{"runners":[]}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+	if _, err := client.MyOrganization(context.Background()); err == nil || !strings.Contains(err.Error(), "credential expired") {
+		t.Fatalf("organization lookup error = %v", err)
+	}
+	if _, err := client.MobileRunnerName(context.Background(), "acme/missing"); err == nil || !strings.Contains(err.Error(), "was not found") {
+		t.Fatalf("runner lookup error = %v", err)
 	}
 }

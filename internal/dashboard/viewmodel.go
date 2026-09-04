@@ -4,8 +4,7 @@ import (
 	"html/template"
 	"net"
 	"net/url"
-	"path/filepath"
-	goruntime "runtime"
+	"runtime"
 	"strings"
 	"time"
 
@@ -33,6 +32,44 @@ func (d PageData) DevicesOnline() int {
 }
 func (d PageData) DevicesTotal() int { return len(d.Snapshot.Devices) }
 
+func (d PageData) ConfiguredDevices() []dashboardruntime.DeviceRuntimeConfig {
+	if d.Runner == nil {
+		return nil
+	}
+	config, err := dashboardruntime.ParseRuntimeConfig(d.Runner.Snapshot())
+	if err != nil {
+		return nil
+	}
+	return config.Devices
+}
+
+type ConfiguredDeviceView struct {
+	dashboardruntime.DeviceRuntimeConfig
+	ADBWarning bool
+}
+
+func (d PageData) ConfiguredDeviceViews() []ConfiguredDeviceView {
+	devices := d.ConfiguredDevices()
+	views := make([]ConfiguredDeviceView, 0, len(devices))
+	for _, configured := range devices {
+		view := ConfiguredDeviceView{DeviceRuntimeConfig: configured}
+		requiresADB := configured.Enabled && configured.Type == "android_phone" && (configured.Mode == "usb" || configured.Mode == "wifi")
+		if requiresADB {
+			found := false
+			for _, live := range d.Snapshot.Devices {
+				if live.Serial == configured.Serial {
+					found = true
+					view.ADBWarning = live.Status != Online
+					break
+				}
+			}
+			view.ADBWarning = view.ADBWarning || !found
+		}
+		views = append(views, view)
+	}
+	return views
+}
+
 func (d PageData) AndroidDevices() []Device {
 	var devices []Device
 	for _, device := range d.Snapshot.Devices {
@@ -45,6 +82,24 @@ func (d PageData) AndroidDevices() []Device {
 
 func (d PageData) AndroidPhoneDevices() []Device {
 	return d.AndroidDevices()
+}
+
+// AndroidUSBPhoneDevices returns only online physical phones reachable over
+// USB. Wi-Fi phones and virtual Android targets are not valid USB picker
+// candidates; the form provides a serial fallback when this list is empty.
+func (d PageData) AndroidUSBPhoneDevices() []Device {
+	devices := d.AndroidDevices()
+	filtered := make([]Device, 0, len(devices))
+	for _, device := range devices {
+		if device.Status == Online && device.Type == "android_phone" && device.Mode == "usb" {
+			filtered = append(filtered, device)
+		}
+	}
+	return filtered
+}
+
+func (d PageData) SupportsDeviceType(deviceType string) bool {
+	return deviceType != "ios_simulator" || currentGOOS() == "darwin"
 }
 
 func isAndroidADBDevice(device Device) bool {
@@ -76,18 +131,12 @@ func (d PageData) WorkersTotal() int { return len(d.Workers) }
 
 func (d PageData) RuntimeHealthy() bool {
 	status := d.RuntimeStatus()
-	if !status.Configured {
-		return false
-	}
-	if d.HasCriticalServices() {
-		return d.ServicesAllUp()
-	}
-	return status.RunnerRunning
+	return status.Configured && status.RunnerRunning
 }
 
 func (d PageData) RuntimeRunning() bool {
 	status := d.RuntimeStatus()
-	return status.RunnerRunning || status.ComposeRunning
+	return status.RunnerRunning
 }
 
 func (d PageData) RuntimeHeadline() string {
@@ -130,38 +179,7 @@ func (d PageData) RunnerAPIURL() string {
 	if port == "" {
 		port = dashboardruntime.DefaultRunnerPort
 	}
-	return "http://" + host + ":" + port
-}
-
-func (d PageData) ConfiguredTargetTitle() string {
-	switch d.Runner.Get("CREDIMI_RUNNER_TYPE") {
-	case "android_emulator":
-		return "Android emulator"
-	case "ios_simulator":
-		return "iOS simulator"
-	case "redroid":
-		return "Redroid"
-	default:
-		switch d.Runner.Get("CREDIMI_RUNNER_DEVICE_MODE") {
-		case "wifi":
-			return "Android phone over Wi-Fi"
-		default:
-			return "Android phone over USB"
-		}
-	}
-}
-
-func (d PageData) ConfiguredTargetDetail() string {
-	switch d.Runner.Get("CREDIMI_RUNNER_TYPE") {
-	case "android_emulator":
-		return orDash(d.Runner.Get("BASE_NAME"))
-	case "ios_simulator":
-		return orDash(d.Runner.Get("BASE_NAME"))
-	case "redroid":
-		return orDash(d.Runner.Get("CREDIMI_RUNNER_SERIAL"))
-	default:
-		return orDash(d.Runner.Get("CREDIMI_RUNNER_SERIAL"))
-	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func (d PageData) ServicesAllUp() bool {
@@ -187,6 +205,9 @@ func (d PageData) HasCriticalServices() bool {
 
 // PublicURL computes the externally reachable endpoint from the network config.
 func (d PageData) PublicURL() string {
+	if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
+		return publicURL
+	}
 	mode := d.Runner.Get("CREDIMI_SERVICE_MODE")
 	switch mode {
 	case "cloudflare-managed":
@@ -200,9 +221,6 @@ func (d PageData) PublicURL() string {
 		}
 		return "Waiting for manual public URL"
 	default:
-		if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
-			return publicURL
-		}
 		return "Waiting for quick tunnel URL"
 	}
 }
@@ -272,6 +290,10 @@ func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
 	return dashboardruntime.RuntimeStatus{}
 }
 
+func (d PageData) RuntimeControlsAvailable() bool {
+	return true
+}
+
 func (d PageData) StartupPhase() StartupPhase {
 	if startup, ok := d.payload()["Startup"].(startupState); ok {
 		return startup.Phase
@@ -293,16 +315,7 @@ func (d PageData) RunnerVersion() string {
 	return "dev"
 }
 
-func (d PageData) RunnerImage() string {
-	for _, service := range d.Snapshot.Services {
-		if service.ID == "runner" && strings.TrimSpace(service.Image) != "" {
-			return service.Image
-		}
-	}
-	return orDash(d.Runner.Get("RUNNER_IMAGE"))
-}
-
-func (d PageData) RunnerContainerDetails() string {
+func (d PageData) RunnerServiceDetails() string {
 	for _, service := range d.Snapshot.Services {
 		if service.ID != "runner" {
 			continue
@@ -316,8 +329,6 @@ func (d PageData) RunnerContainerDetails() string {
 	return "Not present"
 }
 
-func (d PageData) RunnerServiceDetails() string { return d.RunnerContainerDetails() }
-
 func (d PageData) MaintenanceStatus() maintenance.Status {
 	if status, ok := d.payload()["Maintenance"].(maintenance.Status); ok {
 		return status
@@ -325,9 +336,16 @@ func (d PageData) MaintenanceStatus() maintenance.Status {
 	return maintenance.Status{}
 }
 
-func (d PageData) UpgradeAvailable() bool {
-	status := d.MaintenanceStatus()
-	return status.Runner.UpdateAvailable || status.Image.UpdateAvailable
+func (d PageData) RuntimeImageVisible() bool {
+	return runtimeGOOS() != "darwin"
+}
+
+func (d PageData) ImageVersionState() string { return componentState(d.MaintenanceStatus().Image) }
+func (d PageData) ImageCurrentVersion() string {
+	return orDash(shortDigest(d.MaintenanceStatus().Image.CurrentVersion))
+}
+func (d PageData) ImageLatestVersion() string {
+	return orDash(shortDigest(d.MaintenanceStatus().Image.LatestVersion))
 }
 
 func componentState(component maintenance.Component) string {
@@ -341,29 +359,20 @@ func componentState(component maintenance.Component) string {
 }
 
 func (d PageData) RunnerVersionState() string { return componentState(d.MaintenanceStatus().Runner) }
-func (d PageData) ImageVersionState() string {
-	if d.Runner != nil && strings.TrimSpace(d.Runner.Get("RUNNER_IMAGE_PULL_POLICY")) == "never" {
-		return "Registry check disabled"
-	}
-	return componentState(d.MaintenanceStatus().Image)
-}
 func (d PageData) RunnerCurrentBuiltAt() string {
 	return formatMaintenanceTime(d.MaintenanceStatus().Runner.CurrentBuiltAt)
 }
 func (d PageData) RunnerLatestBuiltAt() string {
 	return formatMaintenanceTime(d.MaintenanceStatus().Runner.LatestBuiltAt)
 }
-func (d PageData) ImageCurrentBuiltAt() string {
-	return formatMaintenanceTime(d.MaintenanceStatus().Image.CurrentBuiltAt)
-}
-func (d PageData) ImageLatestBuiltAt() string {
-	return formatMaintenanceTime(d.MaintenanceStatus().Image.LatestBuiltAt)
-}
 func (d PageData) LatestRunnerVersion() string {
 	return orDash(d.MaintenanceStatus().Runner.LatestVersion)
 }
-func (d PageData) LatestImageVersion() string {
-	return orDash(d.MaintenanceStatus().Image.LatestVersion)
+func shortDigest(value string) string {
+	if len(value) > 19 && strings.HasPrefix(value, "sha256:") {
+		return value[:19]
+	}
+	return value
 }
 func (d PageData) MaintenanceError() string { return d.MaintenanceStatus().Error }
 
@@ -377,9 +386,6 @@ func formatMaintenanceTime(value time.Time) string {
 // Field returns the render model for one config key.
 func (d PageData) Field(key string) FieldVM {
 	field := fieldByKey[key]
-	if key == "CREDIMI_RUNNER_TYPE" {
-		field.Options = dashboardruntime.RunnerTypeChoices(currentGOOS())
-	}
 	return FieldVM{Field: field, Value: d.Runner.Get(key), Err: d.errorsMap()[key]}
 }
 
@@ -389,41 +395,15 @@ func (d PageData) FieldWithLabel(key, label string) FieldVM {
 	return field
 }
 
-func (d PageData) RunnerTypeChoices() []string {
-	return dashboardruntime.RunnerTypeChoices(currentGOOS())
-}
-
-func (d PageData) SupportsRunnerType(runnerType string) bool {
-	for _, candidate := range d.RunnerTypeChoices() {
-		if candidate == runnerType {
-			return true
-		}
-	}
-	return false
-}
-
-func (d PageData) BaseNameFieldLabel(runnerType string) string {
-	if runnerType == "ios_simulator" {
-		return "Simulator name"
-	}
-	return "Emulator base name"
-}
-
-func (d PageData) EmulatorBaseNameField() FieldVM {
-	return d.FieldWithLabel("BASE_NAME", d.BaseNameFieldLabel("android_emulator"))
-}
-
-func (d PageData) SimulatorBaseNameField() FieldVM {
-	return d.FieldWithLabel("BASE_NAME", d.BaseNameFieldLabel("ios_simulator"))
-}
-
 func (d PageData) DefaultSSHKnownHostsPath() string {
-	home := homeDir()
-	if home == "" {
-		return ""
-	}
-	return filepath.Join(home, ".ssh", "known_hosts")
+	return dashboardruntime.DefaultSSHKnownHostsPath()
 }
+
+func (d PageData) DefaultWiFiPort() string { return dashboardruntime.DefaultWiFiPort }
+
+func (d PageData) DefaultRedroidDataDir() string { return dashboardruntime.DefaultRedroidDataDir }
+
+func (d PageData) DefaultRedroidDataTar() string { return dashboardruntime.DefaultRedroidDataTar }
 
 func (d PageData) SetupSteps() []SetupStep {
 	return []SetupStep{
@@ -440,10 +420,9 @@ func (d PageData) SetupSteps() []SetupStep {
 			Fields:  []string{"CREDIMI_SERVICE_MODE", "RUNNER_DOMAIN", "RUNNER_PUBLIC_URL", "RUNNER_PUBLIC_PORT", "CLOUDFLARE_TUNNEL_TOKEN"},
 		},
 		{
-			ID:      "device",
-			Title:   "Device",
-			Summary: "Phone, emulator, simulator, and connection mode.",
-			Fields:  []string{"CREDIMI_RUNNER_TYPE", "CREDIMI_RUNNER_DEVICE_MODE", "CREDIMI_RUNNER_SERIAL", "CREDIMI_RUNNER_WIFI_IP", "CREDIMI_RUNNER_WIFI_PORT", "RUNNER_IMAGE", "RUNNER_IMAGE_PULL_POLICY", "CREDIMI_TEMP_DIR", "ANDROID_KEYS_DIR", "BASE_NAME", "GOLDEN_PATH", "HOST_AVD_HOME_PATH", "HOST_AVD_GOLDEN_PATH", "AVDCTL_SSH_TARGET", "AVDCTL_SSH_PASSWORD", "AVDCTL_SSH_KNOWN_HOSTS_PATH", "AVDCTL_SUDO", "AVDCTL_SUDO_PASSWORD", "REDROID_DATA_DIR", "REDROID_DATA_TAR"},
+			ID:      "devices",
+			Title:   "Devices",
+			Summary: "Add the execution targets this shared runner will serve.",
 		},
 		{
 			ID:      "advanced",
@@ -454,7 +433,7 @@ func (d PageData) SetupSteps() []SetupStep {
 		{
 			ID:      "review",
 			Title:   "Review",
-			Summary: "Write .env, generate docker-compose.yaml, and start services.",
+			Summary: "Write config.toml and start the runner services.",
 		},
 	}
 }
@@ -510,5 +489,5 @@ func currentGOOS() string {
 	if goos != "" {
 		return goos
 	}
-	return goruntime.GOOS
+	return runtime.GOOS
 }

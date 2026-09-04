@@ -1,0 +1,48 @@
+schema_version = 1
+
+[runner]
+id = "example-org/office-runner"
+name = "Office runner"
+organization = "example-org"
+description = "Runner in the device lab"
+published = false
+
+[credimi]
+url = "https://credimi.io"
+auth_mode = "user"
+user_api_key = "replace-me"
+
+[temporal]
+address = "temporal.credimi.io:7233"
+
+[server]
+api_listen = "0.0.0.0:8050"
+dashboard_listen = "127.0.0.1:8051"
+open_browser = true
+read_header_timeout = "60s"
+shutdown_timeout = "30s"
+
+[exposure]
+mode = "quick_tunnel"
+
+[storage]
+artifact_retention = "168h"
+
+[android]
+runner_image = "ghcr.io/forkbombeu/credimi-runner:latest"
+pull_policy = "if-not-present"
+network = "credimi-runner"
+state_volume = "credimi-runner-state"
+tool_cache_volume = "credimi-runner-tools"
+sdk_volume = "credimi-runner-sdk"
+
+[[devices]]
+id = "example-org/office-runner/pixel-7"
+name = "Pixel 7"
+type = "android_physical"
+enabled = true
+
+[devices.android_physical]
+transport = "wifi"
+wifi_ip = "192.168.1.42"
+wifi_port = "5555"

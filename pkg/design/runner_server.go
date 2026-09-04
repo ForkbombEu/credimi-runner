@@ -238,12 +238,14 @@ var _ = Service("credimi", func() {
 			Attribute("action_identifier", String)
 			Attribute("platform", String)
 			Attribute("skip_installer", Boolean)
-			Required("version_identifier", "platform")
+			Attribute("device_identifier", String)
+			Required("version_identifier", "platform", "device_identifier")
 			Example(map[string]any{
 				"version_identifier": "",
 				"action_identifier":  "",
 				"platform":           "android",
 				"skip_installer":     false,
+				"device_identifier":  "organization/runner/device",
 			})
 		})
 		Result(FetchInstallerAndActionResult)
@@ -273,7 +275,7 @@ var _ = Service("credimi", func() {
 			Attribute("last_frame_path", String)
 			Attribute("log_path", String)
 			Attribute("run_identifier", String)
-			Attribute("runner_identifier", String)
+			Attribute("device_identifier", String)
 			Attribute("platform", String)
 			Required("run_identifier", "platform")
 			Example(map[string]any{
@@ -282,7 +284,7 @@ var _ = Service("credimi", func() {
 				"log_path":          "",
 				"platform":          "android",
 				"run_identifier":    "",
-				"runner_identifier": "",
+				"device_identifier": "organization/runner/device",
 			})
 		})
 		Result(MapOf(String, Any))
@@ -309,13 +311,13 @@ var _ = Service("credimi", func() {
 		Payload(func() {
 			CredimiAPIKeyPayload()
 			Attribute("run_identifier", String)
-			Attribute("runner_identifier", String)
+			Attribute("device_identifier", String)
 			Attribute("step_id", String)
 			Attribute("screenshot_paths", ArrayOf(String))
-			Required("run_identifier", "runner_identifier", "step_id", "screenshot_paths")
+			Required("run_identifier", "device_identifier", "step_id", "screenshot_paths")
 			Example(map[string]any{
 				"run_identifier":    "organization/workflow-run",
-				"runner_identifier": "organization/runner",
+				"device_identifier": "organization/runner/device",
 				"step_id":           "scan-credential",
 				"screenshot_paths":  []string{"/credimi/workflows/child-workflow/checkout.png"},
 			})
@@ -351,6 +353,8 @@ var _ = Service("mobile", func() {
 	Method("touch_fingerprint", func() {
 		Payload(func() {
 			CredimiAPIKeyPayload()
+			Attribute("device_identifier", String)
+			Required("device_identifier")
 		})
 		Result(TouchFingerprintResult)
 
@@ -359,6 +363,7 @@ var _ = Service("mobile", func() {
 
 		HTTP(func() {
 			GET("/mobile/fingerprint/touch")
+			Param("device_identifier")
 			Header("api_key:Credimi-Api-Key")
 			Response(StatusOK)
 			Response("unauthorized", StatusUnauthorized)

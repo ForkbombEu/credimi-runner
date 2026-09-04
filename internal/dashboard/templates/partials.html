@@ -2,6 +2,20 @@
 <span class="hd" style="background:{{if .OK}}var(--ok){{else}}var(--warn){{end}}"></span> {{.Label}}
 {{- end}}
 
+{{/* Reusable type-first device provisioning body for setup and inventory. */}}
+{{define "setup_device_provision"}}
+<section class="card" data-setup-device-card data-device-provision data-default-wifi-port="{{.DefaultWiFiPort}}" data-default-redroid-data-dir="{{.DefaultRedroidDataDir}}" data-default-redroid-data-tar="{{.DefaultRedroidDataTar}}" style="margin-bottom:12px"><div class="card-h">{{icon "phone"}}<div><h3 data-device-form-title>Device</h3><div class="sub">Choose a type, then configure only its relevant settings.</div></div><div class="right"><button type="button" class="btn btn-out btn-sm" data-device-form-cancel hidden>Cancel edit</button><button type="button" class="btn btn-danger btn-sm" data-setup-device-remove hidden>Remove</button></div></div><div class="card-b">
+<input type="hidden" name="CREDIMI_DEVICE_CONFLICT_ACTION" value="create" data-device-conflict-action data-setup-device-field="CONFLICT_ACTION"><input type="hidden" name="CREDIMI_DEVICE_ID" value="" data-device-id data-setup-device-field="ID">
+<div class="field"><label>Device name <span class="req">*</span></label><input class="inp" name="CREDIMI_DEVICE_NAME" data-setup-device-field="NAME" required placeholder="Pixel lab"></div>
+<input type="hidden" name="CREDIMI_RUNNER_TYPE" data-device-type-value data-setup-device-field="TYPE" value="android_phone"><input type="hidden" name="CREDIMI_RUNNER_DEVICE_MODE" data-device-mode-value data-setup-device-field="MODE" value="usb">
+<div class="field"><label>Device type <span class="req">*</span></label><div class="picks" style="grid-template-columns:repeat(4,1fr)"><label class="pick on" data-dev-pick="android_phone"><input type="radio" data-device-type-ui name="device_type_ui" value="android_phone" checked style="display:none">{{icon "android"}}<span><b>Android phone</b><span>USB, Wi-Fi, or no device</span></span></label><label class="pick" data-dev-pick="android_emulator"><input type="radio" data-device-type-ui name="device_type_ui" value="android_emulator" style="display:none">{{icon "server"}}<span><b>Android emulator</b><span>AVD and golden image</span></span></label>{{if .SupportsDeviceType "ios_simulator"}}<label class="pick" data-dev-pick="ios_simulator"><input type="radio" data-device-type-ui name="device_type_ui" value="ios_simulator" style="display:none">{{icon "apple"}}<span><b>iOS simulator</b><span>macOS simulator</span></span></label>{{end}}<label class="pick" data-dev-pick="redroid"><input type="radio" data-device-type-ui name="device_type_ui" value="redroid" style="display:none">{{icon "grid"}}<span><b>Redroid</b><span>Managed Android</span></span></label></div></div>
+<div data-dev-type="android_phone"><div class="field"><label>Connection mode</label><div class="seg"><label class="on"><input type="radio" data-device-mode-ui name="device_mode_ui" value="usb" checked> USB</label><label><input type="radio" data-device-mode-ui name="device_mode_ui" value="wifi"> Wi-Fi</label><label><input type="radio" data-device-mode-ui name="device_mode_ui" value="no_device"> No device</label></div></div><div data-dev-mode="usb" class="field"><label data-android-phone-serial-label>{{if .AndroidUSBPhoneDevices}}Connected Android device{{else}}USB serial{{end}} <span class="req">*</span></label><input class="inp mono" name="CREDIMI_RUNNER_SERIAL" data-setup-device-field="SERIAL" data-android-phone-serial {{if .AndroidUSBPhoneDevices}}hidden{{end}} placeholder="e.g. 37131JEHN05321"><select class="sel mono" data-android-phone-device-select {{if not .AndroidUSBPhoneDevices}}hidden disabled{{else}}required{{end}}><option value="">Select a connected Android device</option>{{range .AndroidUSBPhoneDevices}}<option value="{{.Serial}}">{{.Name}} — {{.Serial}}</option>{{end}}</select><p class="hint" data-android-phone-serial-hint>{{if .AndroidUSBPhoneDevices}}Choose a detected device, or enter its serial manually if needed.{{else}}No USB devices are visible from the current Runner topology. Adding the first USB device may require the Runner service to restart.{{end}}</p></div><div data-dev-mode="wifi" class="field-row" style="display:none"><div class="field"><label>Wi-Fi IP <span class="req">*</span></label><input class="inp mono" name="CREDIMI_RUNNER_WIFI_IP" data-setup-device-field="WIFI_IP"></div><div class="field"><label>Port</label><input class="inp mono" name="CREDIMI_RUNNER_WIFI_PORT" data-setup-device-field="WIFI_PORT" value="{{.DefaultWiFiPort}}"></div></div></div>
+<div data-dev-type="android_emulator" style="display:none"><div class="field"><label>Emulator base name</label><input class="inp mono" name="BASE_NAME" data-setup-device-field="BASE_NAME" value="credimi"></div><div class="card" data-android-emulator-assets-panel><div class="card-h">{{icon "server"}}<div><h3>Emulator assets</h3><div class="sub">Use existing assets or download Credimi base and golden images.</div></div></div><div class="card-b"><div class="callout info" data-android-emulator-assets-message>{{icon "info"}}<div>Checking emulator assets.</div></div><div class="field-row" data-android-emulator-avd-controls hidden><select class="sel" data-android-emulator-avd-select></select><select class="sel" data-android-emulator-golden-select></select></div><div class="savebar"><button type="button" class="btn btn-out btn-sm" data-android-emulator-apply-avd hidden>Use existing AVD</button><button type="button" class="btn btn-out btn-sm" data-android-emulator-apply-golden hidden>Use existing golden</button><button type="button" class="btn btn-pri btn-sm" data-android-emulator-download>Download Credimi assets</button></div></div></div></div>
+<div data-dev-type="ios_simulator" style="display:none"><div class="field"><label>Simulator name</label><input class="inp mono" name="BASE_NAME" data-setup-device-field="BASE_NAME" value="credimi"></div><input type="hidden" name="IOS_UDID" data-setup-device-field="IOS_UDID"><div class="card" data-ios-simulator-panel><div class="card-h">{{icon "apple"}}<div><h3>Simulator provisioning</h3><div class="sub">Find or create the named simulator.</div></div></div><div class="card-b"><div class="callout info" data-ios-simulator-message>{{icon "info"}}<div>Checking simulator status.</div></div><div class="field-row" data-ios-simulator-selects hidden><select class="sel" data-ios-simulator-device-type></select><select class="sel" data-ios-simulator-runtime></select></div><button type="button" class="btn btn-pri btn-sm" data-ios-simulator-create hidden>Create simulator</button></div></div></div>
+<div data-dev-type="redroid" style="display:none"><div class="field-row"><div class="field"><label>Redroid IP <span class="req">*</span></label><input class="inp mono" name="CREDIMI_RUNNER_WIFI_IP" data-setup-device-field="WIFI_IP"></div><div class="field"><label>ADB port</label><input class="inp mono" name="CREDIMI_RUNNER_WIFI_PORT" data-setup-device-field="WIFI_PORT" value="{{.DefaultWiFiPort}}"></div></div><div class="field-row"><div class="field"><label>Data directory</label><input class="inp mono" name="REDROID_DATA_DIR" data-setup-device-field="REDROID_DATA_DIR" value="{{.DefaultRedroidDataDir}}"></div><div class="field"><label>Data archive</label><input class="inp mono" name="REDROID_DATA_TAR" data-setup-device-field="REDROID_DATA_TAR" value="{{.DefaultRedroidDataTar}}"></div></div><div class="tog-row" data-avdctl-ssh-control data-default-known-hosts="{{.DefaultSSHKnownHostsPath}}"><div class="tx"><b>Use avdctl via SSH</b><span>Enable only when Redroid is managed on a remote machine.</span></div><button type="button" class="tog" role="switch" aria-checked="false" data-avdctl-ssh-toggle></button><input type="checkbox" data-avdctl-ssh-enabled hidden></div><input type="hidden" name="AVDCTL_SUDO" value="false" data-setup-device-field="AVDCTL_SUDO"><div data-avdctl-ssh-fields hidden><div class="field-row"><div class="field"><label>SSH target</label><input class="inp mono" name="AVDCTL_SSH_TARGET" data-setup-device-field="AVDCTL_SSH_TARGET"></div><div class="field"><label>Known-hosts path</label><input class="inp mono" name="AVDCTL_SSH_KNOWN_HOSTS_PATH" data-setup-device-field="AVDCTL_SSH_KNOWN_HOSTS_PATH" value="{{.DefaultSSHKnownHostsPath}}"></div></div><div class="field-row"><div class="field"><label>SSH password</label><input class="inp mono" type="password" name="AVDCTL_SSH_PASSWORD" data-setup-device-field="AVDCTL_SSH_PASSWORD" autocomplete="new-password"></div><div class="field"><label>Sudo password</label><input class="inp mono" type="password" name="AVDCTL_SUDO_PASSWORD" data-setup-device-field="AVDCTL_SUDO_PASSWORD" autocomplete="new-password"></div></div><div class="tog-row"><div class="tx"><b>Use sudo</b><span>Run remote avdctl commands through sudo.</span></div><button type="button" class="tog" role="switch" aria-checked="false" data-avdctl-sudo-toggle></button><input type="checkbox" hidden value="true" data-avdctl-sudo-enabled></div></div></div>
+<div class="field"><label>Description</label><input class="inp" name="CREDIMI_DEVICE_DESCRIPTION" data-setup-device-field="DESCRIPTION" placeholder="Optional note"></div></div></section>
+{{end}}
+
 {{- /* ── Field renderer: text / select / secret / bool ── */ -}}
 {{define "field" -}}
 {{- if eq (printf "%s" .Type) "bool" -}}
@@ -34,19 +48,6 @@
 {{- end -}}
 {{- end}}
 
-{{define "avdctl_ssh_fields" -}}
-<div class="tog-row" data-avdctl-ssh-control data-default-known-hosts="{{.DefaultSSHKnownHostsPath}}">
-  <div class="tx"><b>Use avdctl via SSH</b><span>Enable only when Redroid is managed on a remote machine.</span></div>
-  <button type="button" class="tog {{if .Runner.Get "AVDCTL_SSH_TARGET"}}on{{end}}" role="switch" aria-checked="{{if .Runner.Get "AVDCTL_SSH_TARGET"}}true{{else}}false{{end}}" data-avdctl-ssh-toggle></button>
-  <input type="checkbox" data-avdctl-ssh-enabled hidden {{if .Runner.Get "AVDCTL_SSH_TARGET"}}checked{{end}}>
-</div>
-<div data-avdctl-ssh-fields {{if not (.Runner.Get "AVDCTL_SSH_TARGET")}}hidden{{end}}>
-  <div class="field-row">{{template "field" .Field "AVDCTL_SSH_TARGET"}}{{template "field" .Field "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}</div>
-  <div class="field-row">{{template "field" .Field "AVDCTL_SSH_PASSWORD"}}{{template "field" .Field "AVDCTL_SUDO_PASSWORD"}}</div>
-  {{template "field" .Field "AVDCTL_SUDO"}}
-</div>
-{{- end}}
-
 {{- /* ── Live device rows (SSE: /events/devices) ── */ -}}
 {{define "device_rows" -}}
 {{- if not . -}}
@@ -76,6 +77,12 @@
 {{end}}
 {{- end}}
 
+{{define "configured_device_rows" -}}
+{{if .ConfiguredDevices}}<div class="list">{{range .ConfiguredDeviceViews}}
+<div class="row"><span class="ic {{if .Enabled}}okbg{{else}}downbg{{end}}">{{icon "phone"}}</span><div class="nm"><div class="t">{{.Name}} <span class="tag kind">{{.Type}}</span><span class="tag">{{.Mode}}</span></div><div class="s mono">{{.ID}}{{if .Serial}} · {{.Serial}}{{end}}</div></div><div class="rt"><span class="{{if .Enabled}}chip ok{{else}}chip down{{end}}"><span class="d"></span>{{if .Enabled}}enabled{{else}}disabled{{end}}</span>{{if .ADBWarning}} <span class="chip down" title="This target is configured, but adb does not currently report the device."><span class="d"></span>ADB offline</span>{{end}}<button type="button" class="btn btn-out btn-sm" data-device-edit data-device-id="{{.ID}}" data-device-name="{{.Name}}" data-device-description="{{.Description}}" data-device-type="{{.Type}}" data-device-mode="{{.Mode}}" data-device-serial="{{.Serial}}" data-device-wifi-ip="{{index .Values "WIFI_IP"}}" data-device-wifi-port="{{index .Values "WIFI_PORT"}}" data-device-base-name="{{index .Values "BASE_NAME"}}" data-device-golden-path="{{index .Values "GOLDEN_PATH"}}" data-device-host-avd-home="{{index .Values "HOST_AVD_HOME_PATH"}}" data-device-host-avd-golden="{{index .Values "HOST_AVD_GOLDEN_PATH"}}" data-device-redroid-data-dir="{{index .Values "REDROID_DATA_DIR"}}" data-device-redroid-data-tar="{{index .Values "REDROID_DATA_TAR"}}" data-device-ssh-target="{{index .Values "AVDCTL_SSH_TARGET"}}" data-device-known-hosts="{{index .Values "AVDCTL_SSH_KNOWN_HOSTS_PATH"}}" data-device-sudo="{{index .Values "AVDCTL_SUDO"}}" data-device-ios-udid="{{index .Values "IOS_UDID"}}">Edit</button><form method="post" action="{{if .Enabled}}/devices/disable{{else}}/devices/enable{{end}}"><input type="hidden" name="device_id" value="{{.ID}}"><button class="btn btn-out btn-sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form><form method="post" action="/devices/remove" hx-post="/devices/remove" hx-swap="none" onsubmit="return confirm('Remove this device from this runner and Credimi?')"><input type="hidden" name="device_id" value="{{.ID}}"><input type="hidden" name="confirm" value="true"><button class="btn btn-danger btn-sm">{{icon "trash"}} Remove</button></form></div></div>
+{{end}}</div>{{else}}<div class="callout info">{{icon "info"}}<div>No devices are configured yet. Add the first target below.</div></div>{{end}}
+{{- end}}
+
 {{define "runtime_status" -}}
 <div class="grid-2">
   <div class="stat">
@@ -84,19 +91,14 @@
     <div class="meta">{{if .StartupMessage}}{{.StartupMessage}}{{else if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
   </div>
   <div class="stat">
-    <div class="k">{{icon "server"}} Runner API</div>
-    <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.RunnerAPIURL}}</div>
-    <div class="meta">{{if .RuntimeStatus.RunnerRunning}}process running{{else}}process stopped{{end}}</div>
-  </div>
-  <div class="stat">
     <div class="k">{{icon "cloud"}} Public URL <button type="button" class="minibtn" data-copy-value="{{.PublicURL}}" title="Copy public URL">{{icon "copy"}} Copy</button></div>
     <div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.PublicURL}}</div>
     <div class="meta">{{.Runner.Get "CREDIMI_SERVICE_MODE"}} exposure</div>
   </div>
   <div class="stat">
-    <div class="k">{{icon "phone"}} Target</div>
-    <div class="v">{{.ConfiguredTargetTitle}}</div>
-    <div class="meta">{{.ConfiguredTargetDetail}}</div>
+    <div class="k">{{icon "phone"}} Devices</div>
+    <div class="v">{{len .ConfiguredDevices}}</div>
+    <div class="meta">independently selectable targets</div>
   </div>
 </div>
 {{- end}}

@@ -6,13 +6,8 @@
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const TYPE_DEFAULTS = {
-    phoneImage: 'ghcr.io/forkbombeu/credimi-runner-phone:latest',
-    emulatorImage: 'ghcr.io/forkbombeu/credimi-runner-emulator:latest',
     baseName: 'credimi',
     goldenPath: '/avd-golden/credimi-golden',
-    wifiPort: '5555',
-    redroidDataDir: '/home/credimi/redroid-data',
-    redroidDataTar: '/home/credimi/redroid-data.tar',
   };
   const TYPE_PREVIEW_KEYS = [
     'ANDROID_KEYS_DIR',
@@ -31,43 +26,199 @@
     'GOLDEN_PATH',
     'HOST_AVD_GOLDEN_PATH',
     'HOST_AVD_HOME_PATH',
+    'IOS_UDID',
     'REDROID_DATA_DIR',
     'REDROID_DATA_TAR',
-    'RUNNER_IMAGE',
-    'RUNNER_IMAGE_PULL_POLICY',
   ];
 
   // ── Toast (driven by HX-Trigger {"toast":"…"}) ───────────────────────────
-  function toast(msg) {
+  function toast(msg, tone = 'success') {
     const host = $('#toast-host');
     if (!host || !msg) return;
-    host.innerHTML = `<div class="toast">${check()} ${escapeHtml(msg)}</div>`;
+    host.innerHTML = `<div class="toast ${tone === 'error' ? 'danger' : ''}">${tone === 'error' ? '!' : check()} ${escapeHtml(msg)}</div>`;
     setTimeout(() => (host.innerHTML = ''), 2800);
   }
-  document.body.addEventListener('toast', (e) => toast(typeof e.detail === 'string' ? e.detail : e.detail && e.detail.value));
+  document.body.addEventListener('toast', (e) => {
+    const detail = e.detail;
+    toast(typeof detail === 'string' ? detail : detail && (detail.value || detail.message), detail && detail.tone || 'success');
+  });
+  let dismissDeviceConflict = null;
   document.body.addEventListener('closeModal', () => closeModals());
+
+  const chooseDeviceConflict = (name, preview) => new Promise((resolve) => {
+    const modal = $('#device-conflict-modal');
+    if (!modal) { resolve(null); return; }
+    const summary = $('[data-device-conflict-summary]', modal);
+    if (summary) summary.textContent = `A device named ${name} already exists. Choose how to continue.`;
+    modal.hidden = false;
+    const finish = (choice) => {
+      if (dismissDeviceConflict === finish) dismissDeviceConflict = null;
+      modal.hidden = true;
+      modal.querySelectorAll('[data-device-conflict-choice], [data-device-conflict-cancel]').forEach((button) => button.removeEventListener('click', onClick));
+      resolve(choice);
+    };
+    dismissDeviceConflict = finish;
+    const onClick = (event) => {
+      const choice = event.target.closest('[data-device-conflict-choice]');
+      if (choice) finish(choice.dataset.deviceConflictChoice);
+      else if (event.target.closest('[data-device-conflict-cancel]')) finish(null);
+    };
+    modal.querySelectorAll('[data-device-conflict-choice], [data-device-conflict-cancel]').forEach((button) => button.addEventListener('click', onClick));
+  });
 
   // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
   let runtimeOperationTimer = null;
+  let runtimeRecoveryTimer = null;
+  let runtimeRecoveryAbort = null;
+  let runtimeRecoveryDeadline = 0;
+  let setupRecoveryTokens = [];
+  let setupRecoveryOrigins = [];
   let runtimeOperationActive = false;
   let runtimeBusyVisibleUntil = 0;
-  function dashboardURL(path) {
-    const url = new URL(path, window.location.origin);
-    const token = new URLSearchParams(window.location.search).get('token');
+  let currentDashboardToken = new URLSearchParams(window.location.search).get('token') || '';
+  function dashboardURL(path, tokenOverride, originOverride) {
+    const url = new URL(path, originOverride || window.location.origin);
+    const token = tokenOverride === undefined ? currentDashboardToken : tokenOverride;
     if (token) url.searchParams.set('token', token);
+    if (originOverride && url.origin !== window.location.origin) return url.toString();
     return `${url.pathname}${url.search}`;
   }
-  function refreshOverview() {
-    htmx.ajax('GET', dashboardURL('/'), { target: 'main', select: 'main', swap: 'outerHTML' });
+  function setDashboardToken(token) {
+    currentDashboardToken = String(token || '').trim();
+    const url = new URL(window.location.href);
+    if (currentDashboardToken) url.searchParams.set('token', currentDashboardToken);
+    else url.searchParams.delete('token');
+    history.replaceState(history.state, '', `${url.pathname}${url.search}${url.hash}`);
+    preserveDashboardToken();
+  }
+
+  // Query-token authentication is a Dashboard boundary. Keep internal htmx,
+  // SSE and ordinary navigation on that boundary without copying tokens into
+  // server-rendered templates or external/public links.
+  function preserveDashboardToken(root = document) {
+    root.querySelectorAll?.('a[href^="/"]').forEach((link) => { link.href = dashboardURL(link.getAttribute('href')); });
+    root.querySelectorAll?.('[sse-connect]').forEach((node) => { node.setAttribute('sse-connect', dashboardURL(node.getAttribute('sse-connect'))); });
+  }
+  document.body.addEventListener('htmx:configRequest', (event) => {
+    const detail = event.detail || {};
+    if (typeof detail.path === 'string' && detail.path.startsWith('/')) detail.path = dashboardURL(detail.path);
+  });
+  document.body.addEventListener('htmx:afterSwap', (event) => preserveDashboardToken(event.target || document));
+  preserveDashboardToken();
+	function refreshOverview(path = '/', tokenOverride, originOverride) {
+		htmx.ajax('GET', dashboardURL(path, tokenOverride, originOverride), { target: 'main', select: 'main', swap: 'outerHTML' });
   }
   function runtimeOperationFailure(snapshot) {
     const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
     return `Runner operation failed: ${message}`;
   }
+  // Candidate provisioning allows ten minutes and launcher quick-tunnel
+  // resolution another two; retain a small reconnect margin for replacement.
+  // Must exceed the backend's 15-minute activation budget.
+  const runtimeRecoveryMaxDuration = 18 * 60 * 1000;
+  const runtimeRecoveryRequestTimeout = 10000;
+  function finishRuntimeRecoveryTimeout() {
+    if (!runtimeOperationActive) return;
+    if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
+    runtimeRecoveryAbort = null;
+    clearTimeout(runtimeRecoveryTimer);
+    runtimeRecoveryTimer = null;
+    runtimeOperationActive = false;
+    setupRecoveryTokens = [];
+    setupRecoveryOrigins = [];
+    hideBusy();
+    toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
+  }
+  function startRuntimeRecovery(operation) {
+    operation._recovering = true;
+    clearTimeout(runtimeOperationTimer);
+    runtimeOperationTimer = null;
+    const deadline = Date.now() + runtimeRecoveryMaxDuration;
+    runtimeRecoveryDeadline = deadline;
+    clearTimeout(runtimeRecoveryTimer);
+    if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
+    const poll = async () => {
+      if (Date.now() >= deadline || !runtimeOperationActive) {
+        finishRuntimeRecoveryTimeout();
+        return;
+      }
+      let timeout;
+      try {
+        const controller = new AbortController();
+        runtimeRecoveryAbort = controller;
+        timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now()));
+        const candidates = [operation.previousToken, operation.recoveryToken]
+          .filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
+        const tokens = candidates.length ? candidates : [undefined];
+        const origins = [operation.recoveryOrigin, window.location.origin]
+          .filter((origin, index, values) => origin && values.indexOf(origin) === index);
+        let recovery;
+        let recoveryToken;
+        let recoveryOrigin;
+        for (const origin of origins.length ? origins : [window.location.origin]) {
+          for (const token of tokens) {
+            try {
+              const candidate = await fetch(dashboardURL('/startup/status', token, origin), { headers: { Accept: 'application/json' }, signal: controller.signal });
+              if (candidate.status === 401 || candidate.status === 403) continue;
+              recovery = candidate;
+              recoveryToken = token;
+              recoveryOrigin = origin;
+              break;
+            } catch (error) {
+              if (origin === origins[origins.length - 1] && token === tokens[tokens.length - 1]) throw error;
+            }
+          }
+          if (recovery) break;
+        }
+        if (!recovery) throw new Error('Dashboard replacement is not reachable');
+        if (Date.now() >= deadline) {
+          finishRuntimeRecoveryTimeout();
+          return;
+        }
+        if (!recovery.ok) {
+          runtimeRecoveryTimer = setTimeout(poll, 1000);
+          return;
+        }
+        const state = await recovery.json();
+        if (state.phase !== 'ready' && state.phase !== 'needs_attention') {
+          runtimeRecoveryTimer = setTimeout(poll, 1000);
+          return;
+        }
+        clearTimeout(runtimeRecoveryTimer);
+        runtimeRecoveryTimer = null;
+        runtimeRecoveryAbort = null;
+        runtimeOperationActive = false;
+        hideBusy();
+        setDashboardToken(recoveryToken);
+        if (state.phase === 'ready') {
+          toast(operation.success || 'Runner operation completed successfully.');
+        } else {
+          toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
+        }
+		if ($('.app.setup-shell')) {
+			if (state.phase === 'ready') window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken, recoveryOrigin));
+			else refreshOverview('/setup', recoveryToken, recoveryOrigin);
+		} else refreshOverview(operation.refresh || '/', recoveryToken, recoveryOrigin);
+      } catch (_) {
+        if (Date.now() >= deadline) finishRuntimeRecoveryTimeout();
+        else if (runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+    void poll();
+  }
   async function pollRuntimeOperation(operation) {
+    operation._pollFailures = operation._pollFailures || 0;
     try {
       const response = await fetch(dashboardURL(`/api/controller/operations/${encodeURIComponent(operation.id)}`), { headers: { Accept: 'application/json' } });
-      if (!response.ok) return;
+      if (!response.ok) {
+        operation._pollFailures++;
+        if (operation._pollFailures < 3) return;
+        startRuntimeRecovery(operation);
+        return;
+      }
+      operation._pollFailures = 0;
       const snapshot = await response.json();
       const phase = String(snapshot.phase || snapshot.Phase || '');
       const message = String(snapshot.message || snapshot.Message || '').trim();
@@ -78,39 +229,68 @@
         appendBusyLog(message);
       }
       if (phase === 'queued' || phase === 'running') return;
-      clearInterval(runtimeOperationTimer);
+      clearTimeout(runtimeOperationTimer);
       runtimeOperationTimer = null;
+      if (phase === 'succeeded' && operation.recovery === 'true') {
+        startRuntimeRecovery(operation);
+        return;
+      }
       const finish = () => {
         runtimeOperationActive = false;
         hideBusy();
         if (phase === 'succeeded') {
           toast(operation.success || 'Runner operation completed successfully.');
         } else {
-          toast(runtimeOperationFailure(snapshot));
+          toast(runtimeOperationFailure(snapshot), 'error');
         }
-        refreshOverview();
+			if ($('.app.setup-shell')) {
+				if (phase === 'succeeded') {
+					window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));
+				} else {
+					refreshOverview('/setup', operation.recoveryToken, operation.recoveryOrigin);
+				}
+				return;
+			}
+			refreshOverview(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin);
       };
       setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
-    } catch (_) {}
+    } catch (_) {
+      operation._pollFailures++;
+      if (operation._pollFailures >= 3) startRuntimeRecovery(operation);
+    }
   }
   document.body.addEventListener('runtimeOperation', (e) => {
     const operation = e.detail && (e.detail.value || e.detail);
     if (!operation || !operation.id) return;
+    if (operation.recoveryToken === undefined) {
+      const tokenField = document.querySelector('[name="DASHBOARD_TOKEN"]');
+      if (tokenField) operation.recoveryToken = tokenField.value.trim();
+    }
+    operation.previousToken = currentDashboardToken;
+    setupRecoveryTokens = [operation.previousToken, operation.recoveryToken]
+      .filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
+    setupRecoveryOrigins = [operation.recoveryOrigin, window.location.origin]
+      .filter((origin, index, values) => origin && values.indexOf(origin) === index);
+    if (operation.recovery !== 'true' && operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);
     runtimeOperationActive = true;
-    clearInterval(runtimeOperationTimer);
+    clearTimeout(runtimeOperationTimer);
     runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
     appendBusyLog('Runtime operation accepted. Waiting for completion.');
-    pollRuntimeOperation(operation);
-    runtimeOperationTimer = setInterval(() => pollRuntimeOperation(operation), 500);
+    const poll = async () => {
+      if (!runtimeOperationActive) return;
+      await pollRuntimeOperation(operation);
+      if (runtimeOperationActive && !operation._recovering) runtimeOperationTimer = setTimeout(poll, 500);
+    };
+    void poll();
   });
 
   // ── Global busy overlay for runtime-changing requests ───────────────────
   const setupBusyKey = 'credimi-runner:setup-startup-busy';
-  let busyLogTimer = null;
+	let busyControllerTimer = null;
   let busyStartupTimer = null;
   let busyLogSeen = new Set();
   let busyStartupNextID = 0;
-  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering', 'upgrading']);
+  const startupBusyPhases = new Set(['starting', 'waiting_for_runner', 'registering']);
   function busyOverlay() { return $('#busy-overlay'); }
   function busyLogNode() {
     const overlay = busyOverlay();
@@ -126,80 +306,135 @@
     log.textContent += `${stamp}  ${text}\n`;
     log.scrollTop = log.scrollHeight;
   }
-  async function pollBusyLogs() {
-    try {
-      const res = await fetch('/runtime/logs', { headers: { Accept: 'application/json' } });
-      if (!res.ok) return;
-      const data = await res.json();
-      (data.lines || []).slice(-24).forEach(appendBusyLog);
-    } catch (_) {}
-  }
+	async function pollBusyControllerOperation() {
+		try {
+			const res = await fetch(dashboardURL('/api/controller/operations/current'), { headers: { Accept: 'application/json' } });
+			if (res.ok) {
+				const snapshot = await res.json();
+				const phase = String(snapshot.phase || snapshot.Phase || '');
+				const message = String(snapshot.message || snapshot.Message || '').trim();
+				if ((phase === 'queued' || phase === 'running') && message) {
+					const overlay = busyOverlay();
+					const messageNode = overlay && $('[data-busy-message]', overlay);
+					if (messageNode) messageNode.textContent = message;
+					appendBusyLog(message);
+				}
+			}
+		} catch (_) {}
+		if (busyControllerTimer !== null && !busyOverlay()?.hidden) busyControllerTimer = setTimeout(pollBusyControllerOperation, 500);
+	}
   async function pollBusyStartupStatus() {
+    let terminal = false;
+    if (runtimeRecoveryDeadline > 0 && Date.now() >= runtimeRecoveryDeadline) {
+      sessionStorage.removeItem(setupBusyKey);
+      hideBusy();
+      toast('Runner service apply timed out. Run credimi-runner service restart and check runtime status.', 'error');
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, Math.max(1, runtimeRecoveryDeadline - Date.now())));
     try {
       const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
-      const res = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (!res.ok) return;
-      const data = await res.json();
-      const phase = String(data.phase || '');
-      const message = String(data.message || '');
-      (data.lines || []).forEach(appendBusyLog);
-      if (Number.isFinite(Number(data.next_id))) busyStartupNextID = Number(data.next_id);
-      if (message) {
-        const overlay = busyOverlay();
-        const messageNode = overlay && $('[data-busy-message]', overlay);
-        if (messageNode) messageNode.textContent = message;
-        appendBusyLog(message);
+      let res;
+      const tokens = setupRecoveryTokens.length ? setupRecoveryTokens : [undefined];
+      const origins = setupRecoveryOrigins.length ? setupRecoveryOrigins : [window.location.origin];
+      for (const origin of origins) {
+        for (const token of tokens) {
+          try {
+            const candidate = await fetch(dashboardURL(url, token, origin), { headers: { Accept: 'application/json' }, signal: controller.signal });
+            if (candidate.status === 401 || candidate.status === 403) continue;
+            res = candidate;
+            break;
+          } catch (error) {
+            if (origin === origins[origins.length - 1] && token === tokens[tokens.length - 1]) throw error;
+          }
+        }
+        if (res) break;
       }
-      if (phase === 'idle' && sessionStorage.getItem(setupBusyKey)) {
-        appendBusyLog('Waiting for setup job to start.');
-        return;
+      if (res && res.ok) {
+        const data = await res.json();
+        const phase = String(data.phase || '');
+        const message = String(data.message || '');
+        (data.lines || []).forEach(appendBusyLog);
+        if (Number.isFinite(Number(data.next_id))) busyStartupNextID = Number(data.next_id);
+        if (message) {
+          const overlay = busyOverlay();
+          const messageNode = overlay && $('[data-busy-message]', overlay);
+          if (messageNode) messageNode.textContent = message;
+          appendBusyLog(message);
+        }
+        if (phase === 'idle' && sessionStorage.getItem(setupBusyKey)) {
+          appendBusyLog('Waiting for setup job to start.');
+        } else if (!startupBusyPhases.has(phase)) {
+          terminal = true;
+          const destinationOrigin = setupRecoveryOrigins[0];
+          sessionStorage.removeItem(setupBusyKey);
+          setupRecoveryTokens = [];
+          setupRecoveryOrigins = [];
+          if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
+          if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
+          clearTimeout(busyStartupTimer);
+          busyStartupTimer = null;
+          const delay = phase === 'needs_attention' ? 2500 : 1000;
+          const destination = phase === 'needs_attention' ? '/setup' : '/';
+          setTimeout(() => { window.location.assign(dashboardURL(destination, undefined, destinationOrigin)); }, delay);
+        }
       }
-      if (!startupBusyPhases.has(phase)) {
+    } catch (_) {
+      if (Date.now() >= runtimeRecoveryDeadline) {
+        terminal = true;
         sessionStorage.removeItem(setupBusyKey);
-        if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
-        if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
-        clearInterval(busyStartupTimer);
-        busyStartupTimer = null;
-        const delay = phase === 'needs_attention' ? 2500 : 1000;
-        setTimeout(() => { window.location.assign('/'); }, delay);
+        hideBusy();
+        toast('Runner service apply timed out. Run credimi-runner service restart and check runtime status.', 'error');
       }
-    } catch (_) {}
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!terminal && busyStartupTimer !== null && !busyOverlay()?.hidden) busyStartupTimer = setTimeout(pollBusyStartupStatus, 1500);
   }
   function showBusy(message, options = {}) {
     const overlay = busyOverlay();
     if (!overlay) return;
     const messageNode = $('[data-busy-message]', overlay);
     if (messageNode && message) messageNode.textContent = message;
+		const titleNode = $('[data-busy-title]', overlay);
+		if (titleNode) titleNode.textContent = options.title || 'Applying runtime change';
     const log = busyLogNode();
     busyLogSeen = new Set();
     if (log) log.textContent = '';
     busyStartupNextID = 0;
-    appendBusyLog(message || 'Starting runtime operation.');
-    appendBusyLog('Writing configuration and preparing Docker services.');
-    appendBusyLog('Large runner images can take several minutes the first time.');
-    clearInterval(busyLogTimer);
-    if (options.runtimeLogs !== false) {
-      pollBusyLogs();
-      busyLogTimer = setInterval(pollBusyLogs, 1500);
-    }
+		appendBusyLog(message || 'Starting runtime operation.');
+		if (options.controllerProgress) appendBusyLog('Waiting for device preparation to start.');
+		else {
+			appendBusyLog('Writing configuration and preparing the Runner runtime.');
+			appendBusyLog('Runtime preparation can take several minutes the first time.');
+		}
+		clearTimeout(busyControllerTimer);
+		busyControllerTimer = null;
+		if (options.controllerProgress) {
+			busyControllerTimer = 0;
+			pollBusyControllerOperation();
+		}
     overlay.hidden = false;
     document.body.classList.add('busy-lock');
   }
   function hideBusy() {
     const overlay = busyOverlay();
     if (!overlay) return;
-    clearInterval(busyLogTimer);
-    clearInterval(busyStartupTimer);
-    busyLogTimer = null;
+		clearTimeout(busyControllerTimer);
+    clearTimeout(busyStartupTimer);
+		busyControllerTimer = null;
     busyStartupTimer = null;
     overlay.hidden = true;
     document.body.classList.remove('busy-lock');
   }
   function showSetupBusy(message) {
-    showBusy(message || 'Writing runner config and starting services. You may close this page safely.', { runtimeLogs: false });
-    clearInterval(busyStartupTimer);
+    showBusy(message || 'Writing runner config and starting services. You may close this page safely.');
+    runtimeRecoveryDeadline = Date.now() + runtimeRecoveryMaxDuration;
+    clearTimeout(busyStartupTimer);
+    busyStartupTimer = null;
+    busyStartupTimer = 0;
     pollBusyStartupStatus();
-    busyStartupTimer = setInterval(pollBusyStartupStatus, 1500);
   }
   function resumeSetupBusyIfNeeded() {
     const overlay = busyOverlay();
@@ -213,7 +448,7 @@
     if (!el) return null;
     const trigger = el.closest('[data-runtime-action],[data-config-form],[data-setup-form]');
     if (!trigger) return null;
-    if (trigger.matches('[data-config-form]') && !trigger.matches('[data-setup-form]') && trigger.dataset.busyActive !== '1') {
+		if (trigger.matches('[data-config-form]') && !trigger.matches('[data-setup-form]') && !trigger.matches('[data-device-add-form]') && trigger.dataset.busyActive !== '1') {
       return null;
     }
     return trigger;
@@ -228,7 +463,10 @@
       showSetupBusy(message);
       return;
     }
-    showBusy(message);
+		showBusy(message, {
+			title: trigger.dataset.busyTitle,
+			controllerProgress: trigger.dataset.busyControllerProgress === 'true',
+		});
   });
   document.body.addEventListener('htmx:afterRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
@@ -255,120 +493,121 @@
   });
   resumeSetupBusyIfNeeded();
 
-  // ── Runner image upgrade modal ─────────────────────────────────────────
-  let upgradeTimer = null;
-  let upgradeNextID = 0;
-  let upgradeDisconnected = false;
-  function upgradeURL(path) {
-    const url = new URL(path, window.location.origin);
-    const token = new URLSearchParams(window.location.search).get('token');
-    if (token) url.searchParams.set('token', token);
-    return `${url.pathname}${url.search}`;
+  // ── Modal open / close ───────────────────────────────────────────────────
+  function closeModals() {
+    if (dismissDeviceConflict) dismissDeviceConflict(null);
+    $$('.modal-bk').forEach((m) => { m.hidden = true; });
   }
-  function appendUpgradeLog(line) {
-    const log = $('[data-upgrade-log]');
-    const text = String(line || '').trim();
-    if (!log || !text) return;
-    const stamp = new Date().toLocaleTimeString([], { hour12: false });
-    log.textContent += `${stamp}  ${text}\n`;
-    log.scrollTop = log.scrollHeight;
-  }
-  async function pollUpgrade() {
-    try {
-      const url = upgradeURL(upgradeNextID > 0 ? `/startup/status?since=${upgradeNextID}` : '/startup/status');
-      const response = await fetch(url, { headers: { Accept: 'application/json' } });
-      if (!response.ok) return;
-      if (upgradeDisconnected) {
-        window.location.reload();
-        return;
-      }
-      const data = await response.json();
-      (data.lines || []).forEach(appendUpgradeLog);
-      upgradeNextID = Number(data.next_id || upgradeNextID);
-      const message = $('[data-upgrade-message]');
-      if (message && data.message) message.textContent = data.message;
-      if (!data.running) {
-        clearInterval(upgradeTimer);
-        upgradeTimer = null;
-        const modal = $('#runner-upgrade-modal');
-        if (modal) modal.dataset.upgradeRunning = '0';
-        const close = $('[data-upgrade-close]');
-        if (close) close.disabled = false;
-      }
-    } catch (_) {
-      const modal = $('#runner-upgrade-modal');
-      if (modal && modal.dataset.upgradeRunning === '1' && !upgradeDisconnected) {
-        upgradeDisconnected = true;
-        appendUpgradeLog('Dashboard is restarting. Waiting to reconnect.');
-      }
-    }
-  }
-  document.addEventListener('click', async (e) => {
+  document.addEventListener('click', (e) => {
     const check = e.target.closest('[data-maintenance-check]');
     if (check) {
       check.disabled = true;
-      try {
-        const response = await fetch(upgradeURL('/maintenance/check'), { method: 'POST', headers: { Accept: 'application/json' } });
-        if (!response.ok) throw new Error(await response.text());
-        window.location.reload();
-      } catch (error) {
-        check.disabled = false;
-        window.alert(`Update check failed: ${String(error.message || error).trim()}`);
-      }
+      fetch(dashboardURL('/maintenance/check'), { method: 'POST', headers: { Accept: 'application/json' } })
+        .then(async (response) => { if (!response.ok) throw new Error(await response.text()); refreshOverview(); })
+        .catch((error) => { check.disabled = false; window.alert(`Update check failed: ${String(error.message || error).trim()}`); });
       return;
     }
-    const upgrade = e.target.closest('[data-runner-upgrade]');
-    if (upgrade) {
-      const modal = $('#runner-upgrade-modal');
-      const log = $('[data-upgrade-log]');
-      const close = $('[data-upgrade-close]');
-      if (!modal || !log || !close) return;
-      modal.hidden = false;
-      modal.dataset.upgradeRunning = '1';
-      log.textContent = '';
-      close.disabled = true;
-      upgradeNextID = 0;
-      upgradeDisconnected = false;
-      appendUpgradeLog('Requesting runner image upgrade.');
-      const controller = new AbortController();
-      const requestTimeout = setTimeout(() => controller.abort(), 10000);
-      try {
-        const response = await fetch(upgradeURL('/maintenance/upgrade'), {
-          method: 'POST',
-          headers: { Accept: 'application/json' },
-          signal: controller.signal,
-        });
-        clearTimeout(requestTimeout);
-        if (!response.ok) throw new Error(await response.text());
-        await pollUpgrade();
-        clearInterval(upgradeTimer);
-        upgradeTimer = setInterval(pollUpgrade, 1000);
-      } catch (error) {
-        clearTimeout(requestTimeout);
-        const reason = error && error.name === 'AbortError'
-          ? 'Dashboard did not accept the request within 10 seconds. Reload the page and verify that the dashboard process is reachable.'
-          : String(error.message || error).trim();
-        appendUpgradeLog(`Upgrade could not start: ${reason}`);
-        modal.dataset.upgradeRunning = '0';
-        close.disabled = false;
-      }
-    }
-    if (e.target.closest('[data-upgrade-close]')) {
-      const modal = $('#runner-upgrade-modal');
-      if (modal && modal.dataset.upgradeRunning !== '1') {
-        modal.hidden = true;
-        window.location.reload();
-      }
-    }
-  });
-
-  // ── Modal open / close ───────────────────────────────────────────────────
-  function closeModals() { $$('.modal-bk').forEach((m) => { if (m.dataset.upgradeRunning !== '1') m.hidden = true; }); }
-  document.addEventListener('click', (e) => {
     const open = e.target.closest('[data-open-modal]');
     if (open) { const m = $('#modal-' + open.dataset.openModal); if (m) { m.hidden = false; resetWizard(m); } }
     if (e.target.closest('[data-close-modal]')) closeModals();
-    if (e.target.classList && e.target.classList.contains('modal-bk') && e.target.dataset.upgradeRunning !== '1') e.target.hidden = true;
+    if (e.target.classList && e.target.classList.contains('modal-bk')) closeModals();
+  });
+
+  // A name that already exists in Credimi is not silently suffixed. Let the
+  // operator choose whether this dashboard form updates that record or creates
+  // the canonified next ID.
+  document.addEventListener('submit', async (e) => {
+    const form = e.target.closest('[data-device-add-form]');
+    if (!form) return;
+    if (form.dataset.deviceSubmitInFlight === '1') {
+      e.preventDefault();
+      return;
+    }
+    const setSubmitInFlight = (active) => {
+      form.dataset.deviceSubmitInFlight = active ? '1' : '0';
+      form.querySelectorAll('button[type="submit"], [data-device-form-submit]').forEach((button) => { button.disabled = active; });
+    };
+    const showError = (message) => {
+      const box = form.querySelector('[data-device-form-error]');
+      if (!box) return;
+      box.hidden = false;
+      box.textContent = message;
+      box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    };
+    const save = async () => {
+      const response = await fetch(dashboardURL(form.action), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(new FormData(form)), redirect: 'follow' });
+      if (!response.ok) {
+        const body = (await response.text()).trim();
+        let message = body;
+        if (body.startsWith('<')) {
+          const documentBody = new DOMParser().parseFromString(body, 'text/html').body;
+          message = documentBody.querySelector('.callout.danger')?.textContent?.replace(/\s+/g, ' ').trim() || '';
+        }
+        throw new Error(message || `Unable to save device configuration (HTTP ${response.status})`);
+      }
+      const trigger = response.headers.get('HX-Trigger');
+      if (trigger) {
+        try {
+          const event = JSON.parse(trigger).runtimeOperation;
+          if (event && event.id) {
+            const tokenField = form.querySelector('[name="DASHBOARD_TOKEN"]');
+            if (tokenField) event.recoveryToken = tokenField.value.trim();
+            showBusy(form.dataset.busyMessage, {
+              title: form.dataset.busyTitle,
+              controllerProgress: form.dataset.busyControllerProgress === 'true',
+            });
+            document.body.dispatchEvent(new CustomEvent('runtimeOperation', { detail: event }));
+            return;
+          }
+        } catch (_) {}
+      }
+      window.location.assign(dashboardURL('/devices'));
+    };
+    if (form.dataset.deviceEditing === '1') {
+      const currentName = ((form.querySelector('[name="CREDIMI_DEVICE_NAME"]') || {}).value || '').trim();
+      if (currentName === (form.dataset.deviceOriginalName || '').trim()) {
+        e.preventDefault();
+        setSubmitInFlight(true);
+        try { await save(); } catch (err) { setSubmitInFlight(false); showError(err && err.message ? err.message : 'Unable to save device configuration'); }
+        return;
+      }
+      form.dataset.deviceConflictResolved = '';
+    }
+    if (form.dataset.deviceConflictResolved === '1') {
+      e.preventDefault();
+      setSubmitInFlight(true);
+      try { await save(); } catch (err) { setSubmitInFlight(false); showError(err && err.message ? err.message : 'Unable to save device configuration'); }
+      return;
+    }
+    const name = ((form.querySelector('[name="CREDIMI_DEVICE_NAME"]') || {}).value || '').trim();
+    if (!name) return;
+    e.preventDefault();
+    setSubmitInFlight(true);
+    try {
+      const body = new URLSearchParams(new FormData(form));
+      body.set('name', name);
+      const res = await fetch(dashboardURL('/devices/preview-id'), { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+      const preview = await res.json();
+      if (!res.ok) throw new Error(preview.message || 'Unable to resolve device ID');
+      const action = form.querySelector('[data-device-conflict-action]');
+      const id = form.querySelector('[data-device-id]');
+      if (preview.conflict) {
+        const choice = await chooseDeviceConflict(name, preview);
+        if (!choice) {
+          setSubmitInFlight(false);
+          return;
+        }
+        if (action) action.value = choice;
+        if (!form.dataset.deviceEditing && id) id.value = choice === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
+      } else if (!form.dataset.deviceEditing && id) {
+        id.value = preview.device_id || '';
+      }
+      form.dataset.deviceConflictResolved = '1';
+      await save();
+    } catch (err) {
+      setSubmitInFlight(false);
+      showError(err && err.message ? err.message : 'Unable to resolve device ID');
+    }
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModals(); });
 
@@ -399,7 +638,8 @@
     form.querySelectorAll('[data-review-net]').forEach(el => {
       el.style.display = el.dataset.reviewNet === netMode ? '' : 'none';
     });
-    const devType = get('CREDIMI_RUNNER_TYPE');
+    const firstDevice = form.querySelector('[data-setup-devices] [data-device-provision]');
+    const devType = firstDevice ? fieldValue(firstDevice, 'CREDIMI_RUNNER_TYPE') : '';
     form.querySelectorAll('[data-review-dev]').forEach(el => {
       const types = (el.dataset.reviewDev || '').split(/\s+/);
       el.style.display = types.includes(devType) ? '' : 'none';
@@ -411,11 +651,26 @@
   };
 
   // ── First-run setup wizard ───────────────────────────────────────────────
+  const reindexSetupDeviceCards = (form) => {
+    if (!form || !form.matches('[data-setup-form]')) return;
+    const cards = form.querySelectorAll('[data-setup-devices] [data-device-provision]');
+    const count = form.querySelector('[data-setup-device-count]');
+    if (count) count.value = String(cards.length);
+    cards.forEach((card, position) => {
+      const index = position + 1;
+      card.querySelectorAll('[data-setup-device-field]').forEach((field) => {
+        field.name = `SETUP_DEVICE_${index}_${field.dataset.setupDeviceField}`;
+      });
+    });
+  };
   function initSetupWizard(root = document) {
     $$('[data-setup-form]', root).forEach((form) => {
       if (form.dataset.setupReady) return;
       form.dataset.setupReady = '1';
+	  reindexSetupDeviceCards(form);
+	  $$('[data-legacy-setup-devices] input, [data-legacy-setup-devices] select, [data-legacy-setup-devices] textarea', form).forEach((field) => { field.disabled = true; });
       let current = 0;
+      let connectedAndroidTimer = null;
       const buttons = $$('.wizard-step', form);
       const panels = $$('.wizard-panel', form);
       const prev = $('[data-step-prev]', form);
@@ -430,6 +685,47 @@
         box.textContent = msg || '';
       };
       const valueMissing = (name) => !String(value(name) || '').trim();
+      const validManualPublicURL = () => {
+        try {
+          const parsed = new URL(String(value('RUNNER_PUBLIC_URL') || '').trim());
+          return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && !!parsed.hostname;
+        } catch (_) {
+          return false;
+        }
+      };
+      const syncManualPublicURLError = () => {
+        const input = field('RUNNER_PUBLIC_URL');
+        const error = $('[data-manual-public-url-error]', form);
+        const wrapper = input && input.closest('[data-manual-public-url-field]');
+        const invalid = value('CREDIMI_SERVICE_MODE') === 'manual' && !valueMissing('RUNNER_PUBLIC_URL') && !validManualPublicURL();
+        if (error) {
+          error.hidden = !invalid;
+          error.textContent = invalid ? 'Enter a complete URL starting with http:// or https://.' : '';
+        }
+        if (input) input.setAttribute('aria-invalid', invalid ? 'true' : 'false');
+        if (wrapper) wrapper.classList.toggle('invalid', invalid);
+      };
+      const deviceValidationError = () => {
+        for (const card of $$('[data-device-provision]', form)) {
+			const get = (fieldName) => setupDeviceFieldValue(card, fieldName);
+          if (!String(get('NAME')).trim()) return 'Each device needs a name.';
+          const type = get('TYPE');
+          const mode = get('MODE');
+			if (type === 'android_phone' && mode === 'usb' && !String(get('SERIAL')).trim()) return 'Enter or select a USB serial for every USB target.';
+          if ((type === 'android_phone' && mode === 'wifi') || type === 'redroid') {
+            if (!String(get('WIFI_IP')).trim()) return 'Every Wi-Fi or Redroid target requires an IP address.';
+          }
+          if (type === 'android_emulator') {
+            const assets = $('[data-android-emulator-assets-panel]', card);
+            if (!String(get('BASE_NAME')).trim() || (assets && assets.dataset.ready !== '1')) return 'Emulator base and golden assets must be ready.';
+          }
+          if (type === 'ios_simulator') {
+            const simulator = $('[data-ios-simulator-panel]', card);
+            if (!String(get('BASE_NAME')).trim() || !String(get('IOS_UDID')).trim() || (simulator && simulator.dataset.exists !== '1')) return 'Create or select every iOS simulator before continuing.';
+          }
+        }
+        return '';
+      };
       const currentStepValid = () => {
         const panel = panels[current];
         if (!panel) return false;
@@ -447,30 +743,7 @@
             if (mode === 'cloudflare-managed') return !valueMissing('RUNNER_DOMAIN') && !valueMissing('CLOUDFLARE_TUNNEL_TOKEN');
             return true;
           }
-          case 'device': {
-            const runnerType = value('CREDIMI_RUNNER_TYPE');
-            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
-            if (runnerType === 'android_phone' && mode !== 'wifi') {
-              return !valueMissing('CREDIMI_RUNNER_SERIAL');
-            }
-            if (runnerType === 'android_phone' && value('CREDIMI_RUNNER_DEVICE_MODE') === 'wifi') {
-              return !valueMissing('CREDIMI_RUNNER_WIFI_IP');
-            }
-            if (runnerType === 'android_emulator') {
-              const panel = $('[data-android-emulator-assets-panel]', form);
-              return !valueMissing('BASE_NAME') && (!panel || panel.dataset.ready === '1');
-            }
-            if (runnerType === 'ios_simulator') {
-              const panel = $('[data-ios-simulator-panel]', form);
-              return !valueMissing('BASE_NAME') && (!panel || panel.dataset.exists === '1');
-            }
-            if (runnerType === 'redroid') {
-              const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
-              return !valueMissing('CREDIMI_RUNNER_WIFI_IP') &&
-                (!sshEnabled || !sshEnabled.checked || !valueMissing('AVDCTL_SSH_TARGET'));
-            }
-            return !!runnerType;
-          }
+          case 'devices': return !deviceValidationError();
           default:
             return true;
         }
@@ -491,40 +764,18 @@
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
             if (mode === 'manual' && valueMissing('RUNNER_PUBLIC_URL')) return 'Manual mode requires a public URL.';
+            if (mode === 'manual' && !validManualPublicURL()) return 'Manual public URL must start with http:// or https://.';
             if (mode === 'cloudflare-managed' && valueMissing('RUNNER_DOMAIN')) return 'Managed mode requires a runner domain.';
             if (mode === 'cloudflare-managed' && valueMissing('CLOUDFLARE_TUNNEL_TOKEN')) return 'Managed mode requires a tunnel token.';
             return '';
           }
-          case 'device': {
-            const runnerType = value('CREDIMI_RUNNER_TYPE');
-            if (!runnerType) return 'Runner type is required.';
-            const mode = value('CREDIMI_RUNNER_DEVICE_MODE');
-            if (runnerType === 'android_phone' && mode === 'wifi' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) {
-              return 'Wi-Fi mode requires an Android Wi-Fi IP.';
-            }
-            if (runnerType === 'android_phone' && mode !== 'wifi' && valueMissing('CREDIMI_RUNNER_SERIAL')) {
-              return 'Select a connected Android device.';
-            }
-            if (runnerType === 'android_emulator' && valueMissing('BASE_NAME')) return 'Base name is required.';
-            if (runnerType === 'android_emulator') {
-              const panel = $('[data-android-emulator-assets-panel]', form);
-              if (panel && panel.dataset.checking === '1') return 'Checking emulator assets.';
-              return 'Emulator assets must be present before continuing.';
-            }
-            if (runnerType === 'ios_simulator' && valueMissing('BASE_NAME')) return 'Simulator name is required.';
-            if (runnerType === 'ios_simulator') return 'Create or select the named simulator before continuing.';
-            if (runnerType === 'redroid' && valueMissing('CREDIMI_RUNNER_WIFI_IP')) return 'Redroid requires an Android Wi-Fi IP.';
-            if (runnerType === 'redroid') {
-              const sshEnabled = $('[data-avdctl-ssh-enabled]', form);
-              if (sshEnabled && sshEnabled.checked && valueMissing('AVDCTL_SSH_TARGET')) return 'Remote avdctl requires an SSH target.';
-            }
-            return '';
-          }
+          case 'devices': return deviceValidationError();
           default:
             return '';
         }
       };
       const syncStepActions = () => {
+        syncManualPublicURLError();
         if (next && !next.hidden) next.disabled = !currentStepValid();
       };
       const show = (idx) => {
@@ -535,6 +786,18 @@
           b.classList.toggle('on', i === current);
           b.classList.toggle('done', i < current);
         });
+        if (connectedAndroidTimer) {
+          clearTimeout(connectedAndroidTimer);
+          connectedAndroidTimer = null;
+        }
+        if (panels[current] && panels[current].dataset.step === 'devices') {
+          const pollConnectedAndroid = async () => {
+            await refreshConnectedAndroidDevices(form);
+            if (connectedAndroidTimer !== null && panels[current] && panels[current].dataset.step === 'devices') connectedAndroidTimer = setTimeout(pollConnectedAndroid, 2500);
+          };
+          connectedAndroidTimer = 0;
+          pollConnectedAndroid();
+        }
         if (prev) prev.disabled = current === 0;
         if (next) next.hidden = current === panels.length - 1;
         if (submit) submit.style.display = current === panels.length - 1 ? '' : 'none';
@@ -543,7 +806,7 @@
         syncStepActions();
       };
       const jsonPost = async (url, body) => {
-        const res = await fetch(url, {
+        const res = await fetch(dashboardURL(url), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -671,14 +934,14 @@
       const applyConflictDecision = (preview, action) => {
         const actionInput = $('[data-runner-conflict-action]', form);
         const runnerID = field('CREDIMI_RUNNER_ID');
-        const nextRunnerID = action === 'create' ? preview.preview_runner_id : preview.base_runner_id;
+        const nextRunnerID = action === 'create' ? preview.runner_id : preview.existing_runner_id;
         if (actionInput) actionInput.value = action;
         if (runnerID) runnerID.value = nextRunnerID || '';
         const runnerPreviewEl = $('[data-runner-id-preview]', form);
         if (runnerPreviewEl) runnerPreviewEl.textContent = nextRunnerID || '';
         syncOTELServiceName(nextRunnerID || '');
       };
-      const openRunnerConflictModal = (preview) => new Promise((resolve) => {
+      const openRunnerConflictModal = (preview, kind = 'runner') => new Promise((resolve) => {
         const modal = $('#runner-conflict-modal');
         if (!modal) {
           resolve('cancel');
@@ -687,9 +950,18 @@
         const summary = $('[data-runner-conflict-modal-summary]', modal);
         const existing = $('[data-runner-conflict-modal-existing]', modal);
         const suggested = $('[data-runner-conflict-modal-preview]', modal);
-        if (summary) summary.textContent = 'The requested runner name already exists. Choose whether to update it or create a new runner ID.';
-        if (existing) existing.innerHTML = `Existing runner: <span class="tag mono">${escapeHtml(preview.base_runner_id || '')}</span>`;
-        if (suggested) suggested.innerHTML = `New available runner ID: <span class="tag mono">${escapeHtml(preview.preview_runner_id || preview.base_runner_id || '')}</span>`;
+        const device = kind === 'device';
+        const baseID = device ? preview.existing_device_id : preview.existing_runner_id;
+        const previewID = device ? preview.device_id : preview.runner_id;
+        const title = $('#runner-conflict-title', modal);
+        if (title) title.textContent = device ? 'Device already exists' : 'Runner already exists';
+        if (summary) summary.textContent = device ? 'The requested device name already exists on this runner. Choose whether to update it or create a new device ID.' : 'The requested runner name already exists. Choose whether to update it or create a new runner ID.';
+        if (existing) existing.innerHTML = `Existing ${device ? 'device' : 'runner'}: <span class="tag mono">${escapeHtml(baseID || '')}</span>`;
+        if (suggested) suggested.innerHTML = `New available ${device ? 'device' : 'runner'} ID: <span class="tag mono">${escapeHtml(previewID || baseID || '')}</span>`;
+        const update = $('[data-runner-conflict-decision="update"]', modal);
+        const create = $('[data-runner-conflict-decision="create"]', modal);
+        if (update) update.textContent = device ? 'Update existing device' : 'Update existing runner';
+        if (create) create.textContent = device ? 'Create new device' : 'Create new runner';
         modal.hidden = false;
         const primary = $('[data-runner-conflict-decision]', modal);
         if (primary) primary.focus();
@@ -742,7 +1014,7 @@
           if (actionInput && !actionInput.value) {
             actionInput.value = data.default_action || 'update';
           }
-          rid = (actionInput && actionInput.value === 'create' ? data.preview_runner_id : data.base_runner_id) || data.runner_id || '';
+          rid = (actionInput && actionInput.value === 'create' ? data.runner_id : data.existing_runner_id) || data.runner_id || '';
           setConflictState(data);
           previewData = data;
         } catch (e) {
@@ -774,6 +1046,24 @@
             const decision = await openRunnerConflictModal(preview);
             if (decision === 'cancel') return false;
             applyConflictDecision(preview, decision);
+          }
+        }
+        if (panel.dataset.step === 'devices') {
+          const instanceURL = value('CREDIMI_URL');
+          const apiKey = selectedAPIKey();
+          const organization = value('CREDIMI_RUNNER_ORGANIZATION');
+          const runnerID = value('CREDIMI_RUNNER_ID');
+          for (const card of $$('[data-device-provision]', form)) {
+            const name = (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim();
+            if (!instanceURL || !apiKey || !organization || !runnerID || !name) continue;
+            const preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
+            if (!preview || !preview.conflict) continue;
+            const decision = await openRunnerConflictModal(preview, 'device');
+            if (decision === 'cancel') return false;
+            const action = $('[data-device-conflict-action]', card);
+            const id = $('[data-device-id]', card);
+            if (action) action.value = decision;
+            if (id) id.value = decision === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
           }
         }
         return true;
@@ -811,6 +1101,33 @@
   }
   initSetupWizard();
 
+  document.addEventListener('click', (e) => {
+    const add = e.target.closest('[data-setup-device-add]');
+    if (add) {
+      const form = add.closest('form');
+      const template = form && form.querySelector('template[data-device-provision-template]');
+      const list = form && form.querySelector('[data-setup-devices]:not([data-legacy-setup-devices])');
+      if (template && list) {
+        const card = template.content.cloneNode(true);
+        list.appendChild(card);
+        const newCard = list.lastElementChild;
+        newCard.querySelector('[data-setup-device-remove]').hidden = false;
+        initializeDeviceProvisionCard(newCard);
+        reindexSetupDeviceCards(form);
+      }
+      return;
+    }
+    const remove = e.target.closest('[data-setup-device-remove]');
+    if (remove) {
+      const card = remove.closest('[data-setup-device-card]');
+      if (card) {
+        const form = remove.closest('[data-setup-form]');
+        card.remove();
+        reindexSetupDeviceCards(form);
+      }
+    }
+  });
+
   // ── Network step: radio cards + show/hide fields based on service mode ──
   const syncNetMode = (mode) => {
     document.querySelectorAll('[data-net-mode]').forEach(el => {
@@ -836,14 +1153,103 @@
   };
   initNetMode();
 
+  // ── Host resource monitor ───────────────────────────────────────────────
+  let systemMonitorTimer = null;
+  function formatSystemBytes(value) {
+    const n = Number(value || 0); if (!Number.isFinite(n)) return '—';
+    if (n < 1024) return `${Math.round(n)} B`;
+    if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KiB`;
+    if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MiB`;
+    return `${(n / 1024 ** 3).toFixed(1)} GiB`;
+  }
+  function metricDisplay(key, sample) {
+    const value = sample && sample[key];
+    if (key === 'disk_activity_kib_s') return `${Number(value || 0).toFixed(1)} KiB/s`;
+    if (key === 'disk_used_percent') return `${Number(value || 0).toFixed(1)}% used · ${formatSystemBytes(sample && sample.disk_free_bytes)} free`;
+    return `${Number(value || 0).toFixed(1)}%`;
+  }
+  function drawSystemChart(canvas, samples, key) {
+    const ratio = window.devicePixelRatio || 1; const width = Math.max(1, canvas.clientWidth); const height = Math.max(1, canvas.clientHeight);
+    canvas.width = width * ratio; canvas.height = height * ratio;
+    const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio); ctx.clearRect(0, 0, width, height);
+    const values = samples.map(s => Number(s[key])).filter(v => Number.isFinite(v));
+    if (!values.length) { ctx.fillStyle = '#9A97B5'; ctx.font = '12px sans-serif'; ctx.fillText('No host data available', 8, height / 2); return; }
+    const max = Math.max(1, ...values) * 1.1;
+    ctx.strokeStyle = '#E4E4E7'; ctx.lineWidth = 1; for (let line = 1; line < 4; line++) { const y = height * line / 4; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+    ctx.strokeStyle = '#3D1FC4'; ctx.lineWidth = 2; ctx.beginPath();
+    samples.forEach((sample, index) => { const value = Number(sample[key]); if (!Number.isFinite(value)) return; const x = samples.length < 2 ? width : index * width / (samples.length - 1); const y = height - Math.min(value, max) / max * (height - 4) - 2; if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }); ctx.stroke();
+  }
+  async function refreshSystemMonitor(root, range = root && root.dataset.systemRange || 'live') {
+    if (!root || !root.isConnected) return;
+    try {
+      const response = await fetch(dashboardURL(`/api/system/metrics?range=${range}`), { headers: { Accept: 'application/json' } }); if (!response.ok) throw new Error('host metrics unavailable');
+      const payload = await response.json(); const samples = payload.samples || []; const current = samples[samples.length - 1] || {};
+      root.dataset.systemRange = range;
+      $$('[data-system-value]', root).forEach(node => { node.textContent = metricDisplay(node.dataset.systemValue, current); });
+      $$('[data-system-chart]', root).forEach(canvas => drawSystemChart(canvas, samples, canvas.dataset.systemChart));
+      const seconds = Number(payload.interval_ms || 2000) / 1000; const meta = $('[data-system-monitor-meta]', root);
+      if (meta) meta.textContent = range === 'hourly' ? `${samples.length} hourly averages from the local JSON log (previous 24 hours).` : `${samples.length} live samples · refreshes every ${seconds % 1 ? seconds.toFixed(1) : seconds} seconds.`;
+    } catch (error) { const meta = $('[data-system-monitor-meta]', root); if (meta) meta.textContent = `Host metrics unavailable: ${error.message}`; }
+  }
+  function initSystemMonitor(root = document) {
+    const monitor = $('[data-system-monitor]', root); if (!monitor) return;
+    clearTimeout(systemMonitorTimer); systemMonitorTimer = null;
+    monitor.addEventListener('click', event => { const tab = event.target.closest('[data-system-range]'); if (!tab) return; $$('[data-system-range]', monitor).forEach(button => button.classList.toggle('on', button === tab)); refreshSystemMonitor(monitor, tab.dataset.systemRange); });
+    const pollSystemMonitor = async () => {
+      if (!monitor.isConnected) return;
+      if (monitor.dataset.systemRange !== 'hourly') await refreshSystemMonitor(monitor);
+      if (systemMonitorTimer !== null) systemMonitorTimer = setTimeout(pollSystemMonitor, 2000);
+    };
+    systemMonitorTimer = 0;
+    pollSystemMonitor();
+  }
+  initSystemMonitor();
+
   // ── Device step: radio cards + show/hide fields based on runner type and mode ──
   const setPanelVisible = (el, visible) => {
     el.style.display = visible ? '' : 'none';
   };
+  const setupDeviceFieldKey = {
+    CREDIMI_DEVICE_NAME: 'NAME',
+    CREDIMI_DEVICE_DESCRIPTION: 'DESCRIPTION',
+    CREDIMI_DEVICE_CONFLICT_ACTION: 'CONFLICT_ACTION',
+    CREDIMI_DEVICE_ID: 'ID',
+    CREDIMI_RUNNER_TYPE: 'TYPE',
+    CREDIMI_RUNNER_DEVICE_MODE: 'MODE',
+    CREDIMI_RUNNER_SERIAL: 'SERIAL',
+    CREDIMI_RUNNER_WIFI_IP: 'WIFI_IP',
+    CREDIMI_RUNNER_WIFI_PORT: 'WIFI_PORT',
+    BASE_NAME: 'BASE_NAME',
+    ANDROID_KEYS_DIR: 'ANDROID_KEYS_DIR',
+    GOLDEN_PATH: 'GOLDEN_PATH',
+    HOST_AVD_HOME_PATH: 'HOST_AVD_HOME_PATH',
+    HOST_AVD_GOLDEN_PATH: 'HOST_AVD_GOLDEN_PATH',
+    REDROID_DATA_DIR: 'REDROID_DATA_DIR',
+    REDROID_DATA_TAR: 'REDROID_DATA_TAR',
+    AVDCTL_SSH_TARGET: 'AVDCTL_SSH_TARGET',
+    AVDCTL_SSH_PASSWORD: 'AVDCTL_SSH_PASSWORD',
+    AVDCTL_SSH_KNOWN_HOSTS_PATH: 'AVDCTL_SSH_KNOWN_HOSTS_PATH',
+    AVDCTL_SUDO: 'AVDCTL_SUDO',
+    AVDCTL_SUDO_PASSWORD: 'AVDCTL_SUDO_PASSWORD',
+    IOS_UDID: 'IOS_UDID',
+  };
+  const setupDeviceField = (root, name) => {
+    const key = setupDeviceFieldKey[name];
+		if (key) {
+			const fields = [...root.querySelectorAll(`[data-setup-device-field="${key}"]`)];
+			return fields.find((field) => !field.disabled) || fields[0] || null;
+		}
+		return root.querySelector(`[name="${name}"]`);
+  };
+	const setupDeviceFieldValue = (root, key) => {
+		const fields = [...root.querySelectorAll(`[data-setup-device-field="${key}"]`)];
+		const field = fields.find((candidate) => !candidate.disabled) || fields[0];
+		return field ? (field.value || '') : '';
+	};
   const fieldValue = (root, name) => {
     const radio = root.querySelector(`[name="${name}"]:checked`);
     if (radio) return radio.value || '';
-    const input = root.querySelector(`[name="${name}"]`);
+    const input = setupDeviceField(root, name);
     return input ? (input.value || '') : '';
   };
   const setFieldValue = (root, name, value) => {
@@ -863,7 +1269,7 @@
       checked.dispatchEvent(new Event('change', { bubbles: true }));
       return;
     }
-    const input = root.querySelector(`[name="${name}"]`);
+    const input = setupDeviceField(root, name);
     if (!input || input.value === value) return;
     input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -883,8 +1289,6 @@
       }
       params.set(input.name, input.value || '');
     });
-    const runnerType = root.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked');
-    if (runnerType) params.set('CREDIMI_RUNNER_TYPE', runnerType.value || '');
     return params;
   };
   const setCallout = (el, tone, message) => {
@@ -1032,6 +1436,7 @@
     const selects = panel.querySelector('[data-ios-simulator-selects]');
     const create = panel.querySelector('[data-ios-simulator-create]');
     panel.dataset.exists = '0';
+	setFieldValue(root, 'IOS_UDID', '');
     if (selects) selects.hidden = true;
     if (create) create.hidden = true;
 
@@ -1041,7 +1446,7 @@
     }
 
     try {
-      const res = await fetch(`/devices/ios-simulator/status?name=${encodeURIComponent(name)}`);
+      const res = await fetch(dashboardURL(`/devices/ios-simulator/status?name=${encodeURIComponent(name)}`));
       if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
       const data = await res.json();
       if (!data.supported) {
@@ -1050,6 +1455,7 @@
       }
       if (data.exists) {
         panel.dataset.exists = '1';
+		setFieldValue(root, 'IOS_UDID', data.udid || '');
         setCallout(message, 'info', `Simulator ${name} already exists and can be used.`);
         root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
         return;
@@ -1096,9 +1502,12 @@
         golden_root: fieldValue(root, 'HOST_AVD_GOLDEN_PATH'),
         golden_path: fieldValue(root, 'GOLDEN_PATH'),
       });
-      const res = await fetch(`/devices/android-emulator/assets/status?${query.toString()}`);
+      const res = await fetch(dashboardURL(`/devices/android-emulator/assets/status?${query.toString()}`));
       if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
       const data = await res.json();
+		if (!fieldValue(root, 'ANDROID_KEYS_DIR') && data.android_keys_dir) setFieldValue(root, 'ANDROID_KEYS_DIR', data.android_keys_dir);
+		if (!fieldValue(root, 'HOST_AVD_HOME_PATH') && data.avd_home) setFieldValue(root, 'HOST_AVD_HOME_PATH', data.avd_home);
+		if (!fieldValue(root, 'HOST_AVD_GOLDEN_PATH') && data.golden_root) setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', data.golden_root);
       const avdReady = data.avd_present === true;
       const goldenReady = data.golden_present === true;
       const avdOptions = data.avd_options || [];
@@ -1143,10 +1552,13 @@
   };
   const applyRunnerTypeDefaults = (root, type) => {
     const derived = deriveHomeDefaults(root);
+    const wifiPort = root.dataset.defaultWifiPort || '';
+    const redroidDataDir = root.dataset.defaultRedroidDataDir || '';
+    const redroidDataTar = root.dataset.defaultRedroidDataTar || '';
+    if (type !== 'ios_simulator') setFieldValue(root, 'IOS_UDID', '');
     switch (type) {
       case 'android_emulator':
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.emulatorImage);
-        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'emulator');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
@@ -1157,15 +1569,9 @@
         setFieldValue(root, 'GOLDEN_PATH', TYPE_DEFAULTS.goldenPath);
         setFieldValue(root, 'REDROID_DATA_DIR', '');
         setFieldValue(root, 'REDROID_DATA_TAR', '');
-        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
-        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
-        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-        setFieldValue(root, 'AVDCTL_SUDO', '');
-        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
       case 'ios_simulator':
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
-        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', '');
+        setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'simulator');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
@@ -1175,47 +1581,35 @@
         setFieldValue(root, 'GOLDEN_PATH', '');
         setFieldValue(root, 'REDROID_DATA_DIR', '');
         setFieldValue(root, 'REDROID_DATA_TAR', '');
-        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
-        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
-        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-        setFieldValue(root, 'AVDCTL_SUDO', '');
-        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
       case 'redroid':
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'no_device');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
-        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', TYPE_DEFAULTS.wifiPort);
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
         setFieldValue(root, 'BASE_NAME', '');
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
         setFieldValue(root, 'GOLDEN_PATH', '');
-        setFieldValue(root, 'REDROID_DATA_DIR', TYPE_DEFAULTS.redroidDataDir);
-        setFieldValue(root, 'REDROID_DATA_TAR', TYPE_DEFAULTS.redroidDataTar);
+        setFieldValue(root, 'REDROID_DATA_DIR', redroidDataDir);
+        setFieldValue(root, 'REDROID_DATA_TAR', redroidDataTar);
         break;
       default:
-        setFieldValue(root, 'RUNNER_IMAGE', TYPE_DEFAULTS.phoneImage);
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'usb');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
-        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', TYPE_DEFAULTS.wifiPort);
+        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
         setFieldValue(root, 'BASE_NAME', '');
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
         setFieldValue(root, 'GOLDEN_PATH', '');
         setFieldValue(root, 'REDROID_DATA_DIR', '');
         setFieldValue(root, 'REDROID_DATA_TAR', '');
-        setFieldValue(root, 'AVDCTL_SSH_TARGET', '');
-        setFieldValue(root, 'AVDCTL_SSH_PASSWORD', '');
-        setFieldValue(root, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-        setFieldValue(root, 'AVDCTL_SUDO', '');
-        setFieldValue(root, 'AVDCTL_SUDO_PASSWORD', '');
         break;
     }
   };
   const applyNormalizedPreview = async (root) => {
-    const res = await fetch('/config/normalize', {
+    const res = await fetch(dashboardURL('/config/normalize'), {
       method: 'POST',
       body: formParams(root),
     });
@@ -1226,6 +1620,37 @@
       if (Object.prototype.hasOwnProperty.call(values, key)) setFieldValue(root, key, values[key] || '');
     });
   };
+  async function refreshConnectedAndroidDevices(root = document) {
+    try {
+      const response = await fetch(dashboardURL('/devices/android/connected'), { headers: { Accept: 'application/json' } });
+      if (!response.ok) return;
+      const devices = (await response.json()).filter((device) => device && device.status === 'online' && device.type === 'android_phone' && device.mode === 'usb');
+      root.querySelectorAll('[data-android-phone-device-select]').forEach((select) => {
+        const card = select.closest('[data-device-provision]');
+        const serialField = card?.querySelector('[data-android-phone-serial]');
+        const fallbackHint = card?.querySelector('[data-android-phone-serial-hint]');
+        const current = serialField?.value || select.value || '';
+        select.replaceChildren(new Option('Select a connected Android device', ''));
+        devices.forEach((device) => {
+          const option = new Option(`${device.name || device.os || 'Android device'} — ${device.serial}`, device.serial);
+          option.selected = device.serial === current;
+          select.add(option);
+        });
+        const hasDevices = devices.length > 0;
+        select.hidden = !hasDevices;
+        select.disabled = !hasDevices;
+        if (serialField) {
+          if (hasDevices && select.value) serialField.value = select.value;
+          serialField.hidden = hasDevices;
+          serialField.disabled = false;
+        }
+        if (fallbackHint) fallbackHint.textContent = hasDevices
+          ? 'Choose a detected device.'
+          : 'No USB devices are visible from the current Runner topology. Adding the first USB device may require the Runner service to restart.';
+      });
+    } catch (_) {}
+  }
+
   const updateDeviceFields = (root = document) => {
     const type = fieldValue(root, 'CREDIMI_RUNNER_TYPE');
     const mode = fieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE');
@@ -1245,57 +1670,127 @@
     root.querySelectorAll('[data-dev-pick]').forEach(p => {
       p.classList.toggle('on', p.dataset.devPick === type);
     });
+	// Device cards reuse field names across type-specific branches. Disabled
+	// controls are not submitted, so an inactive phone USB radio cannot
+	// override the selected emulator's hidden `emulator` mode.
+	root.querySelectorAll('[data-dev-type] input, [data-dev-type] select, [data-dev-type] textarea').forEach(control => { control.disabled = false; });
+	root.querySelectorAll('[data-dev-type], [data-dev-mode]').forEach(panel => {
+		if (panel.style.display === 'none') panel.querySelectorAll('input, select, textarea').forEach(control => { control.disabled = true; });
+	});
+	// A hidden USB selector must not block Wi-Fi/no-device submissions, while
+	// USB itself must never continue without an explicit ADB target.
+	const serialSelect = root.querySelector('[data-android-phone-device-select]');
+	const serialField = root.querySelector('[data-android-phone-serial]');
+	if (serialSelect || serialField) {
+		const needsSerial = type === 'android_phone' && mode === 'usb';
+		const hasDetectedDevices = !!serialSelect && serialSelect.options.length > 1;
+		if (serialSelect) {
+			serialSelect.required = needsSerial && hasDetectedDevices;
+			serialSelect.disabled = !needsSerial || !hasDetectedDevices;
+			serialSelect.hidden = !needsSerial || !hasDetectedDevices;
+		}
+		if (serialField) {
+			serialField.required = needsSerial && !hasDetectedDevices;
+			serialField.disabled = !needsSerial;
+			serialField.hidden = !needsSerial || hasDetectedDevices;
+		}
+	}
     refreshIOSSimulatorPanel(root);
     refreshAndroidEmulatorAssetsPanel(root);
+  };
+  let nextDeviceProvisionID = 0;
+  const initializeDeviceProvisionCard = (card) => {
+    if (!card || !card.matches('[data-device-provision]')) return;
+    const id = card.dataset.deviceProvisionId || `device-${++nextDeviceProvisionID}`;
+    card.dataset.deviceProvisionId = id;
+    card.querySelectorAll('[data-device-type-ui]').forEach((radio) => {
+      radio.name = `device_type_ui_${id}`;
+    });
+    card.querySelectorAll('[data-device-mode-ui]').forEach((radio) => {
+      radio.name = `device_mode_ui_${id}`;
+    });
+
+    const typeRadio = card.querySelector('[data-device-type-ui]:checked');
+    const typeField = card.querySelector('[data-device-type-value]');
+    if (typeRadio && typeField) typeField.value = typeRadio.value || '';
+
+    const modeField = card.querySelector('[data-device-mode-value]');
+    if (modeField) {
+      const type = typeField ? typeField.value : '';
+      if (type === 'android_phone') {
+        const modeRadio = card.querySelector('[data-device-mode-ui]:checked');
+        if (modeRadio) modeField.value = modeRadio.value || '';
+      } else if (type === 'android_emulator') {
+        modeField.value = 'emulator';
+      } else if (type === 'ios_simulator') {
+        modeField.value = 'simulator';
+      } else if (type === 'redroid') {
+        modeField.value = 'no_device';
+      }
+    }
+    updateDeviceFields(card);
   };
   document.addEventListener('change', (e) => {
     const select = e.target.closest('[data-android-phone-device-select]');
     if (!select) return;
-    const root = select.closest('form') || document;
+    const root = select.closest('[data-device-provision]') || select.closest('form') || document;
     setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', select.value || '');
+    root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+  });
+  document.addEventListener('input', (e) => {
+    const field = e.target.closest('[data-android-phone-serial]');
+    if (!field) return;
+    const root = field.closest('[data-device-provision]') || field.closest('form') || document;
     root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
   });
   document.addEventListener('click', (e) => {
     const pick = e.target.closest('[data-dev-pick]');
     if (!pick) return;
-    const root = pick.closest('form') || document;
+    const root = pick.closest('[data-device-provision]') || pick.closest('form') || document;
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
-      updateDeviceFields(root);
+      initializeDeviceProvisionCard(root);
+		applyRunnerTypeDefaults(root, radio.value);
+		initializeDeviceProvisionCard(root);
       markDirty();
       const finish = () => {
-        updateDeviceFields(root);
+        initializeDeviceProvisionCard(root);
         const sshEnabled = root.querySelector('[data-avdctl-ssh-enabled]');
         if (sshEnabled) sshEnabled.checked = radio.value === 'redroid' && !!fieldValue(root, 'AVDCTL_SSH_TARGET');
         syncAVDCTLSSH(root);
         markDirty();
       };
       applyNormalizedPreview(root).then(finish).catch(() => {
+		initializeDeviceProvisionCard(root);
         applyRunnerTypeDefaults(root, radio.value);
         finish();
       });
     }
   });
   document.addEventListener('change', (e) => {
-    if (e.target.name === 'CREDIMI_RUNNER_DEVICE_MODE' || e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
-      updateDeviceFields(e.target.closest('form') || document);
+    if (e.target.matches('[data-device-mode-ui]')) {
+      initializeDeviceProvisionCard(e.target.closest('[data-device-provision]'));
+      return;
+    }
+    if (e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
+      updateDeviceFields(e.target.closest('[data-device-provision]') || e.target.closest('form') || document);
     }
   });
   document.addEventListener('dashboard:step-shown', (e) => {
-    if (e.detail && e.detail.step === 'device') updateDeviceFields(e.target.closest('form') || document);
+    if (e.detail && e.detail.step === 'devices') (e.target.closest('form') || document).querySelectorAll('[data-device-provision]').forEach(updateDeviceFields);
   });
   document.addEventListener('click', async (e) => {
     const create = e.target.closest('[data-ios-simulator-create]');
     if (create) {
-      const root = create.closest('form') || document;
+      const root = create.closest('[data-device-provision]') || create.closest('form') || document;
       const panel = create.closest('[data-ios-simulator-panel]');
       const message = panel && panel.querySelector('[data-ios-simulator-message]');
       const deviceType = panel && panel.querySelector('[data-ios-simulator-device-type]');
       const runtime = panel && panel.querySelector('[data-ios-simulator-runtime]');
       create.disabled = true;
       try {
-        const res = await fetch('/devices/ios-simulator/create', {
+        const res = await fetch(dashboardURL('/devices/ios-simulator/create'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1305,8 +1800,10 @@
           }),
         });
         if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
-        setCallout(message, 'info', 'Simulator created. Refreshing status.');
-        await refreshIOSSimulatorPanel(root);
+		const data = await res.json();
+		setFieldValue(root, 'IOS_UDID', data.udid || '');
+		setCallout(message, 'info', 'Simulator created.');
+		await refreshIOSSimulatorPanel(root);
       } catch (error) {
         setCallout(message, 'danger', error && error.message ? error.message : 'Failed to create simulator.');
       } finally {
@@ -1317,7 +1814,7 @@
 
     const applyAVD = e.target.closest('[data-android-emulator-apply-avd]');
     if (applyAVD) {
-      const root = applyAVD.closest('form') || document;
+      const root = applyAVD.closest('[data-device-provision]') || applyAVD.closest('form') || document;
       const panel = applyAVD.closest('[data-android-emulator-assets-panel]');
       const select = panel && panel.querySelector('[data-android-emulator-avd-select]');
       const option = select && select.selectedOptions[0];
@@ -1330,7 +1827,7 @@
 
     const applyGolden = e.target.closest('[data-android-emulator-apply-golden]');
     if (applyGolden) {
-      const root = applyGolden.closest('form') || document;
+      const root = applyGolden.closest('[data-device-provision]') || applyGolden.closest('form') || document;
       const panel = applyGolden.closest('[data-android-emulator-assets-panel]');
       const select = panel && panel.querySelector('[data-android-emulator-golden-select]');
       const option = select && select.selectedOptions[0];
@@ -1344,7 +1841,7 @@
 
     const download = e.target.closest('[data-android-emulator-download]');
     if (download) {
-      const root = download.closest('form') || document;
+      const root = download.closest('[data-device-provision]') || download.closest('form') || document;
       const panel = download.closest('[data-android-emulator-assets-panel]');
       const message = panel && panel.querySelector('[data-android-emulator-assets-message]');
       const avdControls = panel && panel.querySelector('[data-android-emulator-avd-controls]');
@@ -1359,7 +1856,7 @@
       resetAndroidEmulatorProgress(panel);
       setCallout(message, 'info', 'Downloading and extracting Credimi emulator assets. Keep this page open.');
       try {
-        const res = await fetch('/devices/android-emulator/assets/download', {
+        const res = await fetch(dashboardURL('/devices/android-emulator/assets/download'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1383,28 +1880,24 @@
   });
   const initDeviceFields = () => {
     $$('form').forEach((form) => {
-      if (form.querySelector('[name="CREDIMI_RUNNER_TYPE"]:checked')) updateDeviceFields(form);
+      form.querySelectorAll('[data-device-provision]').forEach(initializeDeviceProvisionCard);
     });
   };
   initDeviceFields();
 
-  const setToggleValue = (root, name, on) => {
-    const checkbox = root.querySelector(`input[type="checkbox"][name="${name}"]`);
-    if (checkbox) checkbox.checked = on;
-    const button = root.querySelector(`[data-toggle="${name}"]`);
-    if (button) {
-      button.classList.toggle('on', on);
-      button.setAttribute('aria-checked', on ? 'true' : 'false');
-    }
-  };
-  const syncAVDCTLSSH = (root = document, clearDisabled = false) => {
+  const syncAVDCTLSSH = (root = document) => {
     root.querySelectorAll('[data-avdctl-ssh-control]').forEach((control) => {
       const enabled = control.querySelector('[data-avdctl-ssh-enabled]');
-      const form = control.closest('form') || root;
-      const fields = control.nextElementSibling;
+      const form = control.closest('[data-device-provision]') || control.closest('form') || root;
+      const fields = control.parentElement && control.parentElement.querySelector('[data-avdctl-ssh-fields]');
       const on = fieldValue(form, 'CREDIMI_RUNNER_TYPE') === 'redroid' && !!(enabled && enabled.checked);
-      if (fields && fields.matches('[data-avdctl-ssh-fields]')) fields.hidden = !on;
-      const target = form.querySelector('[name="AVDCTL_SSH_TARGET"]');
+      if (fields && fields.matches('[data-avdctl-ssh-fields]')) {
+        fields.hidden = !on;
+        // Keep the canonical fields submitted even while the section is
+        // hidden, so disabling SSH can explicitly clear an edited device.
+        fields.querySelectorAll('input, select, textarea').forEach((input) => { input.disabled = false; });
+      }
+      const target = form.querySelector('[name="AVDCTL_SSH_TARGET"], [data-setup-device-field="AVDCTL_SSH_TARGET"]');
       if (target) target.required = on;
       if (on) {
         if (!fieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH')) {
@@ -1412,11 +1905,20 @@
         }
         return;
       }
-      if (!clearDisabled) return;
       setFieldValue(form, 'AVDCTL_SSH_TARGET', '');
       setFieldValue(form, 'AVDCTL_SSH_PASSWORD', '');
       setFieldValue(form, 'AVDCTL_SSH_KNOWN_HOSTS_PATH', '');
-      setToggleValue(form, 'AVDCTL_SUDO', false);
+      // AVDCTL_SUDO is a hidden canonical value, not the visual checkbox.
+      // Always write it when SSH is disabled so a prior true value cannot be
+      // submitted after the toggle is turned off.
+      setFieldValue(form, 'AVDCTL_SUDO', 'false');
+      const sudoEnabled = form.querySelector('[data-avdctl-sudo-enabled]');
+      if (sudoEnabled) sudoEnabled.checked = false;
+      const sudoToggle = form.querySelector('[data-avdctl-sudo-toggle]');
+      if (sudoToggle) {
+        sudoToggle.classList.remove('on');
+        sudoToggle.setAttribute('aria-checked', 'false');
+      }
       setFieldValue(form, 'AVDCTL_SUDO_PASSWORD', '');
     });
   };
@@ -1429,10 +1931,132 @@
     enabled.checked = !enabled.checked;
     toggle.classList.toggle('on', enabled.checked);
     toggle.setAttribute('aria-checked', enabled.checked ? 'true' : 'false');
-    syncAVDCTLSSH(control.parentElement || document, !enabled.checked);
+    syncAVDCTLSSH(control.parentElement || document);
+    markDirty();
+  });
+  document.addEventListener('click', (e) => {
+    const toggle = e.target.closest('[data-avdctl-sudo-toggle]');
+    if (!toggle) return;
+    const root = toggle.closest('[data-device-provision]') || toggle.closest('form') || document;
+    const enabled = root.querySelector('[data-avdctl-sudo-enabled]');
+    if (!enabled) return;
+    enabled.checked = !enabled.checked;
+    setFieldValue(root, 'AVDCTL_SUDO', enabled.checked ? 'true' : 'false');
+    toggle.classList.toggle('on', enabled.checked);
+    toggle.setAttribute('aria-checked', enabled.checked ? 'true' : 'false');
     markDirty();
   });
   syncAVDCTLSSH();
+
+  const deviceEditFields = {
+    CREDIMI_DEVICE_NAME: 'deviceName',
+    CREDIMI_DEVICE_DESCRIPTION: 'deviceDescription',
+    CREDIMI_RUNNER_SERIAL: 'deviceSerial',
+    CREDIMI_RUNNER_WIFI_IP: 'deviceWifiIp',
+    CREDIMI_RUNNER_WIFI_PORT: 'deviceWifiPort',
+    BASE_NAME: 'deviceBaseName',
+    GOLDEN_PATH: 'deviceGoldenPath',
+    HOST_AVD_HOME_PATH: 'deviceHostAvdHome',
+    HOST_AVD_GOLDEN_PATH: 'deviceHostAvdGolden',
+    REDROID_DATA_DIR: 'deviceRedroidDataDir',
+    REDROID_DATA_TAR: 'deviceRedroidDataTar',
+    AVDCTL_SSH_TARGET: 'deviceSshTarget',
+    AVDCTL_SSH_KNOWN_HOSTS_PATH: 'deviceKnownHosts',
+    IOS_UDID: 'deviceIosUdid',
+  };
+  const setDeviceEditMode = (form, editing) => {
+    form.dataset.deviceEditing = editing ? '1' : '';
+    const title = form.querySelector('[data-device-form-title]');
+    const label = form.querySelector('[data-device-form-submit-label]');
+    const cancel = form.querySelector('[data-device-form-cancel]');
+    if (title) title.textContent = editing ? 'Edit device' : 'Device';
+    if (label) label.textContent = editing ? 'Save device' : 'Add device';
+    if (cancel) cancel.hidden = !editing;
+  };
+  const selectDeviceType = (card, type) => {
+    const radio = card.querySelector(`[data-device-type-ui][value="${CSS.escape(type)}"]`);
+    if (!radio) return;
+    radio.checked = true;
+    card.querySelectorAll('[data-dev-pick]').forEach((pick) => pick.classList.toggle('on', pick.dataset.devPick === type));
+    initializeDeviceProvisionCard(card);
+		applyRunnerTypeDefaults(card, type);
+		initializeDeviceProvisionCard(card);
+  };
+  const selectDeviceMode = (card, mode) => {
+    const radio = card.querySelector(`[data-device-mode-ui][value="${CSS.escape(mode)}"]`);
+    if (radio) radio.checked = true;
+    setFieldValue(card, 'CREDIMI_RUNNER_DEVICE_MODE', mode);
+    initializeDeviceProvisionCard(card);
+  };
+  const populateDeviceEdit = (button) => {
+		const form = document.querySelector('[data-device-add-form]');
+    const card = form && form.querySelector('[data-device-provision]');
+    if (!form || !card) return;
+    selectDeviceType(card, button.dataset.deviceType || 'android_phone');
+    if ((button.dataset.deviceType || '') === 'android_phone') selectDeviceMode(card, button.dataset.deviceMode || 'usb');
+    setFieldValue(card, 'CREDIMI_DEVICE_ID', button.dataset.deviceId || '');
+    setFieldValue(card, 'CREDIMI_DEVICE_CONFLICT_ACTION', 'update');
+    Object.entries(deviceEditFields).forEach(([name, dataKey]) => setFieldValue(card, name, button.dataset[dataKey] || ''));
+    const serial = button.dataset.deviceSerial || '';
+    const serialSelect = card.querySelector('[data-android-phone-device-select]');
+    if (serialSelect && serial) {
+      if (![...serialSelect.options].some((option) => option.value === serial)) serialSelect.add(new Option(`Configured device — ${serial}`, serial));
+      serialSelect.value = serial;
+    }
+    const sshEnabled = card.querySelector('[data-avdctl-ssh-enabled]');
+    const sshOn = (button.dataset.deviceSshTarget || '').trim() !== '';
+    if (sshEnabled) sshEnabled.checked = sshOn;
+    const sshToggle = card.querySelector('[data-avdctl-ssh-toggle]');
+    if (sshToggle) {
+      sshToggle.classList.toggle('on', sshOn);
+      sshToggle.setAttribute('aria-checked', sshOn ? 'true' : 'false');
+    }
+    const sudoOn = button.dataset.deviceSudo === 'true';
+    setFieldValue(card, 'AVDCTL_SUDO', sudoOn ? 'true' : 'false');
+    const sudoEnabled = card.querySelector('[data-avdctl-sudo-enabled]');
+    if (sudoEnabled) sudoEnabled.checked = sudoOn;
+    const sudoToggle = card.querySelector('[data-avdctl-sudo-toggle]');
+    if (sudoToggle) {
+      sudoToggle.classList.toggle('on', sudoOn);
+      sudoToggle.setAttribute('aria-checked', sudoOn ? 'true' : 'false');
+    }
+    syncAVDCTLSSH(card);
+    setDeviceEditMode(form, true);
+    form.dataset.deviceOriginalName = button.dataset.deviceName || '';
+    form.dataset.deviceConflictResolved = '1';
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  const resetDeviceEdit = (form) => {
+    const card = form.querySelector('[data-device-provision]');
+    if (!card) return;
+    form.reset();
+    setDeviceEditMode(form, false);
+    form.dataset.deviceConflictResolved = '';
+    form.dataset.deviceOriginalName = '';
+    selectDeviceType(card, 'android_phone');
+    selectDeviceMode(card, 'usb');
+    setFieldValue(card, 'CREDIMI_DEVICE_ID', '');
+    setFieldValue(card, 'CREDIMI_DEVICE_CONFLICT_ACTION', 'create');
+    setFieldValue(card, 'AVDCTL_SUDO', 'false');
+    const sshEnabled = card.querySelector('[data-avdctl-ssh-enabled]');
+    if (sshEnabled) sshEnabled.checked = false;
+    syncAVDCTLSSH(card);
+    updateDeviceFields(card);
+  };
+  document.addEventListener('click', (e) => {
+    const edit = e.target.closest('[data-device-edit]');
+    if (edit) {
+      e.preventDefault();
+      populateDeviceEdit(edit);
+      return;
+    }
+    const cancel = e.target.closest('[data-device-form-cancel]');
+    if (cancel) {
+      e.preventDefault();
+      const form = cancel.closest('[data-device-add-form]');
+      if (form) resetDeviceEdit(form);
+    }
+  });
 
   // ── API keys link button (reads from CREDIMI_URL field) ─────────────────
   document.addEventListener('click', (e) => {
@@ -1490,6 +2114,44 @@
   });
   function typeOf(m) { return ($('input[name=type]', m) || {}).value || 'android_phone'; }
   function modeOf(m) { return ($('input[name=mode]', m) || {}).value || 'wifi'; }
+
+  // ── Inventory device form ────────────────────────────────────────────────
+  // This deliberately has its own scoped selectors. The former single-target
+  // handlers use global runner field names and would make cards affect each
+  // other once a host can own several devices.
+  function syncInventoryDeviceForm(form) {
+    if (!form) return;
+    const type = (form.querySelector('[data-inventory-type]') || {}).value || 'android_phone';
+    const phone = form.querySelector('[data-inventory-phone]');
+    const emulator = form.querySelector('[data-inventory-emulator]');
+    const ios = form.querySelector('[data-inventory-ios]');
+    const redroid = form.querySelector('[data-inventory-redroid]');
+    if (phone) phone.hidden = type !== 'android_phone';
+    if (emulator) emulator.hidden = type !== 'android_emulator';
+    if (ios) ios.hidden = type !== 'ios_simulator';
+    if (redroid) redroid.hidden = type !== 'redroid';
+    form.querySelectorAll('input[name="mode"]').forEach(input => { input.disabled = input.closest('[hidden]') !== null; });
+    const mode = (form.querySelector('input[name="mode"]:not(:disabled)') || {}).value || 'usb';
+    const usb = form.querySelector('[data-inventory-usb]');
+    const wifi = form.querySelector('[data-inventory-wifi]');
+    if (usb) usb.hidden = mode !== 'usb';
+    if (wifi) wifi.hidden = mode !== 'wifi';
+  }
+  document.addEventListener('change', (e) => {
+    const form = e.target.closest('[data-inventory-device-form]');
+    if (form && e.target.matches('[data-inventory-type]')) syncInventoryDeviceForm(form);
+  });
+  document.addEventListener('click', (e) => {
+    const button = e.target.closest('[data-inventory-mode] [data-value]');
+    if (!button) return;
+    const form = button.closest('[data-inventory-device-form]');
+    const group = button.closest('[data-inventory-mode]');
+    group.querySelectorAll('[data-value]').forEach(item => item.classList.toggle('on', item === button));
+    const mode = form.querySelector('input[name="mode"]:not(:disabled)');
+    if (mode) mode.value = button.dataset.value;
+    syncInventoryDeviceForm(form);
+  });
+  $$('[data-inventory-device-form]').forEach(syncInventoryDeviceForm);
 
   // ── Pick-card segmented control (network: service mode) ───────────────────
   document.addEventListener('click', (e) => {
@@ -1653,7 +2315,7 @@
   document.addEventListener('change', (e) => { if (e.target.closest('[data-config-form]')) markDirty(); });
   document.addEventListener('submit', async (e) => {
     const form = e.target.closest('[data-config-form]');
-    if (!form || form.matches('[data-setup-form]')) return;
+    if (!form || form.matches('[data-setup-form], [data-device-add-form]')) return;
     if (form.dataset.confirmedSubmit === '1') {
       delete form.dataset.confirmedSubmit;
       return;
@@ -1665,7 +2327,7 @@
     let message = 'Save these changes?';
     let confirmRequired = false;
     try {
-      const res = await fetch('/config/diff', { method: 'POST', body });
+      const res = await fetch(dashboardURL('/config/diff'), { method: 'POST', body });
       if (res.ok) {
         const data = await res.json();
         confirmRequired = data.confirm_required === true;
@@ -1709,6 +2371,9 @@
       initNetMode();
       initDeviceFields();
       syncAVDCTLSSH(e.detail.target);
+      // outerHTML swaps detach the original <main>, so initialize from the
+      // current document rather than the event's stale target.
+      initSystemMonitor();
     }
   });
   window.addEventListener('popstate', syncNav);

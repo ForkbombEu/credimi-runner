@@ -12,10 +12,17 @@ type touchFingerprintResult struct {
 	Status string
 }
 
-func (s *runnerService) touchFingerprintLogic() (*touchFingerprintResult, *runner.APIError) {
+func (s *runnerService) touchFingerprintLogic(deviceIdentifier string) (*touchFingerprintResult, *runner.APIError) {
+	device, apiErr := s.configuredDevice(deviceIdentifier)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	if device.Serial == "" {
+		return nil, &runner.APIError{Code: http.StatusBadRequest, Domain: "device", Reason: "missing device serial", Message: "device has no configured Android serial"}
+	}
 	s.Deps.Sleeper(5 * time.Second)
 
-	output, err := s.Deps.CommandRunner.Run("adb", "-e", "emu", "finger", "touch", "1")
+	output, err := s.Deps.CommandRunner.Run("adb", "-s", device.Serial, "emu", "finger", "touch", "1")
 	if err != nil {
 		return nil, &runner.APIError{
 			Code:    http.StatusInternalServerError,

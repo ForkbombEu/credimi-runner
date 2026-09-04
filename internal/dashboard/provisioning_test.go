@@ -1,9 +1,6 @@
 package dashboard
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -24,6 +21,52 @@ func TestParseSimctlEntries(t *testing.T) {
 	label, identifier, ok = parseSimctlRuntimeLine("iOS 18.0 - com.apple.CoreSimulator.SimRuntime.iOS-18-0")
 	if !ok || label != "iOS 18.0" || identifier != "com.apple.CoreSimulator.SimRuntime.iOS-18-0" {
 		t.Fatalf("runtime parse = %q %q %v", label, identifier, ok)
+	}
+}
+
+func TestIOSSimulatorUDID(t *testing.T) {
+	if got := iosSimulatorUDID("iPhone 16 Pro (AAAA-BBBB) (Shutdown)\n", "iPhone 16 Pro"); got != "AAAA-BBBB" {
+		t.Fatalf("UDID = %q", got)
+	}
+	if got := iosSimulatorUDID("credimi (CCCC-DDDD)\n", "credimi"); got != "CCCC-DDDD" {
+		t.Fatalf("short UDID = %q", got)
+	}
+}
+
+func TestProvisioningHelpersRejectMalformedIdentifiersAndPaths(t *testing.T) {
+	for _, line := range []string{
+		"iPhone 16 Pro",
+		"iPhone 16 Pro (com.apple.NotADeviceType)",
+		"(com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro)",
+	} {
+		if _, _, ok := parseSimctlDeviceTypeLine(line); ok {
+			t.Fatalf("malformed device type accepted: %q", line)
+		}
+	}
+	for _, line := range []string{"iOS 18.0", "iOS 18.0 - com.apple.NotARuntime"} {
+		if _, _, ok := parseSimctlRuntimeLine(line); ok {
+			t.Fatalf("malformed runtime accepted: %q", line)
+		}
+	}
+
+	if avdAssetsExistForName("", "credimi") || avdAssetsExistForName(t.TempDir(), "") {
+		t.Fatal("empty AVD asset paths were accepted")
+	}
+	if goldenAssetsPresent("") || goldenAssetsPresentForLeaf("", "credimi-golden") {
+		t.Fatal("empty golden asset paths were accepted")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "credimi-golden"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !goldenAssetsPresent(filepath.Join(root, "credimi-golden")) {
+		t.Fatal("golden leaf root was not recognized")
+	}
+	if got := goldenLeafFromPath("/", "pixel"); got != "pixel-golden" {
+		t.Fatalf("root golden path leaf = %q", got)
+	}
+	if got := goldenLeafFromPath("", ""); got != "credimi-golden" {
+		t.Fatalf("default golden path leaf = %q", got)
 	}
 }
 
@@ -101,48 +144,6 @@ func TestAndroidEmulatorAssetHelpers(t *testing.T) {
 	goldenOptions := listGoldenOptions(goldenRoot)
 	if len(goldenOptions) != 2 {
 		t.Fatalf("expected golden options, got %#v", goldenOptions)
-	}
-}
-
-func TestDownloadAndExtractTarball(t *testing.T) {
-	var archive bytes.Buffer
-	gzw := gzip.NewWriter(&archive)
-	tw := tar.NewWriter(gzw)
-	content := []byte("hello")
-	if err := tw.WriteHeader(&tar.Header{Name: "credimi/file.txt", Mode: 0o644, Size: int64(len(content))}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write(content); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gzw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	original := provisioningHTTPClient
-	t.Cleanup(func() { provisioningHTTPClient = original })
-	provisioningHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     make(http.Header),
-			Body:       io.NopCloser(bytes.NewReader(archive.Bytes())),
-		}, nil
-	})}
-
-	dest := t.TempDir()
-	if err := downloadAndExtractTarball(context.Background(), "https://files.example/assets.tar.gz", dest, nil); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(dest, "credimi", "file.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "hello" {
-		t.Fatalf("extracted file = %q", string(data))
 	}
 }
 
@@ -359,30 +360,27 @@ func TestAndroidEmulatorAssetsSelectRoute(t *testing.T) {
 }
 
 func TestAndroidEmulatorAssetsDownloadRoute(t *testing.T) {
-	avdArchive := tarGzArchive(t, "credimi.avd/config.ini")
-	goldenArchive := tarGzArchive(t, "credimi-golden/config.ini")
-
-	originalClient := provisioningHTTPClient
-	t.Cleanup(func() { provisioningHTTPClient = originalClient })
-	provisioningHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body := avdArchive
-		if strings.Contains(req.URL.Path, "golden") {
-			body = goldenArchive
+	originalClient := downloadAndroidAssets
+	t.Cleanup(func() { downloadAndroidAssets = originalClient })
+	downloadAndroidAssets = func(_ context.Context, url, dest string, progress func(DownloadProgress)) error {
+		if progress != nil {
+			progress(DownloadProgress{Phase: "downloading"})
+			progress(DownloadProgress{Phase: "extracting"})
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     make(http.Header),
-			Body:       io.NopCloser(bytes.NewReader(body)),
-		}, nil
-	})}
-
+		if strings.Contains(url, "golden") {
+			return os.MkdirAll(filepath.Join(dest, "credimi-golden"), 0o755)
+		}
+		if err := os.MkdirAll(filepath.Join(dest, "credimi.avd"), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dest, "credimi.ini"), nil, 0o644)
+	}
 	s := newTestServer(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/devices/android-emulator/assets/download", strings.NewReader(`{}`))
 	s.androidEmulatorAssetsDownload(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("missing paths code = %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default paths code = %d", rec.Code)
 	}
 
 	avdHome := filepath.Join(t.TempDir(), "avd")
@@ -400,33 +398,12 @@ func TestAndroidEmulatorAssetsDownloadRoute(t *testing.T) {
 	if !strings.Contains(body, `"phase":"base_avd_downloading"`) || !strings.Contains(body, `"phase":"golden_downloading"`) || !strings.Contains(body, `"phase":"complete"`) {
 		t.Fatalf("progress body = %s", body)
 	}
-	if !pathExists(filepath.Join(avdHome, "credimi.avd")) {
+	if _, err := os.Stat(filepath.Join(avdHome, "credimi.avd")); err != nil {
 		t.Fatalf("expected avd assets under %s", avdHome)
 	}
-	if !pathExists(filepath.Join(goldenRoot, "credimi-golden")) {
+	if _, err := os.Stat(filepath.Join(goldenRoot, "credimi-golden")); err != nil {
 		t.Fatalf("expected golden assets under %s", goldenRoot)
 	}
-}
-
-func tarGzArchive(t *testing.T, name string) []byte {
-	t.Helper()
-	var archive bytes.Buffer
-	gzw := gzip.NewWriter(&archive)
-	tw := tar.NewWriter(gzw)
-	content := []byte("hello")
-	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write(content); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := gzw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return archive.Bytes()
 }
 
 func helperCommand(t *testing.T, output string) *exec.Cmd {

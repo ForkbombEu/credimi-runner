@@ -3,7 +3,7 @@
   <div class="page-head">
     <span class="eyebrow">Network &amp; exposure</span>
     <h1>Network</h1>
-    <p>How the runner API on port {{.Runner.Get "RUNNER_PORT"}} is reached — directly, via a quick Cloudflare Tunnel, or your own named tunnel and domain.</p>
+    <p>Choose how Credimi reaches this runner. The public endpoint below is derived from the selected exposure mode.</p>
   </div>
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
@@ -15,9 +15,9 @@
         {{with .Field "CREDIMI_SERVICE_MODE"}}
         <div class="field"><label><span class="lbtx">Exposure strategy</span><span class="envkey">CREDIMI_SERVICE_MODE</span></label>
           <div class="picks" style="grid-template-columns:1fr 1fr 1fr" data-seg="CREDIMI_SERVICE_MODE">
-            <button type="button" class="pick {{if .Selected "auto"}}on{{end}}" data-val="auto"><span class="pic">{{icon "cloud"}}</span><span><b>Quick tunnel</b><span>Instant trycloudflare.com URL</span></span></button>
-            <button type="button" class="pick {{if .Selected "cloudflare-managed"}}on{{end}}" data-val="cloudflare-managed"><span class="pic">{{icon "globe"}}</span><span><b>Named tunnel</b><span>Your domain via Cloudflare</span></span></button>
-            <button type="button" class="pick {{if .Selected "manual"}}on{{end}}" data-val="manual"><span class="pic">{{icon "server"}}</span><span><b>Direct</b><span>Bind host port, no tunnel</span></span></button>
+            <button type="button" class="pick {{if .Selected "auto"}}on{{end}}" data-val="auto"><span class="pic">{{icon "cloud"}}</span><span><b>Auto</b><span>Quick tunnel</span></span></button>
+            <button type="button" class="pick {{if .Selected "cloudflare-managed"}}on{{end}}" data-val="cloudflare-managed"><span class="pic">{{icon "globe"}}</span><span><b>Managed</b><span>Named tunnel</span></span></button>
+            <button type="button" class="pick {{if .Selected "manual"}}on{{end}}" data-val="manual"><span class="pic">{{icon "server"}}</span><span><b>Manual</b><span>Self-managed</span></span></button>
           </div>
           <input type="hidden" name="CREDIMI_SERVICE_MODE" value="{{.Value}}">
         </div>
@@ -25,24 +25,22 @@
         <div class="divline"></div>
         <div class="field"><label><span class="lbtx">Public endpoint</span></label>
           <div class="inp-wrap"><input class="inp mono" readonly value="{{.PublicURL}}"><div class="acts"><button type="button" class="minibtn" data-copy-value="{{.PublicURL}}">{{icon "copy"}} Copy</button></div></div></div>
-        <div data-net-mode="cloudflare-managed" style="display:none">
-          <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_DOMAIN"}}{{template "field" .Field "CLOUDFLARE_TUNNEL_TOKEN"}}</div>
-        </div>
         <div data-net-mode="manual" style="display:none">
           <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_PUBLIC_URL"}}{{template "field" .Field "RUNNER_PUBLIC_PORT"}}</div>
+        </div>
+        <div data-net-mode="cloudflare-managed" style="display:none">
+          <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_DOMAIN"}}{{template "field" .Field "CLOUDFLARE_TUNNEL_TOKEN"}}</div>
         </div>
       </div>
     </section>
 
     <section class="card">
-      <header class="card-h">{{icon "shield"}}<div><h3>Edge &amp; tunnel</h3><div class="sub">Caddy reverse proxy + cloudflared</div></div></header>
+      <header class="card-h">{{icon "gear"}}<div><h3>Advanced infrastructure</h3><div class="sub">Internal listener and edge settings</div></div></header>
       <div class="card-b">
-        <div class="grid-2">
-          {{range .Snapshot.Services}}{{if or (eq .ID "caddy") (eq .ID "temporal")}}{{template "service_row" .}}{{end}}{{end}}
-        </div>
-        <div class="divline"></div>
-        <div class="field-row">{{template "field" .Field "RUNNER_HOST"}}{{template "field" .Field "RUNNER_PORT"}}</div>
-        {{template "field" .Field "RUNNER_CADDY_SITE"}}
+        <details class="gear-panel">
+          <summary>{{icon "gear"}} Show internal listener and edge settings</summary>
+          <div class="field-row">{{template "field" .Field "RUNNER_HOST"}}{{template "field" .Field "RUNNER_PORT"}}</div>
+        </details>
       </div>
     </section>
 

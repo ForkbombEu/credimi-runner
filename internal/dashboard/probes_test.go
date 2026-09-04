@@ -2,31 +2,15 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/forkbombeu/credimi-runner/internal/controller"
-	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
-
-func TestServicesFromObservationMapsLifecycleStates(t *testing.T) {
-	services := servicesFromObservation(controller.ObservedRuntime{Services: []controller.ObservedService{
-		{ID: "running", State: controller.StateRunning, Critical: true},
-		{ID: "degraded", State: controller.StateDegraded},
-		{ID: "foreign", State: controller.StateForeign},
-		{ID: "unknown", State: controller.StateUnknown},
-		{ID: "stopped", State: controller.StateStopped},
-	}})
-	want := []Status{Online, Degraded, Degraded, Degraded, Offline}
-	for index, service := range services {
-		if service.Status != want[index] || !service.Expected {
-			t.Fatalf("service %d = %#v", index, service)
-		}
-	}
-}
 
 func TestProbeAndroid_ParseOutput(t *testing.T) {
 	// Simulated output from "adb devices -l"
@@ -117,13 +101,45 @@ func TestPillData(t *testing.T) {
 	}
 
 	// One offline
-	snap.Services = append(snap.Services, Service{ID: "caddy", Status: Offline, Expected: true, Critical: true})
+	snap.Services[0].Status = Offline
 	p = h.pillData(snap)
 	if p.OK {
 		t.Error("expected not OK when one service offline")
 	}
 	if p.Issues != 1 {
 		t.Errorf("expected 1 issue, got %d", p.Issues)
+	}
+}
+
+func TestPillDataDeduplicatesConfiguredOfflineDevice(t *testing.T) {
+	h := &Hub{cfg: &Config{values: map[string]string{
+		"CREDIMI_DEVICE_COUNT":     "1",
+		"CREDIMI_DEVICE_1_ID":      "acme/runner/phone",
+		"CREDIMI_DEVICE_1_NAME":    "Phone",
+		"CREDIMI_DEVICE_1_TYPE":    "android_phone",
+		"CREDIMI_DEVICE_1_MODE":    "usb",
+		"CREDIMI_DEVICE_1_SERIAL":  "usb-1",
+		"CREDIMI_DEVICE_1_ENABLED": "true",
+	}}}
+	snap := Snapshot{Devices: []Device{{Serial: "usb-1", Status: Offline}}}
+	if got := h.pillData(snap); got.Issues != 1 || got.OK {
+		t.Fatalf("configured offline device health = %#v, want one issue", got)
+	}
+}
+
+func TestPillDataDeduplicatesConfiguredDegradedDevice(t *testing.T) {
+	h := &Hub{cfg: &Config{values: map[string]string{
+		"CREDIMI_DEVICE_COUNT":     "1",
+		"CREDIMI_DEVICE_1_ID":      "acme/runner/phone",
+		"CREDIMI_DEVICE_1_NAME":    "Phone",
+		"CREDIMI_DEVICE_1_TYPE":    "android_phone",
+		"CREDIMI_DEVICE_1_MODE":    "usb",
+		"CREDIMI_DEVICE_1_SERIAL":  "usb-1",
+		"CREDIMI_DEVICE_1_ENABLED": "true",
+	}}}
+	snap := Snapshot{Devices: []Device{{Serial: "usb-1", Status: Degraded}}}
+	if got := h.pillData(snap); got.Issues != 1 || got.OK {
+		t.Fatalf("configured degraded device health = %#v, want one issue", got)
 	}
 }
 
@@ -159,6 +175,34 @@ esac
 	}
 }
 
+func TestConnectedAndroidDevicesEndpointReturnsLiveProbe(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "adb"), `#!/bin/sh
+	printf '%s\n' 'List of devices attached' 'USB123 device product:pixel model:Pixel_8 device:husky transport_id:1' '192.0.2.2:5555 device model:WiFi_Phone' 'emulator-5554 device model:Emulator'
+`)
+	server := newTestServer(t)
+	t.Setenv("PATH", bin)
+	response := httptest.NewRecorder()
+	server.connectedAndroidDevices(response, httptest.NewRequest(http.MethodGet, "/devices/android/connected", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("endpoint status = %d", response.Code)
+	}
+	var devices []Device
+	if err := json.Unmarshal(response.Body.Bytes(), &devices); err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].Serial != "USB123" || devices[0].Status != Online {
+		t.Fatalf("connected devices = %#v", devices)
+	}
+	var payload []map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 1 || payload[0]["serial"] != "USB123" || payload[0]["status"] != string(Online) {
+		t.Fatalf("connected devices JSON = %#v", payload)
+	}
+}
+
 func TestProbeIOSWithFakeXcrun(t *testing.T) {
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "xcrun"), `#!/bin/sh
@@ -178,42 +222,21 @@ printf '%s\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-18-0":[{"udid
 	}
 }
 
-func TestProbeServicesWithFakeDocker(t *testing.T) {
-	bin := t.TempDir()
-	writeExecutable(t, filepath.Join(bin, "docker"), `#!/bin/sh
-printf '%s\n' '{"Service":"runner","State":"running","Status":"Up 10 seconds","Image":"runner:local"}' '{"Service":"caddy","State":"paused","Status":"Paused","Image":"caddy:local"}' '{"Service":"cloudflared","State":"exited","Status":"Exited","Image":"cloudflared:local"}'
-`)
-	t.Setenv("PATH", bin)
-
-	plan := dashboardruntime.BuildRuntimePlan(t.TempDir(), dashboardruntime.Values{
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "auto",
-	})
-	services := probeServices(context.Background(), t.TempDir(), plan, true)
-	if len(services) != 4 {
+func TestProbeServicesUsesRuntimeAndTemporalState(t *testing.T) {
+	services := probeServices(map[string]string{"TEMPORAL_ADDRESS": ""}, true)
+	if len(services) != 2 {
 		t.Fatalf("services len = %d", len(services))
 	}
-	if services[0].Status != Online || services[0].Image != "runner:local" || services[0].Uptime != "Up 10 seconds" {
+	if services[0].Status != Online || services[0].Image != "" || services[0].Uptime != "" {
 		t.Fatalf("runner service = %#v", services[0])
 	}
-	if services[1].Status != Degraded {
-		t.Fatalf("caddy service = %#v", services[1])
-	}
-	if services[2].Status != Offline || services[2].ID != "tunnel" {
-		t.Fatalf("tunnel service = %#v", services[2])
-	}
-	if services[3].ID != "temporal" || services[3].Critical {
-		t.Fatalf("temporal service = %#v", services[3])
+	if services[1].ID != "temporal" || services[1].Critical {
+		t.Fatalf("temporal service = %#v", services[1])
 	}
 }
 
-func TestProbeServicesWithoutDocker(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	plan := dashboardruntime.BuildRuntimePlan("", dashboardruntime.Values{
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-	})
-	services := probeServices(context.Background(), "", plan, false)
+func TestProbeServicesReportsStoppedRuntime(t *testing.T) {
+	services := probeServices(map[string]string{}, false)
 	for _, svc := range services {
 		if svc.ID == "temporal" {
 			continue

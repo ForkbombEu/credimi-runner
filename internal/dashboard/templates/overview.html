@@ -7,10 +7,10 @@
   </div>
 
   {{if .Flash}}<div class="callout info" style="margin-bottom:16px">{{icon "info"}}<div>{{.Flash}}</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runner restart.</div></div>{{end}}
-  {{if .RuntimeStatus.PendingRecreate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runtime recreate.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a runtime restart.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingReconcile}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for runtime reconciliation.</div></div>{{end}}
+  {{if .RuntimeStatus.PendingServiceRestart}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes require a service restart.</div></div>{{end}}
   {{if .RuntimeStatus.PendingCredimiUpdate}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Configuration changes are waiting for a Credimi registration update.</div></div>{{end}}
-  {{if .Snapshot.ObservationStale}}<div class="callout warn" style="margin-bottom:16px">{{icon "warn"}}<div>Runtime observation is stale. Refreshing local state.</div></div>{{end}}
   {{if .StartupMessage}}<div class="callout {{if eq .StartupPhase "needs_attention"}}danger{{else}}info{{end}}" style="margin-bottom:16px">{{icon "info"}}<div>{{.StartupMessage}}</div></div>{{end}}
 
   <div class="grid-4" style="margin-bottom:16px">
@@ -33,8 +33,9 @@
   </form>
 
   <section class="card">
-    <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">docker compose · {{.Runner.Get "CREDIMI_RUNNER_TYPE"}}</div></div>
+    <header class="card-h">{{icon "server"}}<div><h3>Service health</h3><div class="sub">runner host and device runtimes</div></div>
       <div class="right" style="display:flex;align-items:center;gap:10px">
+        {{if .RuntimeControlsAvailable}}
         <button class="btn {{if .RuntimeRunning}}btn-danger{{else}}btn-pri{{end}} runtime-cta"
                 hx-post="{{.RuntimeTogglePath}}"
                 hx-target="main"
@@ -45,6 +46,7 @@
                 data-busy-message="{{.RuntimeToggleBusyMessage}}">
           {{if .RuntimeRunning}}{{icon "x"}}{{else}}{{icon "check"}}{{end}} {{.RuntimeToggleLabel}}
         </button>
+        {{end}}
       </div></header>
     <div class="card-b">
       <div id="runtime-status" hx-ext="sse" sse-connect="/events/runtime" sse-swap="runtime">{{template "runtime_status" .}}</div>
@@ -62,19 +64,18 @@
   </section>
 
   <section class="card maintenance-card" style="margin-top:16px">
-    <header class="card-h">{{icon "gear"}}<div><h3>Maintenance</h3><div class="sub">Runner build and Docker runtime</div></div>
+    <header class="card-h">{{icon "gear"}}<div><h3>Maintenance</h3><div class="sub">Runner build</div></div>
       <div class="right maintenance-actions">
         <button type="button" class="btn btn-out btn-sm maintenance-check" data-maintenance-check title="Click to check if a new Credimi-Runner version is available" aria-label="Check for Credimi Runner updates">{{icon "refresh"}}</button>
-        <button type="button" class="btn btn-pri btn-sm" data-runner-upgrade {{if not .UpgradeAvailable}}disabled{{end}}>{{icon "activity"}} Upgrade</button>
       </div>
     </header>
     <div class="card-b">
       <div class="maintenance-grid">
-        <div class="maintenance-detail"><span>Runner version</span><b>{{.RunnerVersion}}</b><strong>{{.RunnerVersionState}}</strong><small>Installed build: {{.RunnerCurrentBuiltAt}}</small><small>Latest: {{.LatestRunnerVersion}} · {{.RunnerLatestBuiltAt}}</small></div>
-        <div class="maintenance-detail"><span>Docker image</span><b class="mono">{{.RunnerImage}}</b><strong>{{.ImageVersionState}}</strong><small>Installed build: {{.ImageCurrentBuiltAt}}</small><small>Latest: {{.LatestImageVersion}} · {{.ImageLatestBuiltAt}}</small></div>
+        <div class="maintenance-detail"><span>Runner binary</span><b>{{.RunnerVersion}}</b><strong>{{.RunnerVersionState}}</strong><small>Installed build: {{.RunnerCurrentBuiltAt}}</small><small>Latest: {{.LatestRunnerVersion}} · {{.RunnerLatestBuiltAt}}</small></div>
+        {{if .RuntimeImageVisible}}<div class="maintenance-detail"><span>Runner image</span><b class="mono">{{.ImageCurrentVersion}}</b><strong>{{.ImageVersionState}}</strong><small>Latest: {{.ImageLatestVersion}}</small></div>{{end}}
       </div>
       {{if .MaintenanceError}}<div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Update check incomplete: {{.MaintenanceError}}</div></div>{{end}}
-      <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Upgrade replaces available Runner binary and Docker image updates, then restarts Credimi Runner. The Dashboard reconnects automatically.</div></div>
+      <div class="callout warn" style="margin-top:16px">{{icon "warn"}}<div>Use the host CLI to upgrade or restart the persistent Runner service.</div></div>
     </div>
   </section>
 </main>

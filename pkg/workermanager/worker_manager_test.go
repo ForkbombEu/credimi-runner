@@ -3,7 +3,6 @@ package workermanager
 import (
 	"context"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -11,12 +10,7 @@ import (
 	"go.temporal.io/sdk/client"
 )
 
-func resetClientCacheForTest() {
-	clientCache = sync.Map{}
-}
-
-func TestGetTemporalClientWithNamespace_Cache(t *testing.T) {
-	resetClientCacheForTest()
+func TestGetTemporalClientWithNamespaceCreatesIndependentClients(t *testing.T) {
 	t.Setenv("TEMPORAL_ADDRESS", client.DefaultHostPort)
 
 	c1, err := getTemporalClientWithNamespace("ns-one")
@@ -25,7 +19,8 @@ func TestGetTemporalClientWithNamespace_Cache(t *testing.T) {
 
 	c2, err := getTemporalClientWithNamespace("ns-one")
 	require.NoError(t, err)
-	require.Same(t, c1, c2)
+	require.NotSame(t, c1, c2)
+	t.Cleanup(func() { c2.Close() })
 
 	c3, err := getTemporalClientWithNamespace("ns-two")
 	require.NoError(t, err)
@@ -33,19 +28,15 @@ func TestGetTemporalClientWithNamespace_Cache(t *testing.T) {
 	require.NotSame(t, c1, c3)
 }
 
-func TestRunTemporalWorker_MissingRunnerIDPanics(t *testing.T) {
-	resetClientCacheForTest()
+func TestRunTemporalWorker_MissingRunnerIDReturnsError(t *testing.T) {
 	t.Setenv("TEMPORAL_ADDRESS", client.DefaultHostPort)
 	require.NoError(t, os.Unsetenv("CREDIMI_RUNNER_ID"))
 
 	run := RunTemporalWorker("namespace-a")
-	require.Panics(t, func() {
-		_ = run(context.Background())
-	})
+	require.ErrorContains(t, run(context.Background(), nil), "runner ID is required")
 }
 
 func TestRunTemporalWorker_ReturnsOnCanceledContext(t *testing.T) {
-	resetClientCacheForTest()
 	t.Setenv("TEMPORAL_ADDRESS", client.DefaultHostPort)
 	t.Setenv("CREDIMI_RUNNER_ID", "runner-1")
 
@@ -56,7 +47,7 @@ func TestRunTemporalWorker_ReturnsOnCanceledContext(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx)
+		done <- run(ctx, nil)
 	}()
 
 	select {

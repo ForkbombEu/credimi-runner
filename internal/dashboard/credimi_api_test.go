@@ -49,7 +49,7 @@ func TestCredimiAPIHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if preview.Organization != "acme" || preview.BaseRunnerID != "acme/runner-name" || preview.PreviewRunnerID != "acme/runner-name" || preview.Conflict {
+	if preview.Organization != "acme" || preview.RunnerID != "acme/runner-name" || preview.Conflict {
 		t.Fatalf("fetchCredimiRunnerPreview = %#v", preview)
 	}
 

@@ -4,162 +4,158 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/controller"
-	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
+	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/spf13/cobra"
 )
 
-type runnerImageUpgrader interface {
-	UpgradeRunnerImage(context.Context, func(string)) error
-}
+var downloadLatestBinary = maintenance.DownloadLatestBinary
 
-var (
-	upgradeBinaryExecutable = os.Executable
-	upgradeBinaryDownload   = maintenance.DownloadLatestBinary
-	upgradeBinaryHTTPClient = http.DefaultClient
-)
+const serviceApplyTimeout = runtimesupervisor.ActivationWaitTimeout
 
-const runnerCLIHeader = `
-  ____              _ _           _   ____
- / ___|_ __ ___  __| (_)_ __ ___ (_) |  _ \ _   _ _ __  _ __   ___ _ __
-| |   | '__/ _ \/ _  | | '_  _ \| | | |_) | | | | '_ \| '_ \ / _ \ '__|
-| |___| | |  __/ (_| | | | | | | | | |  _ <| |_| | | | | | | |  __/ |
- \____|_|  \___|\__,_|_|_| |_| |_|_| |_| \_\\__,_|_| |_| |_|_|  \___|_|
-`
+var upgradeBinaryCmd = &cobra.Command{Use: "upgrade-binary", Short: "Upgrade the host Credimi Runner CLI binary", RunE: runUpgradeBinary}
+var upgradeImageCmd = &cobra.Command{Use: "upgrade-image", Short: "Upgrade the persistent Docker service image", RunE: runUpgradeImage}
 
-var upgradeImageCmd = &cobra.Command{
-	Use:   "upgrade-image",
-	Short: "Replace the runner Docker image with the latest available image",
-	Args:  cobra.NoArgs,
-	RunE:  runUpgradeImage,
-}
-
-var upgradeBinaryCmd = &cobra.Command{
-	Use:   "upgrade-binary",
-	Short: "Replace the Credimi Runner binary with the latest available release",
-	Args:  cobra.NoArgs,
-	RunE:  runUpgradeBinary,
-}
-
-func init() {
-	rootCmd.AddCommand(upgradeImageCmd, upgradeBinaryCmd)
-}
-
-func runUpgradeImage(cmd *cobra.Command, _ []string) error {
-	printRunnerCLIHeader(cmd)
-	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Minute)
-	defer cancel()
-	metadata, err := controller.ReadMetadata(lifecycleConfigDir())
-	if err == nil && controller.Probe(ctx, metadata) == nil {
-		baseURL := controllerBaseURL(metadata)
-		return runLifecycleDashboardEndpointAction(ctx, cmd, baseURL, baseURL+"/api/controller/maintenance/upgrade-image", "Runner image upgraded", "runner image upgrade")
-	}
-
-	lease, err := controller.Acquire(lifecycleConfigDir())
-	if err != nil {
-		if errors.Is(err, controller.ErrAlreadyRunning) {
-			return errors.New("dashboard controller is active but could not be verified; refusing direct runner image upgrade")
-		}
-		return err
-	}
-	defer lease.Close()
-	manager, values, closeManager, err := lifecycleDirectManager()
-	if err != nil {
-		return err
-	}
-	defer closeManager()
-	upgrader, ok := manager.(runnerImageUpgrader)
-	if !ok {
-		return errors.New("runner image upgrade is unavailable")
-	}
-	progress := func(message string) { cmd.Println(message) }
-	if err := upgrader.UpgradeRunnerImage(ctx, progress); err != nil {
-		return fmt.Errorf("runner image upgrade failed: %w", err)
-	}
-	lifecycle := controller.RuntimeLifecycle{Manager: manager, Values: values, GOOS: runtime.GOOS, WaitReady: lifecycleRuntimeWaitReady}
-	if err := lifecycle.RegisterRunning(ctx); err != nil {
-		return fmt.Errorf("runner image upgraded, but Credimi registration failed: %w", err)
-	}
-	cmd.Println("Runner image upgraded successfully.")
-	return nil
-}
+func init() { rootCmd.AddCommand(upgradeBinaryCmd, upgradeImageCmd) }
 
 func runUpgradeBinary(cmd *cobra.Command, _ []string) error {
-	printRunnerCLIHeader(cmd)
-	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
-	defer cancel()
-	lease, err := controller.Acquire(lifecycleConfigDir())
-	if err != nil {
-		if errors.Is(err, controller.ErrAlreadyRunning) {
-			return errors.New("stop the dashboard before upgrading its binary")
-		}
-		return err
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	defer lease.Close()
-	manager, values, closeManager, err := lifecycleDirectManager()
+	executable, err := os.Executable()
 	if err != nil {
-		return err
-	}
-	defer closeManager()
-	executable, err := upgradeBinaryExecutable()
-	if err != nil {
-		return fmt.Errorf("resolve runner binary: %w", err)
+		return fmt.Errorf("resolve current executable: %w", err)
 	}
 	executable, err = filepath.Abs(executable)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve executable path: %w", err)
 	}
-	cmd.Println("Stopping runner services.")
-	if err := manager.Stop(ctx); err != nil {
-		return fmt.Errorf("stop runner: %w", err)
-	}
-	for label, address := range map[string]string{
-		"runner":    net.JoinHostPort(normalizeUpgradeListenHost(values["RUNNER_HOST"]), defaultUpgradeString(values["RUNNER_PORT"], dashboardruntime.DefaultRunnerPort)),
-		"dashboard": net.JoinHostPort(normalizeUpgradeListenHost(values["DASHBOARD_HOST"]), defaultUpgradeString(values["DASHBOARD_PORT"], dashboardruntime.DefaultDashboardPort)),
-	} {
-		if err := verifyUpgradeAddressFree(address); err != nil {
-			return fmt.Errorf("%s port must be free before upgrading: %w", label, err)
+	manager := currentServiceManager()
+	running := false
+	var previousIdentity string
+	if runtime.GOOS == "darwin" {
+		status, err := manager.Status(ctx)
+		if err != nil {
+			return err
+		}
+		running = status.Running
+		if running {
+			metadata, err := verifiedController(ctx, effectiveConfigDir())
+			if err != nil {
+				return err
+			}
+			previousIdentity = metadata.IdentityToken
 		}
 	}
-	if err := upgradeBinaryDownload(ctx, upgradeBinaryHTTPClient, executable, func(message string) { cmd.Println(message) }); err != nil {
+	if err := downloadLatestBinary(ctx, http.DefaultClient, executable, func(message string) { cmd.Println(message) }); err != nil {
 		return err
 	}
-	cmd.Printf("Runner binary upgraded successfully: %s\n", executable)
-	return nil
+	if runtime.GOOS != "darwin" {
+		cmd.Println("Credimi Runner CLI upgraded successfully. The persistent Docker service image was not changed; use `credimi-runner upgrade-image` to upgrade it.")
+		return nil
+	}
+	if !running {
+		return nil
+	}
+	if err := manager.Restart(ctx); err != nil {
+		return fmt.Errorf("binary was upgraded but persistent service restart failed: %w", err)
+	}
+	_, err = waitForRunningController(ctx, effectiveConfigDir(), previousIdentity)
+	return err
 }
 
-func printRunnerCLIHeader(cmd *cobra.Command) {
-	_, _ = fmt.Fprint(cmd.OutOrStdout(), runnerCLIHeader)
-}
-
-func verifyUpgradeAddressFree(address string) error {
-	listener, err := net.Listen("tcp", address)
+func runUpgradeImage(cmd *cobra.Command, _ []string) error {
+	if runtime.GOOS == "darwin" {
+		return errors.New("runner service image upgrade is only available for the Docker-backed persistent service")
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	manager := currentServiceManager()
+	status, err := manager.Status(ctx)
 	if err != nil {
-		return fmt.Errorf("%s is already in use; stop the process before upgrading", address)
+		return err
 	}
-	return listener.Close()
+	var previousIdentity string
+	if status.Running {
+		metadata, err := verifiedController(ctx, effectiveConfigDir())
+		if err != nil {
+			return err
+		}
+		previousIdentity = metadata.IdentityToken
+	}
+	upgrader, ok := manager.(servicemanager.ImageUpgrader)
+	if !ok {
+		return errors.New("runner service image upgrade is only available for the Docker-backed persistent service")
+	}
+	if err := upgrader.UpgradeImage(ctx, func(message string) { cmd.Println(message) }); err != nil {
+		return err
+	}
+	if !status.Running {
+		return nil
+	}
+	_, err = waitForRunningController(ctx, effectiveConfigDir(), previousIdentity)
+	return err
 }
 
-func normalizeUpgradeListenHost(host string) string {
-	host = strings.Trim(strings.TrimSpace(host), "[]")
-	if host == "" {
-		return "0.0.0.0"
-	}
-	return host
+func waitForRunningController(ctx context.Context, configDir, previousIdentityToken string) (controller.Metadata, error) {
+	return waitForRunningControllerUsing(ctx, configDir, previousIdentityToken, controller.ReadMetadata, controller.Probe)
 }
 
-func defaultUpgradeString(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
+func waitForRunningControllerUsing(
+	ctx context.Context,
+	configDir, previousIdentityToken string,
+	readMetadata func(string) (controller.Metadata, error),
+	probe func(context.Context, controller.Metadata) error,
+) (controller.Metadata, error) {
+	return waitForRunningControllerUsingWithTimeout(ctx, configDir, previousIdentityToken, "", 30*time.Second, readMetadata, probe)
+}
+
+func waitForRunningControllerUsingWithTimeout(
+	ctx context.Context,
+	configDir, previousIdentityToken, expectedFingerprint string,
+	maximum time.Duration,
+	readMetadata func(string) (controller.Metadata, error),
+	probe func(context.Context, controller.Metadata) error,
+) (controller.Metadata, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return strings.TrimSpace(value)
+	deadline, cancel := context.WithTimeout(ctx, maximum)
+	defer cancel()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		metadata, err := readMetadata(configDir)
+		if err == nil && (previousIdentityToken == "" || metadata.IdentityToken != previousIdentityToken) && (expectedFingerprint == "" || metadata.ConfigFingerprint == expectedFingerprint) {
+			probeCtx, probeCancel := context.WithTimeout(deadline, controller.ProbeTimeout)
+			err = probe(probeCtx, metadata)
+			probeCancel()
+			if err == nil {
+				return metadata, nil
+			}
+		}
+		if err != nil {
+			lastErr = err
+		}
+		select {
+		case <-deadline.Done():
+			if lastErr != nil {
+				return controller.Metadata{}, fmt.Errorf("wait for running controller: %w", lastErr)
+			}
+			return controller.Metadata{}, deadline.Err()
+		case <-ticker.C:
+		}
+	}
 }

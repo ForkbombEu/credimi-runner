@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
@@ -21,12 +22,42 @@ func TestValidateReadinessRejectsUnrelatedHTTP(t *testing.T) {
 
 func TestValidateReadinessRequiresExactConfiguredIdentity(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","device_serial":"serial-1","device_state":"device"}`))
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/device-1":{"serial":"serial-1","state":"device","ready":true}}}`))
 	}))
 	defer server.Close()
-	_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_SERIAL": "serial-1"})
+	_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_SERIAL": "serial-1", "CREDIMI_DEVICE_1_MODE": "usb"})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateReadinessExplainsMissingAndMismatchedDevice(t *testing.T) {
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":       "runner-1",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "runner-1/device-1",
+		"CREDIMI_DEVICE_1_TYPE":   "android_phone",
+		"CREDIMI_DEVICE_1_MODE":   "usb",
+		"CREDIMI_DEVICE_1_SERIAL": "serial-1",
+	}
+	for name, body := range map[string]string{
+		"missing":  `{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{}}`,
+		"mismatch": `{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/device-1":{"serial":"serial-2","state":"device"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+			defer server.Close()
+			_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, values)
+			if err == nil || !strings.Contains(err.Error(), "runner-1/device-1") {
+				t.Fatalf("readiness error = %v", err)
+			}
+			if name == "missing" && !errors.Is(err, ErrDeviceMissing) {
+				t.Fatalf("missing error = %v", err)
+			}
+			if name == "mismatch" && !errors.Is(err, ErrDeviceMismatch) {
+				t.Fatalf("mismatch error = %v", err)
+			}
+		})
 	}
 }
 
@@ -37,10 +68,10 @@ func TestValidateReadinessClassifiesDeviceFailures(t *testing.T) {
 	}{{"missing", ErrDeviceMissing}, {"offline", ErrDeviceOffline}, {"unauthorized", ErrDeviceUnauthorized}, {"other", ErrRunnerNotReady}} {
 		t.Run(test.state, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","device_serial":"serial-1","device_state":"` + test.state + `"}`))
+				_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/device-1":{"serial":"serial-1","state":"` + test.state + `","ready":false}}}`))
 			}))
 			defer server.Close()
-			_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_RUNNER_SERIAL": "serial-1"})
+			_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "runner-1/device-1", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_SERIAL": "serial-1", "CREDIMI_DEVICE_1_MODE": "usb"})
 			if !errors.Is(err, test.want) {
 				t.Fatalf("err = %v, want %v", err, test.want)
 			}
@@ -50,16 +81,30 @@ func TestValidateReadinessClassifiesDeviceFailures(t *testing.T) {
 
 func TestValidateReadinessIgnoresDeferredManagedDevice(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","device_serial":"192.168.0.241:5555","device_state":"missing"}`))
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1","devices":{"runner-1/device-1":{"serial":"192.168.0.241:5555","state":"missing","ready":false}}}`))
 	}))
 	defer server.Close()
 	_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{
-		"CREDIMI_RUNNER_ID":     "runner-1",
-		"CREDIMI_RUNNER_SERIAL": "192.168.0.241:5555",
-		"CREDIMI_RUNNER_TYPE":   "redroid",
+		"CREDIMI_RUNNER_ID":       "runner-1",
+		"CREDIMI_DEVICE_COUNT":    "1",
+		"CREDIMI_DEVICE_1_ID":     "runner-1/device-1",
+		"CREDIMI_DEVICE_1_SERIAL": "192.168.0.241:5555",
+		"CREDIMI_DEVICE_1_TYPE":   "redroid",
+		"CREDIMI_DEVICE_1_MODE":   "no_device",
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateReadinessAcceptsRunnerIdentityWhenDevicesAreDeferred(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":"boot-1"}`))
+	}))
+	defer server.Close()
+	if _, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1"}); err != nil {
+		t.Fatalf("identity readiness error = %v", err)
 	}
 }
 
@@ -81,5 +126,17 @@ func TestValidateReadinessRejectsMismatchedOrUnavailableRunner(t *testing.T) {
 	_, err = ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1"})
 	if !errors.Is(err, ErrRunnerIdentityMismatch) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestValidateReadinessRejectsEmptyBootID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"runner-1","boot_id":""}`))
+	}))
+	defer server.Close()
+	_, err := ValidateReadiness(context.Background(), server.Client(), server.URL, dashboardruntime.Values{"CREDIMI_RUNNER_ID": "runner-1"})
+	if !errors.Is(err, ErrRunnerIdentityMismatch) {
+		t.Fatalf("err = %v, want %v", err, ErrRunnerIdentityMismatch)
 	}
 }

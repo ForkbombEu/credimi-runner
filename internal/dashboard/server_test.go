@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,514 +17,1547 @@ import (
 	"testing"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
+	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
+	"github.com/forkbombeu/credimi-runner/internal/servicecoordination"
+	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return f(req)
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
-type fakeManager struct {
-	mu               sync.Mutex
-	startCalls       int
-	stopCalls        int
-	restartCalls     int
-	updateImageCalls int
-	logLines         []dashboardruntime.LogLine
-	logLinesSince    []dashboardruntime.LogLine
-	status           dashboardruntime.RuntimeStatus
-	startErr         error
-	stopErr          error
-	restartErr       error
-	updateImageErr   error
-	logTail          int
-	upgradeBlock     chan struct{}
+func writeCoordinatorPresenceFixture(dir string, updatedAt time.Time) error {
+	raw, err := json.Marshal(servicecoordination.Presence{PID: os.Getpid(), Protocol: servicecoordination.Protocol, UpdatedAt: updatedAt.UTC()})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, servicecoordination.CoordinatorFile), raw, 0o600)
 }
 
-func (f *fakeManager) Start(context.Context) error {
+type fakeRuntimeController struct {
+	mu            sync.Mutex
+	status        runtimesupervisor.Status
+	starts        int
+	stops         int
+	restarts      int
+	reconciles    int
+	inventories   int
+	endpoints     int
+	requestStarts int
+	reconcileErr  error
+}
+
+func persistentServerSettingsFromTestValues(values map[string]string) appliedServerSettings {
+	settings, err := persistentServerSettingsFromValues(dashboardruntime.Values(values))
+	if err != nil {
+		panic(err)
+	}
+	return settings
+}
+
+func (f *fakeRuntimeController) Start(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.startCalls++
-	if f.startErr != nil {
-		return f.startErr
-	}
-	f.status.RunnerRunning = true
+	f.starts++
 	return nil
 }
-func (f *fakeManager) StartWithProgress(ctx context.Context, progress func(string)) error {
-	if progress != nil {
-		progress("Pulling Docker images.")
-		progress("runner Downloading 128MB")
-	}
-	return f.Start(ctx)
-}
-func (f *fakeManager) Stop(context.Context) error {
+
+func (f *fakeRuntimeController) Stop(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.stopCalls++
-	if f.stopErr != nil {
-		return f.stopErr
-	}
-	f.status.RunnerRunning = false
-	f.status.PublicURL = ""
+	f.stops++
 	return nil
 }
-func (f *fakeManager) Restart(context.Context) error {
+
+func (f *fakeRuntimeController) Restart(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.restartCalls++
-	if f.restartErr == nil {
-		f.status.LastStartedAt = time.Now()
-	}
-	return f.restartErr
+	f.restarts++
+	return nil
 }
-func (f *fakeManager) UpdateImage(context.Context) error {
+
+func (f *fakeRuntimeController) RequestStart() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.updateImageCalls++
-	return f.updateImageErr
+	f.requestStarts++
+	f.status.Desired = runtimesupervisor.DesiredRunning
+	return nil
 }
-func (f *fakeManager) UpgradeRunnerImage(_ context.Context, progress func(string)) error {
-	f.mu.Lock()
-	f.updateImageCalls++
-	block := f.upgradeBlock
-	err := f.updateImageErr
-	f.mu.Unlock()
-	if progress != nil {
-		progress("Stopping the runner and Docker services.")
-		progress("Downloading the latest runner image.")
-	}
-	if block != nil {
-		<-block
-	}
-	return err
-}
-func (f *fakeManager) Configure(values dashboardruntime.Values) {
+
+func (f *fakeRuntimeController) Reconcile(context.Context, runnerconfig.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.status.Configured = strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) != ""
+	f.reconciles++
+	return f.reconcileErr
 }
-func (f *fakeManager) SetPublicURL(publicURL string) {
+
+func (f *fakeRuntimeController) ApplyInventory(context.Context, runnerconfig.Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.status.PublicURL = publicURL
+	f.inventories++
+	return f.reconcileErr
 }
-func (f *fakeManager) Status(context.Context) dashboardruntime.RuntimeStatus {
+
+func (f *fakeRuntimeController) ApplyEndpoint(context.Context, runnerconfig.Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.endpoints++
+	return f.reconcileErr
+}
+
+func (f *fakeRuntimeController) Status() runtimesupervisor.Status {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.status
 }
-func (f *fakeManager) Logs(_ context.Context, tail int) ([]dashboardruntime.LogLine, error) {
+
+func (f *fakeRuntimeController) counts() (int, int, int, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.logTail = tail
-	if tail > 0 && f.logLinesSince != nil {
-		return f.logLinesSince, nil
+	return f.starts, f.stops, f.restarts, f.reconciles
+}
+
+func (f *fakeRuntimeController) requestedStarts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.requestStarts
+}
+
+func (f *fakeRuntimeController) inventoryCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inventories
+}
+
+func (f *fakeRuntimeController) endpointCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.endpoints
+}
+
+func TestExposureApplyClassificationUsesActiveMode(t *testing.T) {
+	manual := runnerconfig.Config{Exposure: runnerconfig.ExposureConfig{Mode: "manual"}}
+	quick := runnerconfig.Config{Exposure: runnerconfig.ExposureConfig{Mode: "quick_tunnel"}}
+	named := runnerconfig.Config{Exposure: runnerconfig.ExposureConfig{Mode: "named_tunnel"}}
+	endpoint := dashboardruntime.ConfigDiff{ChangedKeys: []string{"RUNNER_PUBLIC_URL"}}
+	if !activeManualEndpointDiff(endpoint, manual) || inventoryOnlyDiff(endpoint, manual) {
+		t.Fatal("manual endpoint change was not classified as an endpoint apply")
 	}
-	return f.logLines, nil
+	if !inactiveExposureOnlyDiff(endpoint, quick) || !inactiveExposureOnlyDiff(endpoint, named) {
+		t.Fatal("inactive manual URL change was not ignored")
+	}
+	domain := dashboardruntime.ConfigDiff{ChangedKeys: []string{"RUNNER_DOMAIN"}}
+	if !inactiveExposureOnlyDiff(domain, manual) || !inactiveExposureOnlyDiff(domain, quick) {
+		t.Fatal("inactive named-domain change was not ignored")
+	}
+	if !inventoryOnlyDiff(dashboardruntime.ConfigDiff{ChangedKeys: []string{"CREDIMI_RUNNER_DESCRIPTION"}}, manual) {
+		t.Fatal("description change was not classified as inventory-only")
+	}
+}
+
+func TestApplySavedConfigUsesWholeDiffForEndpointHotApply(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	values := dashboardruntime.Values(loaded.Snapshot())
+	values["CREDIMI_SERVICE_MODE"] = "manual"
+	values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	loaded = persistDashboardValues(t, path, values)
+	old := dashboardruntime.Values(loaded.Snapshot())
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(func() runnerconfig.Config {
+		cfg, err := runnerconfig.LoadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}(), true))
+	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
+	t.Setenv(servicemanager.AppliedServiceNeedsHostADBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsUSBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsEmulatorEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceRedroidKnownHostsEnv, "[]")
+	for _, tc := range []struct {
+		name                        string
+		mutate                      func(dashboardruntime.Values)
+		wantEndpoint, wantReconcile int
+	}{
+		{name: "url", mutate: func(v dashboardruntime.Values) { v["RUNNER_PUBLIC_URL"] = "https://new.example" }, wantEndpoint: 1},
+		{name: "url plus temporal", mutate: func(v dashboardruntime.Values) {
+			v["RUNNER_PUBLIC_URL"] = "https://new.example"
+			v["TEMPORAL_ADDRESS"] = "temporal-new:7233"
+		}, wantReconcile: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+			s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+			candidate := dashboardruntime.Values(cloneStringMap(map[string]string(old)))
+			tc.mutate(candidate)
+			s.cfg = persistDashboardValues(t, path, candidate)
+			if err := s.applySavedConfig(context.Background(), dashboardruntime.DiffValuesForOS(old, candidate, "linux")); err != nil {
+				t.Fatal(err)
+			}
+			if fake.endpointCount() != tc.wantEndpoint {
+				t.Fatalf("endpoint calls=%d want %d", fake.endpointCount(), tc.wantEndpoint)
+			}
+			if _, _, _, got := fake.counts(); got != tc.wantReconcile {
+				t.Fatalf("reconcile calls=%d want %d", got, tc.wantReconcile)
+			}
+		})
+	}
+}
+
+func TestNamedTunnelDomainChangeUsesRuntimeReconcile(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	values := dashboardruntime.Values(loaded.Snapshot())
+	values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
+	values["RUNNER_DOMAIN"] = "old.example"
+	values["CLOUDFLARE_TUNNEL_TOKEN"] = "test-token"
+	loaded = persistDashboardValues(t, path, values)
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(func() runnerconfig.Config {
+		cfg, err := runnerconfig.LoadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}(), true))
+	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
+	t.Setenv(servicemanager.AppliedServiceNeedsHostADBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsUSBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsEmulatorEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceRedroidKnownHostsEnv, "[]")
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+	candidate := dashboardruntime.Values(cloneStringMap(map[string]string(values)))
+	candidate["RUNNER_DOMAIN"] = "new.example"
+	s.cfg = persistDashboardValues(t, path, candidate)
+	if err := s.applySavedConfig(context.Background(), dashboardruntime.DiffValuesForOS(values, candidate, "linux")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 1 || fake.endpointCount() != 0 || fake.inventoryCount() != 0 {
+		t.Fatalf("named tunnel apply calls: reconcile=%d endpoint=%d inventory=%d", reconciles, fake.endpointCount(), fake.inventoryCount())
+	}
 }
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
-	cfg := &Config{path: t.TempDir() + "/.env", values: map[string]string{}}
-	for k, v := range Defaults {
-		cfg.values[k] = v
+	if os.Getenv("ANDROID_SDK_ROOT") == "" {
+		original := ensureCandidateEmulatorReady
+		ensureCandidateEmulatorReady = func(context.Context, runnerconfig.Config, string, androidtools.EmulatorProgress) error { return nil }
+		t.Cleanup(func() { ensureCandidateEmulatorReady = original })
 	}
+	cfg := &Config{path: filepath.Join(t.TempDir(), "config.toml"), values: map[string]string{}}
+	for key, value := range Defaults {
+		cfg.values[key] = value
+	}
+	cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
+	cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	cfg.values["TEMPORAL_ADDRESS"] = "temporal.example:7233"
+	cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
+	cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
 	render, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub := NewHub(cfg, t.TempDir(), render, func() dashboardruntime.RuntimeStatus { return dashboardruntime.RuntimeStatus{} })
-	hub.snap = Snapshot{
-		Services: []Service{{ID: "runner", Name: "runner", Status: Online}},
-		Devices:  []Device{{Serial: "device-1", Name: "Pixel 8", Type: "android_phone", Mode: "usb", Status: Online}},
-	}
-	hub.workers = []Worker{{ID: "runner-mr", Env: "runner", Status: Online}}
+	fake := &fakeRuntimeController{}
+	hub := NewHub(cfg, render, func() dashboardruntime.RuntimeStatus { return dashboardRuntimeStatus(cfg, fake.Status()) })
+	hub.snap = Snapshot{Services: []Service{{ID: "runner", Name: "runner", Status: Online}}, Devices: []Device{{Serial: "device-1", Name: "Pixel 8", Type: "android_phone", Mode: "usb", Status: Online}}}
+	hub.workers = []Worker{{ID: "runner-worker", Env: "runner", Status: Online}}
 	return &Server{
-		cfg:        cfg,
-		hub:        hub,
-		render:     render,
-		composeDir: t.TempDir(),
-		ctx:        context.Background(),
-		authToken:  "token",
-		manager: &fakeManager{logLines: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://runner.example.trycloudflare.com"},
-		}},
-		runnerReady:        func(context.Context, map[string]string) error { return nil },
-		lookupPath:         func(string) (string, error) { return "/tmp/fake-bin", nil },
-		statPath:           func(string) (os.FileInfo, error) { return fakeFileInfo("ok"), nil },
-		maintenanceChecked: true,
-		maintenanceChecker: func(context.Context, string, time.Time, string) maintenance.Status { return maintenance.Status{} },
-		downloadBinary:     func(context.Context, *http.Client, string, func(string)) error { return nil },
-		restartDashboard:   func(string) error { return nil },
+		cfg: cfg, hub: hub, render: render, composeDir: t.TempDir(), ctx: context.Background(),
+		runtime: fake, operations: controller.NewCoordinator(context.Background()),
+		appliedServerSettings: persistentServerSettingsFromTestValues(cfg.Snapshot()),
+		lookupPath:            func(string) (string, error) { return "/tmp/fake-bin", nil },
 	}
 }
 
-func TestNewHandlerWithManagerWrapper(t *testing.T) {
-	handler, cancel, err := NewHandlerWithManager(t.TempDir(), &fakeManager{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-	if handler == nil {
-		t.Fatal("handler is nil")
+func TestDarwinAppliedServerTimeoutReversionClearsRestart(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	s := newTestServer(t)
+	base := s.cfg.Snapshot()
+	for _, tc := range []struct {
+		name, key, changed string
+	}{
+		{"read header", "SERVER_READ_HEADER_TIMEOUT", "2m0s"},
+		{"shutdown", "SERVER_SHUTDOWN_TIMEOUT", "45s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := cloneStringMap(base)
+			candidate[tc.key] = tc.changed
+			s.cfg.mu.Lock()
+			s.cfg.values = candidate
+			s.cfg.mu.Unlock()
+			if !s.serviceRestartRequired() {
+				t.Fatalf("changed %s did not require restart", tc.key)
+			}
+			s.cfg.mu.Lock()
+			s.cfg.values = cloneStringMap(base)
+			s.cfg.mu.Unlock()
+			if s.serviceRestartRequired() {
+				t.Fatalf("reverted %s still requires restart", tc.key)
+			}
+		})
 	}
 }
 
-func bootstrapReadyRunner(t *testing.T) (string, string) {
+func TestDashboardListenCanonicalizesWildcardHosts(t *testing.T) {
+	for _, tc := range []struct {
+		name, host, want string
+	}{
+		{"empty host", "", "127.0.0.1:8051"},
+		{"IPv4 wildcard", "0.0.0.0", "127.0.0.1:8051"},
+		{"IPv6 wildcard", "::", "127.0.0.1:8051"},
+		{"IPv6 loopback", "::1", "[::1]:8051"},
+		{"alternate IPv4", "127.0.0.2", "127.0.0.2:8051"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dashboardListen(dashboardruntime.Values{"DASHBOARD_HOST": tc.host, "DASHBOARD_PORT": "8051"})
+			if got != tc.want {
+				t.Fatalf("dashboardListen(%q)=%q; want %q", tc.host, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDarwinIPv6WildcardListenerEquivalence(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	for _, tc := range []struct {
+		name, applied, desired string
+		wantRestart            bool
+	}{
+		{"IPv6 wildcard to IPv4 loopback", "[::]:8051", "127.0.0.1:8051", false},
+		{"IPv4 loopback to IPv6 wildcard", "127.0.0.1:8051", "[::]:8051", false},
+		{"IPv4 wildcard to IPv6 wildcard", "0.0.0.0:8051", "[::]:8051", false},
+		{"IPv6 wildcard to IPv4 wildcard", "[::]:8051", "0.0.0.0:8051", false},
+		{"IPv6 loopback remains distinct", "[::1]:8051", "127.0.0.1:8051", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t)
+			appliedCfg := runnerconfig.Bootstrap()
+			appliedCfg.Server.DashboardListen = tc.applied
+			appliedCfg.Server.ReadHeaderTimeout = runnerconfig.Duration(time.Minute)
+			appliedCfg.Server.ShutdownTimeout = runnerconfig.Duration(30 * time.Second)
+			s.appliedServerSettings = persistentServerSettings(appliedCfg)
+			host, port, err := net.SplitHostPort(tc.desired)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.cfg.mu.Lock()
+			s.cfg.values["DASHBOARD_HOST"] = host
+			s.cfg.values["DASHBOARD_PORT"] = port
+			s.cfg.mu.Unlock()
+			if got := s.serviceRestartRequired(); got != tc.wantRestart {
+				t.Fatalf("restart required=%v; want %v", got, tc.wantRestart)
+			}
+		})
+	}
+}
+
+func writeDashboardTestConfig(t *testing.T, dir, dashboardToken string) {
 	t.Helper()
-	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/health":
-			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
-		case "/readyz":
-			_, _ = w.Write([]byte(`{"service":"credimi-runner","runner_id":"acme/runner","boot_id":"test-boot"}`))
-		default:
-			http.NotFound(w, request)
+	cfg := runnerconfig.Config{
+		SchemaVersion: runnerconfig.SchemaVersion,
+		Runner:        runnerconfig.RunnerConfig{ID: "acme/runner", Name: "runner", Organization: "acme"},
+		Credimi:       runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "test"},
+		Temporal:      runnerconfig.TemporalConfig{Address: "temporal.example:7233"},
+		Server:        runnerconfig.ServerConfig{DashboardToken: dashboardToken},
+		Exposure:      runnerconfig.ExposureConfig{Mode: "manual", PublicURL: "https://runner.example"},
+	}
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForRuntimeCount(t *testing.T, runtime *fakeRuntimeController, want func(int, int, int, int) bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		start, stop, restart, reconcile := runtime.counts()
+		if want(start, stop, restart, reconcile) {
+			return
 		}
-	}))
-	t.Cleanup(runner.Close)
-	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
+		time.Sleep(time.Millisecond)
+	}
+	start, stop, restart, reconcile := runtime.counts()
+	t.Fatalf("runtime calls did not reach expected state: %d/%d/%d/%d", start, stop, restart, reconcile)
+}
+
+func waitForQueuedOperation(t *testing.T, s *Server, response *httptest.ResponseRecorder) controller.Snapshot {
+	t.Helper()
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("queued operation response = %d body=%s", response.Code, response.Body.String())
+	}
+	snapshot := s.operations.Current()
+	if snapshot.ID == "" {
+		t.Fatal("queued operation has no ID")
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return host, port
+	if completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("queued operation failed: %#v", completed)
+	}
+	return completed
 }
 
-func TestBootstrapConfiguredRuntimeUsesControllerWithoutRestartingRunningRuntime(t *testing.T) {
-	dir := t.TempDir()
-	runnerHost, runnerPort := bootstrapReadyRunner(t)
-	registered := make(chan struct{}, 1)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/mobile-runner" {
-			http.NotFound(w, r)
-			return
-		}
-		registered <- struct{}{}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer api.Close()
-	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\nRUNNER_HOST=" + runnerHost + "\nRUNNER_PORT=" + runnerPort + "\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true, PublicURL: "https://runner.example"}}
-	progress := make(chan string, 8)
-	_, cancel, err := NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(context.Background(), dir, manager, "controller-1", "token", "fingerprint", controller.NewCoordinator(context.Background()), func(message string) {
-		progress <- message
-	})
+func TestDashboardRuntimeControllerRoutesUseSharedController(t *testing.T) {
+	fake := &fakeRuntimeController{}
+	handler, cancel, err := NewHandler(context.Background(), t.TempDir(), "controller", "identity", "fingerprint", fake, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cancel()
-	select {
-	case <-registered:
-	case <-time.After(time.Second):
-		t.Fatal("configured runtime was not registered")
+
+	actions := []struct {
+		name string
+		want func(int, int, int, int) bool
+	}{
+		{"start", func(start, _, _, _ int) bool { return start == 1 }},
+		{"stop", func(_, stop, _, _ int) bool { return stop == 1 }},
+		{"restart", func(_, _, restart, _ int) bool { return restart == 1 }},
 	}
-	if manager.startCalls != 0 {
-		t.Fatalf("running runtime should not be started again: %d", manager.startCalls)
-	}
-	if manager.status.PublicURL != "https://runner.example" {
-		t.Fatalf("public URL = %q", manager.status.PublicURL)
-	}
-	select {
-	case message := <-progress:
-		if !strings.Contains(message, "Runner already running") {
-			t.Fatalf("bootstrap progress = %q", message)
+	for _, action := range actions {
+		request := httptest.NewRequest(http.MethodPost, "/api/controller/runtime/"+action.name, nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("%s status = %d, body=%s", action.name, recorder.Code, recorder.Body)
 		}
-	default:
-		t.Fatal("bootstrap did not publish terminal progress")
+		waitForRuntimeCount(t, fake, action.want)
 	}
 }
 
-func TestBootstrapConfiguredRuntimeRestoresAutoTunnelURL(t *testing.T) {
-	dir := t.TempDir()
-	runnerHost, runnerPort := bootstrapReadyRunner(t)
-	registered := make(chan dashboardruntime.RegisterRunnerRequest, 1)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/mobile-runner" {
-			http.NotFound(w, r)
-			return
+func TestDashboardRuntimeActionHandlersAndControllerStatus(t *testing.T) {
+	s := newTestServer(t)
+	for _, tc := range []struct {
+		handler http.HandlerFunc
+		want    func(int, int, int, int) bool
+	}{
+		{s.runtimeStart, func(start, _, _, _ int) bool { return start == 1 }},
+		{s.runtimeStop, func(_, stop, _, _ int) bool { return stop == 1 }},
+		{s.runtimeRestart, func(_, _, restart, _ int) bool { return restart == 1 }},
+	} {
+		recorder := httptest.NewRecorder()
+		tc.handler(recorder, httptest.NewRequest(http.MethodPost, "/runtime", nil))
+		waitForRuntimeCount(t, s.runtime.(*fakeRuntimeController), tc.want)
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("runtime action status = %d", recorder.Code)
 		}
-		var payload dashboardruntime.RegisterRunnerRequest
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	}
+	for _, endpoint := range []string{"/api/controller/status", "/api/controller/operations/current"} {
+		recorder := httptest.NewRecorder()
+		s.routes(http.NewServeMux())
+		if endpoint == "/api/controller/status" {
+			s.controllerStatus(recorder, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		} else if endpoint == "/api/controller/operations/current" {
+			s.controllerOperationCurrent(recorder, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		}
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", endpoint, recorder.Code)
+		}
+	}
+	operationID := s.operations.Current().ID
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/controller/operations/"+operationID, nil)
+	request.SetPathValue("id", operationID)
+	s.controllerOperation(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("controller operation status = %d", recorder.Code)
+	}
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/controller/operations/missing", nil)
+	request.SetPathValue("id", "missing")
+	s.controllerOperation(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("missing controller operation status = %d", recorder.Code)
+	}
+	if got := runtimeActionSuccessMessage("unknown"); got == "" {
+		t.Fatal("missing default runtime action message")
+	}
+	if got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRuntimeReconcile}}); !strings.Contains(got, "reconciled") {
+		t.Fatalf("diff description = %q", got)
+	}
+}
+
+func TestDashboardRemainingControllerAndMutationHandlers(t *testing.T) {
+	s := newTestServer(t)
+	for _, request := range []struct {
+		path string
+		call func(http.ResponseWriter, *http.Request)
+	}{
+		{"/internal/controller/identity", s.controllerIdentity},
+		{"/config/diff", s.configDiff},
+		{"/devices/enable", s.deviceEnable},
+	} {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, request.path, nil)
+		request.call(recorder, req)
+		if request.path == "/config/diff" && recorder.Code != http.StatusOK {
+			t.Fatalf("config diff status = %d", recorder.Code)
+		}
+	}
+	s.controllerIdentityToken = "identity"
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/internal/controller/identity", nil)
+	req.Header.Set("X-Credimi-Controller-Token", "identity")
+	s.controllerIdentity(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("identity status = %d", recorder.Code)
+	}
+	if got := dashboardRefreshPath("devices"); got != "/devices" || dashboardRefreshPath("setup") != "/setup" || dashboardRefreshPath("other") != "/" {
+		t.Fatalf("refresh paths = %q", got)
+	}
+	recorder = httptest.NewRecorder()
+	s.renderRuntimeActionError(recorder, "overview", errors.New("runtime failed"))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("runtime error status = %d", recorder.Code)
+	}
+}
+
+func TestDashboardConfigAndViewHelperBranches(t *testing.T) {
+	s := newTestServer(t)
+	if !(PageData{Snapshot: Snapshot{Services: []Service{{Expected: true, Critical: true, Status: Online}}}}.HasCriticalServices()) {
+		t.Fatal("critical service was not detected")
+	}
+	if (PageData{Snapshot: Snapshot{Services: []Service{{Expected: true, Critical: true, Status: Offline}}}}.ServicesAllUp()) {
+		t.Fatal("offline critical service reported healthy")
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/overview/config", strings.NewReader(url.Values{"CREDIMI_RUNNER_PUBLISHED": {"on"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveOverviewConfig(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("overview config status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	waitForQueuedOperation(t, s, recorder)
+}
+
+func TestDashboardRemainsReachableWhenRuntimeStops(t *testing.T) {
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped, Actual: runtimesupervisor.ActualStopped}}
+	handler, cancel, err := NewHandler(context.Background(), t.TempDir(), "controller", "", "", fake, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "ok" {
+		t.Fatalf("dashboard health = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if start, stop, restart, _ := fake.counts(); start != 0 || stop != 0 || restart != 0 {
+		t.Fatalf("health request changed runtime counts: %d/%d/%d", start, stop, restart)
+	}
+}
+
+func TestDashboardRecoveryCORSAllowsSameHostPortChangeWithoutBypassingAuth(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_TOKEN"] = "replacement-token"
+	s.cfg.mu.Unlock()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /startup/status", s.startupStatus)
+	handler := recoveryCORS(s.auth(mux))
+
+	req := httptest.NewRequest(http.MethodGet, "/startup/status?token=replacement-token", nil)
+	req.Host = "runner.example:8052"
+	req.Header.Set("Origin", "http://runner.example:8051")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recovery status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://runner.example:8051" {
+		t.Fatalf("allow origin=%q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/startup/status", nil)
+	req.Host = "runner.example:8052"
+	req.Header.Set("Origin", "http://runner.example:8051")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated recovery status=%d", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://runner.example:8051" {
+		t.Fatalf("unauthenticated allow origin=%q", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/startup/status?token=replacement-token", nil)
+	req.Host = "runner.example:8052"
+	req.Header.Set("Origin", "http://other.example:8051")
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("foreign allow origin=%q", got)
+	}
+}
+
+func TestDashboardMapsSupervisorStatus(t *testing.T) {
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner.ID = "org/runner"
+	cfg.Runner.Name = "runner"
+	cfg.Runner.Organization = "org"
+	cfg.Credimi.URL = "https://credimi.example"
+	cfg.Credimi.UserAPIKey = "key"
+	cfg.Temporal.Address = "temporal.example:7233"
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{
+		Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualRunning,
+		PublicURL: "https://runner.example", APIListening: true, WorkersRunning: true,
+		EdgeRunning: true, HeartbeatRunning: true,
+	}}
+	loaded, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := dashboardRuntimeStatus(loaded, fake.Status())
+	if !status.Configured || !status.RunnerRunning || !status.APIListening || !status.WorkersRunning || !status.EdgeRunning || !status.HeartbeatRunning {
+		t.Fatalf("status mapping lost supervisor state: %+v", status)
+	}
+	if status.PublicURL != "https://runner.example" {
+		t.Fatalf("public URL = %q", status.PublicURL)
+	}
+}
+
+func testSavedConfig(t *testing.T) (*Config, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner.ID = "org/runner"
+	cfg.Runner.Name = "runner"
+	cfg.Runner.Organization = "org"
+	cfg.Credimi.URL = "https://credimi.example"
+	cfg.Credimi.UserAPIKey = "key"
+	cfg.Temporal.Address = "temporal.example:7233"
+	path := filepath.Join(dir, "config.toml")
+	if err := runnerconfig.WriteFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded, path
+}
+
+func TestDashboardTokenOnlySaveDoesNotReconcileRuntime(t *testing.T) {
+	loaded, _ := testSavedConfig(t)
+	fake := &fakeRuntimeController{}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["DASHBOARD_TOKEN"] = "new-token"
+	diff := dashboardruntime.DiffValues(oldValues, newValues)
+	if len(diff.Classes) != 1 || diff.Classes[0] != dashboardruntime.ApplySavedOnly {
+		t.Fatalf("token diff = %+v", diff)
+	}
+	err := s.applySavedConfig(context.Background(), diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 0 {
+		t.Fatalf("reconcile calls = %d", reconciles)
+	}
+}
+
+func TestDashboardRuntimeConfigChangeReconcilesSupervisor(t *testing.T) {
+	loaded, _ := testSavedConfig(t)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["CREDIMI_RUNNER_DESCRIPTION"] = "updated"
+	diff := dashboardruntime.DiffValues(oldValues, newValues)
+	if !diffNeedsRuntimeApply(diff) {
+		t.Fatalf("description diff did not require runtime reconcile: %+v", diff)
+	}
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 0 || fake.inventoryCount() != 1 {
+		t.Fatalf("runtime apply calls: reconcile=%d inventory=%d", reconciles, fake.inventoryCount())
+	}
+}
+
+func TestServiceTopologyChangeDoesNotCallRuntime(t *testing.T) {
+	oldValues := dashboardruntime.Values{"ANDROID_RUNNER_IMAGE": "old"}
+	newValues := dashboardruntime.Values{"ANDROID_RUNNER_IMAGE": "new"}
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "linux")
+	if len(diff.Classes) != 1 || diff.Classes[0] != dashboardruntime.ApplyServiceRestartRequired {
+		t.Fatalf("service diff = %+v", diff)
+	}
+}
+
+func TestServiceTopologyChangeRequestsAttachedHostRestart(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	newValues := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
+	newValues["ANDROID_RUNNER_IMAGE"] = "credimi-runner:replacement"
+	s := newTestServer(t)
+	s.cfg = persistDashboardValues(t, path, newValues)
+	s.composeDir = filepath.Dir(path)
+	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(loaded.Snapshot()), newValues, "linux")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	request, err := servicecoordination.ReadRestartRequest(s.composeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := runnerconfig.ConfigFileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequestedConfigDigest != digest {
+		t.Fatalf("request config digest=%q, want %q", request.RequestedConfigDigest, digest)
+	}
+	if got := s.startupSnapshot(); got.Phase != StartupNeedsAttention || !strings.Contains(got.Message, "credimi-runner service restart") {
+		t.Fatalf("detached startup state=%+v", got)
+	}
+	if got := s.runtime.(*fakeRuntimeController).requestedStarts(); got != 0 {
+		t.Fatalf("runtime start requests=%d, want 0 for an ordinary config edit", got)
+	}
+}
+
+func TestServiceRestartRequestForUnknownHostnameForcesHostEvaluation(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	values := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
+	values["CREDIMI_URL"] = "http://new-host.example:8090"
+	s := newTestServer(t)
+	s.cfg = persistDashboardValues(t, path, values)
+	s.composeDir = filepath.Dir(path)
+	resolved, _ := json.Marshal(map[string]string{"credimi.example": ""})
+	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
+	if err := s.requestServiceRestart(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := servicecoordination.ReadRestartRequest(s.composeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !request.ForceRestart || request.RequestedConfigDigest == "" {
+		t.Fatalf("request = %+v", request)
+	}
+	want, err := runnerconfig.ConfigFileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequestedConfigDigest != want {
+		t.Fatalf("request digest = %q, want %q", request.RequestedConfigDigest, want)
+	}
+}
+
+func TestServiceRestartRequestBindsDigestAndForceRestartToOneSnapshot(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	first, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Credimi.URL = "http://new-host.example:8090"
+	if err := runnerconfig.WriteFile(path, first); err != nil {
+		t.Fatal(err)
+	}
+	_, firstDigest, err := runnerconfig.LoadFileSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Credimi.URL = "https://credimi.example"
+	previousLoader := loadDashboardConfigSnapshot
+	loadDashboardConfigSnapshot = func(snapshotPath string) (runnerconfig.Config, string, error) {
+		cfg, digest, snapshotErr := runnerconfig.LoadFileSnapshot(snapshotPath)
+		if snapshotErr == nil {
+			snapshotErr = runnerconfig.WriteFile(snapshotPath, second)
+		}
+		return cfg, digest, snapshotErr
+	}
+	t.Cleanup(func() { loadDashboardConfigSnapshot = previousLoader })
+	resolved, _ := json.Marshal(map[string]string{"credimi.example": ""})
+	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = filepath.Dir(path)
+	if err := s.requestServiceRestart(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := servicecoordination.ReadRestartRequest(s.composeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RequestedConfigDigest != firstDigest || !request.ForceRestart {
+		t.Fatalf("request=%+v, want digest=%q force=true", request, firstDigest)
+	}
+}
+
+func TestServiceTopologyChangeWaitsForAttachedHost(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	newValues := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
+	newValues["ANDROID_RUNNER_IMAGE"] = "credimi-runner:replacement"
+	s := newTestServer(t)
+	s.cfg = persistDashboardValues(t, path, newValues)
+	s.composeDir = filepath.Dir(path)
+	if err := writeCoordinatorPresenceFixture(s.composeDir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(loaded.Snapshot()), newValues, "linux")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	got := s.startupSnapshot()
+	if got.Phase != StartupStarting || !strings.Contains(got.Message, "attached") {
+		t.Fatalf("attached startup state=%+v", got)
+	}
+}
+
+func TestRecoveryOriginUsesDesiredDashboardPortAndBrowserHost(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_PORT"] = "8052"
+	s.cfg.mu.Unlock()
+	for _, tc := range []struct {
+		name, requestHost, want string
+	}{
+		{"hostname", "runner.example:8051", "http://runner.example:8052"},
+		{"forwarded scheme", "runner.example", "https://runner.example:8052"},
+		{"wildcard", "0.0.0.0:8051", "http://127.0.0.1:8052"},
+		{"ipv6", "[::1]:8051", "http://[::1]:8052"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/config", nil)
+			req.Host = tc.requestHost
+			if tc.name == "forwarded scheme" {
+				req.Header.Set("X-Forwarded-Proto", "https, http")
+			}
+			if got := s.recoveryOrigin(req); got != tc.want {
+				t.Fatalf("recovery origin=%q want=%q", got, tc.want)
+			}
+		})
+	}
+	req := httptest.NewRequest(http.MethodPost, "/config", nil)
+	req.Host = "runner.example:8051"
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_PORT"] = "8051"
+	s.cfg.mu.Unlock()
+	req.PostForm = url.Values{"DASHBOARD_PORT": {"8052"}}
+	response := httptest.NewRecorder()
+	s.writeQueuedRuntimeAction(response, req, controller.Snapshot{ID: "operation"}, "saved", "/", true)
+	var trigger map[string]map[string]string
+	if err := json.Unmarshal([]byte(response.Header().Get("HX-Trigger")), &trigger); err != nil {
+		t.Fatal(err)
+	}
+	if got := trigger["runtimeOperation"]["recoveryOrigin"]; got != "http://runner.example:8052" {
+		t.Fatalf("recovery trigger origin=%q", got)
+	}
+}
+
+func TestStartupStatusFallsBackWhenAttachedCoordinatorGoesStale(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	s.setStartupState(StartupStarting, "Configuration saved. Waiting for the attached Credimi Runner to restart the service.")
+	now := time.Unix(1000, 0)
+	oldNow := dashboardNow
+	dashboardNow = func() time.Time { return now }
+	t.Cleanup(func() { dashboardNow = oldNow })
+	if err := writeCoordinatorPresenceFixture(dir, now); err != nil {
+		t.Fatal(err)
+	}
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupStarting) {
+		t.Fatalf("fresh coordinator phase=%v", state["phase"])
+	}
+	if err := writeCoordinatorPresenceFixture(dir, now.Add(-servicecoordination.CoordinatorMaxAge-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	state = map[string]any{}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupNeedsAttention) || state["message"] != serviceRestartManualMessage {
+		t.Fatalf("stale coordinator state=%v", state)
+	}
+}
+
+func TestStartupStatusWaitsForRuntimeAfterSuccessfulServiceReplacement(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Success: true, AppliedFingerprint: fingerprint, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualStopped}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	s.runtime = fake
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupStarting) {
+		t.Fatalf("stopped runtime phase=%v", state["phase"])
+	}
+	fake.mu.Lock()
+	fake.status.Actual = runtimesupervisor.ActualRunning
+	fake.mu.Unlock()
+	response = httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	state = map[string]any{}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupReady) {
+		t.Fatalf("running runtime phase=%v", state["phase"])
+	}
+}
+
+func TestStartupStatusCompletesForStoppedRuntimeAfterServiceReplacement(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Success: true, AppliedFingerprint: fingerprint, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped, Actual: runtimesupervisor.ActualStopped}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	s.runtime = fake
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupReady) {
+		t.Fatalf("stopped runtime phase=%v", state["phase"])
+	}
+	if starts, _, _, _ := fake.counts(); starts != 0 {
+		t.Fatalf("runtime starts=%d, want 0", starts)
+	}
+}
+
+func TestStartupStatusReflectsStartingAndFailedRuntime(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(typedConfig, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning, Actual: runtimesupervisor.ActualStarting}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	s.runtime = fake
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupStarting) {
+		t.Fatalf("starting runtime phase=%v", state["phase"])
+	}
+	fake.mu.Lock()
+	fake.status.Actual = runtimesupervisor.ActualFailed
+	fake.status.LastError = "registration failed"
+	fake.mu.Unlock()
+	response = httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	state = map[string]any{}
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupNeedsAttention) || state["message"] != "registration failed" {
+		t.Fatalf("failed runtime state=%v", state)
+	}
+}
+
+func TestStartupStatusPreservesServiceRestartFailure(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	typedConfig, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := servicemanager.ServiceConfigFingerprint(typedConfig, true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Error: "replacement failed", UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "old-service-fingerprint")
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.composeDir = dir
+	response := httptest.NewRecorder()
+	s.startupStatus(response, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
+	var state map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state["phase"] != string(StartupNeedsAttention) || state["message"] != "replacement failed" {
+		t.Fatalf("service failure state=%v", state)
+	}
+}
+
+func TestServiceRestartResultStateMatchesCurrentRequest(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	dir := filepath.Dir(path)
+	fingerprint := servicemanager.ServiceConfigFingerprint(func() runnerconfig.Config {
+		cfg, err := runnerconfig.LoadFile(path)
+		if err != nil {
 			t.Fatal(err)
 		}
-		registered <- payload
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer api.Close()
-	config := "CREDIMI_URL=" + api.URL + "\nCREDIMI_RUNNER_ID=acme/runner\nCREDIMI_RUNNER_NAME=runner\nCREDIMI_RUNNER_ORGANIZATION=acme\nCREDIMI_USER_API_KEY=user-key\nCREDIMI_SERVICE_MODE=auto\nCREDIMI_RUNNER_TYPE=android_emulator\nCREDIMI_CONTAINER_MODE=emulator\nRUNNER_HOST=" + runnerHost + "\nRUNNER_PORT=" + runnerPort + "\n"
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(config), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := &fakeManager{
-		status:   dashboardruntime.RuntimeStatus{RunnerRunning: true},
-		logLines: []dashboardruntime.LogLine{{Message: "tunnel ready https://restored.trycloudflare.com"}},
-	}
-	_, cancel, err := NewHandlerWithManagerContextAndIdentityAndCoordinatorAndBootstrapProgress(context.Background(), dir, manager, "controller-1", "token", "fingerprint", controller.NewCoordinator(context.Background()), nil)
+		return cfg
+	}(), true)
+	request, err := servicecoordination.NewRestartRequest(fingerprint, false, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
-	select {
-	case payload := <-registered:
-		if payload.IP != "https://restored.trycloudflare.com" {
-			t.Fatalf("registered URL = %q", payload.IP)
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Success: true, AppliedFingerprint: fingerprint, UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !serviceRestartResultApplied(dir, path) || serviceRestartResultFailure(dir) != "" {
+		t.Fatal("successful service restart result was not recognized")
+	}
+	if err := servicecoordination.WriteRestartResult(dir, servicecoordination.RestartResult{
+		RequestID: request.RequestID, Error: "replacement failed", UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := serviceRestartResultFailure(dir); got != "replacement failed" || serviceRestartResultApplied(dir, loaded.Path()) {
+		t.Fatalf("failed service restart result: failure=%q applied=%t", got, serviceRestartResultApplied(dir, loaded.Path()))
+	}
+}
+
+func persistDashboardValues(t *testing.T, path string, values dashboardruntime.Values) *Config {
+	t.Helper()
+	cfg, err := dashboardruntime.TypedConfigFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runnerconfig.WriteFile(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loaded
+}
+
+func TestServiceStaleSaveDoesNotReconcileOrPartiallyApply(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["ANDROID_RUNNER_IMAGE"] = "runner:new"
+	newValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"
+	s.cfg = persistDashboardValues(t, path, newValues)
+
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "linux")
+	if !hasApplyClass(diff, dashboardruntime.ApplyServiceRestartRequired) || !hasApplyClass(diff, dashboardruntime.ApplyRuntimeReconcile) {
+		t.Fatalf("mixed diff = %+v", diff)
+	}
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	if starts, stops, restarts, reconciles := fake.counts(); starts != 0 || stops != 0 || restarts != 0 || reconciles != 0 {
+		t.Fatalf("stale save activated runtime: %d/%d/%d/%d", starts, stops, restarts, reconciles)
+	}
+	if !s.serviceRestartRequired() || !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile) {
+		t.Fatalf("stale save state: service=%t pending=%+v", s.serviceRestartRequired(), s.pendingDiff)
+	}
+}
+
+func TestPureServiceSaveDoesNotReconcileRunningRuntime(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["ANDROID_RUNNER_IMAGE"] = "runner:new"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	if err := s.applySavedConfig(context.Background(), dashboardruntime.DiffValuesForOS(oldValues, newValues, "linux")); err != nil {
+		t.Fatal(err)
+	}
+	if starts, stops, restarts, reconciles := fake.counts(); starts != 0 || stops != 0 || restarts != 0 || reconciles != 0 {
+		t.Fatalf("service-only save activated runtime: %d/%d/%d/%d", starts, stops, restarts, reconciles)
+	}
+	if len(s.pendingDiff.Classes) != 0 || !s.serviceRestartRequired() {
+		t.Fatalf("service-only save state: pending=%+v stale=%t", s.pendingDiff, s.serviceRestartRequired())
+	}
+}
+
+func TestRuntimeOnlySaveReconcilesWhenRunning(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "linux")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 1 {
+		t.Fatalf("reconcile calls = %d", reconciles)
+	}
+	if len(s.pendingDiff.Classes) != 0 {
+		t.Fatalf("pending diff = %+v", s.pendingDiff)
+	}
+}
+
+func TestDarwinDashboardListenerSaveStaysPending(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "")
+	loaded, path := testSavedConfig(t)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.runtime = fake
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["DASHBOARD_PORT"] = "9051"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	starts, stops, restarts, reconciles := fake.counts()
+	if starts != 0 || stops != 0 || restarts != 0 || reconciles != 0 {
+		t.Fatalf("Dashboard listener save activated runtime: %d/%d/%d/%d", starts, stops, restarts, reconciles)
+	}
+	if !s.serviceRestartRequired() || !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
+		t.Fatalf("pending service restart lost: service=%t pending=%+v", s.serviceRestartRequired(), s.pendingDiff)
+	}
+	if !s.pageData("overview", nil).RuntimeStatus().PendingServiceRestart {
+		t.Fatal("page status did not report pending service restart")
+	}
+	for _, action := range []string{"start", "restart"} {
+		snapshot, err := s.submitRuntimeAction(action)
+		if err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("configured runtime was not registered")
+		completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if completed.Phase != controller.PhaseFailed {
+			t.Fatalf("%s was not blocked: %#v", action, completed)
+		}
 	}
-	if manager.status.PublicURL != "https://restored.trycloudflare.com" {
-		t.Fatalf("dashboard URL = %q", manager.status.PublicURL)
+	if got := s.cfg.Snapshot()["DASHBOARD_PORT"]; got != "9051" {
+		t.Fatalf("saved Dashboard port = %q", got)
+	}
+
+	s.cfg = persistDashboardValues(t, path, oldValues)
+	revert := dashboardruntime.DiffValuesForOS(newValues, oldValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), revert); err != nil {
+		t.Fatal(err)
+	}
+	if s.serviceRestartRequired() || hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
+		t.Fatalf("reverted listener remained pending: service=%t pending=%+v applied=%+v desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedServerSettings, s.desiredDashboardListen())
+	}
+	for _, action := range []string{"start", "restart"} {
+		snapshot, err := s.submitRuntimeAction(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if completed.Phase != controller.PhaseSucceeded {
+			t.Fatalf("%s remained blocked after revert: %#v", action, completed)
+		}
+	}
+	if starts, _, restarts, _ := fake.counts(); starts != 1 || restarts != 1 {
+		t.Fatalf("runtime calls after revert: start=%d restart=%d", starts, restarts)
 	}
 }
 
-func TestControllerRuntimeAPIQueuesAndSerializesOperations(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("CREDIMI_RUNNER_ID=acme/runner\n"), 0o600); err != nil {
+func TestDarwinMixedDashboardAndRuntimeSaveWaitsForServiceRestart(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "")
+	loaded, path := testSavedConfig(t)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.runtime = fake
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["DASHBOARD_PORT"] = "9051"
+	newValues["TEMPORAL_ADDRESS"] = "temporal-new:7233"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
 		t.Fatal(err)
 	}
-	manager := &fakeManager{}
-	handler, cancel, err := NewHandlerWithManagerContext(context.Background(), dir, manager)
+	_, _, _, reconciles := fake.counts()
+	if reconciles != 0 {
+		t.Fatalf("mixed save partially reconciled runtime: %d", reconciles)
+	}
+	if !s.serviceRestartRequired() || !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile) {
+		t.Fatalf("mixed save state: service=%t pending=%+v", s.serviceRestartRequired(), s.pendingDiff)
+	}
+
+	reverted := dashboardruntime.Values(cloneStringMap(map[string]string(newValues)))
+	reverted["DASHBOARD_PORT"] = oldValues["DASHBOARD_PORT"]
+	s.cfg = persistDashboardValues(t, path, reverted)
+	second := dashboardruntime.DiffValuesForOS(newValues, reverted, "darwin")
+	if err := s.applySavedConfig(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if s.serviceRestartRequired() || hasApplyClass(s.pendingDiff, dashboardruntime.ApplyServiceRestartRequired) {
+		t.Fatalf("reverted mixed listener remained pending: service=%t pending=%+v applied=%+v desired=%q", s.serviceRestartRequired(), s.pendingDiff, s.appliedServerSettings, s.desiredDashboardListen())
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 1 {
+		t.Fatalf("runtime reconcile calls after revert = %d", reconciles)
+	}
+	if len(s.pendingDiff.Classes) != 0 {
+		t.Fatalf("pending diff after revert = %+v", s.pendingDiff)
+	}
+}
+
+func TestDarwinRunnerPortSaveReconcilesRuntime(t *testing.T) {
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "")
+	loaded, path := testSavedConfig(t)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := newTestServer(t)
+	s.cfg = loaded
+	s.runtime = fake
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["RUNNER_PORT"] = "9050"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "darwin")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	starts, stops, restarts, reconciles := fake.counts()
+	if starts != 0 || stops != 0 || restarts != 0 || reconciles != 1 {
+		t.Fatalf("runner port save calls: %d/%d/%d/%d", starts, stops, restarts, reconciles)
+	}
+	if s.serviceRestartRequired() {
+		t.Fatal("runner port save incorrectly required service restart")
+	}
+}
+
+func TestRuntimeOnlySaveWhileStoppedDoesNotCreateRuntime(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
-	request := httptest.NewRequest(http.MethodPost, "/api/controller/runtime/start", nil)
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("queue status = %d, body=%s", response.Code, response.Body.String())
-	}
-	var queued map[string]any
-	if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil || queued["id"] == nil {
-		t.Fatalf("queued operation = %s", response.Body.String())
-	}
-	conflict := httptest.NewRecorder()
-	handler.ServeHTTP(conflict, httptest.NewRequest(http.MethodPost, "/api/controller/runtime/start", nil))
-	if conflict.Code != http.StatusConflict {
-		t.Fatalf("conflicting queue status = %d", conflict.Code)
-	}
-}
-
-func TestControllerAPIsExposeLifecycleOperations(t *testing.T) {
-	s := newTestServer(t)
-	s.operations = controller.NewCoordinator(context.Background())
-	status := httptest.NewRecorder()
-	s.controllerStatus(status, httptest.NewRequest(http.MethodGet, "/api/controller/status", nil))
-	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), "runtime") {
-		t.Fatalf("controller status = %d %s", status.Code, status.Body.String())
-	}
-
-	current := httptest.NewRecorder()
-	s.controllerOperationCurrent(current, httptest.NewRequest(http.MethodGet, "/api/controller/operations/current", nil))
-	if current.Code != http.StatusOK {
-		t.Fatalf("controller current = %d", current.Code)
-	}
-
-	missing := httptest.NewRecorder()
-	missingRequest := httptest.NewRequest(http.MethodGet, "/api/controller/operations/missing", nil)
-	missingRequest.SetPathValue("id", "missing")
-	s.controllerOperation(missing, missingRequest)
-	if missing.Code != http.StatusNotFound {
-		t.Fatalf("missing operation = %d", missing.Code)
-	}
-
-	unavailable := httptest.NewRecorder()
-	s.manager = nil
-	action := httptest.NewRequest(http.MethodPost, "/api/controller/runtime/stop", nil)
-	action.SetPathValue("action", "stop")
-	s.controllerRuntimeAction(unavailable, action)
-	if unavailable.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unavailable action = %d", unavailable.Code)
-	}
-
-	s.manager = &fakeManager{}
-	queued := httptest.NewRecorder()
-	action = httptest.NewRequest(http.MethodPost, "/api/controller/runtime/stop", nil)
-	action.SetPathValue("action", "stop")
-	s.controllerRuntimeAction(queued, action)
-	if queued.Code != http.StatusAccepted {
-		t.Fatalf("queued action = %d %s", queued.Code, queued.Body.String())
-	}
-	operation := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), operation.ID); err != nil {
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, "linux")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
 		t.Fatal(err)
 	}
-	got := httptest.NewRecorder()
-	getRequest := httptest.NewRequest(http.MethodGet, "/api/controller/operations/"+operation.ID, nil)
-	getRequest.SetPathValue("id", operation.ID)
-	s.controllerOperation(got, getRequest)
-	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), operation.ID) {
-		t.Fatalf("operation lookup = %d %s", got.Code, got.Body.String())
+	if starts, stops, restarts, reconciles := fake.counts(); starts != 0 || stops != 0 || restarts != 0 || reconciles != 0 {
+		t.Fatalf("stopped save activated runtime: %d/%d/%d/%d", starts, stops, restarts, reconciles)
 	}
-
+	if !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile) {
+		t.Fatalf("pending runtime change lost: %+v", s.pendingDiff)
+	}
 }
 
-func TestControllerIdentityRuntimeLogsAndStartupStatus(t *testing.T) {
-	s := newTestServer(t)
-	s.controllerID = "controller-1"
-	s.controllerFingerprint = "fingerprint"
-	s.controllerIdentityToken = "identity-token"
-	unauthorized := httptest.NewRecorder()
-	s.controllerIdentity(unauthorized, httptest.NewRequest(http.MethodGet, "/internal/controller/identity", nil))
-	if unauthorized.Code != http.StatusUnauthorized {
-		t.Fatalf("identity without token = %d", unauthorized.Code)
-	}
-	identity := httptest.NewRecorder()
-	identityRequest := httptest.NewRequest(http.MethodGet, "/internal/controller/identity", nil)
-	identityRequest.Header.Set("X-Credimi-Controller-Token", "identity-token")
-	s.controllerIdentity(identity, identityRequest)
-	if identity.Code != http.StatusOK || !strings.Contains(identity.Body.String(), "controller-1") {
-		t.Fatalf("identity = %d %s", identity.Code, identity.Body.String())
-	}
-
-	s.manager = nil
-	logs := httptest.NewRecorder()
-	s.runtimeLogs(logs, httptest.NewRequest(http.MethodGet, "/runtime/logs", nil))
-	if logs.Code != http.StatusOK || !strings.Contains(logs.Body.String(), "lines") {
-		t.Fatalf("logs without manager = %d %s", logs.Code, logs.Body.String())
-	}
-	s.manager = &fakeManager{logLines: []dashboardruntime.LogLine{{Message: " line one "}, {Message: ""}}}
-	logs = httptest.NewRecorder()
-	s.runtimeLogs(logs, httptest.NewRequest(http.MethodGet, "/runtime/logs", nil))
-	if !strings.Contains(logs.Body.String(), "line one") {
-		t.Fatalf("logs with manager = %s", logs.Body.String())
-	}
-
-	parent, stop := context.WithCancel(context.Background())
-	s.operations = controller.NewCoordinator(parent)
-	started := make(chan struct{})
-	op, err := s.operations.Submit(controller.OperationRuntimeStart, func(ctx context.Context, _ func(controller.Progress)) error {
-		close(started)
-		<-ctx.Done()
-		return ctx.Err()
-	})
+func TestRevertingStaleTopologyAppliesAccumulatedRuntimeChange(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-started
-	startup := httptest.NewRecorder()
-	s.startupStatus(startup, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
-	if !strings.Contains(startup.Body.String(), string(StartupStarting)) {
-		t.Fatalf("running startup status = %s", startup.Body.String())
-	}
-	stop()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	serviceValues := dashboardruntime.Values(loaded.Snapshot())
+	serviceValues["ANDROID_RUNNER_IMAGE"] = "runner:new"
+	serviceValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"
+	s.cfg = persistDashboardValues(t, path, serviceValues)
+	first := dashboardruntime.DiffValuesForOS(oldValues, serviceValues, "linux")
+	if err := s.applySavedConfig(context.Background(), first); err != nil {
 		t.Fatal(err)
 	}
-	startup = httptest.NewRecorder()
-	s.startupStatus(startup, httptest.NewRequest(http.MethodGet, "/startup/status", nil))
-	if !strings.Contains(startup.Body.String(), string(StartupNeedsAttention)) {
-		t.Fatalf("cancelled startup status = %s", startup.Body.String())
+	reverted := dashboardruntime.Values(serviceValues)
+	reverted["ANDROID_RUNNER_IMAGE"] = oldValues["ANDROID_RUNNER_IMAGE"]
+	s.cfg = persistDashboardValues(t, path, reverted)
+	second := dashboardruntime.DiffValuesForOS(serviceValues, reverted, "linux")
+	if err := s.applySavedConfig(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	if s.serviceRestartRequired() {
+		t.Fatal("reverted topology still reported stale")
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 1 {
+		t.Fatalf("reconcile calls = %d", reconciles)
+	}
+	if len(s.pendingDiff.Classes) != 0 {
+		t.Fatalf("pending diff = %+v", s.pendingDiff)
 	}
 }
 
-func TestApplyModeAndSaveMessageHelpers(t *testing.T) {
-	for input, want := range map[string]string{
-		"quick":              "auto",
-		"direct":             "manual",
-		"named":              "cloudflare-managed",
-		"auto":               "auto",
-		"manual":             "manual",
-		"cloudflare-managed": "cloudflare-managed",
-		"unexpected":         "auto",
+func TestFailedRuntimeReconcileRetainsPendingChange(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	want := errors.New("reconcile failed")
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}, reconcileErr: want}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(loaded.Path())}
+	oldValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues := dashboardruntime.Values(loaded.Snapshot())
+	newValues["TEMPORAL_ADDRESS"] = "temporal:new:7233"
+	s.cfg = persistDashboardValues(t, path, newValues)
+	err = s.applySavedConfig(context.Background(), dashboardruntime.DiffValuesForOS(oldValues, newValues, "linux"))
+	if !errors.Is(err, want) {
+		t.Fatalf("reconcile error = %v", err)
+	}
+	if !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile) {
+		t.Fatalf("failed change was not retained: %+v", s.pendingDiff)
+	}
+}
+
+func TestStaleServiceBlocksRuntimeActivationButAllowsStop(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	values := dashboardruntime.Values(loaded.Snapshot())
+	values["ANDROID_RUNNER_IMAGE"] = "runner:new"
+	loaded = persistDashboardValues(t, path, values)
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, operations: controller.NewCoordinator(context.Background())}
+	for _, action := range []string{"start", "restart"} {
+		snapshot, err := s.submitRuntimeAction(action)
+		if err != nil {
+			t.Fatal(err)
+		}
+		completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if completed.Phase != controller.PhaseFailed || !strings.Contains(completed.Error, "credimi-runner service restart") {
+			t.Fatalf("%s operation = %#v", action, completed)
+		}
+	}
+	if starts, _, restarts, _ := fake.counts(); starts != 0 || restarts != 0 {
+		t.Fatalf("stale service activated runtime: start=%d restart=%d", starts, restarts)
+	}
+	stopSnapshot, err := s.submitRuntimeAction("stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.operations.Wait(context.Background(), stopSnapshot.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, stops, _, _ := fake.counts(); stops != 1 {
+		t.Fatalf("stop calls = %d", stops)
+	}
+}
+
+func TestExplicitStartClearsPendingRuntimeChange(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, operations: controller.NewCoordinator(context.Background()), pendingDiff: dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRuntimeReconcile}}}
+	snapshot, err := s.submitRuntimeAction("start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.operations.Wait(context.Background(), snapshot.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Phase != controller.PhaseSucceeded {
+		t.Fatalf("start operation = %#v", completed)
+	}
+	if starts, _, _, _ := fake.counts(); starts != 1 {
+		t.Fatalf("start calls = %d", starts)
+	}
+	if len(s.pendingDiff.Classes) != 0 {
+		t.Fatalf("pending diff = %+v", s.pendingDiff)
+	}
+}
+
+func TestDashboardConfigIdentityAndImpactHelpers(t *testing.T) {
+	s := newTestServer(t)
+	for _, tc := range []struct {
+		class dashboardruntime.ApplyClass
+		want  string
+	}{
+		{dashboardruntime.ApplyServiceRestartRequired, "persistent service must restart"},
+		{dashboardruntime.ApplyRuntimeRestartRequired, "runtime generation must restart"},
+		{dashboardruntime.ApplyRuntimeReconcile, "runtime generation will be reconciled"},
+		{dashboardruntime.ApplyCredimiUpdateRequired, "runner record in Credimi"},
+		{"", ""},
 	} {
-		if got := normalizedApplyServiceMode(input); got != want {
-			t.Fatalf("normalizedApplyServiceMode(%q) = %q, want %q", input, got, want)
+		got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{tc.class}})
+		if !strings.Contains(got, tc.want) {
+			t.Fatalf("impact %q = %q", tc.class, got)
 		}
 	}
-	if got := saveSuccessMessage(applyOutcome{Restarted: true}); got != "Runner restarted with the new configuration." {
-		t.Fatalf("restart message = %q", got)
+	if got := clonePostForm(url.Values{"key": {"value"}}); got.Get("key") != "value" {
+		t.Fatalf("cloned form = %#v", got)
 	}
-	if got := saveSuccessMessage(applyOutcome{}); got != "Configuration updated." {
-		t.Fatalf("save message = %q", got)
+	if _, err := s.submitRuntimeAction("invalid"); err == nil {
+		t.Fatal("unsupported runtime action was accepted")
 	}
-}
 
-func formValuesFromConfig(cfg *Config) url.Values {
-	form := url.Values{}
-	for _, field := range Registry {
-		value := cfg.values[field.Key]
-		if field.Type == TypeBool {
-			if value == "true" {
-				form.Set(field.Key, "on")
-			}
-			continue
-		}
-		form.Set(field.Key, value)
+	current := map[string]string{
+		"CREDIMI_URL":                 "https://credimi.example",
+		"CREDIMI_RUNNER_ID":           "org/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "org",
+		"CREDIMI_USER_API_KEY":        "user-key",
 	}
-	return form
-}
+	if err := s.resolveConfigIdentity(context.Background(), current, map[string]string{"CREDIMI_RUNNER_ID": "org/other"}); err == nil {
+		t.Fatal("runner ID change was accepted")
+	}
+	if err := s.resolveConfigIdentity(context.Background(), current, map[string]string{"CREDIMI_RUNNER_ORGANIZATION": "other"}); err == nil {
+		t.Fatal("user runner organization change was accepted")
+	}
+	withoutKey := map[string]string{"CREDIMI_RUNNER_ID": "org/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "org"}
+	if err := s.resolveConfigIdentity(context.Background(), withoutKey, map[string]string{"CREDIMI_RUNNER_NAME": "renamed"}); err == nil {
+		t.Fatal("identity update without a key was accepted")
+	}
 
-type fakeFileInfo string
-
-func (f fakeFileInfo) Name() string       { return string(f) }
-func (f fakeFileInfo) Size() int64        { return 0 }
-func (f fakeFileInfo) Mode() os.FileMode  { return 0o644 }
-func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
-func (f fakeFileInfo) IsDir() bool        { return false }
-func (f fakeFileInfo) Sys() any           { return nil }
-
-func TestNewHandlerAndRoutes(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	dir := t.TempDir()
-	h, cancel, err := NewHandler(dir)
-	if err != nil {
+	incoming := map[string]string{}
+	if err := s.resolveConfigIdentity(context.Background(), current, incoming); err != nil {
 		t.Fatal(err)
 	}
-	defer cancel()
-
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "ok" {
-		t.Fatalf("healthz = %d %q", rec.Code, rec.Body.String())
-	}
-
-	req = httptest.NewRequest(http.MethodGet, "/workers", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("workers route = %d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestNewHandlerAppliesDashboardTokenAuth(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("DASHBOARD_TOKEN=secret-token\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h, cancel, err := NewHandler(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cancel()
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config/raw", nil))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("config/raw without token = %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/config/raw?token=secret-token", nil)
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("config/raw with token = %d", rec.Code)
+	if incoming["CREDIMI_RUNNER_ID"] != "org/runner" {
+		t.Fatalf("resolved identity = %#v", incoming)
 	}
 }
 
 func TestServerAuth(t *testing.T) {
 	s := newTestServer(t)
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_TOKEN"] = "token"
+	s.cfg.mu.Unlock()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -548,6 +1582,19 @@ func TestServerAuth(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("bearer token code = %d", rec.Code)
 	}
+	s.cfg.mu.Lock()
+	s.cfg.values["DASHBOARD_TOKEN"] = "rotated"
+	s.cfg.mu.Unlock()
+	rec = httptest.NewRecorder()
+	s.auth(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config?token=token", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old token remained valid after rotation = %d", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	s.auth(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/config?token=rotated", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("rotated token code = %d", rec.Code)
+	}
 
 	rec = httptest.NewRecorder()
 	s.auth(next).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/app.css", nil))
@@ -568,7 +1615,7 @@ func TestServerPageAndPageData(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("page code = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "Set up Credimi Runner") {
+	if !strings.Contains(rec.Body.String(), "Credimi Runner — Setup") {
 		t.Fatalf("first run should render setup page, got: %s", rec.Body.String()[:200])
 	}
 
@@ -580,8 +1627,7 @@ func TestServerPageAndPageData(t *testing.T) {
 		t.Fatalf("fragment code/body = %d %s", rec.Code, rec.Body.String())
 	}
 
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	if err := s.cfg.write(); err != nil {
+	if _, err := s.cfg.Apply(map[string]string{"CREDIMI_RUNNER_ID": "acme/runner"}); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
@@ -625,231 +1671,6 @@ func TestServerConfigHandlers(t *testing.T) {
 	}
 }
 
-func TestServerConfigDiffAndHelpers(t *testing.T) {
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.values = map[string]string(normalized)
-	form := formValuesFromConfig(s.cfg)
-	form.Set("CREDIMI_RUNNER_DESCRIPTION", "updated description")
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "credimi_update_required") || !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
-		t.Fatalf("configDiff = %d %s", rec.Code, rec.Body.String())
-	}
-	if got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplySavedOnly}}); got != "" {
-		t.Fatalf("describeDiffImpact = %q", got)
-	}
-	if got := describeDiffImpact(dashboardruntime.ConfigDiff{}); got != "" {
-		t.Fatalf("default describeDiffImpact = %q", got)
-	}
-	for _, diff := range []dashboardruntime.ConfigDiff{
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate, dashboardruntime.ApplyCredimiUpdateRequired}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired, dashboardruntime.ApplyCredimiUpdateRequired}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyComposeRecreate}},
-		{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired}},
-	} {
-		if got := describeDiffImpact(diff); got == "" {
-			t.Fatalf("describeDiffImpact(%#v) returned empty string", diff)
-		}
-	}
-	if got := describeDiffImpact(dashboardruntime.ConfigDiff{Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired}}); got != "" {
-		t.Fatalf("Credimi-only diff should not ask for confirmation: %q", got)
-	}
-}
-
-func TestServerConfigDiffRunnerTypeChangeRequiresApply(t *testing.T) {
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.cfg.values["RUNNER_IMAGE"] = defaultPhoneImage
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(url.Values{
-		"CREDIMI_URL":         {"https://credimi.example"},
-		"CREDIMI_RUNNER_ID":   {"acme/runner"},
-		"CREDIMI_RUNNER_NAME": {"runner"},
-		"CREDIMI_RUNNER_TYPE": {"android_emulator"},
-	}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("configDiff runner type change = %d %s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "No restart") {
-		t.Fatalf("runner type change should not be saved-only: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"confirm_required":true`) {
-		t.Fatalf("runner type change should require confirmation: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "runner record in Credimi") {
-		t.Fatalf("runner type change should require Credimi update: %s", rec.Body.String())
-	}
-}
-
-func TestServerConfigDiffManualPublicURLOnlyUpdatesCredimi(t *testing.T) {
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://old.example"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.values = map[string]string(normalized)
-
-	form := formValuesFromConfig(s.cfg)
-	form.Set("RUNNER_PUBLIC_URL", "https://manual.example")
-	form.Set("RUNNER_PUBLIC_PORT", "8443")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("configDiff manual URL change = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "credimi_update_required") {
-		t.Fatalf("manual URL change should update Credimi: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
-		t.Fatalf("manual URL change should not require restart confirmation: %s", rec.Body.String())
-	}
-}
-
-func TestServerConfigDiffIgnoresDirectRunnerIDChange(t *testing.T) {
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.values = map[string]string(normalized)
-
-	form := formValuesFromConfig(s.cfg)
-	form.Set("CREDIMI_RUNNER_ID", "evil/id")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("configDiff direct ID change = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "saved_only") || !strings.Contains(rec.Body.String(), `"confirm_required":false`) {
-		t.Fatalf("direct runner ID edits should be ignored: %s", rec.Body.String())
-	}
-}
-
-func TestServerConfigDiffNameChangeDerivesRunnerID(t *testing.T) {
-	transport := http.DefaultTransport
-	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/mobile-runner/preview-id" {
-			return nil, errors.New("unexpected path: " + req.URL.Path)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"organization":"acme","runner_id":"acme/renamed-runner"}`)),
-		}, nil
-	})
-	defer func() { http.DefaultTransport = transport }()
-
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.values = map[string]string(normalized)
-
-	form := formValuesFromConfig(s.cfg)
-	form.Set("CREDIMI_RUNNER_NAME", "Renamed Runner")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.configDiff(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("configDiff name change = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "restart_required") || !strings.Contains(rec.Body.String(), "credimi_update_required") || !strings.Contains(rec.Body.String(), `"confirm_required":true`) {
-		t.Fatalf("name change should require restart and Credimi update: %s", rec.Body.String())
-	}
-}
-
-func TestServerConfigDiffRejectsUserScopedOrganizationChange(t *testing.T) {
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_INTERNAL_ADMIN_KEY"] = ""
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.values = map[string]string(normalized)
-
-	form := formValuesFromConfig(s.cfg)
-	form.Set("CREDIMI_RUNNER_ORGANIZATION", "other")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.configDiff(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("configDiff user org change = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "organization cannot be changed for user-scoped runners") {
-		t.Fatalf("configDiff user org change should explain rejection: %s", rec.Body.String())
-	}
-}
-
-func TestServerNormalizeConfigPreviewRunnerTypeChange(t *testing.T) {
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.cfg.values["RUNNER_IMAGE"] = defaultPhoneImage
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config/normalize", strings.NewReader(url.Values{
-		"CREDIMI_RUNNER_TYPE": {"android_emulator"},
-	}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.normalizeConfigPreview(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("normalizeConfigPreview = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), defaultEmulatorImage) || !strings.Contains(rec.Body.String(), dashboardruntime.DefaultGoldenPath) {
-		t.Fatalf("normalizeConfigPreview missing emulator defaults: %s", rec.Body.String())
-	}
-}
-
 func TestServerSetupRenderHelpers(t *testing.T) {
 	s := newTestServer(t)
 
@@ -874,183 +1695,26 @@ func TestServerSetupRenderHelpers(t *testing.T) {
 	}
 }
 
-func TestServerSaveDevicesConfig(t *testing.T) {
-	s := newTestServer(t)
-	form := url.Values{
-		"CREDIMI_URL":                 {"https://credimi.example"},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"manual"},
-		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
-	}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveDevicesConfig(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Save target") {
-		t.Fatalf("saveDevicesConfig = %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestServerSaveOverviewPublishedConfig(t *testing.T) {
-	transport := http.DefaultTransport
-	var payload dashboardruntime.RegisterRunnerRequest
-	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/mobile-runner" {
-			return nil, errors.New("unexpected path: " + req.URL.Path)
-		}
-		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
-			t.Fatal(err)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{}`)),
-		}, nil
+func TestValidateSetupInputRejectsManualURLWithoutScheme(t *testing.T) {
+	errs := validateSetupInput(map[string]string{
+		"CREDIMI_URL":          "https://credimi.example",
+		"CREDIMI_USER_API_KEY": "user-key",
+		"CREDIMI_RUNNER_NAME":  "runner",
+		"CREDIMI_SERVICE_MODE": "manual",
+		"RUNNER_PUBLIC_URL":    "runner.example",
 	})
-	defer func() { http.DefaultTransport = transport }()
-
-	s := newTestServer(t)
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.cfg.values["CREDIMI_RUNNER_PUBLISHED"] = "false"
-
-	form := url.Values{
-		"CREDIMI_RUNNER_PUBLISHED": {"on"},
-	}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/overview/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveOverviewConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveOverviewConfig = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "Runner publication") || strings.Contains(rec.Body.String(), "API &amp; Config") {
-		t.Fatalf("saveOverviewConfig should render overview, got %s", rec.Body.String())
-	}
-	if payload.Published == nil || !*payload.Published {
-		t.Fatalf("published payload = %#v", payload.Published)
-	}
-	if got := s.cfg.Get("CREDIMI_RUNNER_PUBLISHED"); got != "true" {
-		t.Fatalf("stored CREDIMI_RUNNER_PUBLISHED = %q", got)
+	if got := errs["RUNNER_PUBLIC_URL"]; !strings.Contains(got, "http:// or https://") {
+		t.Fatalf("manual public URL validation = %q", got)
 	}
 }
 
-func TestServerRuntimeActionVariants(t *testing.T) {
+func TestSetupPageDisplaysStartupFailure(t *testing.T) {
 	s := newTestServer(t)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
-	defer api.Close()
-	s.cfg.values["CREDIMI_URL"] = api.URL
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.runnerReady = func(context.Context, map[string]string) error { return nil }
-
-	for _, target := range []struct {
-		path string
-		fn   http.HandlerFunc
-	}{
-		{"/runtime/stop", s.runtimeStop},
-		{"/runtime/restart", s.runtimeRestart},
-	} {
-		rec := httptest.NewRecorder()
-		target.fn(rec, httptest.NewRequest(http.MethodPost, target.path, nil))
-		if rec.Code != http.StatusAccepted {
-			t.Fatalf("%s = %d %s", target.path, rec.Code, rec.Body.String())
-		}
-		op := s.operations.Current()
-		if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
-			t.Fatalf("%s operation: %v", target.path, err)
-		}
-	}
-}
-
-func TestServerMaintenanceUpgradeRunsInBackgroundAndPublishesLogs(t *testing.T) {
-	registered := make(chan string, 1)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		registered <- string(body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer api.Close()
-	s := newTestServer(t)
-	manager := s.manager.(*fakeManager)
-	manager.status.PublicURL = ""
-	manager.logLines = []dashboardruntime.LogLine{{Message: "INF quick tunnel ready at https://fresh.example.trycloudflare.com"}}
-	s.cfg.values["CREDIMI_URL"] = api.URL
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	s.cfg.values["CREDIMI_RUNNER_BACKEND"] = "container"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
-	s.maintenance.Image.UpdateAvailable = true
+	s.setStartupState(StartupNeedsAttention, "runtime start failed: public URL is unreachable")
 	recorder := httptest.NewRecorder()
-	s.maintenanceUpgrade(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
-	if recorder.Code != http.StatusAccepted {
-		t.Fatalf("maintenanceUpgrade = %d %s", recorder.Code, recorder.Body.String())
-	}
-	deadline := time.Now().Add(time.Second)
-	for s.startupSnapshot().running && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	startup := s.startupSnapshot()
-	if startup.Phase != StartupReady || !strings.Contains(strings.Join(startup.Logs, "\n"), "Downloading the latest runner image") {
-		t.Fatalf("startup = %#v", startup)
-	}
-	select {
-	case body := <-registered:
-		if !strings.Contains(body, "https://fresh.example.trycloudflare.com") {
-			t.Fatalf("registration body = %s", body)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Credimi registration was not updated")
-	}
-	if manager.status.PublicURL != "https://fresh.example.trycloudflare.com" {
-		t.Fatalf("manager public URL = %q", manager.status.PublicURL)
-	}
-}
-
-func TestServerMaintenanceUpgradeRejectsConcurrentJobAndReportsFailure(t *testing.T) {
-	s := newTestServer(t)
-	manager := s.manager.(*fakeManager)
-	manager.upgradeBlock = make(chan struct{})
-	manager.updateImageErr = errors.New("pull failed")
-	s.maintenance = maintenance.Status{Image: maintenance.Component{UpdateAvailable: true}}
-
-	first := httptest.NewRecorder()
-	s.maintenanceUpgrade(first, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
-	if first.Code != http.StatusAccepted {
-		t.Fatalf("first upgrade = %d", first.Code)
-	}
-	second := httptest.NewRecorder()
-	s.maintenanceUpgrade(second, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
-	if second.Code != http.StatusConflict {
-		t.Fatalf("second upgrade = %d %s", second.Code, second.Body.String())
-	}
-	close(manager.upgradeBlock)
-	deadline := time.Now().Add(time.Second)
-	for s.startupSnapshot().running && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	startup := s.startupSnapshot()
-	if startup.Phase != StartupNeedsAttention || !strings.Contains(startup.Message, "pull failed") {
-		t.Fatalf("startup = %#v", startup)
+	s.page("setup")(recorder, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "public URL is unreachable") {
+		t.Fatalf("setup failure page = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -1058,7 +1722,7 @@ func TestServerMaintenanceCheckRefreshesMetadata(t *testing.T) {
 	s := newTestServer(t)
 	s.maintenanceChecked = false
 	calls := 0
-	s.maintenanceChecker = func(context.Context, string, time.Time, string) maintenance.Status {
+	s.maintenanceChecker = func(context.Context, string, time.Time) maintenance.Status {
 		calls++
 		return maintenance.Status{Runner: maintenance.Component{LatestVersion: "v2", UpdateAvailable: true}}
 	}
@@ -1073,168 +1737,450 @@ func TestServerMaintenanceCheckRefreshesMetadata(t *testing.T) {
 	}
 }
 
-func TestServerMaintenanceCheckSkipsLocalRunnerImage(t *testing.T) {
-	s := newTestServer(t)
-	s.maintenanceChecked = false
-	s.cfg.values["RUNNER_IMAGE"] = "credimi-runner-phone:latest"
-	s.cfg.values["RUNNER_IMAGE_PULL_POLICY"] = "never"
-	checkedImage := "not-called"
-	s.maintenanceChecker = func(_ context.Context, _ string, _ time.Time, image string) maintenance.Status {
-		checkedImage = image
-		return maintenance.Status{Runner: maintenance.Component{LatestVersion: "v2"}}
-	}
-	s.ensureMaintenanceChecked(context.Background(), true)
-	if checkedImage != "" {
-		t.Fatalf("checked image = %q", checkedImage)
-	}
-	if s.maintenance.Error != "" || s.maintenance.Runner.LatestVersion != "v2" {
-		t.Fatalf("maintenance status = %#v", s.maintenance)
-	}
-}
-
-func TestServerMaintenanceUpgradeStagesBinaryAndSchedulesRestart(t *testing.T) {
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
-	defer api.Close()
-	s := newTestServer(t)
-	s.binaryPath = "/installed/credimi-runner"
-	s.maintenance = maintenance.Status{Runner: maintenance.Component{UpdateAvailable: true}}
-	s.cfg.values["CREDIMI_URL"] = api.URL
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	var downloaded, restarted string
-	s.downloadBinary = func(_ context.Context, _ *http.Client, target string, progress func(string)) error {
-		downloaded = target
-		progress("binary staged")
-		return nil
-	}
-	s.restartDashboard = func(staged string) error { restarted = staged; return nil }
-	recorder := httptest.NewRecorder()
-	s.maintenanceUpgrade(recorder, httptest.NewRequest(http.MethodPost, "/maintenance/upgrade", nil))
-	op := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
-		t.Fatalf("maintenance upgrade operation: %v", err)
-	}
-	if downloaded != "/installed/credimi-runner.upgrade" || restarted != downloaded {
-		t.Fatalf("downloaded=%q restarted=%q startup=%#v", downloaded, restarted, s.startupSnapshot())
-	}
-}
-
-func TestScheduleDashboardRestartUsesCurrentBinaryAsHelper(t *testing.T) {
-	originalExecutable, originalStart, originalTerminate := dashboardExecutable, startDashboardRestartHelper, terminateDashboardAfter
-	t.Cleanup(func() {
-		dashboardExecutable, startDashboardRestartHelper, terminateDashboardAfter = originalExecutable, originalStart, originalTerminate
-	})
-	dashboardExecutable = func() (string, error) { return "/installed/credimi-runner", nil }
-	var helper string
-	var args []string
-	startDashboardRestartHelper = func(name string, values ...string) error {
-		helper, args = name, append([]string(nil), values...)
-		return nil
-	}
-	terminated := false
-	terminateDashboardAfter = func(time.Duration, int) { terminated = true }
-	if err := scheduleDashboardRestart("/installed/credimi-runner.upgrade"); err != nil {
-		t.Fatal(err)
-	}
-	joined := strings.Join(args, " ")
-	if helper != "/installed/credimi-runner" || !strings.Contains(joined, "--staged /installed/credimi-runner.upgrade") || !terminated {
-		t.Fatalf("helper=%q args=%q terminated=%v", helper, joined, terminated)
-	}
-}
-
-func TestScheduleDashboardRestartReportsHelperErrors(t *testing.T) {
-	originalExecutable, originalStart := dashboardExecutable, startDashboardRestartHelper
-	t.Cleanup(func() { dashboardExecutable, startDashboardRestartHelper = originalExecutable, originalStart })
-	dashboardExecutable = func() (string, error) { return "", errors.New("executable failed") }
-	if err := scheduleDashboardRestart("staged"); err == nil || !strings.Contains(err.Error(), "executable failed") {
-		t.Fatalf("error = %v", err)
-	}
-	dashboardExecutable = func() (string, error) { return "/runner", nil }
-	startDashboardRestartHelper = func(string, ...string) error { return errors.New("start failed") }
-	if err := scheduleDashboardRestart("staged"); err == nil || !strings.Contains(err.Error(), "start failed") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestServerRuntimeRegisterAndActionError(t *testing.T) {
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/mobile-runner" {
-			w.WriteHeader(http.StatusOK)
-			return
+func TestServerSetupHelperEndpoints(t *testing.T) {
+	originalClient := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/organizations/my":
+			body = `{"canonified_name":"acme","name":"Acme"}`
+		case "/api/canonify/identifier/validate":
+			body = `{"record":{"slug":"runner-slug"}}`
+		case "/api/mobile-runner/preview-id":
+			body = `{"organization":"acme","runner_id":"acme/runner-slug-2"}`
 		}
-		http.NotFound(w, r)
-	}))
-	defer api.Close()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
 
 	s := newTestServer(t)
-	manager := s.manager.(*fakeManager)
-	s.cfg.values["CREDIMI_URL"] = api.URL
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
 
 	rec := httptest.NewRecorder()
-	s.runtimeRegister(rec, httptest.NewRequest(http.MethodPost, "/runtime/register", nil))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("runtimeRegister = %d body=%s publicURL=%q", rec.Code, rec.Body.String(), manager.status.PublicURL)
-	}
-	op := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil || manager.status.PublicURL != "https://runner.example" {
-		t.Fatalf("runtimeRegister operation=%#v err=%v publicURL=%q", op, err, manager.status.PublicURL)
+	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	s.lookupSetupOrganization(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified_name":"acme"`) {
+		t.Fatalf("lookupSetupOrganization = %d %s", rec.Code, rec.Body.String())
 	}
 
-	manager.stopErr = errors.New("stop failed")
 	rec = httptest.NewRecorder()
-	s.runtimeStop(rec, httptest.NewRequest(http.MethodPost, "/runtime/stop", nil))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("runtimeStop = %d %s", rec.Code, rec.Body.String())
+	req = httptest.NewRequest(http.MethodPost, "/setup/canonify?name=Runner+Slug", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	s.canonifySetupName(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified":"runner-slug"`) {
+		t.Fatalf("canonifySetupName = %d %s", rec.Code, rec.Body.String())
 	}
-	op = s.operations.Current()
-	result, err := s.operations.Wait(context.Background(), op.ID)
-	if err != nil || result.Phase != controller.PhaseFailed || !strings.Contains(result.Error, "stop failed") {
-		t.Fatalf("runtimeStop operation=%#v err=%v", result, err)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup/preview-id", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key","organization":"acme","name":"Runner Slug"}`))
+	s.previewSetupRunnerID(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"runner_id":"acme/runner-slug-2"`) {
+		t.Fatalf("previewSetupRunnerID = %d %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestControllerImageUpgradeUsesLifecycleRegistration(t *testing.T) {
+func TestServerSetupHelperEndpointValidation(t *testing.T) {
+	s := newTestServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{`))
+	s.lookupSetupOrganization(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("lookupSetupOrganization invalid JSON = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup/canonify", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	s.canonifySetupName(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("canonifySetupName missing name = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/setup/preview-id", strings.NewReader(`{"instance_url":"https://credimi.example"}`))
+	s.previewSetupRunnerID(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("previewSetupRunnerID missing fields = %d", rec.Code)
+	}
+}
+
+func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
+	s := newTestServer(t)
+	s.startup.Phase = StartupWaitingRunner
+	s.startup.Message = "Runtime started. Waiting for runner readiness."
+	s.startup.Logs = []string{"Pulling Docker images.", "runner Pulling fs layer"}
+	s.startup.LogBase = 1
+	s.startup.LogNextID = 3
+	s.startup.running = true
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/startup/status", nil)
+	s.startupStatus(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("startupStatus = %d %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"phase":"waiting_for_runner"`) ||
+		!strings.Contains(body, `"running":true`) ||
+		!strings.Contains(body, `"next_id":3`) ||
+		!strings.Contains(body, "Waiting for runner readiness") ||
+		!strings.Contains(body, "runner Pulling fs layer") {
+		t.Fatalf("startupStatus body = %s", body)
+	}
+
+	s.appendStartupLog("runner Downloading 128MB")
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/startup/status?since=3", nil)
+	s.startupStatus(rec, req)
+	body = rec.Body.String()
+	if strings.Contains(body, "runner Pulling fs layer") ||
+		!strings.Contains(body, "runner Downloading 128MB") ||
+		!strings.Contains(body, `"next_id":4`) {
+		t.Fatalf("startupStatus cursor body = %s", body)
+	}
+}
+
+func TestServerSystemMetricsReturnsEmptySnapshotWithoutMonitor(t *testing.T) {
+	s := newTestServer(t)
+	s.systemMonitor = nil
+	recorder := httptest.NewRecorder()
+	s.systemMetrics(recorder, httptest.NewRequest(http.MethodGet, "/api/system-metrics", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"samples":[]`) || !strings.Contains(recorder.Body.String(), `"interval_ms":2000`) {
+		t.Fatalf("empty system metrics = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestServerDeviceAndSSEHelpers(t *testing.T) {
+	s := newTestServer(t)
+	rec := httptest.NewRecorder()
+	s.deviceError(rec, `bad <device> "quoted"`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("deviceError code = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "&lt;device&gt;") || !strings.Contains(rec.Body.String(), "&quot;quoted&quot;") {
+		t.Fatalf("deviceError did not escape body: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	writeSSE(rec, "rows", "a\nb")
+	if got := rec.Body.String(); got != "event: rows\ndata: a\ndata: b\n\n" {
+		t.Fatalf("writeSSE = %q", got)
+	}
+
+	if got := htmlAttr(`a&b<c>"`); got != "a&amp;b&lt;c&gt;&quot;" {
+		t.Fatalf("htmlAttr = %q", got)
+	}
+}
+
+func TestServerSSE(t *testing.T) {
+	s := newTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/events/health", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		s.sse("health").ServeHTTP(rec, req)
+		close(done)
+	}()
+	cancel()
+	<-done
+	if !strings.Contains(rec.Body.String(), "event: pill") {
+		t.Fatalf("sse body = %q", rec.Body.String())
+	}
+}
+
+func TestServerRuntimeSSE(t *testing.T) {
+	s := newTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/events/runtime", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		s.sse("runtime").ServeHTTP(rec, req)
+		close(done)
+	}()
+	cancel()
+	<-done
+	if !strings.Contains(rec.Body.String(), "event: runtime") {
+		t.Fatalf("runtime sse body = %q", rec.Body.String())
+	}
+}
+
+func TestDialTemporalOnline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	done := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			conn.Close()
+		}
+		close(done)
+	}()
+	if got := dialTemporal(ln.Addr().String()); got != Online {
+		t.Fatalf("listening temporal = %s", got)
+	}
+	<-done
+}
+func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
+	emulator := dashboardruntime.DeviceRuntimeConfig{Type: "android_emulator", Mode: "emulator"}
+	applyDeviceDefaults(&emulator)
+	if emulator.Values["BASE_NAME"] != "credimi" || emulator.Values["AVD_NAME"] != "" || emulator.Values["GOLDEN_PATH"] == "" || emulator.Values["ANDROID_KEYS_DIR"] == "" || emulator.Values["HOST_AVD_HOME_PATH"] == "" || emulator.Values["HOST_AVD_GOLDEN_PATH"] == "" {
+		t.Fatalf("emulator defaults = %#v", emulator.Values)
+	}
+	redroid := dashboardruntime.DeviceRuntimeConfig{Type: "redroid", Mode: "no_device", Values: dashboardruntime.Values{}}
+	applyDeviceDefaults(&redroid)
+	if redroid.Values["WIFI_PORT"] != "5555" || redroid.Values["REDROID_DATA_DIR"] == "" {
+		t.Fatalf("redroid defaults = %#v", redroid.Values)
+	}
+}
+
+func TestSetupDevicesUsesBaseNameAsEmulatorID(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/mobile-runner" {
+		if r.URL.Path != "/api/mobile-device/preview-id" {
 			http.NotFound(w, r)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"device_id":"acme/runner/emulator"}`))
 	}))
 	defer api.Close()
-	s := newTestServer(t)
-	manager := s.manager.(*fakeManager)
-	s.runnerReady = func(context.Context, map[string]string) error { return nil }
-	s.cfg.values["CREDIMI_URL"] = api.URL
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
 
-	rec := httptest.NewRecorder()
-	s.controllerUpgradeImage(rec, httptest.NewRequest(http.MethodPost, "/api/controller/maintenance/upgrade-image", nil))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("controllerUpgradeImage = %d %s", rec.Code, rec.Body.String())
+	s := newTestServer(t)
+	values := map[string]string(dashboardruntime.DefaultValues())
+	values["CREDIMI_URL"] = api.URL
+	values["CREDIMI_USER_API_KEY"] = "key"
+	values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	values["CREDIMI_RUNNER_NAME"] = "runner"
+	values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	form := url.Values{
+		"SETUP_DEVICE_COUNT":       {"1"},
+		"SETUP_DEVICE_1_NAME":      {"Emulator"},
+		"SETUP_DEVICE_1_TYPE":      {"android_emulator"},
+		"SETUP_DEVICE_1_MODE":      {"emulator"},
+		"SETUP_DEVICE_1_BASE_NAME": {"credimi"},
 	}
-	op := s.operations.Current()
-	if completed, err := s.operations.Wait(context.Background(), op.ID); err != nil || completed.Phase != controller.PhaseSucceeded || manager.updateImageCalls != 1 {
-		t.Fatalf("upgrade operation=%#v err=%v updates=%d", completed, err, manager.updateImageCalls)
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatal(err)
 	}
-	s.manager = nil
-	rec = httptest.NewRecorder()
-	s.controllerUpgradeImage(rec, httptest.NewRequest(http.MethodPost, "/api/controller/maintenance/upgrade-image", nil))
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unavailable") {
-		t.Fatalf("unavailable upgrade = %d %s", rec.Code, rec.Body.String())
+	devices, err := s.setupDevices(req, values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 || devices[0].Values["BASE_NAME"] != "credimi" || devices[0].Values["AVD_NAME"] != "" {
+		t.Fatalf("emulator device = %#v", devices)
+	}
+	store, err := dashboardruntime.LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(values), Devices: devices}); err != nil {
+		t.Fatalf("emulator inventory must persist: %v", err)
+	}
+	if store.Values["CREDIMI_DEVICE_1_AVD_NAME"] != "credimi" {
+		t.Fatalf("derived emulator compatibility name = %#v", store.Values)
+	}
+}
+
+func TestSetupDevicesParsesTwoUSBDevicesInCardOrder(t *testing.T) {
+	var previewCount int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		previewCount++
+		_ = json.NewEncoder(w).Encode(map[string]string{"device_id": fmt.Sprintf("acme/runner/device-%d", previewCount)})
+	}))
+	defer api.Close()
+
+	s := newTestServer(t)
+	form := url.Values{
+		"SETUP_DEVICE_COUNT":    {"2"},
+		"SETUP_DEVICE_1_NAME":   {"Pixel One"},
+		"SETUP_DEVICE_1_TYPE":   {"android_phone"},
+		"SETUP_DEVICE_1_MODE":   {"usb"},
+		"SETUP_DEVICE_1_SERIAL": {"SERIAL_ONE"},
+		"SETUP_DEVICE_2_NAME":   {"Pixel Two"},
+		"SETUP_DEVICE_2_TYPE":   {"android_phone"},
+		"SETUP_DEVICE_2_MODE":   {"usb"},
+		"SETUP_DEVICE_2_SERIAL": {"SERIAL_TWO"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := s.setupDevices(req, map[string]string{
+		"CREDIMI_URL":                 api.URL,
+		"CREDIMI_USER_API_KEY":        "key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("devices = %#v", devices)
+	}
+	for index, want := range []struct{ name, serial string }{{"Pixel One", "SERIAL_ONE"}, {"Pixel Two", "SERIAL_TWO"}} {
+		if devices[index].Name != want.name || devices[index].Type != "android_phone" || devices[index].Mode != "usb" || devices[index].Serial != want.serial {
+			t.Fatalf("device %d = %#v", index+1, devices[index])
+		}
+	}
+}
+
+func TestSetupDevicesKeepsMixedTypesAndModesInCardOrder(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"device_id": "acme/runner/device" + r.URL.Path})
+	}))
+	defer api.Close()
+
+	s := newTestServer(t)
+	form := url.Values{
+		"SETUP_DEVICE_COUNT":    {"2"},
+		"SETUP_DEVICE_1_NAME":   {"USB phone"},
+		"SETUP_DEVICE_1_TYPE":   {"android_phone"},
+		"SETUP_DEVICE_1_MODE":   {"usb"},
+		"SETUP_DEVICE_1_SERIAL": {"SERIAL_ONE"},
+		"SETUP_DEVICE_2_NAME":   {"Emulator"},
+		"SETUP_DEVICE_2_TYPE":   {"android_emulator"},
+		"SETUP_DEVICE_2_MODE":   {"emulator"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := req.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	devices, err := s.setupDevices(req, map[string]string{
+		"CREDIMI_URL":                 api.URL,
+		"CREDIMI_USER_API_KEY":        "key",
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devices[0].Type != "android_phone" || devices[0].Mode != "usb" || devices[0].Serial != "SERIAL_ONE" || devices[1].Type != "android_emulator" || devices[1].Mode != "emulator" {
+		t.Fatalf("mixed devices = %#v", devices)
+	}
+}
+
+func TestSetupDevicesKeepsIndexedOptionalFieldsWithTheirCards(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"device_id": "acme/runner/device" + r.URL.Path})
+	}))
+	defer api.Close()
+
+	cases := []struct {
+		name  string
+		form  url.Values
+		check func(*testing.T, []dashboardruntime.DeviceRuntimeConfig)
+	}{
+		{
+			name: "wifi then usb",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"Wi-Fi phone"},
+				"SETUP_DEVICE_1_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_1_MODE":      {"wifi"},
+				"SETUP_DEVICE_1_WIFI_IP":   {"192.168.1.10"},
+				"SETUP_DEVICE_1_WIFI_PORT": {"5555"},
+				"SETUP_DEVICE_2_NAME":      {"USB phone"},
+				"SETUP_DEVICE_2_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_2_MODE":      {"usb"},
+				"SETUP_DEVICE_2_SERIAL":    {"SERIAL_TWO"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Values["WIFI_IP"] != "192.168.1.10" || devices[0].Serial != "192.168.1.10:5555" || devices[1].Serial != "SERIAL_TWO" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+		{
+			name: "usb then wifi",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"USB phone"},
+				"SETUP_DEVICE_1_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_1_MODE":      {"usb"},
+				"SETUP_DEVICE_1_SERIAL":    {"SERIAL_ONE"},
+				"SETUP_DEVICE_2_NAME":      {"Wi-Fi phone"},
+				"SETUP_DEVICE_2_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_2_MODE":      {"wifi"},
+				"SETUP_DEVICE_2_WIFI_IP":   {"192.168.1.20"},
+				"SETUP_DEVICE_2_WIFI_PORT": {"5555"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Serial != "SERIAL_ONE" || devices[1].Values["WIFI_IP"] != "192.168.1.20" || devices[1].Serial != "192.168.1.20:5555" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+		{
+			name: "emulator then usb",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"Emulator"},
+				"SETUP_DEVICE_1_TYPE":      {"android_emulator"},
+				"SETUP_DEVICE_1_MODE":      {"emulator"},
+				"SETUP_DEVICE_1_BASE_NAME": {"credimi-one"},
+				"SETUP_DEVICE_2_NAME":      {"USB phone"},
+				"SETUP_DEVICE_2_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_2_MODE":      {"usb"},
+				"SETUP_DEVICE_2_SERIAL":    {"SERIAL_TWO"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Values["BASE_NAME"] != "credimi-one" || devices[1].Serial != "SERIAL_TWO" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+		{
+			name: "usb then redroid",
+			form: url.Values{
+				"SETUP_DEVICE_COUNT":       {"2"},
+				"SETUP_DEVICE_1_NAME":      {"USB phone"},
+				"SETUP_DEVICE_1_TYPE":      {"android_phone"},
+				"SETUP_DEVICE_1_MODE":      {"usb"},
+				"SETUP_DEVICE_1_SERIAL":    {"SERIAL_ONE"},
+				"SETUP_DEVICE_2_NAME":      {"Redroid"},
+				"SETUP_DEVICE_2_TYPE":      {"redroid"},
+				"SETUP_DEVICE_2_MODE":      {"no_device"},
+				"SETUP_DEVICE_2_WIFI_IP":   {"192.168.1.30"},
+				"SETUP_DEVICE_2_WIFI_PORT": {"5555"},
+			},
+			check: func(t *testing.T, devices []dashboardruntime.DeviceRuntimeConfig) {
+				if devices[0].Serial != "SERIAL_ONE" || devices[1].Values["WIFI_IP"] != "192.168.1.30" {
+					t.Fatalf("devices = %#v", devices)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t)
+			req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(tc.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if err := req.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			devices, err := s.setupDevices(req, map[string]string{
+				"CREDIMI_URL": api.URL, "CREDIMI_USER_API_KEY": "key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_ORGANIZATION": "acme",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(devices) != 2 {
+				t.Fatalf("devices = %#v", devices)
+			}
+			tc.check(t, devices)
+		})
 	}
 }
 
@@ -1310,627 +2256,76 @@ func TestResolveSetupIdentityBranches(t *testing.T) {
 	}
 }
 
-func TestServerSetupHelperEndpoints(t *testing.T) {
-	originalClient := http.DefaultClient
-	t.Cleanup(func() { http.DefaultClient = originalClient })
-	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		body := `{}`
-		switch req.URL.Path {
-		case "/api/organizations/my":
-			body = `{"canonified_name":"acme","name":"Acme"}`
-		case "/api/canonify/identifier/validate":
-			body = `{"record":{"slug":"runner-slug"}}`
-		case "/api/mobile-runner/preview-id":
-			body = `{"organization":"acme","runner_id":"acme/runner-slug-2"}`
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(body)),
-		}, nil
-	})}
-
-	s := newTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
-	s.lookupSetupOrganization(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified_name":"acme"`) {
-		t.Fatalf("lookupSetupOrganization = %d %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup/canonify?name=Runner+Slug", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
-	s.canonifySetupName(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified":"runner-slug"`) {
-		t.Fatalf("canonifySetupName = %d %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup/preview-id", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key","organization":"acme","name":"Runner Slug"}`))
-	s.previewSetupRunnerID(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"preview_runner_id":"acme/runner-slug-2"`) {
-		t.Fatalf("previewSetupRunnerID = %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestServerSetupHelperEndpointValidation(t *testing.T) {
-	s := newTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{`))
-	s.lookupSetupOrganization(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("lookupSetupOrganization invalid JSON = %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup/canonify", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
-	s.canonifySetupName(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("canonifySetupName missing name = %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup/preview-id", strings.NewReader(`{"instance_url":"https://credimi.example"}`))
-	s.previewSetupRunnerID(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("previewSetupRunnerID missing fields = %d", rec.Code)
-	}
-}
-
-func TestFinishSetupValidationAndRequirementErrors(t *testing.T) {
-	s := newTestServer(t)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(url.Values{
-		"CREDIMI_URL":          {"https://credimi.example"},
-		"CREDIMI_USER_API_KEY": {"user-key"},
-	}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention.") {
-		t.Fatalf("finishSetup validation = %d %s", rec.Code, rec.Body.String())
-	}
-
-	s.lookupPath = func(string) (string, error) { return "", os.ErrNotExist }
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(url.Values{
-		"CREDIMI_URL":                 {"https://credimi.example"},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"cloudflare-managed"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
-		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
-	}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "runtime requirement check failed") {
-		t.Fatalf("finishSetup requirements = %d %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestValidateSetupInputRequiresRedroidWiFiIP(t *testing.T) {
-	values := map[string]string{
-		"CREDIMI_URL":          "https://credimi.example",
-		"CREDIMI_USER_API_KEY": "user-key",
-		"CREDIMI_RUNNER_NAME":  "runner",
-		"CREDIMI_RUNNER_TYPE":  "redroid",
-	}
-	if errs := validateSetupInput(values); errs["CREDIMI_RUNNER_WIFI_IP"] == "" {
-		t.Fatalf("validateSetupInput errors = %#v", errs)
-	}
-	values["CREDIMI_RUNNER_WIFI_IP"] = "192.168.1.30"
-	if errs := validateSetupInput(values); len(errs) != 0 {
-		t.Fatalf("validateSetupInput errors = %#v", errs)
-	}
-}
-
-func TestValidateSetupInputRequiresConnectionAndPublicEndpoint(t *testing.T) {
-	errs := validateSetupInput(map[string]string{"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_SERVICE_MODE": "manual"})
-	for _, key := range []string{"CREDIMI_URL", "CREDIMI_USER_API_KEY", "CREDIMI_RUNNER_NAME", "CREDIMI_RUNNER_SERIAL", "RUNNER_PUBLIC_URL"} {
-		if errs[key] == "" {
-			t.Fatalf("missing validation error %s: %#v", key, errs)
-		}
-	}
-	valid := validateSetupInput(map[string]string{
-		"CREDIMI_URL": "https://credimi.example", "CREDIMI_INTERNAL_ADMIN_KEY": "key", "CREDIMI_RUNNER_ID": "acme/runner",
-		"CREDIMI_RUNNER_TYPE": "android_phone", "CREDIMI_RUNNER_DEVICE_MODE": "wifi", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
-	})
-	if len(valid) != 0 {
-		t.Fatalf("valid setup errors = %#v", valid)
-	}
-}
-
-func TestRegisterCurrentAndWaitForRunnerReadyBranches(t *testing.T) {
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	s := newTestServer(t)
-	if err := s.registerCurrent(context.Background(), map[string]string{}); err == nil {
-		t.Fatal("expected registerCurrent without API key to fail")
-	}
-
-	runner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/health":
-			_, _ = w.Write([]byte(`{"status":"connected","devices":[]}`))
-		case "/readyz":
-			_, _ = w.Write([]byte(`{"service":"credimi-runner","boot_id":"test-boot"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer runner.Close()
-	host, port, err := net.SplitHostPort(strings.TrimPrefix(runner.URL, "http://"))
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	values := map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
-		"RUNNER_HOST":            host,
-		"RUNNER_PORT":            port,
-	}
-	if err := s.runnerReady(context.Background(), values); err != nil {
-		t.Fatalf("waitForRunnerReady = %v", err)
-	}
-}
-
-func TestApplySavedConfigClearsCachedQuickTunnelURL(t *testing.T) {
-	s := newTestServer(t)
-	fm := &fakeManager{
-		status: dashboardruntime.RuntimeStatus{
-			RunnerRunning: true,
-			PublicURL:     "https://old.example.trycloudflare.com",
-		},
-		logLines: []dashboardruntime.LogLine{
-			{Message: "INF quick tunnel ready at https://new.example.trycloudflare.com"},
-		},
-	}
-	s.manager = fm
-	values := map[string]string{
-		"CREDIMI_URL":                 "https://credimi.example",
-		"CREDIMI_USER_API_KEY":        "user-key",
-		"CREDIMI_RUNNER_ID":           "acme/runner",
-		"CREDIMI_RUNNER_NAME":         "runner",
-		"CREDIMI_RUNNER_ORGANIZATION": "acme",
-		"CREDIMI_SERVICE_MODE":        "auto",
-	}
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/mobile-runner" {
-			var payload dashboardruntime.RegisterRunnerRequest
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatal(err)
-			}
-			if payload.IP != "https://new.example.trycloudflare.com" {
-				t.Fatalf("registered IP = %q", payload.IP)
-			}
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer api.Close()
-	values["CREDIMI_URL"] = api.URL
-
-	outcome, err := s.applySavedConfig(dashboardruntime.ConfigDiff{
-		ChangedKeys: []string{"RUNNER_PORT"},
-		Classes:     []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
-	}, values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !outcome.Restarted || !outcome.CredimiUpdated {
-		t.Fatalf("outcome = %#v", outcome)
-	}
-	if fm.status.PublicURL != "https://new.example.trycloudflare.com" {
-		t.Fatalf("cached public URL = %q", fm.status.PublicURL)
-	}
-}
-
-func TestShouldRegisterAfterApply(t *testing.T) {
-	if !shouldRegisterAfterApply(dashboardruntime.ConfigDiff{
-		Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyCredimiUpdateRequired},
-	}, map[string]string{}, false) {
-		t.Fatal("expected explicit Credimi update to register")
-	}
-	if shouldRegisterAfterApply(dashboardruntime.ConfigDiff{
-		Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
-	}, map[string]string{"CREDIMI_SERVICE_MODE": "manual"}, true) {
-		t.Fatal("manual restart should not force registration")
-	}
-	if !shouldRegisterAfterApply(dashboardruntime.ConfigDiff{
-		Classes: []dashboardruntime.ApplyClass{dashboardruntime.ApplyRestartRequired},
-	}, map[string]string{"CREDIMI_SERVICE_MODE": "auto"}, true) {
-		t.Fatal("auto restart should force registration")
-	}
-}
-
-func TestRuntimeLogsReturnsRecentLines(t *testing.T) {
-	s := newTestServer(t)
-	s.manager = &fakeManager{logLines: []dashboardruntime.LogLine{
-		{Message: "runner pulling image"},
-		{Message: "runner started"},
-	}}
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/runtime/logs", nil)
-	s.runtimeLogs(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("runtimeLogs = %d %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "runner pulling image") || !strings.Contains(rec.Body.String(), "runner started") {
-		t.Fatalf("runtimeLogs body = %s", rec.Body.String())
-	}
-}
-
-func TestStartupStatusReturnsCurrentSetupProgress(t *testing.T) {
-	s := newTestServer(t)
-	s.startup.Phase = StartupWaitingRunner
-	s.startup.Message = "Runtime started. Waiting for runner readiness."
-	s.startup.Logs = []string{"Pulling Docker images.", "runner Pulling fs layer"}
-	s.startup.LogBase = 1
-	s.startup.LogNextID = 3
-	s.startup.running = true
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/startup/status", nil)
-	s.startupStatus(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("startupStatus = %d %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `"phase":"waiting_for_runner"`) ||
-		!strings.Contains(body, `"running":true`) ||
-		!strings.Contains(body, `"next_id":3`) ||
-		!strings.Contains(body, "Waiting for runner readiness") ||
-		!strings.Contains(body, "runner Pulling fs layer") {
-		t.Fatalf("startupStatus body = %s", body)
-	}
-
-	s.appendStartupLog("runner Downloading 128MB")
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/startup/status?since=3", nil)
-	s.startupStatus(rec, req)
-	body = rec.Body.String()
-	if strings.Contains(body, "runner Pulling fs layer") ||
-		!strings.Contains(body, "runner Downloading 128MB") ||
-		!strings.Contains(body, `"next_id":4`) {
-		t.Fatalf("startupStatus cursor body = %s", body)
-	}
-}
-
-func TestServerSaveAndFinishSetup(t *testing.T) {
-	s := newTestServer(t)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/mobile-runner":
-			w.WriteHeader(http.StatusOK)
-		case "/api/organizations/my":
-			w.Write([]byte(`{"canonified_name":"acme"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer api.Close()
-	form := url.Values{
-		"CREDIMI_URL":                 {api.URL},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"manual"},
-		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
-		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
-		"RUNNER_PORT":                 {"8050"},
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK || rec.Header().Get("HX-Trigger") == "" {
-		t.Fatalf("saveConfig = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "data-config-form") {
-		t.Fatalf("saveConfig body missing config form: %s", rec.Body.String())
-	}
-	if fm, ok := s.manager.(*fakeManager); !ok || fm.restartCalls != 0 {
-		t.Fatalf("saveConfig should not restart automatically: %#v", s.manager)
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
-		t.Fatalf("finishSetup = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
-	op := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
-		t.Fatalf("setup operation: %v", err)
-	}
-	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
-		t.Fatal("finishSetup should start runtime")
-	}
-	startup := s.startupSnapshot()
-	if !containsString(startup.Logs, "runner Downloading 128MB") {
-		t.Fatalf("startup logs missing docker progress: %#v", startup.Logs)
-	}
-}
-
-func TestServerSaveConfigDescriptionUpdateUsesCompactToast(t *testing.T) {
-	s := newTestServer(t)
-	s.manager = &fakeManager{
-		status: dashboardruntime.RuntimeStatus{
-			RunnerRunning: true,
-			PublicURL:     "https://cached.example.trycloudflare.com",
-		},
-	}
-	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.values = map[string]string(normalized)
-
+func TestServerManagedDeviceActions(t *testing.T) {
 	transport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/mobile-runner" {
+		if req.URL.Path != "/api/mobile-device" {
 			return nil, errors.New("unexpected path: " + req.URL.Path)
 		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{}`)),
-		}, nil
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader("{}"))}, nil
 	})
-	defer func() { http.DefaultTransport = transport }()
-
-	form := formValuesFromConfig(s.cfg)
-	form.Set("CREDIMI_RUNNER_DESCRIPTION", "updated description")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveConfig description update = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "must be updated") {
-		t.Fatalf("saveConfig flash should describe the completed update, got %s", rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "Configuration updated.") {
-		t.Fatalf("saveConfig should not render inline success messages: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Configuration updated.") {
-		t.Fatalf("saveConfig toast missing compact result: %s", rec.Header().Get("HX-Trigger"))
-	}
-}
-
-func TestServerSaveConfigRestartUsesCompactToast(t *testing.T) {
+	t.Cleanup(func() { http.DefaultTransport = transport })
 	s := newTestServer(t)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
-	defer api.Close()
-	fm := &fakeManager{
-		status: dashboardruntime.RuntimeStatus{RunnerRunning: true},
-	}
-	s.manager = fm
-	s.cfg.values["CREDIMI_URL"] = api.URL
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.cfg.values = map[string]string(normalized)
-
-	form := formValuesFromConfig(s.cfg)
-	form.Set("CREDIMI_USER_API_KEY", "new-user-key")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveConfig restart update = %d body=%s", rec.Code, rec.Body.String())
-	}
-	if fm.stopCalls != 1 || fm.startCalls != 1 {
-		t.Fatalf("saveConfig lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
-	}
-	if strings.Contains(rec.Body.String(), "Runner restarted with the new configuration.") {
-		t.Fatalf("saveConfig should not render inline restart success: %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Runner restarted with the new configuration.") {
-		t.Fatalf("saveConfig restart toast missing compact result: %s", rec.Header().Get("HX-Trigger"))
-	}
-}
-
-func TestServerSaveConfigNameChangeStoresDerivedRunnerIDAndRestarts(t *testing.T) {
-	transport := http.DefaultTransport
-	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		switch req.URL.Path {
-		case "/api/mobile-runner/preview-id":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"organization":"acme","runner_id":"acme/renamed-runner"}`)),
-			}, nil
-		case "/api/mobile-runner":
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Status:     "200 OK",
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{}`)),
-			}, nil
-		default:
-			return nil, errors.New("unexpected path: " + req.URL.Path)
-		}
-	})
-	defer func() { http.DefaultTransport = transport }()
-
-	s := newTestServer(t)
-	fm := &fakeManager{status: dashboardruntime.RuntimeStatus{RunnerRunning: true}}
-	s.manager = fm
 	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "key"
 	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
 	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	s.cfg.values["CREDIMI_RUNNER_TYPE"] = "android_phone"
-	normalized, err := dashboardruntime.NormalizeValues(dashboardruntime.Values(s.cfg.values), runtimeGOOS())
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.cfg.values = map[string]string(normalized)
-
-	form := formValuesFromConfig(s.cfg)
-	form.Set("CREDIMI_RUNNER_NAME", "Renamed Runner")
-	form.Set("CREDIMI_RUNNER_ID", "evil/id")
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	s.saveConfig(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("saveConfig name change = %d body=%s", rec.Code, rec.Body.String())
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values(s.cfg.Snapshot()), Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/pixel", Name: "Pixel", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{}}, {ID: "acme/runner/pixel-2", Name: "Pixel Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-2", Values: dashboardruntime.Values{}}}}); err != nil {
+		t.Fatal(err)
 	}
-	if got := s.cfg.Get("CREDIMI_RUNNER_ID"); got != "acme/renamed-runner" {
-		t.Fatalf("stored runner ID = %q", got)
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	post := func(handler http.HandlerFunc, form url.Values) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/devices", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		handler(rec, req)
+		return rec
 	}
-	if got := s.cfg.Get("CREDIMI_RUNNER_NAME"); got != "Renamed Runner" {
-		t.Fatalf("stored runner name = %q", got)
+	if rec := post(s.deviceDisable, url.Values{"device_id": {"acme/runner/pixel"}}); rec.Code != http.StatusAccepted {
+		t.Fatalf("disable = %d %s", rec.Code, rec.Body.String())
+	} else {
+		waitForQueuedOperation(t, s, rec)
 	}
-	if fm.stopCalls != 1 || fm.startCalls != 1 {
-		t.Fatalf("saveConfig name change lifecycle calls stop=%d start=%d", fm.stopCalls, fm.startCalls)
-	}
-	if !strings.Contains(rec.Header().Get("HX-Trigger"), "Runner restarted with the new configuration.") {
-		t.Fatalf("saveConfig name change toast missing restart result: %s", rec.Header().Get("HX-Trigger"))
+	if rec := post(s.deviceRemove, url.Values{"device_id": {"acme/runner/pixel"}, "confirm": {"true"}}); rec.Code != http.StatusAccepted {
+		t.Fatalf("remove = %d %s", rec.Code, rec.Body.String())
+	} else {
+		waitForQueuedOperation(t, s, rec)
 	}
 }
 
-func TestServerFinishSetupKeepsStartedRuntimeWhenRegistrationFails(t *testing.T) {
+func TestServerValidateRuntimeRequirements(t *testing.T) {
+	base := map[string]string{"CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_DEVICE_COUNT": "1", "CREDIMI_DEVICE_1_ID": "acme/runner/pixel", "CREDIMI_DEVICE_1_TYPE": "android_phone", "CREDIMI_DEVICE_1_MODE": "usb", "CREDIMI_DEVICE_1_SERIAL": "device-1"}
 	s := newTestServer(t)
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/mobile-runner":
-			http.Error(w, "registration unavailable", http.StatusBadGateway)
-		case "/api/organizations/my":
-			w.Write([]byte(`{"canonified_name":"acme"}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer api.Close()
-	form := url.Values{
-		"CREDIMI_URL":                 {api.URL},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"manual"},
-		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"android_phone"},
-		"CREDIMI_RUNNER_SERIAL":       {"device-1"},
+	if err := s.validateRuntimeRequirements(base); err != nil {
+		t.Fatalf("connected phone requirements = %v", err)
 	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
-		t.Fatalf("finishSetup registration failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+	s.hub.snap.Devices[0].Status = Offline
+	if err := s.validateRuntimeRequirements(base); err != nil {
+		t.Fatalf("offline phone should remain persistable for topology expansion = %v", err)
 	}
-	waitForCondition(t, func() bool {
-		return strings.Contains(s.startupSnapshot().Message, "runtime start failed")
-	})
-	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
-		t.Fatal("finishSetup should keep the runtime start when registration fails")
-	}
-	if !strings.Contains(s.lastRegistrationStatus, "runtime start failed") {
-		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
+	emulator := cloneStringMap(base)
+	emulator["CREDIMI_DEVICE_1_TYPE"] = "android_emulator"
+	emulator["CREDIMI_DEVICE_1_MODE"] = "emulator"
+	emulator["CREDIMI_DEVICE_1_ANDROID_KEYS_DIR"] = "/keys"
+	emulator["CREDIMI_DEVICE_1_HOST_AVD_HOME_PATH"] = "/avd"
+	emulator["CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH"] = "/golden"
+	if err := s.validateRuntimeRequirements(emulator); err != nil {
+		t.Fatalf("emulator candidate requirements = %v", err)
 	}
 }
-
-func TestServerFinishSetupKeepsStartedRuntimeWhenReadinessFails(t *testing.T) {
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	s := newTestServer(t)
-	s.runnerReady = func(context.Context, map[string]string) error {
-		return context.DeadlineExceeded
-	}
-	form := url.Values{
-		"CREDIMI_URL":                 {"https://credimi.example"},
-		"CREDIMI_RUNNER_ID":           {"acme/runner"},
-		"CREDIMI_RUNNER_BACKEND":      {"host"},
-		"CREDIMI_RUNNER_NAME":         {"runner"},
-		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
-		"CREDIMI_USER_API_KEY":        {"user-key"},
-		"CREDIMI_SERVICE_MODE":        {"manual"},
-		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
-		"CREDIMI_RUNNER_TYPE":         {"ios_simulator"},
-		"BASE_NAME":                   {"credimi"},
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("HX-Request", "true")
-	s.finishSetup(rec, req)
-	if rec.Code != http.StatusAccepted || rec.Header().Get("HX-Redirect") != "" {
-		t.Fatalf("finishSetup readiness failure = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
-	}
-	waitForCondition(t, func() bool {
-		return strings.Contains(s.startupSnapshot().Message, "runtime start failed")
-	})
-	if fm := s.manager.(*fakeManager); fm.startCalls == 0 {
-		t.Fatal("finishSetup should keep the runtime start when readiness is not confirmed")
-	}
-	if !strings.Contains(s.lastRegistrationStatus, "runtime start failed") {
-		t.Fatalf("lastRegistrationStatus = %q", s.lastRegistrationStatus)
-	}
-}
-
-func waitForCondition(t *testing.T, fn func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if fn() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("condition not satisfied before timeout")
-}
-
 func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
 	s := newTestServer(t)
-	form := url.Values{"CREDIMI_URL": {"https://credimi.io"}}
+	form := url.Values{"CREDIMI_URL": {"not-a-url"}}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.saveConfig(rec, req)
-	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "Some fields need attention") {
+	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("saveConfig validation = %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -1943,194 +2338,77 @@ func TestServerSaveAndFinishSetupValidationErrors(t *testing.T) {
 	}
 }
 
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
-
-func TestValidateRuntimeRequirements(t *testing.T) {
+func TestServerDevicePreviewAndConfigNormalizationEndpoints(t *testing.T) {
 	s := newTestServer(t)
-	values := map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "auto",
-		"CREDIMI_RUNNER_TYPE":    "android_phone",
-		"CREDIMI_RUNNER_SERIAL":  "device-1",
-	}
-	if err := s.validateRuntimeRequirements(values); err != nil {
-		t.Fatalf("validateRuntimeRequirements = %v", err)
+	missing := httptest.NewRecorder()
+	s.devicePreviewID(missing, httptest.NewRequest(http.MethodPost, "/devices/preview-id", nil))
+	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), "name is required") {
+		t.Fatalf("missing preview name = %d %s", missing.Code, missing.Body.String())
 	}
 
-	s.hub.snap.Devices = []Device{
-		{Serial: "emulator-5554", Name: "Pixel test", Type: "android_emulator", Mode: "emulator", OS: "Android", Status: Online},
-	}
-	values["CREDIMI_RUNNER_SERIAL"] = "emulator-5554"
-	if err := s.validateRuntimeRequirements(values); err != nil {
-		t.Fatalf("validateRuntimeRequirements emulator serial = %v", err)
-	}
-
-	s.lookupPath = func(name string) (string, error) {
-		if name == "docker" {
-			return "", os.ErrNotExist
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, errors.New("unexpected path: " + req.URL.Path)
 		}
-		return "/tmp/fake", nil
-	}
-	if err := s.validateRuntimeRequirements(values); err == nil || !strings.Contains(err.Error(), "docker is required") {
-		t.Fatalf("expected docker requirement error, got %v", err)
-	}
-
-	s = newTestServer(t)
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	s.lookupPath = func(name string) (string, error) {
-		if name == "xcrun" {
-			return "", os.ErrNotExist
-		}
-		return "/tmp/fake", nil
-	}
-	if err := s.validateRuntimeRequirements(map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "host",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "ios_simulator",
-	}); err == nil || !strings.Contains(err.Error(), "xcrun simctl") {
-		t.Fatalf("expected xcrun requirement error, got %v", err)
-	}
-
-	s = newTestServer(t)
-	s.statPath = func(path string) (os.FileInfo, error) {
-		if path == "/dev/kvm" {
-			return nil, os.ErrNotExist
-		}
-		return fakeFileInfo("ok"), nil
-	}
-	if err := s.validateRuntimeRequirements(map[string]string{
-		"CREDIMI_RUNNER_BACKEND": "container",
-		"CREDIMI_SERVICE_MODE":   "manual",
-		"CREDIMI_RUNNER_TYPE":    "android_emulator",
-		"ANDROID_KEYS_DIR":       "/tmp/keys",
-		"HOST_AVD_HOME_PATH":     "/tmp/avd-home",
-		"HOST_AVD_GOLDEN_PATH":   "/tmp/avd-golden",
-	}); err == nil || !strings.Contains(err.Error(), "/dev/kvm") {
-		t.Fatalf("expected /dev/kvm requirement error, got %v", err)
-	}
-}
-
-func TestServerRuntimeStartRegistersRunner(t *testing.T) {
-	s := newTestServer(t)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/pixel"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
 	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "manual"
-	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example"
-	s.cfg.values["CREDIMI_RUNNER_PUBLISHED"] = "true"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 
-	var payload dashboardruntime.RegisterRunnerRequest
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/mobile-runner" {
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatal(err)
-			}
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	defer api.Close()
-	s.cfg.values["CREDIMI_URL"] = api.URL
+	preview := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/preview-id", strings.NewReader(url.Values{"name": {"Pixel"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.devicePreviewID(preview, request)
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "acme/runner/pixel") {
+		t.Fatalf("device preview = %d %s", preview.Code, preview.Body.String())
+	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runtime/start", nil)
-	s.runtimeStart(rec, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("runtimeStart = %d body=%s", rec.Code, rec.Body.String())
+	normalized := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/config/normalize", strings.NewReader(url.Values{"RUNNER_PORT": {" 9000 "}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.normalizeConfigPreview(normalized, request)
+	if normalized.Code != http.StatusOK || !strings.Contains(normalized.Body.String(), `"RUNNER_PORT":"9000"`) {
+		t.Fatalf("normalized preview = %d %s", normalized.Code, normalized.Body.String())
 	}
-	op := s.operations.Current()
-	if _, err := s.operations.Wait(context.Background(), op.ID); err != nil {
-		t.Fatalf("runtimeStart operation: %v", err)
-	}
-	fm := s.manager.(*fakeManager)
-	if fm.startCalls == 0 {
-		t.Fatal("runtimeStart should start runtime")
-	}
-	if payload.Published == nil || !*payload.Published {
-		t.Fatalf("runtimeStart registration published = %#v", payload.Published)
+	if _, err := normalizedConfigValues(map[string]string{"CREDIMI_DEVICE_COUNT": "1"}, map[string]string{}, "linux"); err == nil {
+		t.Fatal("invalid indexed configuration was normalized")
 	}
 }
 
-func TestDashboardRuntimeStartUsesControllerLifecycleAndRefreshesAutoURL(t *testing.T) {
+func TestServerSetupDevicePreviewAndSystemMetricsEndpoints(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected path %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/phone"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	s := newTestServer(t)
-	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
-	s.cfg.values["CREDIMI_RUNNER_NAME"] = "runner"
-	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
-	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
-	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
-	s.manager.(*fakeManager).logLines = []dashboardruntime.LogLine{{Message: "tunnel ready https://new-url.trycloudflare.com"}}
+	preview := httptest.NewRecorder()
+	s.previewSetupDeviceID(preview, httptest.NewRequest(http.MethodPost, "/setup/device-id", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key","organization":"acme","runner_id":"acme/runner","name":"Phone"}`)))
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "acme/runner/phone") {
+		t.Fatalf("device preview = %d %s", preview.Code, preview.Body.String())
+	}
+	metrics := httptest.NewRecorder()
+	s.systemMetrics(metrics, httptest.NewRequest(http.MethodGet, "/api/system-metrics", nil))
+	if metrics.Code != http.StatusOK || !strings.Contains(metrics.Body.String(), "interval_ms") {
+		t.Fatalf("system metrics = %d %s", metrics.Code, metrics.Body.String())
+	}
+}
 
-	var payload dashboardruntime.RegisterRunnerRequest
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/mobile-runner" {
-			http.NotFound(w, r)
-			return
-		}
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatal(err)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer api.Close()
-	s.cfg.values["CREDIMI_URL"] = api.URL
-
-	rec := httptest.NewRecorder()
-	s.runtimeStart(rec, httptest.NewRequest(http.MethodPost, "/runtime/start", nil))
-	if rec.Code != http.StatusAccepted || rec.Body.Len() != 0 || rec.Header().Get("HX-Reswap") != "none" {
-		t.Fatalf("runtime start response = %d headers=%v body=%q", rec.Code, rec.Header(), rec.Body.String())
-	}
-	trigger := rec.Header().Get("HX-Trigger")
-	if !strings.Contains(trigger, "runtimeOperation") || strings.Contains(trigger, "Operation op-") {
-		t.Fatalf("runtime start trigger = %q", trigger)
-	}
-
-	op := s.operations.Current()
-	completed, err := s.operations.Wait(context.Background(), op.ID)
-	if err != nil || completed.Phase != controller.PhaseSucceeded {
-		t.Fatalf("runtime start completed=%#v err=%v", completed, err)
-	}
-	if payload.IP != "https://new-url.trycloudflare.com" {
-		t.Fatalf("registered URL = %q", payload.IP)
-	}
-	if got := s.manager.Status(context.Background()).PublicURL; got != payload.IP {
-		t.Fatalf("dashboard public URL = %q, want %q", got, payload.IP)
-	}
-
-	rec = httptest.NewRecorder()
-	s.runtimeStop(rec, httptest.NewRequest(http.MethodPost, "/runtime/stop", nil))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("runtime stop response = %d", rec.Code)
-	}
-	op = s.operations.Current()
-	if completed, err = s.operations.Wait(context.Background(), op.ID); err != nil || completed.Phase != controller.PhaseSucceeded {
-		t.Fatalf("runtime stop completed=%#v err=%v", completed, err)
-	}
-	if got := s.manager.Status(context.Background()).PublicURL; got != "" {
-		t.Fatalf("stopped runtime retained quick tunnel URL %q", got)
-	}
-
-	s.manager.(*fakeManager).logLines = []dashboardruntime.LogLine{{Message: "tunnel ready https://replacement-url.trycloudflare.com"}}
-	rec = httptest.NewRecorder()
-	s.runtimeRestart(rec, httptest.NewRequest(http.MethodPost, "/runtime/restart", nil))
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("runtime restart response = %d", rec.Code)
-	}
-	op = s.operations.Current()
-	if completed, err = s.operations.Wait(context.Background(), op.ID); err != nil || completed.Phase != controller.PhaseSucceeded {
-		t.Fatalf("runtime restart completed=%#v err=%v", completed, err)
-	}
-	if payload.IP != "https://replacement-url.trycloudflare.com" {
-		t.Fatalf("restart registered URL = %q", payload.IP)
+func TestServerSystemMetricsSupportsHourlyRange(t *testing.T) {
+	s := newTestServer(t)
+	now := time.Now().UTC()
+	s.systemMonitor = &SystemMonitor{samples: []SystemMetrics{{Timestamp: now.Unix(), CPUPercent: 42}}}
+	recorder := httptest.NewRecorder()
+	s.systemMetrics(recorder, httptest.NewRequest(http.MethodGet, "/api/system-metrics?range=hourly", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"samples"`) {
+		t.Fatalf("hourly system metrics = %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -2158,28 +2436,6 @@ func TestServerSetupValidationHandlers(t *testing.T) {
 				t.Fatalf("code/body = %d %q, want %q", rec.Code, rec.Body.String(), tt.want)
 			}
 		})
-	}
-}
-
-func TestServerDeviceAndSSEHelpers(t *testing.T) {
-	s := newTestServer(t)
-	rec := httptest.NewRecorder()
-	s.deviceError(rec, `bad <device> "quoted"`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("deviceError code = %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "&lt;device&gt;") || !strings.Contains(rec.Body.String(), "&quot;quoted&quot;") {
-		t.Fatalf("deviceError did not escape body: %s", rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	writeSSE(rec, "rows", "a\nb")
-	if got := rec.Body.String(); got != "event: rows\ndata: a\ndata: b\n\n" {
-		t.Fatalf("writeSSE = %q", got)
-	}
-
-	if got := htmlAttr(`a&b<c>"`); got != "a&amp;b&lt;c&gt;&quot;" {
-		t.Fatalf("htmlAttr = %q", got)
 	}
 }
 
@@ -2215,57 +2471,512 @@ func TestServerDeviceHandlers(t *testing.T) {
 		t.Fatalf("deviceDisconnect = %d %s", rec.Code, rec.Body.String())
 	}
 }
-
-func TestServerSSE(t *testing.T) {
+func TestServerSaveDevicesConfigPreviewsAndPersistsNewDevice(t *testing.T) {
 	s := newTestServer(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/events/health", nil).WithContext(ctx)
-	rec := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		s.sse("health").ServeHTTP(rec, req)
-		close(done)
-	}()
-	cancel()
-	<-done
-	if !strings.Contains(rec.Body.String(), "event: pill") {
-		t.Fatalf("sse body = %q", rec.Body.String())
-	}
-}
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
 
-func TestServerRuntimeSSE(t *testing.T) {
-	s := newTestServer(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/events/runtime", nil).WithContext(ctx)
-	rec := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		s.sse("runtime").ServeHTTP(rec, req)
-		close(done)
-	}()
-	cancel()
-	<-done
-	if !strings.Contains(rec.Body.String(), "event: runtime") {
-		t.Fatalf("runtime sse body = %q", rec.Body.String())
-	}
-}
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/api/mobile-device/preview-id" && request.URL.Path != "/api/mobile-device" {
+			return nil, errors.New("unexpected Credimi path: " + request.URL.Path)
+		}
+		if request.Header.Get("Credimi-Api-Key") != "user-key" {
+			return nil, errors.New("missing Credimi API key")
+		}
+		body := `{"runner_id":"acme/runner","device_id":"/acme/runner/pixel"}`
+		if request.URL.Path == "/api/mobile-device" {
+			body = `{}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 
-func TestDialTemporalOnline(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	form := url.Values{
+		"name":        {"Pixel 8"},
+		"description": {"USB test device"},
+		"type":        {"android_phone"},
+		"mode":        {"usb"},
+		"serial":      {"usb-1"},
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+
+	waitForQueuedOperation(t, s, recorder)
+	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
-	done := make(chan struct{})
-	go func() {
-		conn, err := ln.Accept()
-		if err == nil {
-			conn.Close()
-		}
-		close(done)
-	}()
-	if got := dialTemporal(ln.Addr().String()); got != Online {
-		t.Fatalf("listening temporal = %s", got)
+	config, err := updatedStore.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
 	}
-	<-done
+	if len(config.Devices) != 1 || config.Devices[0].ID != "acme/runner/pixel" || config.Devices[0].Serial != "usb-1" {
+		t.Fatalf("persisted devices = %#v", config.Devices)
+	}
+}
+
+func TestServerSaveDevicesConfigUpdatesOnlySelectedDevice(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected Credimi path: %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/renamed-one"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "TEMPORAL_ADDRESS": "temporal.example:7233", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}, Devices: []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "one", Values: dashboardruntime.Values{}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "wifi", Enabled: true, WiFiIP: "10.0.0.2", WiFiPort: "5555", Values: dashboardruntime.Values{}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	form := url.Values{"device_id": {"acme/runner/one"}, "name": {"Renamed One"}, "type": {"android_phone"}, "mode": {"wifi"}, "wifi_ip": {"10.0.0.1"}, "wifi_port": {"5555"}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+	waitForQueuedOperation(t, s, recorder)
+	updated, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := updated.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Devices[0].ID != "acme/runner/renamed-one" || config.Devices[0].Name != "Renamed One" || config.Devices[0].Mode != "wifi" || config.Devices[0].Serial != "10.0.0.1:5555" || config.Devices[1].Name != "Two" || config.Devices[1].Serial != "10.0.0.2:5555" {
+		t.Fatalf("devices = %#v", config.Devices)
+	}
+
+	form.Set("device_id", "acme/runner/missing")
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("missing update response = %d", recorder.Code)
+	}
+	failed, err := s.operations.Wait(context.Background(), s.operations.Current().ID)
+	if err != nil || failed.Phase != controller.PhaseFailed || !strings.Contains(failed.Error, "device not found") {
+		t.Fatalf("missing update operation = %#v err=%v", failed, err)
+	}
+}
+
+func TestServerSaveDevicesConfigRenameConflictRequiresExplicitChoice(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/old", Name: "Old", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected Credimi path: %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/new","existing_device_id":"acme/runner/other","conflict":true}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	form := url.Values{"device_id": {"acme/runner/old"}, "name": {"New"}, "type": {"android_phone"}, "mode": {"usb"}, "serial": {"usb-1"}}
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	err = s.saveDevicesConfigSync(request, nil)
+	if err == nil || !strings.Contains(err.Error(), "choose create or update explicitly") {
+		t.Fatalf("rename conflict = %v", err)
+	}
+	updated, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := updated.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Devices[0].ID != "acme/runner/old" || current.Devices[0].Name != "Old" {
+		t.Fatalf("conflicting rename changed local identity = %#v", current.Devices[0])
+	}
+}
+
+func TestSaveRuntimeCandidateIgnoresStaleDashboardCache(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values(s.cfg.Snapshot())
+	devices := []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-2", Values: dashboardruntime.Values{"SERIAL": "usb-2"}},
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	baseline := dashboardruntime.Values(store.Snapshot())
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_RUNNER_DESCRIPTION"] = "stale dashboard cache"
+	s.cfg.mu.Unlock()
+	candidate := dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices[:1]}
+	if err := s.saveRuntimeCandidate(baseline, store, candidate); err != nil {
+		t.Fatalf("stale Dashboard cache blocked candidate: %v", err)
+	}
+	reloaded, err := store.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.Devices) != 1 || reloaded.Devices[0].ID != "acme/runner/one" {
+		t.Fatalf("saved devices = %#v", reloaded.Devices)
+	}
+}
+
+func TestSaveRuntimeCandidateRejectsPersistedConcurrentChange(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values(s.cfg.Snapshot())
+	devices := []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-2", Values: dashboardruntime.Values{"SERIAL": "usb-2"}},
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	baseline := dashboardruntime.Values(store.Snapshot())
+	changedHost := dashboardruntime.Values(host)
+	changedHost["CREDIMI_RUNNER_DESCRIPTION"] = "concurrent change"
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: changedHost, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	err = s.saveRuntimeCandidate(baseline, store, dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices[:1]})
+	if err == nil || !strings.Contains(err.Error(), "configuration changed while preparing") {
+		t.Fatalf("concurrent change error = %v", err)
+	}
+	current, err := store.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Devices) != 2 || current.Host["CREDIMI_RUNNER_DESCRIPTION"] != "concurrent change" {
+		t.Fatalf("concurrent configuration was overwritten: %#v", current)
+	}
+}
+
+func TestSaveConfigPageIgnoresStaleDashboardCache(t *testing.T) {
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := dashboardruntime.Values(s.cfg.Snapshot())
+	values["CREDIMI_DEVICE_COUNT"] = "1"
+	values["CREDIMI_DEVICE_1_ID"] = "acme/runner/device"
+	values["CREDIMI_DEVICE_1_NAME"] = "Device"
+	values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	values["CREDIMI_DEVICE_1_MODE"] = "no_device"
+	values["CREDIMI_DEVICE_1_ENABLED"] = "true"
+	values["CREDIMI_RUNNER_DESCRIPTION"] = "persisted"
+	if err := store.Save(values); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.mu.Lock()
+	s.cfg.values["CREDIMI_RUNNER_DESCRIPTION"] = "stale cache"
+	s.cfg.mu.Unlock()
+	form := url.Values{}
+	for key, value := range values {
+		form.Set(key, value)
+	}
+	form.Set("CREDIMI_RUNNER_DESCRIPTION", "updated")
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := s.saveConfigPageSync(req, "config", func(string) {}); err != nil {
+		t.Fatalf("stale cache blocked config save: %v", err)
+	}
+	reloaded, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Snapshot()["CREDIMI_RUNNER_DESCRIPTION"]; got != "updated" {
+		t.Fatalf("persisted description = %q", got)
+	}
+	if got := s.cfg.Snapshot()["CREDIMI_RUNNER_DESCRIPTION"]; got != "updated" {
+		t.Fatalf("dashboard cache description = %q", got)
+	}
+}
+
+func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device" {
+			return nil, fmt.Errorf("unexpected Credimi path %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	s := newTestServer(t)
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}, Devices: []dashboardruntime.DeviceRuntimeConfig{{
+		ID: "acme/runner/first-phone", Name: "First phone", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-1", Values: dashboardruntime.Values{"SERIAL": "usb-1"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+	form := url.Values{
+		"CREDIMI_DEVICE_CONFLICT_ACTION": {"create"},
+		"CREDIMI_DEVICE_ID":              {"acme/runner/second-phone"},
+		"name":                           {"Second phone"},
+		"type":                           {"android_phone"},
+		"mode":                           {"usb"},
+		"CREDIMI_RUNNER_SERIAL":          {"usb-2"},
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.saveDevicesConfig(recorder, request)
+	waitForQueuedOperation(t, s, recorder)
+	updatedStore, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := updatedStore.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.Devices) != 2 || config.Devices[1].ID != "acme/runner/second-phone" || config.Devices[1].Serial != "usb-2" {
+		t.Fatalf("created device inventory = %#v", config.Devices)
+	}
+}
+
+func TestServerSaveDevicesConfigUsesCanonicalAliasesAndClearsFields(t *testing.T) {
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected Credimi path: %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/usb-renamed"}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}
+	devices := []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/usb", Name: "USB", Type: "android_phone", Mode: "usb", Enabled: true, Serial: "usb-old", Values: dashboardruntime.Values{"SERIAL": "usb-old"}},
+		{ID: "acme/runner/wifi", Name: "Wi-Fi", Type: "android_phone", Mode: "wifi", Enabled: true, WiFiIP: "10.0.0.2", WiFiPort: "5555", Serial: "10.0.0.2:5555", Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.2", "WIFI_PORT": "5555"}},
+		{ID: "acme/runner/redroid", Name: "Redroid", Type: "redroid", Mode: "redroid", Enabled: true, WiFiIP: "10.0.0.3", WiFiPort: "5555", Serial: "10.0.0.3:5555", Values: dashboardruntime.Values{"WIFI_IP": "10.0.0.3", "WIFI_PORT": "5555"}},
+	}
+	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: host, Devices: devices}); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+
+	post := func(form url.Values) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		s.saveDevicesConfig(recorder, request)
+		waitForQueuedOperation(t, s, recorder)
+	}
+
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/usb"},
+		"CREDIMI_DEVICE_NAME":        {"USB renamed"},
+		"CREDIMI_DEVICE_DESCRIPTION": {"updated description"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"wifi"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.10"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5555"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/usb-renamed"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"usb"},
+		"CREDIMI_RUNNER_SERIAL":      {"usb-new"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/wifi"},
+		"CREDIMI_RUNNER_TYPE":        {"android_phone"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"wifi"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.20"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5566"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/redroid"},
+		"CREDIMI_RUNNER_TYPE":        {"redroid"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"redroid"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.30"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5566"},
+	})
+	post(url.Values{
+		"CREDIMI_DEVICE_ID":          {"acme/runner/redroid"},
+		"CREDIMI_DEVICE_DESCRIPTION": {""},
+		"CREDIMI_RUNNER_TYPE":        {"redroid"},
+		"CREDIMI_RUNNER_DEVICE_MODE": {"redroid"},
+		"CREDIMI_RUNNER_WIFI_IP":     {"10.0.0.30"},
+		"CREDIMI_RUNNER_WIFI_PORT":   {"5566"},
+	})
+
+	updated, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := updated.RuntimeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.Devices[0]; got.Name != "USB renamed" || got.Description != "updated description" || got.Mode != "usb" || got.Serial != "usb-new" || got.WiFiIP != "" || got.WiFiPort != "" {
+		t.Fatalf("USB device after transitions = %#v", got)
+	}
+	if got := config.Devices[1]; got.WiFiIP != "10.0.0.20" || got.WiFiPort != "5566" || got.Serial != "10.0.0.20:5566" {
+		t.Fatalf("Wi-Fi device after update = %#v", got)
+	}
+	if got := config.Devices[2]; got.Description != "" || got.WiFiIP != "10.0.0.30" || got.WiFiPort != "5566" || got.Serial != "10.0.0.30:5566" {
+		t.Fatalf("Redroid device after update = %#v", got)
+	}
+}
+
+func TestServerDeviceEnableAndRemovePersistIndexedInventory(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	s := newTestServer(t)
+	dir := filepath.Dir(s.cfg.Path())
+	store, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_USER_API_KEY": "user-key", "CREDIMI_RUNNER_ID": "acme/runner", "CREDIMI_RUNNER_NAME": "runner", "CREDIMI_RUNNER_ORGANIZATION": "acme", "TEMPORAL_ADDRESS": "temporal.example:7233", "CREDIMI_SERVICE_MODE": "manual", "RUNNER_PUBLIC_URL": "https://runner.example",
+	}, Devices: []dashboardruntime.DeviceRuntimeConfig{
+		{ID: "acme/runner/one", Name: "One", Type: "android_phone", Mode: "usb", Serial: "usb-1", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-1"}},
+		{ID: "acme/runner/two", Name: "Two", Type: "android_phone", Mode: "usb", Serial: "usb-2", Enabled: true, Values: dashboardruntime.Values{"SERIAL": "usb-2"}},
+	}}
+	if err := store.SaveRuntimeConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg = loadConfigSnapshot(store, s.cfg)
+
+	enable := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/devices/disable", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.deviceDisable(enable, req)
+	waitForQueuedOperation(t, s, enable)
+	stored, err := dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := stored.RuntimeConfig()
+	if err != nil || updated.Devices[0].Enabled {
+		t.Fatalf("updated inventory = %#v, %v", updated, err)
+	}
+
+	remove := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/devices/remove", strings.NewReader(url.Values{"device_id": {"acme/runner/one"}, "confirm": {"true"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.deviceRemove(remove, req)
+	waitForQueuedOperation(t, s, remove)
+	stored, err = dashboardruntime.LoadStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err = stored.RuntimeConfig()
+	if err != nil || len(updated.Devices) != 1 || updated.Devices[0].Index != 1 || updated.Devices[0].ID != "acme/runner/two" {
+		t.Fatalf("reindexed inventory = %#v, %v", updated, err)
+	}
+}
+
+func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
+	s := newTestServer(t)
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/mobile-device/preview-id":
+			body = `{"device_id":"acme/runner/pixel"}`
+		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
+		default:
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	form := url.Values{
+		"CREDIMI_URL":                 {"https://credimi.example"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_SERVICE_MODE":        {"manual"},
+		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+		"SETUP_DEVICE_COUNT":          {"1"},
+		"SETUP_DEVICE_1_NAME":         {"Pixel"},
+		"SETUP_DEVICE_1_TYPE":         {"redroid"},
+		"SETUP_DEVICE_1_MODE":         {"no_device"},
+		"SETUP_DEVICE_1_WIFI_IP":      {"192.0.2.10"},
+		"SETUP_DEVICE_1_SERIAL":       {"redroid:5555"},
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("HX-Request", "true")
+	s.finishSetup(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("setup response = %d redirect=%q body=%s", recorder.Code, recorder.Header().Get("HX-Redirect"), recorder.Body.String())
+	}
+	waitForQueuedOperation(t, s, recorder)
+	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
+		t.Fatalf("setup was not persisted: exists=%t values=%#v", s.cfg.Exists(), s.cfg.Snapshot())
+	}
+	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeConfig, err := store.RuntimeConfig()
+	if err != nil || len(runtimeConfig.Devices) != 1 || runtimeConfig.Devices[0].ID != "acme/runner/pixel" {
+		t.Fatalf("setup persisted incomplete inventory: %#v err=%v", runtimeConfig, err)
+	}
+	if startup := s.startupSnapshot(); startup.Phase != StartupReady {
+		t.Fatalf("setup startup phase = %q: %s", startup.Phase, startup.Message)
+	}
 }
