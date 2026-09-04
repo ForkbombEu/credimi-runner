@@ -712,6 +712,31 @@ func TestBuildServiceSpecRestoresPhysicalUSBHostADBContract(t *testing.T) {
 	}
 }
 
+func TestBuildServiceSpecFirstUSBAddsOnlyUSBTopology(t *testing.T) {
+	host := testHost("/home/alice")
+	withoutUSB := configForDevices(config.DeviceConfig{
+		ID: "org/runner/emulator", Name: "Emulator", Type: config.DeviceAndroidEmulator, Enabled: true,
+		AndroidEmulator: &config.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden"},
+	})
+	withUSB := withoutUSB
+	withUSB.Devices = append(withUSB.Devices, config.DeviceConfig{
+		ID: "org/runner/phone", Name: "Phone", Type: config.DeviceAndroidPhysical, Enabled: true,
+		AndroidPhysical: &config.AndroidPhysicalConfig{Transport: "usb", Serial: "SERIAL123"},
+	})
+	spec, err := BuildServiceSpec(withUSB, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.NetworkMode != "host" || spec.Environment[ADBServerSocketEnv] != ADBServerSocket {
+		t.Fatalf("first USB topology = mode %q env %#v", spec.NetworkMode, spec.Environment)
+	}
+	assertDevice(t, spec, "/dev/bus/usb", "/dev/bus/usb")
+	assertDevice(t, spec, "/dev/kvm", "/dev/kvm")
+	if ServiceConfigsCompatibleWithHost(withoutUSB, withUSB, true, host) {
+		t.Fatal("first USB capability expansion was treated as compatible")
+	}
+}
+
 func TestBuildServiceSpecBootstrapCanDiscoverHostADBDevices(t *testing.T) {
 	// The Dashboard discovers phones before setup persists a device entry, so
 	// bootstrap must retain the old host-ADB topology with an empty config.
@@ -751,6 +776,60 @@ func TestBuildServiceSpecExportsCanonicalComposeProject(t *testing.T) {
 	wantFingerprint := ServiceConfigFingerprint(cfg, true)
 	if spec.Environment[AppliedServiceConfigFingerprintEnv] != wantFingerprint {
 		t.Fatalf("applied service fingerprint = %q, want %q", spec.Environment[AppliedServiceConfigFingerprintEnv], wantFingerprint)
+	}
+}
+
+func TestServiceNetworkModeUsesHostOnlyForHostLocalDependencies(t *testing.T) {
+	host := testHost("/home/alice/.config/credimi-runner")
+	host.HostAddresses = []string{"192.168.178.120", "10.0.0.2"}
+	base := configForDevices()
+	base.Credimi.URL = "https://credimi.io"
+	base.Temporal.Address = "temporal.credimi.io:7233"
+	base.Exposure.Mode = "quick_tunnel"
+	cases := []struct {
+		name        string
+		mutate      func(*config.Config)
+		wantMode    string
+		wantNetwork string
+	}{
+		{name: "remote dependencies", wantMode: "bridge", wantNetwork: "credimi-runner"},
+		{name: "host address", mutate: func(cfg *config.Config) { cfg.Credimi.URL = "http://192.168.178.120:8090" }, wantMode: "host"},
+		{name: "loopback", mutate: func(cfg *config.Config) { cfg.Temporal.Address = "127.0.0.1:7233" }, wantMode: "host"},
+		{name: "host hostname", mutate: func(cfg *config.Config) { cfg.Credimi.URL = "http://localhost:8090" }, wantMode: "host"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			if tc.mutate != nil {
+				tc.mutate(&cfg)
+			}
+			spec, err := BuildServiceSpec(cfg, host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if spec.NetworkMode != tc.wantMode {
+				t.Fatalf("network mode=%q want %q", spec.NetworkMode, tc.wantMode)
+			}
+			if tc.wantNetwork != "" && len(spec.Networks) != 1 || tc.wantNetwork != "" && spec.Networks[0] != tc.wantNetwork {
+				t.Fatalf("networks=%v want %q", spec.Networks, tc.wantNetwork)
+			}
+		})
+	}
+}
+
+func TestServiceNetworkModeChangeRequiresExactCompatibility(t *testing.T) {
+	host := testHost("/home/alice/.config/credimi-runner")
+	host.HostAddresses = []string{"192.168.178.120"}
+	remote := configForDevices()
+	remote.Credimi.URL = "https://credimi.io"
+	remote.Temporal.Address = "temporal.credimi.io:7233"
+	local := remote
+	local.Credimi.URL = "http://192.168.178.120:8090"
+	if ServiceNetworkModeForConfig(remote, host) != "bridge" || ServiceNetworkModeForConfig(local, host) != "host" {
+		t.Fatal("host-local topology was not derived")
+	}
+	if ServiceConfigFingerprintForHost(remote, true, host) == ServiceConfigFingerprintForHost(local, true, host) {
+		t.Fatal("network topology did not affect fingerprint")
 	}
 }
 

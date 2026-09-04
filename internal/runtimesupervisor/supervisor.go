@@ -20,7 +20,11 @@ import (
 )
 
 const (
-	startTimeout                  = 2 * time.Minute
+	// Activation is a sequence of bounded child operations (edge startup,
+	// endpoint verification, capability preparation, registration and worker
+	// startup). Its budget must encompass that sequence rather than equal one
+	// child timeout.
+	startTimeout                  = 15 * time.Minute
 	stopTimeout                   = 30 * time.Second
 	cleanupTimeout                = 30 * time.Second
 	edgeStartTimeout              = 2 * time.Minute
@@ -598,22 +602,22 @@ func (s *Supervisor) ApplyEndpoint(ctx context.Context, cfg config.Config) error
 		return errors.New("runtime generation is not running")
 	}
 	publicURL, _ := g.snapshot()
+	candidate := publicURL
+	if cfg.Exposure.Mode == "manual" {
+		candidate = cfg.Exposure.PublicURL
+	}
 	if s.deps.VerifyPublicEndpoint != nil {
-		candidate := publicURL
-		if cfg.Exposure.Mode == "manual" {
-			candidate = cfg.Exposure.PublicURL
-		}
 		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, candidate); err != nil {
 			return fmt.Errorf("verify public endpoint: %w", err)
 		}
 	}
 	if s.deps.Register != nil {
-		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
+		if err := registerWithRetry(ctx, s.deps.Register, cfg, candidate); err != nil {
 			return fmt.Errorf("register endpoint: %w", err)
 		}
 	}
 	if cfg.Exposure.Mode == "manual" {
-		g.setPublicURL(cfg.Exposure.PublicURL)
+		g.setPublicURL(candidate)
 	}
 	g.activeConfig.Store(cfg)
 	g.mu.Lock()

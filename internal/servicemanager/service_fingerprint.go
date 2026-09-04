@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
+	"net/url"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -15,7 +18,8 @@ const (
 	AppliedServiceNeedsHostADBEnv      = "CREDIMI_APPLIED_SERVICE_NEEDS_HOST_ADB"
 	AppliedServiceNeedsUSBEnv          = "CREDIMI_APPLIED_SERVICE_NEEDS_USB"
 	AppliedServiceNeedsEmulatorEnv     = "CREDIMI_APPLIED_SERVICE_NEEDS_EMULATOR"
-	AppliedServiceRedroidKnownHostsEnv = "CREDIMI_APPLIED_SERVICE_REDIROID_KNOWN_HOSTS"
+	AppliedServiceRedroidKnownHostsEnv = "CREDIMI_APPLIED_SERVICE_REDROID_KNOWN_HOSTS"
+	AppliedServiceHostAddressesEnv     = "CREDIMI_APPLIED_SERVICE_HOST_ADDRESSES"
 )
 
 // ServiceCapabilities describes capabilities that may safely be retained when
@@ -27,6 +31,8 @@ type ServiceCapabilities struct {
 	NeedsUSB          bool
 	NeedsEmulator     bool
 	RedroidKnownHosts []string
+	NetworkMode       string
+	HostAddresses     []string
 }
 
 type serviceConfigProjection struct {
@@ -36,6 +42,7 @@ type serviceConfigProjection struct {
 	ReadHeaderTimeout string                   `json:"read_header_timeout"`
 	ShutdownTimeout   string                   `json:"shutdown_timeout"`
 	ExposureClass     string                   `json:"exposure_class"`
+	NetworkMode       string                   `json:"network_mode"`
 	Android           serviceAndroidProjection `json:"android"`
 	NeedsHostADB      bool                     `json:"needs_host_adb"`
 	NeedsUSB          bool                     `json:"needs_usb"`
@@ -59,14 +66,26 @@ const defaultRedroidKnownHosts = "<host-default-known-hosts>"
 // the current service/container topology stale. Runtime credentials and
 // execution settings intentionally do not participate.
 func ServiceConfigFingerprint(cfg config.Config, configured bool) string {
+	return ServiceConfigFingerprintForHost(cfg, configured, HostContext{})
+}
+
+// ServiceConfigFingerprintForHost includes the host-resolved network
+// namespace decision used by the generated service. Keeping that decision in
+// the same projection prevents the service specification and restart guard
+// from disagreeing about host-local dependencies.
+func ServiceConfigFingerprintForHost(cfg config.Config, configured bool, host HostContext) string {
 	// Persisted TOML is normally loaded with defaults applied. Applying them
 	// here as well keeps callers that hold a freshly assembled Config on the
 	// same canonical projection.
 	_ = config.ApplyDefaults(&cfg)
-	return fingerprintServiceProjection(serviceConfigProjectionFor(cfg, configured))
+	return fingerprintServiceProjection(serviceConfigProjectionForHost(cfg, configured, host))
 }
 
 func serviceConfigProjectionFor(cfg config.Config, configured bool) serviceConfigProjection {
+	return serviceConfigProjectionForHost(cfg, configured, HostContext{})
+}
+
+func serviceConfigProjectionForHost(cfg config.Config, configured bool, host HostContext) serviceConfigProjection {
 	_ = config.ApplyDefaults(&cfg)
 	projection := serviceConfigProjection{
 		Configured:        configured,
@@ -75,6 +94,7 @@ func serviceConfigProjectionFor(cfg config.Config, configured bool) serviceConfi
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration().String(),
 		ShutdownTimeout:   cfg.Server.ShutdownTimeout.Duration().String(),
 		ExposureClass:     serviceExposureClass(cfg.Exposure.Mode),
+		NetworkMode:       ServiceNetworkModeForConfig(cfg, host),
 		NeedsHostADB:      !configured,
 		Android: serviceAndroidProjection{
 			RunnerImage:     cfg.Android.RunnerImage,
@@ -144,8 +164,15 @@ func ServiceRedroidKnownHostsForConfig(cfg config.Config) []string {
 // satisfy desired configuration. Extra USB, ADB, or KVM capability is a safe
 // superset; all other service topology fields must remain equal.
 func ServiceConfigsCompatible(applied, desired config.Config, configured bool) bool {
-	appliedProjection := serviceConfigProjectionFor(applied, configured)
-	desiredProjection := serviceConfigProjectionFor(desired, configured)
+	return ServiceConfigsCompatibleWithHost(applied, desired, configured, HostContext{})
+}
+
+// ServiceConfigsCompatibleWithHost applies the capability-superset rules to
+// an actual host-resolved service topology. Network namespace changes remain
+// exact because host networking changes isolation and Docker DNS behavior.
+func ServiceConfigsCompatibleWithHost(applied, desired config.Config, configured bool, host HostContext) bool {
+	appliedProjection := serviceConfigProjectionForHost(applied, configured, host)
+	desiredProjection := serviceConfigProjectionForHost(desired, configured, host)
 	if appliedProjection.NeedsHostADB {
 		desiredProjection.NeedsHostADB = true
 	}
@@ -167,7 +194,10 @@ func ServiceConfigsCompatible(applied, desired config.Config, configured bool) b
 // when only the applied service fingerprint and its exported capabilities are
 // available to the Dashboard process.
 func ServiceConfigCompatibleWithFingerprint(cfg config.Config, configured bool, appliedFingerprint string, capabilities ServiceCapabilities) bool {
-	desiredProjection := serviceConfigProjectionFor(cfg, configured)
+	desiredProjection := serviceConfigProjectionForHost(cfg, configured, HostContext{OS: runtime.GOOS, HostAddresses: capabilities.HostAddresses})
+	if capabilities.NetworkMode != "" && desiredProjection.NetworkMode != capabilities.NetworkMode {
+		return false
+	}
 	if capabilities.NeedsHostADB {
 		desiredProjection.NeedsHostADB = true
 	}
@@ -183,6 +213,93 @@ func ServiceConfigCompatibleWithFingerprint(cfg config.Config, configured bool, 
 	desiredProjection.RedroidKnownHosts = append([]string(nil), capabilities.RedroidKnownHosts...)
 	sort.Strings(desiredProjection.RedroidKnownHosts)
 	return fingerprintServiceProjection(desiredProjection) == appliedFingerprint
+}
+
+// ServiceNetworkModeForConfig is the single host-side topology decision used
+// by service rendering and applied-service comparisons. Host networking is
+// required for USB/bootstrap operation and when a configured startup
+// dependency points at this Linux host. Container DNS names remain bridged.
+func ServiceNetworkModeForConfig(cfg config.Config, host HostContext) string {
+	if strings.EqualFold(strings.TrimSpace(cfg.Android.Network), "host") {
+		return "host"
+	}
+	if host.OS == "" {
+		host.OS = runtime.GOOS
+	}
+	if host.OS != "linux" {
+		return "bridge"
+	}
+	if host.BeforeSetup || serviceNeedsUSB(cfg) || hostLocalDependencies(cfg, host) {
+		return "host"
+	}
+	return "bridge"
+}
+
+func serviceNeedsUSB(cfg config.Config) bool {
+	for _, device := range cfg.Devices {
+		if device.Enabled && device.Type == config.DeviceAndroidPhysical && device.AndroidPhysical != nil && strings.EqualFold(strings.TrimSpace(device.AndroidPhysical.Transport), "usb") {
+			return true
+		}
+	}
+	return false
+}
+
+func hostLocalDependencies(cfg config.Config, host HostContext) bool {
+	if hostIsLocalURL(cfg.Credimi.URL, host) || hostIsLocalAddress(cfg.Temporal.Address, host) {
+		return true
+	}
+	return serviceExposureClass(cfg.Exposure.Mode) == "manual" && hostIsLocalURL(cfg.Exposure.PublicURL, host)
+}
+
+func hostIsLocalURL(raw string, host HostContext) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	return hostNameIsLocal(parsed.Hostname(), host)
+}
+
+func hostIsLocalAddress(raw string, host HostContext) bool {
+	raw = strings.TrimSpace(raw)
+	name, _, err := net.SplitHostPort(raw)
+	if err != nil {
+		name = strings.Trim(raw, "[]")
+	}
+	return hostNameIsLocal(name, host)
+}
+
+func hostNameIsLocal(name string, host HostContext) bool {
+	name = strings.Trim(strings.ToLower(strings.TrimSpace(name)), "[]")
+	if name == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(name)
+	if ip != nil {
+		if ip.IsLoopback() {
+			return true
+		}
+		for _, address := range host.HostAddresses {
+			if candidate := net.ParseIP(strings.Trim(address, "[]")); candidate != nil && candidate.Equal(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(host.HostAddresses) == 0 {
+		return false
+	}
+	resolved, err := net.LookupIP(name)
+	if err != nil {
+		return false
+	}
+	for _, candidate := range resolved {
+		for _, address := range host.HostAddresses {
+			if own := net.ParseIP(strings.Trim(address, "[]")); own != nil && own.Equal(candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isStringSetSuperset(have, want []string) bool {

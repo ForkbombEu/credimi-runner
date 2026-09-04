@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	runnerconfig "github.com/forkbombeu/credimi-runner/internal/config"
 	runnerplacement "github.com/forkbombeu/credimi-runner/internal/runtime"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
@@ -118,14 +119,20 @@ func ServiceRestartRequired(values Values, configured bool) bool {
 	if err != nil {
 		return true
 	}
-	if applied == servicemanager.ServiceConfigFingerprint(cfg, configured) {
-		return false
-	}
 	capabilities, present, valid := appliedServiceCapabilities()
-	if !present || !valid {
-		return true
+	if present {
+		if !valid {
+			return true
+		}
+		return !servicemanager.ServiceConfigCompatibleWithFingerprint(cfg, configured, applied, capabilities)
 	}
-	return !servicemanager.ServiceConfigCompatibleWithFingerprint(cfg, configured, applied, capabilities)
+	return applied != servicemanager.ServiceConfigFingerprint(cfg, configured)
+}
+
+// ServiceConfigFingerprintForCurrentHost mirrors the host-side fingerprint
+// using the non-secret host metadata exported by the persistent service.
+func ServiceConfigFingerprintForCurrentHost(cfg runnerconfig.Config, configured bool) string {
+	return servicemanager.ServiceConfigFingerprintForHost(cfg, configured, appliedServiceHostContext())
 }
 
 func appliedServiceCapabilities() (servicemanager.ServiceCapabilities, bool, bool) {
@@ -155,6 +162,16 @@ func appliedServiceCapabilities() (servicemanager.ServiceCapabilities, bool, boo
 	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceRedroidKnownHostsEnv); ok {
 		present = true
 		if err := json.Unmarshal([]byte(raw), &capabilities.RedroidKnownHosts); err != nil {
+			valid = false
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv(servicemanager.ServiceNetworkModeEnv)); raw != "" {
+		present = true
+		capabilities.NetworkMode = raw
+	}
+	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceHostAddressesEnv); ok {
+		present = true
+		if err := json.Unmarshal([]byte(raw), &capabilities.HostAddresses); err != nil {
 			valid = false
 		}
 	}
@@ -299,7 +316,7 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 	if goos != "darwin" {
 		if oldCfg, oldErr := TypedConfigFromValues(oldValues); oldErr == nil {
 			if newCfg, newErr := TypedConfigFromValues(newValues); newErr == nil {
-				if !servicemanager.ServiceConfigsCompatible(oldCfg, newCfg, true) {
+				if !servicemanager.ServiceConfigsCompatibleWithHost(oldCfg, newCfg, true, appliedServiceHostContext()) {
 					classSet[ApplyServiceRestartRequired] = struct{}{}
 				}
 			} else if serviceFallbackChanged(diff.ChangedKeys) {
@@ -323,6 +340,14 @@ func DiffValuesForOS(oldValues, newValues Values, goos string) ConfigDiff {
 		}
 	}
 	return diff
+}
+
+func appliedServiceHostContext() servicemanager.HostContext {
+	addresses := []string{}
+	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceHostAddressesEnv); ok {
+		_ = json.Unmarshal([]byte(raw), &addresses)
+	}
+	return servicemanager.HostContext{OS: "linux", HostAddresses: addresses}
 }
 
 func containsStringValue(values []string, want string) bool {

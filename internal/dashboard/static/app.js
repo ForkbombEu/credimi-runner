@@ -244,7 +244,11 @@
           toast(runtimeOperationFailure(snapshot), 'error');
         }
 			if ($('.app.setup-shell')) {
-				window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));
+				if (phase === 'succeeded') {
+					window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));
+				} else {
+					refreshOverview('/setup', operation.recoveryToken, operation.recoveryOrigin);
+				}
 				return;
 			}
 			refreshOverview(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin);
@@ -707,7 +711,7 @@
           if (!String(get('NAME')).trim()) return 'Each device needs a name.';
           const type = get('TYPE');
           const mode = get('MODE');
-          if (type === 'android_phone' && mode === 'usb' && !String(get('SERIAL')).trim()) return 'Select a connected Android device for every USB target.';
+			if (type === 'android_phone' && mode === 'usb' && !String(get('SERIAL')).trim()) return 'Enter or select a USB serial for every USB target.';
           if ((type === 'android_phone' && mode === 'wifi') || type === 'redroid') {
             if (!String(get('WIFI_IP')).trim()) return 'Every Wi-Fi or Redroid target requires an IP address.';
           }
@@ -1622,7 +1626,9 @@
       if (!response.ok) return;
       const devices = (await response.json()).filter((device) => device && device.status === 'online');
       root.querySelectorAll('[data-android-phone-device-select]').forEach((select) => {
-        const serialField = select.closest('[data-device-provision]')?.querySelector('[data-android-phone-serial]');
+        const card = select.closest('[data-device-provision]');
+        const serialField = card?.querySelector('[data-android-phone-serial]');
+        const fallbackHint = card?.querySelector('[data-android-phone-serial-hint]');
         const current = serialField?.value || select.value || '';
         select.replaceChildren(new Option('Select a connected Android device', ''));
         devices.forEach((device) => {
@@ -1630,7 +1636,17 @@
           option.selected = device.serial === current;
           select.add(option);
         });
-        if (serialField) serialField.value = select.value || '';
+        const hasDevices = devices.length > 0;
+        select.hidden = !hasDevices;
+        select.disabled = !hasDevices;
+        if (serialField) {
+          if (hasDevices && select.value) serialField.value = select.value;
+          serialField.hidden = hasDevices;
+          serialField.disabled = hasDevices;
+        }
+        if (fallbackHint) fallbackHint.textContent = hasDevices
+          ? 'Choose a detected device.'
+          : 'No USB devices are visible from the current Runner topology. Adding the first USB device may require the Runner service to restart.';
       });
     } catch (_) {}
   }
@@ -1664,10 +1680,20 @@
 	// A hidden USB selector must not block Wi-Fi/no-device submissions, while
 	// USB itself must never continue without an explicit ADB target.
 	const serialSelect = root.querySelector('[data-android-phone-device-select]');
-	if (serialSelect) {
+	const serialField = root.querySelector('[data-android-phone-serial]');
+	if (serialSelect || serialField) {
 		const needsSerial = type === 'android_phone' && mode === 'usb';
-		serialSelect.required = needsSerial;
-		serialSelect.disabled = !needsSerial;
+		const hasDetectedDevices = !!serialSelect && serialSelect.options.length > 1;
+		if (serialSelect) {
+			serialSelect.required = needsSerial && hasDetectedDevices;
+			serialSelect.disabled = !needsSerial || !hasDetectedDevices;
+			serialSelect.hidden = !needsSerial || !hasDetectedDevices;
+		}
+		if (serialField) {
+			serialField.required = needsSerial && !hasDetectedDevices;
+			serialField.disabled = !needsSerial || hasDetectedDevices;
+			serialField.hidden = !needsSerial && hasDetectedDevices;
+		}
 	}
     refreshIOSSimulatorPanel(root);
     refreshAndroidEmulatorAssetsPanel(root);
@@ -1709,6 +1735,12 @@
     if (!select) return;
     const root = select.closest('[data-device-provision]') || select.closest('form') || document;
     setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', select.value || '');
+    root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+  });
+  document.addEventListener('input', (e) => {
+    const field = e.target.closest('[data-android-phone-serial]');
+    if (!field) return;
+    const root = field.closest('[data-device-provision]') || field.closest('form') || document;
     root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
   });
   document.addEventListener('click', (e) => {

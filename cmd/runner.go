@@ -139,7 +139,11 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 		resultErr := writeResult(false, "", fmt.Sprintf("load saved service configuration: %v", err))
 		return errors.Join(err, resultErr)
 	}
-	expected := servicemanager.ServiceConfigFingerprint(cfg, true)
+	host, hostErr := servicemanager.ResolveHostContext(configDir)
+	if hostErr != nil {
+		return writeResult(false, "", fmt.Sprintf("resolve host service configuration: %v", hostErr))
+	}
+	expected := servicemanager.ServiceConfigFingerprintForHost(cfg, true, host)
 	if request.RequestedFingerprint != expected {
 		return writeResult(false, "", "service restart request was superseded by a newer configuration")
 	}

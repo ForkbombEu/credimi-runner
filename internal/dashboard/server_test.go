@@ -154,6 +154,87 @@ func TestExposureApplyClassificationUsesActiveMode(t *testing.T) {
 	}
 }
 
+func TestApplySavedConfigUsesWholeDiffForEndpointHotApply(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	values := dashboardruntime.Values(loaded.Snapshot())
+	values["CREDIMI_SERVICE_MODE"] = "manual"
+	values["RUNNER_PUBLIC_URL"] = "https://runner.example"
+	loaded = persistDashboardValues(t, path, values)
+	old := dashboardruntime.Values(loaded.Snapshot())
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(func() runnerconfig.Config {
+		cfg, err := runnerconfig.LoadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}(), true))
+	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
+	t.Setenv(servicemanager.AppliedServiceNeedsHostADBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsUSBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsEmulatorEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceRedroidKnownHostsEnv, "[]")
+	for _, tc := range []struct {
+		name                        string
+		mutate                      func(dashboardruntime.Values)
+		wantEndpoint, wantReconcile int
+	}{
+		{name: "url", mutate: func(v dashboardruntime.Values) { v["RUNNER_PUBLIC_URL"] = "https://new.example" }, wantEndpoint: 1},
+		{name: "url plus temporal", mutate: func(v dashboardruntime.Values) {
+			v["RUNNER_PUBLIC_URL"] = "https://new.example"
+			v["TEMPORAL_ADDRESS"] = "temporal-new:7233"
+		}, wantReconcile: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+			s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+			candidate := dashboardruntime.Values(cloneStringMap(map[string]string(old)))
+			tc.mutate(candidate)
+			s.cfg = persistDashboardValues(t, path, candidate)
+			if err := s.applySavedConfig(context.Background(), dashboardruntime.DiffValuesForOS(old, candidate, "linux")); err != nil {
+				t.Fatal(err)
+			}
+			if fake.endpointCount() != tc.wantEndpoint {
+				t.Fatalf("endpoint calls=%d want %d", fake.endpointCount(), tc.wantEndpoint)
+			}
+			if _, _, _, got := fake.counts(); got != tc.wantReconcile {
+				t.Fatalf("reconcile calls=%d want %d", got, tc.wantReconcile)
+			}
+		})
+	}
+}
+
+func TestNamedTunnelDomainChangeUsesRuntimeReconcile(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	values := dashboardruntime.Values(loaded.Snapshot())
+	values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
+	values["RUNNER_DOMAIN"] = "old.example"
+	values["CLOUDFLARE_TUNNEL_TOKEN"] = "test-token"
+	loaded = persistDashboardValues(t, path, values)
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(func() runnerconfig.Config {
+		cfg, err := runnerconfig.LoadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}(), true))
+	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
+	t.Setenv(servicemanager.AppliedServiceNeedsHostADBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsUSBEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceNeedsEmulatorEnv, "false")
+	t.Setenv(servicemanager.AppliedServiceRedroidKnownHostsEnv, "[]")
+	fake := &fakeRuntimeController{status: runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}}
+	s := &Server{cfg: loaded, runtime: fake, composeDir: filepath.Dir(path)}
+	candidate := dashboardruntime.Values(cloneStringMap(map[string]string(values)))
+	candidate["RUNNER_DOMAIN"] = "new.example"
+	s.cfg = persistDashboardValues(t, path, candidate)
+	if err := s.applySavedConfig(context.Background(), dashboardruntime.DiffValuesForOS(values, candidate, "linux")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, reconciles := fake.counts(); reconciles != 1 || fake.endpointCount() != 0 || fake.inventoryCount() != 0 {
+		t.Fatalf("named tunnel apply calls: reconcile=%d endpoint=%d inventory=%d", reconciles, fake.endpointCount(), fake.inventoryCount())
+	}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
@@ -2145,8 +2226,8 @@ func TestServerValidateRuntimeRequirements(t *testing.T) {
 		t.Fatalf("connected phone requirements = %v", err)
 	}
 	s.hub.snap.Devices[0].Status = Offline
-	if err := s.validateRuntimeRequirements(base); err == nil || !strings.Contains(err.Error(), "not connected") {
-		t.Fatalf("offline phone requirements = %v", err)
+	if err := s.validateRuntimeRequirements(base); err != nil {
+		t.Fatalf("offline phone should remain persistable for topology expansion = %v", err)
 	}
 	emulator := cloneStringMap(base)
 	emulator["CREDIMI_DEVICE_1_TYPE"] = "android_emulator"

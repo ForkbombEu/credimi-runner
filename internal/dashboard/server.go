@@ -28,7 +28,6 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 	"github.com/forkbombeu/credimi-runner/internal/runtimesupervisor"
 	"github.com/forkbombeu/credimi-runner/internal/servicecoordination"
-	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1201,7 +1200,7 @@ func (s *Server) serviceRestartFingerprint() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return servicemanager.ServiceConfigFingerprint(cfg, true), nil
+	return dashboardruntime.ServiceConfigFingerprintForCurrentHost(cfg, true), nil
 }
 
 func serviceRestartResultApplied(configDir, configPath string) bool {
@@ -1214,7 +1213,7 @@ func serviceRestartResultApplied(configDir, configPath string) bool {
 		return false
 	}
 	cfg, err := runnerconfig.LoadFile(configPath)
-	return err == nil && result.AppliedFingerprint == servicemanager.ServiceConfigFingerprint(cfg, true)
+	return err == nil && result.AppliedFingerprint == dashboardruntime.ServiceConfigFingerprintForCurrentHost(cfg, true)
 }
 
 func serviceRestartResultFailure(configDir string) string {
@@ -1399,15 +1398,15 @@ func inventoryOnlyDiff(diff dashboardruntime.ConfigDiff, cfg runnerconfig.Config
 }
 
 func activeManualEndpointDiff(diff dashboardruntime.ConfigDiff, cfg runnerconfig.Config) bool {
-	if cfg.Exposure.Mode != "manual" {
+	if cfg.Exposure.Mode != "manual" || len(diff.ChangedKeys) == 0 {
 		return false
 	}
 	for _, key := range diff.ChangedKeys {
-		if key == "RUNNER_PUBLIC_URL" || key == "RUNNER_PUBLIC_PORT" {
-			return true
+		if key != "RUNNER_PUBLIC_URL" && key != "RUNNER_PUBLIC_PORT" {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func inactiveExposureOnlyDiff(diff dashboardruntime.ConfigDiff, cfg runnerconfig.Config) bool {
@@ -1427,7 +1426,7 @@ func inactiveExposureKey(key, mode string) bool {
 	case key == "RUNNER_PUBLIC_URL" || key == "RUNNER_PUBLIC_PORT":
 		return mode != "manual"
 	case key == "RUNNER_DOMAIN":
-		return mode != "cloudflare-managed"
+		return mode != "named_tunnel"
 	default:
 		return false
 	}
@@ -1595,7 +1594,7 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 			}
 		}
 		if device.Type == "android_phone" && device.Mode == "usb" && device.Serial == "" {
-			return nil, fmt.Errorf("device %d requires a selected USB Android device", index)
+			return nil, fmt.Errorf("device %d requires a USB Android serial", index)
 		}
 		if (device.Type == "android_phone" && device.Mode == "wifi") || device.Type == "redroid" {
 			if device.Values["WIFI_IP"] == "" {
@@ -1738,9 +1737,9 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 				return errors.New("xcrun simctl is required for iOS simulator devices")
 			}
 		case "android_phone":
-			if device.Mode == "usb" && !s.androidSerialConnected(device.Serial) {
-				return fmt.Errorf("device %q is not connected", device.ID)
-			}
+			// USB serials may be entered before this service has USB access.
+			// The replacement runtime performs the authoritative adb readiness
+			// check after the required host-ADB/USB topology is active.
 		case "android_emulator":
 			// KVM belongs to the active service topology. Candidate assets may be
 			// prepared before that topology is recreated with /dev/kvm.
@@ -1750,19 +1749,6 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 		}
 	}
 	return nil
-}
-
-func (s *Server) androidSerialConnected(serial string) bool {
-	serial = strings.TrimSpace(serial)
-	if serial == "" {
-		return false
-	}
-	for _, device := range s.hub.CurrentSnapshot().Devices {
-		if isAndroidADBDevice(device) && device.Status == Online && device.Serial == serial {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Server) lookupSetupOrganization(w http.ResponseWriter, r *http.Request) {

@@ -65,6 +65,19 @@ func TestExecutionAPIBindAddressFollowsServiceNetwork(t *testing.T) {
 	}
 }
 
+func TestExecutionAPIBindAddressPreservesLoopbackForManagedHostNetwork(t *testing.T) {
+	for _, mode := range []string{"quick_tunnel", "named_tunnel"} {
+		got, err := executionAPIBindAddressForExposure("127.0.0.1:8050", "host", mode)
+		if err != nil || got != "127.0.0.1:8050" {
+			t.Fatalf("mode %q: bind=%q err=%v, want loopback", mode, got, err)
+		}
+	}
+	got, err := executionAPIBindAddressForExposure("127.0.0.1:8050", "host", "manual")
+	if err != nil || got != "0.0.0.0:8050" {
+		t.Fatalf("manual bind=%q err=%v, want wildcard", got, err)
+	}
+}
+
 func TestApplicationBuildsRuntimeHandlerWithOrdinaryContext(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "")

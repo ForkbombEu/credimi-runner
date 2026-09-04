@@ -262,6 +262,65 @@ func TestServiceConfigFingerprintProjectsOnlyServiceTopology(t *testing.T) {
 	}
 }
 
+func TestServiceRestartRequiredTracksHostResolvedNetworkMode(t *testing.T) {
+	base := runnerconfig.Bootstrap()
+	base.Credimi.URL = "https://credimi.io"
+	base.Temporal.Address = "temporal.credimi.io:7233"
+	base.Exposure.Mode = "quick_tunnel"
+	host := servicemanager.HostContext{OS: "linux", HostAddresses: []string{"192.168.178.120"}}
+	local := base
+	local.Credimi.URL = "http://192.168.178.120:8090"
+	applied := servicemanager.ServiceConfigFingerprintForHost(base, true, host)
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, applied)
+	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
+	addresses, _ := json.Marshal(host.HostAddresses)
+	t.Setenv(servicemanager.AppliedServiceHostAddressesEnv, string(addresses))
+	if !ServiceRestartRequired(ValuesFromTypedConfig(local), true) {
+		t.Fatal("host-local dependency did not require service replacement")
+	}
+	if ServiceRestartRequired(ValuesFromTypedConfig(base), true) {
+		t.Fatal("unchanged bridged dependency required service replacement")
+	}
+}
+
+func TestFirstUSBExpansionRequiresServiceReplacement(t *testing.T) {
+	host := servicemanager.HostContext{OS: "linux", HostAddresses: []string{"192.168.178.120"}}
+	base := runnerconfig.Bootstrap()
+	base.Credimi.URL = "https://credimi.io"
+	base.Temporal.Address = "temporal.credimi.io:7233"
+	base.Devices = []runnerconfig.DeviceConfig{{Type: runnerconfig.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi"}}}
+	desired := base
+	desired.Devices = append(desired.Devices, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "SERIAL123"}})
+	if servicemanager.ServiceConfigsCompatibleWithHost(base, desired, true, host) {
+		t.Fatal("adding the first USB device did not require service replacement")
+	}
+	if got := servicemanager.ServiceNetworkModeForConfig(base, host); got != "bridge" {
+		t.Fatalf("emulator-only network mode = %q, want bridge", got)
+	}
+	if got := servicemanager.ServiceNetworkModeForConfig(desired, host); got != "host" {
+		t.Fatalf("emulator-plus-USB network mode = %q, want host", got)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprintForHost(base, true, host))
+	t.Setenv(servicemanager.ServiceNetworkModeEnv, "bridge")
+	addresses, _ := json.Marshal(host.HostAddresses)
+	t.Setenv(servicemanager.AppliedServiceHostAddressesEnv, string(addresses))
+	diff := DiffValuesForOS(ValuesFromTypedConfig(base), ValuesFromTypedConfig(desired), "linux")
+	if !hasClass(diff, ApplyServiceRestartRequired) {
+		t.Fatalf("first USB configuration change was not classified as service replacement: %+v", diff)
+	}
+}
+
+func TestAdditionalUSBUsesRetainedCapability(t *testing.T) {
+	host := servicemanager.HostContext{OS: "linux"}
+	applied := runnerconfig.Bootstrap()
+	applied.Devices = []runnerconfig.DeviceConfig{{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "A"}}}
+	desired := applied
+	desired.Devices = append(desired.Devices, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "B"}})
+	if !servicemanager.ServiceConfigsCompatibleWithHost(applied, desired, true, host) {
+		t.Fatal("additional USB device unnecessarily required service replacement")
+	}
+}
+
 func TestServiceConfigFingerprintUsesCapabilityUnion(t *testing.T) {
 	base := runnerconfig.Bootstrap()
 	base.Server.APIListen = "127.0.0.1:8050"

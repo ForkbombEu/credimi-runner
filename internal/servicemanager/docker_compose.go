@@ -59,6 +59,7 @@ type HostContext struct {
 	OS              string
 	BeforeSetup     bool
 	Bootstrap       BootstrapOptions
+	HostAddresses   []string
 }
 
 type BindMount struct {
@@ -171,15 +172,8 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 		spec.RestartPolicy = "always"
 	}
 	configuredNetwork := strings.TrimSpace(cfg.Android.Network)
-	if strings.EqualFold(configuredNetwork, "host") {
-		spec.NetworkMode = "host"
-	} else if configuredNetwork != "" && !strings.EqualFold(configuredNetwork, "bridge") {
+	if configuredNetwork != "" && !strings.EqualFold(configuredNetwork, "host") && !strings.EqualFold(configuredNetwork, "bridge") {
 		spec.Networks = []string{configuredNetwork}
-	}
-	if host.OS == "linux" && host.BeforeSetup {
-		// Bootstrap must be able to discover host phones before setup has
-		// persisted any device configuration.
-		spec.NetworkMode = "host"
 	}
 
 	setEnv := func(key, value string) { spec.Environment[key] = value }
@@ -187,13 +181,15 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	setEnv(ConfigOwnerUIDEnv, strconv.Itoa(host.UID))
 	setEnv(ConfigOwnerGIDEnv, strconv.Itoa(host.GID))
 	setEnv(ComposeProjectEnv, ProjectName(host.ConfigDir, host.UID))
-	setEnv(AppliedServiceConfigFingerprintEnv, ServiceConfigFingerprint(cfg, !host.BeforeSetup))
+	setEnv(AppliedServiceConfigFingerprintEnv, ServiceConfigFingerprintForHost(cfg, !host.BeforeSetup, host))
 	capabilities := ServiceCapabilitiesForConfig(cfg)
 	setEnv(AppliedServiceNeedsHostADBEnv, strconv.FormatBool(capabilities.NeedsHostADB || host.BeforeSetup))
 	setEnv(AppliedServiceNeedsUSBEnv, strconv.FormatBool(capabilities.NeedsUSB))
 	setEnv(AppliedServiceNeedsEmulatorEnv, strconv.FormatBool(capabilities.NeedsEmulator))
 	knownHostsMetadata, _ := json.Marshal(ServiceRedroidKnownHostsForConfig(cfg))
 	setEnv(AppliedServiceRedroidKnownHostsEnv, string(knownHostsMetadata))
+	hostAddresses, _ := json.Marshal(host.HostAddresses)
+	setEnv(AppliedServiceHostAddressesEnv, string(hostAddresses))
 	setEnv(HostHomeEnv, host.HomeDir)
 	setEnv(HostAndroidDirEnv, host.AndroidDir)
 	setEnv(HostGoldenRootEnv, host.GoldenRoot)
@@ -273,9 +269,10 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 		}
 	}
 	if host.OS == "linux" && needsUSB {
-		spec.NetworkMode = "host"
 		spec.Devices = appendDevice(spec.Devices, DeviceMapping{Source: "/dev/bus/usb", Target: "/dev/bus/usb"})
 	}
+	// Apply the same host-resolved topology decision used by the fingerprint.
+	spec.NetworkMode = ServiceNetworkModeForConfig(cfg, host)
 	// Set this only after every input that can select host networking.
 	setEnv(ServiceNetworkModeEnv, spec.NetworkMode)
 	if usesHostADB {
@@ -416,7 +413,29 @@ func ResolveHostContext(configDir string) (HostContext, error) {
 	if err != nil {
 		return HostContext{}, err
 	}
-	return HostContext{ConfigDir: configDir, HomeDir: home, UID: uid, GID: gid, AndroidDir: filepath.Join(home, ".android"), AVDHome: filepath.Join(home, ".android", "avd"), GoldenRoot: filepath.Join(home, "avd-golden"), HasKVM: fileExists("/dev/kvm"), OS: runtime.GOOS, BeforeSetup: !fileExists(filepath.Join(configDir, "config.toml"))}, nil
+	return HostContext{ConfigDir: configDir, HomeDir: home, UID: uid, GID: gid, AndroidDir: filepath.Join(home, ".android"), AVDHome: filepath.Join(home, ".android", "avd"), GoldenRoot: filepath.Join(home, "avd-golden"), HasKVM: fileExists("/dev/kvm"), OS: runtime.GOOS, BeforeSetup: !fileExists(filepath.Join(configDir, "config.toml")), HostAddresses: hostInterfaceAddresses()}, nil
+}
+
+func hostInterfaceAddresses() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	addresses := make([]string, 0)
+	for _, iface := range interfaces {
+		values, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, value := range values {
+			name, _, err := net.ParseCIDR(value.String())
+			if err == nil {
+				addresses = append(addresses, name.String())
+			}
+		}
+	}
+	sort.Strings(addresses)
+	return addresses
 }
 
 func listenPort(address, fallback string) (string, string) {

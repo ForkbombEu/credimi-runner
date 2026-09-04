@@ -339,7 +339,13 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 			t.Fatalf("setup wizard missing %q", want)
 		}
 	}
-	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-emulator-assets-panel`, `data-device-provision-template`, `AVDCTL_SSH_TARGET`, `AVDCTL_SSH_KNOWN_HOSTS_PATH`, `AVDCTL_SUDO`, `type="password" name="AVDCTL_SSH_PASSWORD"`, `type="password" name="AVDCTL_SUDO_PASSWORD"`} {
+	if !strings.Contains(html, "No USB devices are visible from the current Runner topology") {
+		t.Fatalf("setup wizard should allow explicit USB serial entry when discovery is empty: %s", html)
+	}
+	if !strings.Contains(html, `name="CREDIMI_RUNNER_SERIAL"`) || !strings.Contains(html, `placeholder="e.g. 37131JEHN05321"`) {
+		t.Fatalf("setup wizard missing explicit USB serial input: %s", html)
+	}
+	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-phone-serial`, `data-android-phone-serial-hint`, `data-android-emulator-assets-panel`, `data-device-provision-template`, `AVDCTL_SSH_TARGET`, `AVDCTL_SSH_KNOWN_HOSTS_PATH`, `AVDCTL_SUDO`, `type="password" name="AVDCTL_SSH_PASSWORD"`, `type="password" name="AVDCTL_SUDO_PASSWORD"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("setup device provisioning missing %q", want)
 		}

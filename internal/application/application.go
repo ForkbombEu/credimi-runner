@@ -85,7 +85,7 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 		NewAPI: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (runtimesupervisor.API, error) {
 			applyEnvironment(cfg)
 			apiCfg := cfg
-			listen, err := executionAPIBindAddress(cfg.Server.APIListen, os.Getenv(servicemanager.ServiceNetworkModeEnv))
+			listen, err := executionAPIBindAddressForExposure(cfg.Server.APIListen, os.Getenv(servicemanager.ServiceNetworkModeEnv), cfg.Exposure.Mode)
 			if err != nil {
 				return nil, err
 			}
@@ -106,7 +106,10 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 			return server.NewRunnerLifecycleClient(server.LoadRunnerLifecycleConfig(utils.LoadInstance(), loader), http.DefaultClient, store, loader)
 		},
 		ValidateRuntimeCapabilities: func(ctx context.Context, cfg runnerconfig.Config) error {
-			return androidtools.EnsureEmulatorReady(ctx, cfg, runtime.GOOS, nil)
+			if err := androidtools.EnsureEmulatorReady(ctx, cfg, runtime.GOOS, nil); err != nil {
+				return err
+			}
+			return androidtools.ValidateConfiguredUSBDevices(ctx, cfg)
 		},
 		Register:             runtimesupervisor.Register,
 		VerifyPublicEndpoint: runtimesupervisor.VerifyPublicEndpoint,
@@ -280,11 +283,15 @@ func localHTTPURL(host, port string) string {
 }
 
 func executionAPIBindAddress(desiredListen, serviceNetworkMode string) (string, error) {
+	return executionAPIBindAddressForExposure(desiredListen, serviceNetworkMode, "manual")
+}
+
+func executionAPIBindAddressForExposure(desiredListen, serviceNetworkMode, exposureMode string) (string, error) {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(desiredListen))
 	if err != nil {
 		return "", fmt.Errorf("parse execution API listen address %q: %w", desiredListen, err)
 	}
-	if serviceNetworkMode == "bridge" || serviceNetworkMode == "host" {
+	if serviceNetworkMode == "bridge" || (serviceNetworkMode == "host" && exposureMode == "manual") {
 		host = "0.0.0.0"
 	}
 	return net.JoinHostPort(host, port), nil
