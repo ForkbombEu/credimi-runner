@@ -735,7 +735,7 @@ func TestServiceRestartRequestForUnknownHostnameForcesHostEvaluation(t *testing.
 	s := newTestServer(t)
 	s.cfg = persistDashboardValues(t, path, values)
 	s.composeDir = filepath.Dir(path)
-	resolved, _ := json.Marshal(map[string]bool{"credimi.example": false})
+	resolved, _ := json.Marshal(map[string]string{"credimi.example": ""})
 	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
 	if err := s.requestServiceRestart(); err != nil {
 		t.Fatal(err)

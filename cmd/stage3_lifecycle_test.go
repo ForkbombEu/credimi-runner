@@ -189,6 +189,46 @@ func TestApplyServiceRestartRequestRejectsSupersededConfig(t *testing.T) {
 	}
 }
 
+func TestApplyServiceRestartRequestUsesTheVerifiedConfigSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	active := stage3Config(t, dir)
+	desired := active
+	desired.Credimi.URL = "http://127.0.0.1:8090"
+	digest := stage3ConfigDigest(t, dir)
+	request, err := servicecoordination.NewRestartRequest(digest, false, nowForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	oldSnapshot := loadServiceConfigSnapshot
+	loadServiceConfigSnapshot = func(path string) (runnerconfig.Config, string, error) {
+		cfg, gotDigest, err := runnerconfig.LoadFileSnapshot(path)
+		if err == nil {
+			if writeErr := runnerconfig.WriteFile(path, desired); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+		}
+		return cfg, gotDigest, err
+	}
+	t.Cleanup(func() { loadServiceConfigSnapshot = oldSnapshot })
+	manager := &stage3Manager{status: servicemanager.Status{Running: true}}
+	if err := applyServiceRestartRequest(context.Background(), manager, dir, request); err != nil {
+		t.Fatal(err)
+	}
+	result, err := servicecoordination.ReadRestartResult(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AppliedFingerprint != servicemanager.ServiceConfigFingerprint(active, true) {
+		t.Fatalf("applied fingerprint=%q, want snapshot A", result.AppliedFingerprint)
+	}
+	if result.AppliedFingerprint == servicemanager.ServiceConfigFingerprint(desired, true) {
+		t.Fatal("superseding config was applied under the old request")
+	}
+}
+
 func TestApplyServiceRestartRequestRecordsRestartFailure(t *testing.T) {
 	dir := t.TempDir()
 	stage3Config(t, dir)

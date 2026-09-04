@@ -60,7 +60,7 @@ type HostContext struct {
 	BeforeSetup          bool
 	Bootstrap            BootstrapOptions
 	HostAddresses        []string
-	ResolvedHostLocality map[string]bool
+	ResolvedHostLocality map[string]string
 }
 
 type BindMount struct {
@@ -117,6 +117,8 @@ func (s ServiceSpec) Fingerprint() string {
 	canonical.ExtraHosts = append([]string(nil), s.ExtraHosts...)
 	canonical.Networks = append([]string(nil), s.Networks...)
 	canonical.Environment = cloneStringMap(s.Environment)
+	delete(canonical.Environment, AppliedServiceHostAddressesEnv)
+	delete(canonical.Environment, AppliedServiceResolvedHostsEnv)
 	canonical.Labels = cloneStringMap(s.Labels)
 	sort.Slice(canonical.BindMounts, func(i, j int) bool {
 		return bindMountKey(canonical.BindMounts[i]) < bindMountKey(canonical.BindMounts[j])
@@ -191,7 +193,7 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	setEnv(AppliedServiceRedroidKnownHostsEnv, string(knownHostsMetadata))
 	hostAddresses, _ := json.Marshal(host.HostAddresses)
 	setEnv(AppliedServiceHostAddressesEnv, string(hostAddresses))
-	resolvedHosts, _ := json.Marshal(cloneBoolMap(host.ResolvedHostLocality))
+	resolvedHosts, _ := json.Marshal(cloneResolvedHostLocality(host.ResolvedHostLocality))
 	setEnv(AppliedServiceResolvedHostsEnv, string(resolvedHosts))
 	setEnv(HostHomeEnv, host.HomeDir)
 	setEnv(HostAndroidDirEnv, host.AndroidDir)
@@ -276,6 +278,12 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	}
 	// Apply the same host-resolved topology decision used by the fingerprint.
 	spec.NetworkMode = ServiceNetworkModeForConfig(cfg, host)
+	for _, name := range serviceDependencyHostnames(cfg) {
+		name = normalizeHostname(name)
+		if address := net.ParseIP(host.ResolvedHostLocality[name]); address != nil {
+			spec.ExtraHosts = appendUniqueString(spec.ExtraHosts, name+":"+address.String())
+		}
+	}
 	// Set this only after every input that can select host networking.
 	setEnv(ServiceNetworkModeEnv, spec.NetworkMode)
 	if usesHostADB {
@@ -543,6 +551,15 @@ func appendPort(ports []PortMapping, candidate PortMapping) []PortMapping {
 		}
 	}
 	return append(ports, candidate)
+}
+
+func appendUniqueString(values []string, candidate string) []string {
+	for _, value := range values {
+		if value == candidate {
+			return values
+		}
+	}
+	return append(values, candidate)
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

@@ -34,7 +34,7 @@ type ServiceCapabilities struct {
 	RedroidKnownHosts    []string
 	NetworkMode          string
 	HostAddresses        []string
-	ResolvedHostLocality map[string]bool
+	ResolvedHostLocality map[string]string
 }
 
 type serviceConfigProjection struct {
@@ -339,8 +339,8 @@ func hostNameLocality(name string, host HostContext) (local, known bool) {
 		return false, true
 	}
 	name = normalizeHostname(name)
-	if local, ok := host.ResolvedHostLocality[name]; ok {
-		return local, true
+	if address, ok := host.ResolvedHostLocality[name]; ok {
+		return address != "", true
 	}
 	return false, false
 }

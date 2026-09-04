@@ -285,11 +285,11 @@ func TestServiceRestartRequiredTracksHostResolvedNetworkMode(t *testing.T) {
 
 func TestAppliedServiceHostContextUsesExportedResolutionWithoutDNS(t *testing.T) {
 	addresses, _ := json.Marshal([]string{"192.168.178.120"})
-	resolved, _ := json.Marshal(map[string]bool{"runner-host.example": true, "remote.example": false})
+	resolved, _ := json.Marshal(map[string]string{"runner-host.example": "192.168.178.120", "remote.example": ""})
 	t.Setenv(servicemanager.AppliedServiceHostAddressesEnv, string(addresses))
 	t.Setenv(servicemanager.AppliedServiceResolvedHostsEnv, string(resolved))
 	host := AppliedServiceHostContext()
-	if !host.ResolvedHostLocality["runner-host.example"] || host.ResolvedHostLocality["remote.example"] {
+	if host.ResolvedHostLocality["runner-host.example"] != "192.168.178.120" || host.ResolvedHostLocality["remote.example"] != "" {
 		t.Fatalf("host metadata = %#v", host)
 	}
 	cfg := runnerconfig.Bootstrap()

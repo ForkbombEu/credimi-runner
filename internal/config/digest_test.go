@@ -21,3 +21,21 @@ func TestConfigFileDigestHashesPersistedBytes(t *testing.T) {
 		t.Fatalf("digest=%q err=%v want=%q", got, err, want)
 	}
 }
+
+func TestLoadFileSnapshotReturnsParsedConfigAndMatchingDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := WriteFile(path, validConfig()); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, digest, err := LoadFileSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Runner.Name != "Runner" || digest != configBytesDigest(contents) {
+		t.Fatalf("snapshot = %#v, digest=%q", cfg.Runner, digest)
+	}
+}

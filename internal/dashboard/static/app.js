@@ -1642,7 +1642,7 @@
         if (serialField) {
           if (hasDevices && select.value) serialField.value = select.value;
           serialField.hidden = hasDevices;
-          serialField.disabled = hasDevices;
+          serialField.disabled = false;
         }
         if (fallbackHint) fallbackHint.textContent = hasDevices
           ? 'Choose a detected device.'
@@ -1691,8 +1691,8 @@
 		}
 		if (serialField) {
 			serialField.required = needsSerial && !hasDetectedDevices;
-			serialField.disabled = !needsSerial || hasDetectedDevices;
-			serialField.hidden = !needsSerial && hasDetectedDevices;
+			serialField.disabled = !needsSerial;
+			serialField.hidden = !needsSerial || hasDetectedDevices;
 		}
 	}
     refreshIOSSimulatorPanel(root);

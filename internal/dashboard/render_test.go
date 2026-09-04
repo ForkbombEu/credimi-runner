@@ -377,6 +377,16 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"serialField.disabled = !needsSerial;",
+		"serialField.hidden = !needsSerial || hasDetectedDevices;",
+		"serialField.disabled = false;",
+		"new URLSearchParams(new FormData(form))",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("USB serial submission contract missing %q", want)
+		}
+	}
+	for _, want := range []string{
 		"syncManualPublicURLError",
 		"data-manual-public-url-error",
 		"Enter a complete URL starting with http:// or https://.",

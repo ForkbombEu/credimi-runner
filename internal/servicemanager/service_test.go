@@ -632,6 +632,44 @@ func TestServiceSpecFingerprintIsOrderIndependent(t *testing.T) {
 	}
 }
 
+func TestServiceSpecFingerprintIgnoresObservedHostAddresses(t *testing.T) {
+	base := ServiceSpec{
+		Image:       "runner",
+		NetworkMode: "bridge",
+		Environment: map[string]string{
+			AppliedServiceHostAddressesEnv: "[\"192.168.178.120\"]",
+			AppliedServiceResolvedHostsEnv: "{\"credimi.example\":\"\"}",
+			ServiceNetworkModeEnv:          "bridge",
+		},
+	}
+	changed := base
+	changed.Environment = cloneStringMap(base.Environment)
+	changed.Environment[AppliedServiceHostAddressesEnv] = "[\"192.168.178.120\",\"172.22.0.1\"]"
+	if base.Fingerprint() != changed.Fingerprint() {
+		t.Fatal("observed host addresses changed the service fingerprint")
+	}
+	changed.Environment[AppliedServiceResolvedHostsEnv] = "{\"credimi.example\":\"192.168.178.120\"}"
+	if base.Fingerprint() != changed.Fingerprint() {
+		t.Fatal("observed hostname resolution changed the service fingerprint")
+	}
+	hostA := testHost("/home/alice")
+	hostA.HostAddresses = []string{"192.168.178.120"}
+	hostB := hostA
+	hostB.HostAddresses = append(hostB.HostAddresses, "172.22.0.1")
+	cfg := configForDevices()
+	specA, err := BuildServiceSpec(cfg, hostA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specB, err := BuildServiceSpec(cfg, hostB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if specA.Fingerprint() != specB.Fingerprint() {
+		t.Fatal("a newly created Docker bridge changed the generated service fingerprint")
+	}
+}
+
 func TestBuildServiceSpecRestoresEmulatorHostCapabilities(t *testing.T) {
 	host := testHost("/home/alice")
 	cfg := configForDevices(config.DeviceConfig{
@@ -986,16 +1024,16 @@ func TestBuildServiceSpecExportsRedroidKnownHostsMetadata(t *testing.T) {
 func TestBuildServiceSpecExportsResolvedHostLocality(t *testing.T) {
 	home := t.TempDir()
 	host := testHost(home)
-	host.ResolvedHostLocality = map[string]bool{"runner-host.example": true, "remote.example": false}
+	host.ResolvedHostLocality = map[string]string{"runner-host.example": "192.168.178.120", "remote.example": ""}
 	spec, err := BuildServiceSpec(config.Bootstrap(), host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got map[string]bool
+	var got map[string]string
 	if err := json.Unmarshal([]byte(spec.Environment[AppliedServiceResolvedHostsEnv]), &got); err != nil {
 		t.Fatal(err)
 	}
-	if !got["runner-host.example"] || got["remote.example"] {
+	if got["runner-host.example"] != "192.168.178.120" || got["remote.example"] != "" {
 		t.Fatalf("resolved-host metadata = %#v", got)
 	}
 }

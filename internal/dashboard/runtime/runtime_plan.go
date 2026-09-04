@@ -353,9 +353,9 @@ func AppliedServiceHostContext() servicemanager.HostContext {
 	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceHostAddressesEnv); ok {
 		_ = json.Unmarshal([]byte(raw), &addresses)
 	}
-	var resolved map[string]bool
+	var resolved map[string]string
 	if raw, ok := os.LookupEnv(servicemanager.AppliedServiceResolvedHostsEnv); ok {
-		resolved = map[string]bool{}
+		resolved = map[string]string{}
 		_ = json.Unmarshal([]byte(raw), &resolved)
 	}
 	return servicemanager.HostContext{OS: "linux", HostAddresses: addresses, ResolvedHostLocality: resolved}

@@ -14,6 +14,10 @@ func ConfigFileDigest(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read config file for digest: %w", err)
 	}
+	return configBytesDigest(contents), nil
+}
+
+func configBytesDigest(contents []byte) string {
 	digest := sha256.Sum256(contents)
-	return hex.EncodeToString(digest[:]), nil
+	return hex.EncodeToString(digest[:])
 }

@@ -29,6 +29,8 @@ var serviceManagerFactory = func(configDir string, bootstrap servicemanager.Boot
 	return servicemanager.ForCurrentPlatformWithBootstrap(configDir, bootstrap)
 }
 
+var loadServiceConfigSnapshot = runnerconfig.LoadFileSnapshot
+
 func currentServiceManager() servicemanager.Manager {
 	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy})
 }
@@ -135,18 +137,13 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 		})
 	}
 	configPath := filepath.Join(configDir, "config.toml")
-	digest, err := runnerconfig.ConfigFileDigest(configPath)
+	cfg, digest, err := loadServiceConfigSnapshot(configPath)
 	if err != nil {
-		resultErr := writeResult(false, "", fmt.Sprintf("read saved configuration digest: %v", err))
+		resultErr := writeResult(false, "", fmt.Sprintf("read saved configuration snapshot: %v", err))
 		return errors.Join(err, resultErr)
 	}
 	if digest != request.RequestedConfigDigest {
 		return writeResult(false, "", "service restart request was superseded by a newer configuration")
-	}
-	cfg, err := runnerconfig.LoadFile(configPath)
-	if err != nil {
-		resultErr := writeResult(false, "", fmt.Sprintf("load saved service configuration: %v", err))
-		return errors.Join(err, resultErr)
 	}
 	host, hostErr := servicemanager.ResolveHostContext(configDir)
 	if hostErr != nil {
