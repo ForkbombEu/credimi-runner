@@ -21,6 +21,13 @@ type upgradeRunner struct {
 
 type noDockerCallsRunner struct{ calls int }
 
+type serviceMatchRunner struct {
+	id         string
+	label      string
+	psErr      error
+	inspectErr error
+}
+
 func (r *noDockerCallsRunner) Run(context.Context, string, []string, []string) error {
 	r.calls++
 	return errors.New("unexpected Docker call")
@@ -43,6 +50,69 @@ func (r *upgradeRunner) Output(_ context.Context, _ string, args []string, _ []s
 		return []byte("sha256:local\n"), nil
 	}
 	return []byte(r.output), nil
+}
+
+func (r *serviceMatchRunner) Run(context.Context, string, []string, []string) error { return nil }
+func (r *serviceMatchRunner) Output(_ context.Context, _ string, args []string, _ []string) ([]byte, error) {
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "ps -q runner") {
+		return []byte(r.id + "\n"), r.psErr
+	}
+	if strings.Contains(joined, "service-fingerprint") {
+		return []byte(r.label + "\n"), r.inspectErr
+	}
+	return nil, nil
+}
+
+func TestDockerServiceMatchesExplicitConfig(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Credimi.URL = "http://203.0.113.10:8090"
+	cfg.Temporal.Address = "203.0.113.11:7233"
+	for _, tc := range []struct {
+		name              string
+		id, label         string
+		psErr, inspectErr error
+		wantMatch         bool
+		wantErr           error
+	}{
+		{name: "no running service"},
+		{name: "fingerprint mismatch", id: "container", label: "wrong"},
+		{name: "fingerprint match", id: "container", wantMatch: true},
+		{name: "ps error", psErr: errors.New("ps failed"), wantErr: errors.New("ps failed")},
+		{name: "inspect error", id: "container", inspectErr: errors.New("inspect failed"), wantErr: errors.New("inspect failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			manager := NewDockerManager(dir, "")
+			host, err := ResolveHostContext(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			host, err = ResolveServiceHostContext(cfg, host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, err := BuildServiceSpec(cfg, host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantMatch {
+				tc.label = spec.Fingerprint()
+			}
+			runner := &serviceMatchRunner{id: tc.id, label: tc.label, psErr: tc.psErr, inspectErr: tc.inspectErr}
+			manager.Runner = runner
+			got, gotErr := manager.ServiceMatchesConfig(context.Background(), cfg)
+			if tc.wantErr != nil {
+				if gotErr == nil || !strings.Contains(gotErr.Error(), tc.wantErr.Error()) {
+					t.Fatalf("error=%v, want %v", gotErr, tc.wantErr)
+				}
+				return
+			}
+			if gotErr != nil || got != tc.wantMatch {
+				t.Fatalf("match=%v error=%v, want %v", got, gotErr, tc.wantMatch)
+			}
+		})
+	}
 }
 func TestDockerUpgradeImageUsesAppliedComposeAndRunningIntent(t *testing.T) {
 	for _, tc := range []struct {

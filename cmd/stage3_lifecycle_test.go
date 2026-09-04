@@ -193,7 +193,7 @@ func TestApplyServiceRestartRequestUsesTheVerifiedConfigSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	active := stage3Config(t, dir)
 	desired := active
-	desired.Credimi.URL = "http://127.0.0.1:8090"
+	desired.Android.RunnerImage = "credimi-runner:replacement"
 	digest := stage3ConfigDigest(t, dir)
 	request, err := servicecoordination.NewRestartRequest(digest, false, nowForTest())
 	if err != nil {
