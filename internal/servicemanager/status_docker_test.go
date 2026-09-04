@@ -4,6 +4,7 @@ package servicemanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -22,10 +23,11 @@ type upgradeRunner struct {
 type noDockerCallsRunner struct{ calls int }
 
 type serviceMatchRunner struct {
-	id         string
-	label      string
-	psErr      error
-	inspectErr error
+	id          string
+	label       string
+	environment string
+	psErr       error
+	inspectErr  error
 }
 
 func (r *noDockerCallsRunner) Run(context.Context, string, []string, []string) error {
@@ -59,9 +61,88 @@ func (r *serviceMatchRunner) Output(_ context.Context, _ string, args []string, 
 		return []byte(r.id + "\n"), r.psErr
 	}
 	if strings.Contains(joined, "service-fingerprint") {
-		return []byte(r.label + "\n"), r.inspectErr
+		return []byte(r.label + "\n" + r.environment), r.inspectErr
 	}
 	return nil, nil
+}
+
+func TestDockerStatusRejectsUnavailableOrPartialAppliedMetadata(t *testing.T) {
+	cfg := runnerconfig.Bootstrap()
+	cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	cfg.Credimi = runnerconfig.CredimiConfig{URL: "http://203.0.113.10:8090", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "203.0.113.11:7233"
+	for _, tc := range []struct {
+		name, environment string
+		inspectErr        error
+	}{
+		{name: "inspect failure", inspectErr: errors.New("inspect failed")},
+		{name: "malformed environment", environment: "not-json"},
+		{name: "partial capability metadata", environment: `["CREDIMI_APPLIED_SERVICE_NEEDS_USB=true"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			m := NewDockerManager(dir, "")
+			m.LoadConfig = func() (runnerconfig.Config, error) { return cfg, nil }
+			m.Runner = &serviceMatchRunner{id: "runner-id", label: "fingerprint", environment: tc.environment, inspectErr: tc.inspectErr}
+			if _, err := m.Status(context.Background()); err == nil || !strings.Contains(err.Error(), "inspect runner service metadata") {
+				t.Fatalf("status error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDockerStatusUsesAppliedCapabilitySuperset(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	applied := runnerconfig.Bootstrap()
+	applied.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	applied.Credimi = runnerconfig.CredimiConfig{URL: "http://203.0.113.10:8090", AuthMode: "user", UserAPIKey: "key"}
+	applied.Temporal.Address = "203.0.113.11:7233"
+	applied.Devices = []runnerconfig.DeviceConfig{
+		{ID: "org/runner/usb", Name: "USB", Enabled: true, Type: runnerconfig.DeviceAndroidPhysical, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "USB"}},
+		{ID: "org/runner/emulator", Name: "Emulator", Enabled: true, Type: runnerconfig.DeviceAndroidEmulator, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "pixel"}},
+	}
+	desired := applied
+	desired.Devices = desired.Devices[:1]
+	if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), desired); err != nil {
+		t.Fatal(err)
+	}
+	host, err := ResolveHostContext(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host = ResolveServiceHostContext(applied, host)
+	spec, err := BuildServiceSpec(applied, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]string, 0, len(spec.Environment))
+	for key, value := range spec.Environment {
+		entries = append(entries, key+"="+value)
+	}
+	metadata, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewDockerManager(dir, "")
+	m.LoadConfig = func() (runnerconfig.Config, error) { return desired, nil }
+	m.Runner = &serviceMatchRunner{id: "runner-id", label: spec.Fingerprint(), environment: string(metadata)}
+	status, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, present, valid := ServiceCapabilitiesFromEnvironment(spec.Environment)
+	if !present || !valid || !ServiceConfigCompatibleWithFingerprint(desired, true, spec.Environment[AppliedServiceConfigFingerprintEnv], capabilities) {
+		t.Fatalf("applied capability metadata did not match the safe-superset desired config: %+v", capabilities)
+	}
+	if status.ServiceRestartRequired {
+		t.Fatalf("safe KVM capability shrink unexpectedly requires restart: %+v", status)
+	}
 }
 
 func TestDockerServiceMatchesExplicitConfig(t *testing.T) {

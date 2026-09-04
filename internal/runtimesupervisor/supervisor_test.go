@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -1174,6 +1175,82 @@ func TestSupervisorReconcileRegistersTheNewEdgeURL(t *testing.T) {
 	}
 	if s.Status().PublicURL != "https://tunnel-b.trycloudflare.com" {
 		t.Fatalf("active public URL = %q", s.Status().PublicURL)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupervisorQuickTunnelStopStartRegistersCurrentGenerationURL(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		requests []dashboardruntime.RegisterRunnerRequest
+	)
+	credimi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/mobile-runner" {
+			var request dashboardruntime.RegisterRunnerRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode runner registration: %v", err)
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			requests = append(requests, request)
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer credimi.Close()
+
+	cfg := validConfig()
+	cfg.Credimi.URL = credimi.URL
+	cfg.Exposure = config.ExposureConfig{Mode: "quick_tunnel", PublicURL: "https://stale-manual.example"}
+	edgeImpl := &testEdge{startURLs: []string{"https://tunnel-a.trycloudflare.com", "https://tunnel-b.trycloudflare.com"}}
+	workers := &testWorkers{}
+	var verified []string
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:     func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
+		NewEdge:    func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers: func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		VerifyPublicEndpoint: func(_ context.Context, _ config.Config, publicURL string) error {
+			verified = append(verified, publicURL)
+			return nil
+		},
+		Register: Register,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Status(); got.Actual != ActualRunning || got.PublicURL != "https://tunnel-a.trycloudflare.com" {
+		t.Fatalf("first generation status = %+v", got)
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	got := append([]dashboardruntime.RegisterRunnerRequest(nil), requests...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("runner registrations = %#v", got)
+	}
+	if got[0].IP != "https://tunnel-a.trycloudflare.com" || got[1].IP != "https://tunnel-b.trycloudflare.com" {
+		t.Fatalf("runner registration endpoints = %#v", got)
+	}
+	if got[0].RunnerID != cfg.Runner.ID || got[1].RunnerID != cfg.Runner.ID || got[1].Port != "" {
+		t.Fatalf("runner registration payloads = %#v", got)
+	}
+	if want := []string{"https://tunnel-a.trycloudflare.com", "https://tunnel-b.trycloudflare.com"}; !slices.Equal(verified, want) {
+		t.Fatalf("verified endpoints = %#v, want %#v", verified, want)
+	}
+	if status := s.Status(); status.Actual != ActualRunning || status.PublicURL != "https://tunnel-b.trycloudflare.com" {
+		t.Fatalf("second generation status = %+v", status)
 	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)

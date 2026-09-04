@@ -347,7 +347,7 @@ func TestDockerUpgradeImagePreservesAndUpdatesAppliedState(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		r := &scriptedRunner{t: t, steps: []commandStep{{kind: "output", contains: []string{"ps", "runner"}, output: []byte("\n")}, {kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("\n")}, {kind: "run", contains: []string{"pull", "runner"}}}}
+		r := &scriptedRunner{t: t, steps: []commandStep{{kind: "output", contains: []string{"ps", "runner"}, output: []byte("\n")}, {kind: "run", contains: []string{"pull", "runner"}}}}
 		m := NewDockerManager(dir, "")
 		m.Runner = r
 		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }

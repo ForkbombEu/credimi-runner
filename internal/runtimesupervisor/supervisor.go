@@ -320,13 +320,17 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 			return err
 		}
 	}
+	// The public endpoint is generation-scoped. Snapshot it only after this
+	// generation's edge has started, then use that same endpoint for both
+	// verification and registration before exposing ActualRunning.
+	publicURL, _ := g.snapshot()
 	if s.deps.ValidateRuntimeCapabilities != nil {
 		if err := s.deps.ValidateRuntimeCapabilities(ctx, cfg); err != nil {
 			return fmt.Errorf("validate runtime capabilities: %w", err)
 		}
 	}
 	if s.deps.VerifyPublicEndpoint != nil {
-		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, g.publicURL); err != nil {
+		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, publicURL); err != nil {
 			return fmt.Errorf("verify public endpoint: %w", err)
 		}
 	}
@@ -334,7 +338,7 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		return err
 	}
 	if s.deps.Register != nil {
-		if err := registerWithRetry(ctx, s.deps.Register, cfg, g.publicURL); err != nil {
+		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
 			return fmt.Errorf("register runtime: %w", err)
 		}
 	}

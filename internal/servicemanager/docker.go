@@ -509,25 +509,38 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	status := Status{Autostart: autostart, Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
-	if cfg, cfgErr := m.config(); cfgErr == nil {
-		if baseHost, hostErr := ResolveHostContext(m.ConfigDir); hostErr == nil {
-			baseHost.Bootstrap = m.Bootstrap
-			m.host = ResolveServiceHostContext(cfg, baseHost)
+	cfg, err := m.config()
+	if err != nil {
+		return Status{}, fmt.Errorf("load desired service configuration: %w", err)
+	}
+	baseHost, err := ResolveHostContext(m.ConfigDir)
+	if err != nil {
+		return Status{}, fmt.Errorf("resolve host service topology: %w", err)
+	}
+	baseHost.Bootstrap = m.Bootstrap
+	m.host = ResolveServiceHostContext(cfg, baseHost)
+	desiredSpec, err := BuildServiceSpec(cfg, m.host)
+	if err != nil {
+		return Status{}, fmt.Errorf("build desired service specification: %w", err)
+	}
+	status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
+	if status.Running {
+		id := strings.TrimSpace(string(out))
+		running, environment, err := m.containerMetadata(ctx, id)
+		if err != nil {
+			return Status{}, fmt.Errorf("inspect runner service metadata: %w", err)
 		}
-		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
-			status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
-			desired := desiredSpec.Fingerprint()
-			id := strings.TrimSpace(string(out))
-			if running, environment, envErr := m.containerMetadata(ctx, id); envErr == nil {
-				if capabilities, present, valid := ServiceCapabilitiesFromEnvironment(environment); present && valid {
-					applied := strings.TrimSpace(environment[AppliedServiceConfigFingerprintEnv])
-					status.ServiceRestartRequired = applied == "" || !ServiceConfigCompatibleWithFingerprint(cfg, true, applied, capabilities)
-				} else {
-					status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desired
-				}
+		if capabilities, present, valid := ServiceCapabilitiesFromEnvironment(environment); present {
+			if !valid || !completeAppliedServiceCapabilities(environment) {
+				return Status{}, errors.New("inspect runner service metadata: applied capability metadata is incomplete or invalid")
 			}
+			applied := strings.TrimSpace(environment[AppliedServiceConfigFingerprintEnv])
+			if applied == "" {
+				return Status{}, errors.New("inspect runner service metadata: applied service fingerprint is empty")
+			}
+			status.ServiceRestartRequired = !ServiceConfigCompatibleWithFingerprint(cfg, true, applied, capabilities)
 		} else {
-			status.DashboardURL = desiredDashboardURL(cfg)
+			status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desiredSpec.Fingerprint()
 		}
 	}
 	if status.Running {
@@ -539,6 +552,24 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	}
 	populateRuntimeState(m.ConfigDir, &status)
 	return status, nil
+}
+
+func completeAppliedServiceCapabilities(values map[string]string) bool {
+	for _, key := range []string{
+		AppliedServiceConfigFingerprintEnv,
+		AppliedServiceNeedsHostADBEnv,
+		AppliedServiceNeedsUSBEnv,
+		AppliedServiceNeedsEmulatorEnv,
+		AppliedServiceRedroidKnownHostsEnv,
+		ServiceNetworkModeEnv,
+		AppliedServiceResolvedHostsEnv,
+	} {
+		value, ok := values[key]
+		if !ok || (key == AppliedServiceConfigFingerprintEnv || key == ServiceNetworkModeEnv) && strings.TrimSpace(value) == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *DockerManager) containerMetadata(ctx context.Context, id string) ([]byte, map[string]string, error) {
@@ -553,7 +584,7 @@ func (m *DockerManager) containerMetadata(ctx context.Context, id string) ([]byt
 	}
 	var entries []string
 	if err := json.Unmarshal([]byte(parts[1]), &entries); err != nil {
-		return label, map[string]string{}, nil
+		return nil, nil, fmt.Errorf("decode container environment: %w", err)
 	}
 	values := make(map[string]string, len(entries))
 	for _, entry := range entries {

@@ -67,9 +67,9 @@ func ServiceCapabilitiesFromEnvironment(values map[string]string) (ServiceCapabi
 			valid = false
 		}
 	}
-	if raw, ok := values[ServiceNetworkModeEnv]; ok && strings.TrimSpace(raw) != "" {
+	if raw, ok := values[ServiceNetworkModeEnv]; ok {
 		present = true
-		capabilities.NetworkMode = raw
+		capabilities.NetworkMode = strings.TrimSpace(raw)
 	}
 	if raw, ok := values[AppliedServiceResolvedHostsEnv]; ok {
 		present = true
