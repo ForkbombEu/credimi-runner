@@ -58,6 +58,11 @@ func NewCloudflared(binary, mode, token, domain string) *Cloudflared {
 
 var quickURL = regexp.MustCompile(`https://[A-Za-z0-9.-]+\.trycloudflare\.com`)
 
+type quickTunnelEvent struct {
+	url       string
+	connected bool
+}
+
 func normalizePublicURL(domain string) (string, error) {
 	domain = strings.TrimSpace(domain)
 	if domain == "" {
@@ -129,9 +134,9 @@ func (e *Cloudflared) Start(ctx context.Context, origin string) (string, error) 
 	e.publicURL = ""
 	e.mu.Unlock()
 
-	urlCh := make(chan string, 1)
-	go e.consumeOutput(stdout, "stdout", urlCh)
-	go e.consumeOutput(stderr, "stderr", urlCh)
+	quickEvents := make(chan quickTunnelEvent, 2)
+	go e.consumeOutput(stdout, "stdout", quickEvents)
+	go e.consumeOutput(stderr, "stderr", quickEvents)
 	go e.waitProcess(p)
 
 	if named {
@@ -157,22 +162,33 @@ func (e *Cloudflared) Start(ctx context.Context, origin string) (string, error) 
 		return namedURL, nil
 	}
 
-	select {
-	case publicURL := <-urlCh:
-		e.mu.Lock()
-		if p.exited {
-			err := p.exitErr
+	var publicURL string
+	connected := false
+	for {
+		select {
+		case event := <-quickEvents:
+			if event.url != "" {
+				publicURL = event.url
+			}
+			connected = connected || event.connected
+			if publicURL == "" || !connected {
+				continue
+			}
+			e.mu.Lock()
+			if p.exited {
+				err := p.exitErr
+				e.mu.Unlock()
+				return "", fmt.Errorf("cloudflared exited before registering quick tunnel connection: %s", redactErrorText(err, e.Token))
+			}
+			p.started = true
+			e.publicURL = publicURL
 			e.mu.Unlock()
-			return "", fmt.Errorf("cloudflared exited before publishing quick tunnel URL: %s", redactErrorText(err, e.Token))
+			return publicURL, nil
+		case <-p.done:
+			return "", e.startExitError(p, "cloudflared exited before registering quick tunnel connection")
+		case <-ctx.Done():
+			return "", e.startupCancellationError(ctx)
 		}
-		p.started = true
-		e.publicURL = publicURL
-		e.mu.Unlock()
-		return publicURL, nil
-	case <-p.done:
-		return "", e.startExitError(p, "cloudflared exited before publishing quick tunnel URL")
-	case <-ctx.Done():
-		return "", e.startupCancellationError(ctx)
 	}
 }
 
@@ -194,7 +210,7 @@ func (e *Cloudflared) startupCancellationError(ctx context.Context) error {
 	return errors.Join(ctx.Err(), e.Stop(ctx))
 }
 
-func (e *Cloudflared) consumeOutput(reader io.ReadCloser, stream string, urls chan<- string) {
+func (e *Cloudflared) consumeOutput(reader io.ReadCloser, stream string, events chan<- quickTunnelEvent) {
 	defer reader.Close()
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -206,9 +222,10 @@ func (e *Cloudflared) consumeOutput(reader io.ReadCloser, stream string, urls ch
 			logf = log.Printf
 		}
 		logf("cloudflared %s: %s", stream, line)
-		if match := quickURL.FindString(line); match != "" {
+		event := quickTunnelEvent{url: quickURL.FindString(line), connected: strings.Contains(strings.ToLower(line), "registered tunnel connection")}
+		if event.url != "" || event.connected {
 			select {
-			case urls <- match:
+			case events <- event:
 			default:
 			}
 		}

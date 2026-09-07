@@ -579,6 +579,7 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
 		"fetch(dashboardURL(url, token, origin), { headers: { Accept: 'application/json' }",
 		"else refreshOverview('/setup', recoveryToken, recoveryOrigin);",
+		"(phase === 'succeeded' || phase === 'cancelled') && operation.recovery === 'true'",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("runtime recovery is missing %q", want)

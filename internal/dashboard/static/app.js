@@ -231,7 +231,11 @@
       if (phase === 'queued' || phase === 'running') return;
       clearTimeout(runtimeOperationTimer);
       runtimeOperationTimer = null;
-      if (phase === 'succeeded' && operation.recovery === 'true') {
+      // Recreating the persistent service terminates this Dashboard process,
+      // so its in-flight config operation is reported as cancelled. The
+      // durable restart request is already written; continue from the
+      // replacement Dashboard instead of showing that expected cancellation.
+      if ((phase === 'succeeded' || phase === 'cancelled') && operation.recovery === 'true') {
         startRuntimeRecovery(operation);
         return;
       }

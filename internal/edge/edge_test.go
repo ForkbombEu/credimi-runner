@@ -84,7 +84,7 @@ func fakeCloudflared(t *testing.T, body string) string {
 	return path
 }
 func TestCloudflaredQuickTunnelLifecycle(t *testing.T) {
-	binary := fakeCloudflared(t, "echo 'https://demo.trycloudflare.com'\ntrap 'exit 0' TERM\nwhile true; do :; done\n")
+	binary := fakeCloudflared(t, "echo 'https://demo.trycloudflare.com'\necho 'Registered tunnel connection' >&2\ntrap 'exit 0' TERM\nwhile true; do :; done\n")
 	e := NewCloudflared(binary, "quick_tunnel", "", "")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -105,6 +105,53 @@ func TestCloudflaredQuickTunnelLifecycle(t *testing.T) {
 	}
 }
 
+func TestCloudflaredQuickTunnelWaitsForRegisteredConnection(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "connected")
+	binary := fakeCloudflared(t, "echo 'https://demo.trycloudflare.com'\nwhile [ ! -f "+gate+" ]; do sleep 0.01; done\necho 'Registered tunnel connection' >&2\ntrap 'exit 0' TERM\nwhile true; do :; done\n")
+	e := NewCloudflared(binary, "quick_tunnel", "", "")
+	urlPrinted := make(chan struct{})
+	var printedOnce sync.Once
+	e.logf = func(format string, args ...any) {
+		if strings.Contains(fmt.Sprintf(format, args...), "https://demo.trycloudflare.com") {
+			printedOnce.Do(func() { close(urlPrinted) })
+		}
+	}
+	urlResult := make(chan string, 1)
+	errResult := make(chan error, 1)
+	go func() {
+		url, err := e.Start(context.Background(), "http://127.0.0.1:8050")
+		urlResult <- url
+		errResult <- err
+	}()
+	select {
+	case <-urlPrinted:
+	case <-time.After(time.Second):
+		t.Fatal("quick tunnel URL was not printed")
+	}
+	select {
+	case url := <-urlResult:
+		t.Fatalf("quick tunnel returned URL %q before connection registration", url)
+	default:
+	}
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case url := <-urlResult:
+		if url != "https://demo.trycloudflare.com" {
+			t.Fatalf("URL = %q", url)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("quick tunnel did not report a registered connection")
+	}
+	if err := <-errResult; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCloudflaredQuickTunnelFailsWithoutPublishedURL(t *testing.T) {
 	binary := fakeCloudflared(t, "echo 'starting'; exit 0\n")
 	e := NewCloudflared(binary, "quick_tunnel", "", "")
@@ -119,7 +166,7 @@ func TestCloudflaredQuickTunnelFailsWithoutPublishedURL(t *testing.T) {
 }
 
 func TestCloudflaredQuickTunnelReadsURLFromStderr(t *testing.T) {
-	binary := fakeCloudflared(t, "echo 'https://stderr.trycloudflare.com' >&2\ntrap 'exit 0' TERM\nwhile true; do :; done\n")
+	binary := fakeCloudflared(t, "echo 'https://stderr.trycloudflare.com' >&2\necho 'Registered tunnel connection'\ntrap 'exit 0' TERM\nwhile true; do :; done\n")
 	e := NewCloudflared(binary, "quick_tunnel", "", "")
 	url, err := e.Start(context.Background(), "http://127.0.0.1:8050")
 	if err != nil || url != "https://stderr.trycloudflare.com" {
@@ -134,7 +181,7 @@ func TestCloudflaredCommandsAndTokenRedaction(t *testing.T) {
 	t.Setenv("TUNNEL_TOKEN", "ambient-secret")
 	quickArgs := filepath.Join(t.TempDir(), "quick-args")
 	quickToken := filepath.Join(t.TempDir(), "quick-token")
-	quickBinary := fakeCloudflared(t, "echo \"$*\" > "+quickArgs+"\nprintf '%s' \"${TUNNEL_TOKEN-}\" > "+quickToken+"\necho 'https://demo.trycloudflare.com'\ntrap 'exit 0' TERM\nwhile true; do :; done\n")
+	quickBinary := fakeCloudflared(t, "echo \"$*\" > "+quickArgs+"\nprintf '%s' \"${TUNNEL_TOKEN-}\" > "+quickToken+"\necho 'https://demo.trycloudflare.com'\necho 'Registered tunnel connection' >&2\ntrap 'exit 0' TERM\nwhile true; do :; done\n")
 	quick := NewCloudflared(quickBinary, "quick_tunnel", "secret-token", "stale.example.com")
 	if _, err := quick.Start(context.Background(), "http://127.0.0.1:8050"); err != nil {
 		t.Fatal(err)
@@ -199,7 +246,7 @@ func TestCloudflaredQuickTunnelExitIncludesStatus(t *testing.T) {
 
 func TestCloudflaredQuickTunnelSpontaneousExit(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
-	binary := fakeCloudflared(t, "echo $$ > "+pidFile+"\necho 'https://demo.trycloudflare.com'\nwhile true; do :; done\n")
+	binary := fakeCloudflared(t, "echo $$ > "+pidFile+"\necho 'https://demo.trycloudflare.com'\necho 'Registered tunnel connection' >&2\nwhile true; do :; done\n")
 	e := NewCloudflared(binary, "quick_tunnel", "", "")
 	if _, err := e.Start(context.Background(), "http://127.0.0.1:8050"); err != nil {
 		t.Fatal(err)
@@ -357,7 +404,7 @@ func TestCloudflaredNamedTunnelSpontaneousExit(t *testing.T) {
 }
 
 func TestCloudflaredForcedKillConfirmsCleanup(t *testing.T) {
-	binary := fakeCloudflared(t, "echo 'https://demo.trycloudflare.com'\ntrap '' TERM\nwhile true; do :; done\n")
+	binary := fakeCloudflared(t, "echo 'https://demo.trycloudflare.com'\necho 'Registered tunnel connection' >&2\ntrap '' TERM\nwhile true; do :; done\n")
 	e := NewCloudflared(binary, "quick_tunnel", "", "")
 	if _, err := e.Start(context.Background(), "http://127.0.0.1:8050"); err != nil {
 		t.Fatal(err)
