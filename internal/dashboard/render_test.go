@@ -589,6 +589,27 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 	}
 }
 
+func TestStaticReplacementRecoveryHandoffsOnlyExpectedCancellation(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"function shouldHandoffToReplacementRecovery(operation, phase, snapshot)",
+		"phase === 'cancelled'",
+		"message === 'context canceled' || message === 'context cancelled'",
+		"if (shouldHandoffToReplacementRecovery(operation, phase, snapshot))",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("replacement recovery handoff is missing %q", want)
+		}
+	}
+	if strings.Contains(content, "phase === 'failed' && operation.recovery === 'true'") {
+		t.Fatal("all replacement failures must not be hidden as recovery handoffs")
+	}
+}
+
 func TestStaticDashboardTokenHasOneCurrentSource(t *testing.T) {
 	script, err := os.ReadFile("static/app.js")
 	if err != nil {

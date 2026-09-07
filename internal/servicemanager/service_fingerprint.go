@@ -86,7 +86,7 @@ type serviceConfigProjection struct {
 	DashboardListen   string                   `json:"dashboard_listen"`
 	ReadHeaderTimeout string                   `json:"read_header_timeout"`
 	ShutdownTimeout   string                   `json:"shutdown_timeout"`
-	ExposureClass     string                   `json:"exposure_class"`
+	APIPublishHost    string                   `json:"api_publish_host,omitempty"`
 	NetworkMode       string                   `json:"network_mode"`
 	Android           serviceAndroidProjection `json:"android"`
 	NeedsHostADB      bool                     `json:"needs_host_adb"`
@@ -138,7 +138,7 @@ func serviceConfigProjectionForHost(cfg config.Config, configured bool, host Hos
 		DashboardListen:   cfg.Server.DashboardListen,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration().String(),
 		ShutdownTimeout:   cfg.Server.ShutdownTimeout.Duration().String(),
-		ExposureClass:     serviceExposureClass(cfg.Exposure.Mode),
+		APIPublishHost:    serviceAPIPublishHost(cfg, host),
 		NetworkMode:       ServiceNetworkModeForConfig(cfg, host),
 		NeedsHostADB:      !configured,
 		Android: serviceAndroidProjection{
@@ -302,6 +302,19 @@ func hostLocalDependencies(cfg config.Config, host HostContext) bool {
 	return serviceExposureClass(cfg.Exposure.Mode) == "manual" && hostIsLocalURL(cfg.Exposure.PublicURL, host)
 }
 
+// serviceAPIPublishHost is the effective Docker port-publishing topology for
+// the execution API. Host networking has no Docker port mapping; bridge mode
+// publishes manual endpoints publicly and managed endpoints only locally.
+func serviceAPIPublishHost(cfg config.Config, host HostContext) string {
+	if ServiceNetworkModeForConfig(cfg, host) == "host" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Exposure.Mode), "manual") {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
+}
+
 // ServiceHostLocalityUnknown reports whether a hostname relevant to the
 // service topology has not been resolved by the authoritative host process.
 func ServiceHostLocalityUnknown(cfg config.Config, host HostContext) bool {
@@ -338,6 +351,13 @@ func serviceDependencyHostnames(cfg config.Config) []string {
 		}
 	}
 	return names
+}
+
+func serviceExposureClass(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "manual") {
+		return "manual"
+	}
+	return "managed"
 }
 
 func hostIsLocalURL(raw string, host HostContext) bool {
@@ -411,11 +431,4 @@ func isStringSetSuperset(have, want []string) bool {
 		}
 	}
 	return true
-}
-
-func serviceExposureClass(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "manual") {
-		return "manual"
-	}
-	return "managed"
 }

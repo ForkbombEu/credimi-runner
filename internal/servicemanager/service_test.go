@@ -347,7 +347,7 @@ func TestDockerUpgradeImagePreservesAndUpdatesAppliedState(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		r := &scriptedRunner{t: t, steps: []commandStep{{kind: "output", contains: []string{"ps", "runner"}, output: []byte("\n")}, {kind: "output", contains: []string{"inspect", "service-fingerprint"}, output: []byte("\n")}, {kind: "run", contains: []string{"pull", "runner"}}}}
+		r := &scriptedRunner{t: t, steps: []commandStep{{kind: "output", contains: []string{"ps", "runner"}, output: []byte("\n")}, {kind: "run", contains: []string{"pull", "runner"}}}}
 		m := NewDockerManager(dir, "")
 		m.Runner = r
 		m.LoadConfig = func() (config.Config, error) { return dockerTestConfig(), nil }
@@ -767,6 +767,70 @@ func TestBuildServiceSpecFirstUSBAddsOnlyUSBTopology(t *testing.T) {
 	assertDevice(t, spec, "/dev/kvm", "/dev/kvm")
 	if ServiceConfigsCompatibleWithHost(withoutUSB, withUSB, true, host) {
 		t.Fatal("first USB capability expansion was treated as compatible")
+	}
+}
+
+func TestServiceAPIPublishTopologyFollowsRenderedCompose(t *testing.T) {
+	host := testHost("/home/alice")
+	host.ResolvedHostLocality = map[string]string{"credimi.example": "192.0.2.10"}
+	base := configForDevices()
+	base.Server.APIListen = "127.0.0.1:8050"
+	base.Credimi.URL = "https://remote.example"
+	base.Temporal.Address = "temporal.example:7233"
+
+	for _, tc := range []struct {
+		name, mode, network, wantNetwork, wantHost string
+	}{
+		{"host manual", "manual", "host", "host", ""},
+		{"host auto", "quick_tunnel", "host", "host", ""},
+		{"bridge manual", "manual", "bridge", "bridge", "0.0.0.0"},
+		{"bridge auto", "quick_tunnel", "bridge", "bridge", "127.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.Exposure.Mode = tc.mode
+			cfg.Android.Network = tc.network
+			spec, err := BuildServiceSpec(cfg, host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if spec.NetworkMode != tc.wantNetwork {
+				t.Fatalf("network mode=%q want %q", spec.NetworkMode, tc.wantNetwork)
+			}
+			var gotHost string
+			for _, port := range spec.Ports {
+				if port.ContainerPort == "8050" {
+					gotHost = port.HostIP
+				}
+			}
+			if gotHost != tc.wantHost {
+				t.Fatalf("API publish host=%q want %q; ports=%#v", gotHost, tc.wantHost, spec.Ports)
+			}
+		})
+	}
+}
+
+func TestHostExposureModeChangeDoesNotRequireServiceReplacement(t *testing.T) {
+	host := testHost("/home/alice")
+	manual := configForDevices()
+	manual.Android.Network = "host"
+	manual.Exposure.Mode = "manual"
+	auto := manual
+	auto.Exposure.Mode = "quick_tunnel"
+	if !ServiceConfigsCompatibleWithHost(manual, auto, true, host) {
+		t.Fatal("host-network exposure-only change requires service replacement")
+	}
+}
+
+func TestBridgeExposureModeChangeRequiresServiceReplacement(t *testing.T) {
+	host := testHost("/home/alice")
+	manual := configForDevices()
+	manual.Android.Network = "bridge"
+	manual.Exposure.Mode = "manual"
+	auto := manual
+	auto.Exposure.Mode = "quick_tunnel"
+	if ServiceConfigsCompatibleWithHost(manual, auto, true, host) {
+		t.Fatal("bridge API publish topology change was treated as compatible")
 	}
 }
 

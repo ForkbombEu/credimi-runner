@@ -228,7 +228,6 @@ func TestServiceConfigFingerprintProjectsOnlyServiceTopology(t *testing.T) {
 		name   string
 		mutate func(*runnerconfig.Config)
 	}{
-		{"manual exposure", func(cfg *runnerconfig.Config) { cfg.Exposure.Mode = "manual" }},
 		{"API port", func(cfg *runnerconfig.Config) { cfg.Server.APIListen = "127.0.0.1:8052" }},
 		{"Dashboard port", func(cfg *runnerconfig.Config) { cfg.Server.DashboardListen = "127.0.0.1:8052" }},
 		{"runner image", func(cfg *runnerconfig.Config) { cfg.Android.RunnerImage = "runner:other" }},

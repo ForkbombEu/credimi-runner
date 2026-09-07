@@ -305,11 +305,7 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: "127.0.0.1", HostPort: hostPort, ContainerPort: containerPort})
 		}
 		if hostPort, containerPort := listenPort(cfg.Server.APIListen, "8050"); containerPort != "" && containerPort != "0" {
-			apiHostIP := "127.0.0.1"
-			if cfg.Exposure.Mode == "manual" {
-				apiHostIP = "0.0.0.0"
-			}
-			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: apiHostIP, HostPort: hostPort, ContainerPort: containerPort})
+			spec.Ports = appendPort(spec.Ports, PortMapping{HostIP: serviceAPIPublishHost(cfg, host), HostPort: hostPort, ContainerPort: containerPort})
 		}
 	}
 

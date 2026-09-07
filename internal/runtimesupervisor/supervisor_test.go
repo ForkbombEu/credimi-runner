@@ -1286,11 +1286,12 @@ func TestSupervisorApplyEndpointFailureKeepsActiveEndpoint(t *testing.T) {
 }
 
 func TestRegistrationAndPublicEndpointVerification(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "test-boot")
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		if r.URL.Path == "/readyz" {
-			_, _ = w.Write([]byte(`{"runner_id":"org/runner"}`))
+			_, _ = w.Write([]byte(`{"runner_id":"org/runner","boot_id":"test-boot"}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{}`))
@@ -1425,6 +1426,7 @@ func TestPublicEndpointVerificationURLUsesManualPortAndBasePath(t *testing.T) {
 }
 
 func TestVerifyPublicEndpointUsesManualPublicPort(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "test-boot")
 	var requestedPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestedPath = r.URL.Path
@@ -1432,7 +1434,7 @@ func TestVerifyPublicEndpointUsesManualPublicPort(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{"runner_id":"org/runner"}`))
+		_, _ = w.Write([]byte(`{"runner_id":"org/runner","boot_id":"test-boot"}`))
 	}))
 	defer server.Close()
 	parsed, err := url.Parse(server.URL)
@@ -1447,6 +1449,23 @@ func TestVerifyPublicEndpointUsesManualPublicPort(t *testing.T) {
 	}
 	if requestedPath != "/readyz" {
 		t.Fatalf("verification path=%q; want /readyz", requestedPath)
+	}
+}
+
+func TestVerifyPublicEndpointRejectsStaleBoot(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			_, _ = w.Write([]byte(`{"runner_id":"org/runner","boot_id":"old-boot"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	cfg := validConfig()
+	cfg.Exposure.PublicURL = server.URL
+	if err := VerifyPublicEndpoint(context.Background(), cfg, server.URL); err == nil || !strings.Contains(err.Error(), "belongs to boot") {
+		t.Fatalf("stale boot verification error=%v", err)
 	}
 }
 

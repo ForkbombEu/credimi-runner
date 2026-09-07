@@ -127,6 +127,38 @@ func TestHTTPAPILocalOriginNormalizesWildcardAndIPv6Addresses(t *testing.T) {
 	}
 }
 
+func TestHTTPAPILocalOriginReachesReadiness(t *testing.T) {
+	cfg := validConfig()
+	cfg.Server.APIListen = "127.0.0.1:0"
+	a, err := NewHTTPAPI(cfg, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"runner_id":"org/runner","boot_id":"boot"}`))
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Shutdown(context.Background())
+	origin, err := a.LocalOrigin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.Get(origin + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("readiness status=%d", response.StatusCode)
+	}
+}
+
 func TestHTTPAPIShutdownRetriesActiveHandler(t *testing.T) {
 	cfg := validConfig()
 	cfg.Server.APIListen = "127.0.0.1:0"

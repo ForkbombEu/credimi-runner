@@ -85,7 +85,7 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 		NewAPI: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (runtimesupervisor.API, error) {
 			applyEnvironment(cfg)
 			apiCfg := cfg
-			listen, err := executionAPIBindAddressForExposure(cfg.Server.APIListen, os.Getenv(servicemanager.ServiceNetworkModeEnv), cfg.Exposure.Mode)
+			listen, err := executionAPIBindAddress(cfg.Server.APIListen, os.Getenv(servicemanager.ServiceNetworkModeEnv))
 			if err != nil {
 				return nil, err
 			}
@@ -284,15 +284,11 @@ func localHTTPURL(host, port string) string {
 }
 
 func executionAPIBindAddress(desiredListen, serviceNetworkMode string) (string, error) {
-	return executionAPIBindAddressForExposure(desiredListen, serviceNetworkMode, "manual")
-}
-
-func executionAPIBindAddressForExposure(desiredListen, serviceNetworkMode, exposureMode string) (string, error) {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(desiredListen))
 	if err != nil {
 		return "", fmt.Errorf("parse execution API listen address %q: %w", desiredListen, err)
 	}
-	if serviceNetworkMode == "bridge" || (serviceNetworkMode == "host" && exposureMode == "manual") {
+	if serviceNetworkMode == "bridge" || serviceNetworkMode == "host" {
 		host = "0.0.0.0"
 	}
 	return net.JoinHostPort(host, port), nil

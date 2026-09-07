@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 )
 
 const endpointVerificationTimeout = 2 * time.Minute
+const endpointVerificationAttemptTimeout = 5 * time.Second
 
 // Register publishes one activated runtime generation and its configured
 // devices. It is called only by Supervisor after the generation has acquired
@@ -115,6 +117,10 @@ func VerifyPublicEndpoint(ctx context.Context, cfg config.Config, publicURL stri
 	if baseURL == "" {
 		return nil
 	}
+	expectedBootID := strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_BOOT_ID"))
+	if expectedBootID == "" {
+		return errors.New("current runner boot ID is unavailable")
+	}
 	deadline, cancel := context.WithTimeout(ctx, endpointVerificationTimeout)
 	defer cancel()
 	endpoint, err := publicEndpointVerificationURL(cfg, baseURL)
@@ -123,28 +129,41 @@ func VerifyPublicEndpoint(ctx context.Context, cfg config.Config, publicURL stri
 	}
 	var lastErr error
 	for {
-		req, err := http.NewRequestWithContext(deadline, http.MethodGet, endpoint, nil)
+		attemptCtx, attemptCancel := context.WithTimeout(deadline, endpointVerificationAttemptTimeout)
+		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, endpoint, nil)
 		if err == nil {
 			response, requestErr := http.DefaultClient.Do(req)
 			if requestErr == nil {
 				var ready struct {
 					RunnerID string `json:"runner_id"`
+					BootID   string `json:"boot_id"`
 				}
 				decodeErr := json.NewDecoder(response.Body).Decode(&ready)
 				_ = response.Body.Close()
-				if response.StatusCode == http.StatusOK && decodeErr == nil && strings.TrimSpace(ready.RunnerID) == strings.TrimSpace(cfg.Runner.ID) {
+				if response.StatusCode == http.StatusOK && decodeErr == nil {
+					if strings.TrimSpace(ready.RunnerID) != strings.TrimSpace(cfg.Runner.ID) {
+						attemptCancel()
+						return fmt.Errorf("public endpoint belongs to runner %q, expected %q", ready.RunnerID, cfg.Runner.ID)
+					}
+					if strings.TrimSpace(ready.BootID) != expectedBootID {
+						attemptCancel()
+						return fmt.Errorf("public endpoint belongs to boot %q, expected current boot %q", ready.BootID, expectedBootID)
+					}
+					attemptCancel()
 					return nil
 				}
-				if response.StatusCode == http.StatusOK && decodeErr == nil {
-					return fmt.Errorf("public endpoint belongs to runner %q, expected %q", ready.RunnerID, cfg.Runner.ID)
+				if decodeErr != nil {
+					lastErr = fmt.Errorf("public endpoint returned %s with malformed readiness JSON: %w", response.Status, decodeErr)
+				} else {
+					lastErr = fmt.Errorf("public endpoint returned %s", response.Status)
 				}
-				lastErr = fmt.Errorf("public endpoint returned %s", response.Status)
 			} else {
 				lastErr = requestErr
 			}
 		} else {
 			lastErr = err
 		}
+		attemptCancel()
 		timer := time.NewTimer(500 * time.Millisecond)
 		select {
 		case <-deadline.Done():

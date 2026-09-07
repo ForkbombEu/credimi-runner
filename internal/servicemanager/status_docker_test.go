@@ -4,6 +4,7 @@ package servicemanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -22,10 +23,11 @@ type upgradeRunner struct {
 type noDockerCallsRunner struct{ calls int }
 
 type serviceMatchRunner struct {
-	id         string
-	label      string
-	psErr      error
-	inspectErr error
+	id          string
+	label       string
+	environment string
+	psErr       error
+	inspectErr  error
 }
 
 func (r *noDockerCallsRunner) Run(context.Context, string, []string, []string) error {
@@ -59,9 +61,97 @@ func (r *serviceMatchRunner) Output(_ context.Context, _ string, args []string, 
 		return []byte(r.id + "\n"), r.psErr
 	}
 	if strings.Contains(joined, "service-fingerprint") {
-		return []byte(r.label + "\n"), r.inspectErr
+		return []byte(r.label + "\n" + r.environment), r.inspectErr
 	}
 	return nil, nil
+}
+
+func TestDockerStatusSurfacesRunningServiceInspectionErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, environment string
+	}{
+		{"inspect error", ""},
+		{"malformed environment", "not-json"},
+		{"partial applied metadata", `["CREDIMI_APPLIED_SERVICE_NEEDS_USB=true"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := runnerconfig.Bootstrap()
+			cfg.Runner = runnerconfig.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+			cfg.Credimi = runnerconfig.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+			cfg.Temporal.Address = "temporal:7233"
+			if err := runnerconfig.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+				t.Fatal(err)
+			}
+			runner := &serviceMatchRunner{id: "container", environment: tc.environment}
+			if tc.name == "inspect error" {
+				runner.inspectErr = errors.New("inspect failed")
+			}
+			m := NewDockerManager(dir, "")
+			m.Runner = runner
+			if _, err := m.Status(context.Background()); err == nil || !strings.Contains(err.Error(), "inspect running service metadata") {
+				t.Fatalf("status error=%v", err)
+			}
+		})
+	}
+}
+
+func TestDockerStatusAcceptsBootstrapComposeWithoutConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &serviceMatchRunner{id: "bootstrap-container"}
+	m := NewDockerManager(dir, "")
+	m.Runner = runner
+	status, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Running || status.ServiceRestartRequired {
+		t.Fatalf("bootstrap status=%+v", status)
+	}
+}
+
+func TestDockerStatusUsesCapabilityCompatibilityForRetainedResources(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := testHost("/home/alice")
+	applied := runnerconfig.Bootstrap()
+	applied.Android.Network = "host"
+	applied.Devices = []runnerconfig.DeviceConfig{
+		{Type: runnerconfig.DeviceAndroidPhysical, Enabled: true, AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "A"}},
+		{Type: runnerconfig.DeviceAndroidEmulator, Enabled: true, AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi"}},
+	}
+	desired := applied
+	desired.Devices = desired.Devices[:1]
+	spec, err := BuildServiceSpec(applied, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := make([]string, 0, len(spec.Environment))
+	for key, value := range spec.Environment {
+		entries = append(entries, key+"="+value)
+	}
+	envJSON, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewDockerManager(dir, "")
+	manager.LoadConfig = func() (runnerconfig.Config, error) { return desired, nil }
+	manager.Runner = &serviceMatchRunner{id: "container", environment: string(envJSON)}
+	status, err := manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ServiceRestartRequired {
+		t.Fatal("retained emulator capability incorrectly requires service replacement")
+	}
 }
 
 func TestDockerServiceMatchesExplicitConfig(t *testing.T) {

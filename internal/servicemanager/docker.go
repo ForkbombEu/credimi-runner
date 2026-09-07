@@ -509,25 +509,46 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 		return Status{}, err
 	}
 	status := Status{Autostart: autostart, Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
-	if cfg, cfgErr := m.config(); cfgErr == nil {
-		if baseHost, hostErr := ResolveHostContext(m.ConfigDir); hostErr == nil {
-			baseHost.Bootstrap = m.Bootstrap
-			m.host = ResolveServiceHostContext(cfg, baseHost)
+	cfg, cfgErr := m.config()
+	if errors.Is(cfgErr, os.ErrNotExist) {
+		// A compose file can exist before setup has persisted config.toml. The
+		// bootstrap service is a valid unconfigured state, not a status error.
+		populateRuntimeState(m.ConfigDir, &status)
+		return status, nil
+	}
+	if cfgErr != nil {
+		return Status{}, fmt.Errorf("load configured service: %w", cfgErr)
+	}
+	baseHost, hostErr := ResolveHostContext(m.ConfigDir)
+	if hostErr != nil {
+		return Status{}, fmt.Errorf("resolve service host: %w", hostErr)
+	}
+	baseHost.Bootstrap = m.Bootstrap
+	m.host = ResolveServiceHostContext(cfg, baseHost)
+	desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host)
+	if desiredErr != nil {
+		return Status{}, fmt.Errorf("build desired service: %w", desiredErr)
+	}
+	status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
+	if status.Running {
+		id := strings.TrimSpace(string(out))
+		running, environment, envErr := m.containerMetadata(ctx, id)
+		if envErr != nil {
+			return Status{}, fmt.Errorf("inspect running service metadata: %w", envErr)
 		}
-		if desiredSpec, desiredErr := BuildServiceSpec(cfg, m.host); desiredErr == nil {
-			status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
-			desired := desiredSpec.Fingerprint()
-			id := strings.TrimSpace(string(out))
-			if running, environment, envErr := m.containerMetadata(ctx, id); envErr == nil {
-				if capabilities, present, valid := ServiceCapabilitiesFromEnvironment(environment); present && valid {
-					applied := strings.TrimSpace(environment[AppliedServiceConfigFingerprintEnv])
-					status.ServiceRestartRequired = applied == "" || !ServiceConfigCompatibleWithFingerprint(cfg, true, applied, capabilities)
-				} else {
-					status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desired
-				}
+		if capabilities, present, valid := ServiceCapabilitiesFromEnvironment(environment); present {
+			if !valid || !completeAppliedServiceMetadata(environment) {
+				return Status{}, errors.New("inspect running service metadata: applied capability metadata is incomplete or invalid")
 			}
+			applied := strings.TrimSpace(environment[AppliedServiceConfigFingerprintEnv])
+			if applied == "" {
+				return Status{}, errors.New("inspect running service metadata: applied service fingerprint is missing")
+			}
+			status.ServiceRestartRequired = !ServiceConfigCompatibleWithFingerprint(cfg, true, applied, capabilities)
+		} else if _, partial := environment[AppliedServiceConfigFingerprintEnv]; partial {
+			return Status{}, errors.New("inspect running service metadata: applied capability metadata is incomplete")
 		} else {
-			status.DashboardURL = desiredDashboardURL(cfg)
+			status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desiredSpec.Fingerprint()
 		}
 	}
 	if status.Running {
@@ -539,6 +560,22 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	}
 	populateRuntimeState(m.ConfigDir, &status)
 	return status, nil
+}
+
+func completeAppliedServiceMetadata(values map[string]string) bool {
+	for _, key := range []string{
+		AppliedServiceNeedsHostADBEnv,
+		AppliedServiceNeedsUSBEnv,
+		AppliedServiceNeedsEmulatorEnv,
+		AppliedServiceRedroidKnownHostsEnv,
+		AppliedServiceResolvedHostsEnv,
+		ServiceNetworkModeEnv,
+	} {
+		if _, ok := values[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *DockerManager) containerMetadata(ctx context.Context, id string) ([]byte, map[string]string, error) {
@@ -553,7 +590,7 @@ func (m *DockerManager) containerMetadata(ctx context.Context, id string) ([]byt
 	}
 	var entries []string
 	if err := json.Unmarshal([]byte(parts[1]), &entries); err != nil {
-		return label, map[string]string{}, nil
+		return label, nil, fmt.Errorf("decode container environment: %w", err)
 	}
 	values := make(map[string]string, len(entries))
 	for _, entry := range entries {

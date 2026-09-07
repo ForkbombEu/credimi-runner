@@ -112,6 +112,13 @@
     const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
     return `Runner operation failed: ${message}`;
   }
+  function shouldHandoffToReplacementRecovery(operation, phase, snapshot) {
+    if (!operation || operation.recovery !== 'true') return false;
+    if (phase === 'succeeded' || phase === 'cancelled') return true;
+    if (phase !== 'failed') return false;
+    const message = String(snapshot && (snapshot.error || snapshot.Error || snapshot.message || snapshot.Message) || '').trim().toLowerCase();
+    return message === 'context canceled' || message === 'context cancelled';
+  }
   // Candidate provisioning allows ten minutes and launcher quick-tunnel
   // resolution another two; retain a small reconnect margin for replacement.
   // Must exceed the backend's 15-minute activation budget.
@@ -231,7 +238,7 @@
       if (phase === 'queued' || phase === 'running') return;
       clearTimeout(runtimeOperationTimer);
       runtimeOperationTimer = null;
-      if (phase === 'succeeded' && operation.recovery === 'true') {
+      if (shouldHandoffToReplacementRecovery(operation, phase, snapshot)) {
         startRuntimeRecovery(operation);
         return;
       }

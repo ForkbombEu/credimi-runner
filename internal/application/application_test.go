@@ -65,16 +65,12 @@ func TestExecutionAPIBindAddressFollowsServiceNetwork(t *testing.T) {
 	}
 }
 
-func TestExecutionAPIBindAddressPreservesLoopbackForManagedHostNetwork(t *testing.T) {
-	for _, mode := range []string{"quick_tunnel", "named_tunnel"} {
-		got, err := executionAPIBindAddressForExposure("127.0.0.1:8050", "host", mode)
-		if err != nil || got != "127.0.0.1:8050" {
-			t.Fatalf("mode %q: bind=%q err=%v, want loopback", mode, got, err)
+func TestExecutionAPIBindAddressWildcardsAllServiceNetworks(t *testing.T) {
+	for _, mode := range []string{"bridge", "host"} {
+		got, err := executionAPIBindAddress("127.0.0.1:8050", mode)
+		if err != nil || got != "0.0.0.0:8050" {
+			t.Fatalf("mode %q: bind=%q err=%v, want wildcard", mode, got, err)
 		}
-	}
-	got, err := executionAPIBindAddressForExposure("127.0.0.1:8050", "host", "manual")
-	if err != nil || got != "0.0.0.0:8050" {
-		t.Fatalf("manual bind=%q err=%v, want wildcard", got, err)
 	}
 }
 
@@ -197,6 +193,35 @@ func TestProductionExecutionAPIUsesEffectiveBridgeBind(t *testing.T) {
 	}
 	if cfg.Server.APIListen != "192.0.2.10:0" {
 		t.Fatalf("desired config mutated to %q", cfg.Server.APIListen)
+	}
+}
+
+func TestProductionExecutionAPIUsesWildcardHostBindForManagedExposure(t *testing.T) {
+	for _, exposure := range []string{"quick_tunnel", "named_tunnel"} {
+		t.Run(exposure, func(t *testing.T) {
+			cfg := runnerconfig.Bootstrap()
+			cfg.Server.APIListen = "192.0.2.10:0"
+			cfg.Server.ReadHeaderTimeout = runnerconfig.Duration(time.Second)
+			cfg.Server.ShutdownTimeout = runnerconfig.Duration(time.Second)
+			cfg.Exposure.Mode = exposure
+			t.Setenv(servicemanager.ServiceNetworkModeEnv, "host")
+			api, err := runtimeDependencies(t.TempDir()).NewAPI(cfg, cluelog.Context(context.Background()), server.NewProcessStore())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer api.Shutdown(context.Background())
+			listenerHost, _, err := net.SplitHostPort(api.(*runtimesupervisor.HTTPAPI).Listener.Addr().String())
+			if err != nil || (listenerHost != "0.0.0.0" && listenerHost != "::") {
+				t.Fatalf("effective host API listener=%q, %v; want wildcard", api.(*runtimesupervisor.HTTPAPI).Listener.Addr(), err)
+			}
+			origin, err := api.LocalOrigin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(origin, "http://127.0.0.1:") {
+				t.Fatalf("effective host API origin=%q", origin)
+			}
+		})
 	}
 }
 

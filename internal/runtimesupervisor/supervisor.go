@@ -294,6 +294,7 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (r
 
 func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 	cfg := g.cfg
+	publicURL := ""
 	if err := g.api.Start(); err != nil {
 		return fmt.Errorf("start execution API: %w", err)
 	}
@@ -310,7 +311,7 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 			defer cancel()
 			url, err := g.edge.Start(edgeCtx, origin)
 			if err == nil {
-				g.setPublicURL(url)
+				publicURL = url
 			}
 			return err
 		}(); err != nil {
@@ -326,7 +327,7 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		}
 	}
 	if s.deps.VerifyPublicEndpoint != nil {
-		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, g.publicURL); err != nil {
+		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, publicURL); err != nil {
 			return fmt.Errorf("verify public endpoint: %w", err)
 		}
 	}
@@ -334,7 +335,7 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		return err
 	}
 	if s.deps.Register != nil {
-		if err := registerWithRetry(ctx, s.deps.Register, cfg, g.publicURL); err != nil {
+		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
 			return fmt.Errorf("register runtime: %w", err)
 		}
 	}
@@ -377,6 +378,9 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 	if err := g.fatalError(); err != nil {
 		return err
 	}
+	// Keep the generated endpoint local until every activation step succeeds;
+	// Status must never advertise an unready generation as active.
+	g.setPublicURL(publicURL)
 	g.setExecuting(true)
 	return nil
 }
