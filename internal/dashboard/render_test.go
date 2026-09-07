@@ -887,9 +887,21 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 		t.Fatalf("managed public URL = %q", d.PublicURL())
 	}
 	d.Runner.values["CREDIMI_SERVICE_MODE"] = "auto"
-	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "failed"}
 	d.Snapshot.Services[0].Status = Offline
-	if d.PublicURL() != "Waiting for quick tunnel URL" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Needs attention" {
+	if d.PublicURL() != "Public endpoint unavailable" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Needs attention" {
 		t.Fatalf("stopped runtime view url=%q toggle=%q headline=%q", d.PublicURL(), d.RuntimeTogglePath(), d.RuntimeHeadline())
+	}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "starting"}
+	if d.PublicURL() != "Starting quick tunnel..." {
+		t.Fatalf("starting runtime view url=%q", d.PublicURL())
+	}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "stopped", PendingServiceRestart: true}
+	if d.RuntimeControlsAvailable() {
+		t.Fatal("stale service still exposed a start control")
+	}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "running", RunnerRunning: true, PendingServiceRestart: true}
+	if !d.RuntimeControlsAvailable() {
+		t.Fatal("running stale service lost the safe stop control")
 	}
 }

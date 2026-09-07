@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
@@ -110,6 +111,26 @@ func registrationEndpoint(cfg config.Config, publicURL string) (string, string, 
 // VerifyPublicEndpoint waits until the URL served by the current edge belongs
 // to the current runner generation.
 func VerifyPublicEndpoint(ctx context.Context, cfg config.Config, publicURL string) error {
+	return (&endpointVerifier{
+		normalClient: http.DefaultClient,
+		quickTunnelClient: func() *http.Client {
+			return newQuickTunnelHTTPClient()
+		},
+		overallTimeout: endpointVerificationTimeout,
+		attemptTimeout: endpointVerificationAttemptTimeout,
+		retryDelay:     500 * time.Millisecond,
+	}).verify(ctx, cfg, publicURL)
+}
+
+type endpointVerifier struct {
+	normalClient      *http.Client
+	quickTunnelClient func() *http.Client
+	overallTimeout    time.Duration
+	attemptTimeout    time.Duration
+	retryDelay        time.Duration
+}
+
+func (v *endpointVerifier) verify(ctx context.Context, cfg config.Config, publicURL string) error {
 	baseURL := strings.TrimSpace(publicURL)
 	if cfg.Exposure.Mode == "manual" {
 		baseURL = strings.TrimSpace(cfg.Exposure.PublicURL)
@@ -121,50 +142,70 @@ func VerifyPublicEndpoint(ctx context.Context, cfg config.Config, publicURL stri
 	if expectedBootID == "" {
 		return errors.New("current runner boot ID is unavailable")
 	}
-	deadline, cancel := context.WithTimeout(ctx, endpointVerificationTimeout)
-	defer cancel()
 	endpoint, err := publicEndpointVerificationURL(cfg, baseURL)
 	if err != nil {
 		return err
 	}
+	parsedEndpoint, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("parse public endpoint verification URL %q: %w", endpoint, err)
+	}
+	useQuickTunnelFallback := cfg.Exposure.Mode == "quick_tunnel" && isTryCloudflareHostname(parsedEndpoint.Hostname())
+	normalClient := v.normalClient
+	if normalClient == nil {
+		normalClient = http.DefaultClient
+	}
+	quickTunnelClient := v.quickTunnelClient
+	if quickTunnelClient == nil {
+		quickTunnelClient = newQuickTunnelHTTPClient
+	}
+	overallTimeout := v.overallTimeout
+	if overallTimeout <= 0 {
+		overallTimeout = endpointVerificationTimeout
+	}
+	attemptTimeout := v.attemptTimeout
+	if attemptTimeout <= 0 {
+		attemptTimeout = endpointVerificationAttemptTimeout
+	}
+	retryDelay := v.retryDelay
+	if retryDelay < 0 {
+		retryDelay = 0
+	}
+	deadline, cancel := context.WithTimeout(ctx, overallTimeout)
+	defer cancel()
 	var lastErr error
+	var fallbackClient *http.Client
 	for {
-		attemptCtx, attemptCancel := context.WithTimeout(deadline, endpointVerificationAttemptTimeout)
-		req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, endpoint, nil)
-		if err == nil {
-			response, requestErr := http.DefaultClient.Do(req)
-			if requestErr == nil {
-				var ready struct {
-					RunnerID string `json:"runner_id"`
-					BootID   string `json:"boot_id"`
-				}
-				decodeErr := json.NewDecoder(response.Body).Decode(&ready)
-				_ = response.Body.Close()
-				if response.StatusCode == http.StatusOK && decodeErr == nil {
-					if strings.TrimSpace(ready.RunnerID) != strings.TrimSpace(cfg.Runner.ID) {
-						attemptCancel()
-						return fmt.Errorf("public endpoint belongs to runner %q, expected %q", ready.RunnerID, cfg.Runner.ID)
-					}
-					if strings.TrimSpace(ready.BootID) != expectedBootID {
-						attemptCancel()
-						return fmt.Errorf("public endpoint belongs to boot %q, expected current boot %q", ready.BootID, expectedBootID)
-					}
-					attemptCancel()
-					return nil
-				}
-				if decodeErr != nil {
-					lastErr = fmt.Errorf("public endpoint returned %s with malformed readiness JSON: %w", response.Status, decodeErr)
-				} else {
-					lastErr = fmt.Errorf("public endpoint returned %s", response.Status)
-				}
-			} else {
-				lastErr = requestErr
-			}
-		} else {
-			lastErr = err
-		}
+		attemptCtx, attemptCancel := context.WithTimeout(deadline, attemptTimeout)
+		requestErr := verifyPublicEndpointAttempt(attemptCtx, normalClient, endpoint, cfg, expectedBootID)
 		attemptCancel()
-		timer := time.NewTimer(500 * time.Millisecond)
+		if requestErr == nil {
+			return nil
+		}
+		lastErr = requestErr
+		if useQuickTunnelFallback && isDNSNotFound(requestErr) {
+			if fallbackClient == nil {
+				fallbackClient = quickTunnelClient()
+			}
+			fallbackCtx, fallbackCancel := context.WithTimeout(deadline, attemptTimeout)
+			fallbackErr := verifyPublicEndpointAttempt(fallbackCtx, fallbackClient, endpoint, cfg, expectedBootID)
+			fallbackCancel()
+			if fallbackErr == nil {
+				return nil
+			}
+			if isEndpointIdentityError(fallbackErr) {
+				return fallbackErr
+			}
+			if isDNSNotFound(fallbackErr) {
+				lastErr = fmt.Errorf("quick tunnel hostname did not become resolvable: system DNS: %v; Cloudflare DNS: %w", requestErr, fallbackErr)
+			} else {
+				lastErr = fmt.Errorf("quick tunnel fallback verification: %w", fallbackErr)
+			}
+		}
+		if isEndpointIdentityError(requestErr) {
+			return requestErr
+		}
+		timer := time.NewTimer(retryDelay)
 		select {
 		case <-deadline.Done():
 			timer.Stop()
@@ -175,6 +216,96 @@ func VerifyPublicEndpoint(ctx context.Context, cfg config.Config, publicURL stri
 		case <-timer.C:
 		}
 	}
+}
+
+type endpointIdentityError struct{ message string }
+
+func (e *endpointIdentityError) Error() string { return e.message }
+
+func isEndpointIdentityError(err error) bool {
+	var identityErr *endpointIdentityError
+	return errors.As(err, &identityErr)
+}
+
+func verifyPublicEndpointAttempt(ctx context.Context, client *http.Client, endpoint string, cfg config.Config, expectedBootID string) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	var ready struct {
+		RunnerID string `json:"runner_id"`
+		BootID   string `json:"boot_id"`
+	}
+	decodeErr := json.NewDecoder(response.Body).Decode(&ready)
+	if response.StatusCode != http.StatusOK {
+		if decodeErr != nil {
+			return fmt.Errorf("public endpoint returned %s with malformed readiness JSON: %w", response.Status, decodeErr)
+		}
+		return fmt.Errorf("public endpoint returned %s", response.Status)
+	}
+	if decodeErr != nil {
+		return fmt.Errorf("public endpoint returned %s with malformed readiness JSON: %w", response.Status, decodeErr)
+	}
+	if strings.TrimSpace(ready.RunnerID) != strings.TrimSpace(cfg.Runner.ID) {
+		return &endpointIdentityError{message: fmt.Sprintf("public endpoint belongs to runner %q, expected %q", ready.RunnerID, cfg.Runner.ID)}
+	}
+	if strings.TrimSpace(ready.BootID) != expectedBootID {
+		return &endpointIdentityError{message: fmt.Sprintf("public endpoint belongs to boot %q, expected current boot %q", ready.BootID, expectedBootID)}
+	}
+	return nil
+}
+
+func isDNSNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
+func isTryCloudflareHostname(hostname string) bool {
+	hostname = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hostname)), ".")
+	const suffix = ".trycloudflare.com"
+	if !strings.HasSuffix(hostname, suffix) || len(hostname) <= len(suffix) || net.ParseIP(hostname) != nil {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(hostname, suffix), ".") {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func newQuickTunnelHTTPClient() *http.Client {
+	resolver := &net.Resolver{PreferGo: true}
+	var next atomic.Uint32
+	resolver.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		servers := [...]string{"1.1.1.1:53", "1.0.0.1:53"}
+		server := servers[(next.Add(1)-1)%uint32(len(servers))]
+		if network == "" {
+			network = "udp"
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, server)
+	}
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		transport = &http.Transport{}
+	} else {
+		transport = transport.Clone()
+	}
+	transport.DialContext = (&net.Dialer{Resolver: resolver}).DialContext
+	return &http.Client{Transport: transport}
 }
 
 func publicEndpointVerificationURL(cfg config.Config, publicURL string) (string, error) {

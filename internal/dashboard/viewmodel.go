@@ -205,7 +205,8 @@ func (d PageData) HasCriticalServices() bool {
 
 // PublicURL computes the externally reachable endpoint from the network config.
 func (d PageData) PublicURL() string {
-	if publicURL := strings.TrimSpace(d.RuntimeStatus().PublicURL); publicURL != "" {
+	status := d.RuntimeStatus()
+	if publicURL := strings.TrimSpace(status.PublicURL); publicURL != "" {
 		return publicURL
 	}
 	mode := d.Runner.Get("CREDIMI_SERVICE_MODE")
@@ -221,7 +222,14 @@ func (d PageData) PublicURL() string {
 		}
 		return "Waiting for manual public URL"
 	default:
-		return "Waiting for quick tunnel URL"
+		switch status.Actual {
+		case "starting":
+			return "Starting quick tunnel..."
+		case "failed":
+			return "Public endpoint unavailable"
+		default:
+			return "No active quick tunnel"
+		}
 	}
 }
 
@@ -291,7 +299,11 @@ func (d PageData) RuntimeStatus() dashboardruntime.RuntimeStatus {
 }
 
 func (d PageData) RuntimeControlsAvailable() bool {
-	return true
+	status := d.RuntimeStatus()
+	// Stopping an active generation remains safe, but starting or restarting
+	// against a stale persistent service would only produce a predictable
+	// failure. The status callout explains the required service action.
+	return status.RunnerRunning || !status.PendingServiceRestart
 }
 
 func (d PageData) StartupPhase() StartupPhase {

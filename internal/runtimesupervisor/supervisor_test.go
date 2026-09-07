@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1180,6 +1181,63 @@ func TestSupervisorReconcileRegistersTheNewEdgeURL(t *testing.T) {
 	}
 }
 
+func TestSupervisorReconcileRegistersNewEdgeURLOverCredimiHTTP(t *testing.T) {
+	var endpoints []string
+	var verified []string
+	credimi := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/mobile-runner" {
+			var request dashboardruntime.RegisterRunnerRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			endpoints = append(endpoints, request.IP)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer credimi.Close()
+
+	api := &testAPI{}
+	edgeImpl := &testEdge{startURLs: []string{"https://tunnel-a.trycloudflare.com", "https://tunnel-b.trycloudflare.com"}}
+	cfg := validConfig()
+	cfg.Credimi.URL = credimi.URL
+	cfg.Exposure.Mode = "quick_tunnel"
+	workers := &testWorkers{}
+	life := &testLife{}
+	s, err := New(t.TempDir(), func() (config.Config, error) { return cfg, nil }, Dependencies{
+		NewAPI:             func(config.Config, context.Context, *server.ProcessStore) (API, error) { return api, nil },
+		NewEdge:            func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:         func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		NewLifecycleClient: func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		VerifyPublicEndpoint: func(_ context.Context, _ config.Config, publicURL string) error {
+			verified = append(verified, publicURL)
+			return nil
+		},
+		Register: Register,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reconcile(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(endpoints) != 2 || endpoints[0] != "https://tunnel-a.trycloudflare.com" || endpoints[1] != "https://tunnel-b.trycloudflare.com" {
+		t.Fatalf("Credimi registration endpoints=%#v", endpoints)
+	}
+	if len(verified) != 2 || verified[0] != endpoints[0] || verified[1] != endpoints[1] {
+		t.Fatalf("verified endpoints=%#v, registered=%#v", verified, endpoints)
+	}
+	if got := s.Status().PublicURL; got != endpoints[1] {
+		t.Fatalf("active public URL=%q, want %q", got, endpoints[1])
+	}
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSupervisorApplyEndpointVerifiesBeforeActivating(t *testing.T) {
 	api := &testAPI{}
 	edgeImpl := &testEdge{startURLs: []string{"https://old.example"}}
@@ -1466,6 +1524,201 @@ func TestVerifyPublicEndpointRejectsStaleBoot(t *testing.T) {
 	cfg.Exposure.PublicURL = server.URL
 	if err := VerifyPublicEndpoint(context.Background(), cfg, server.URL); err == nil || !strings.Contains(err.Error(), "belongs to boot") {
 		t.Fatalf("stale boot verification error=%v", err)
+	}
+}
+
+type endpointRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f endpointRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func endpointResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func endpointDNSNotFound(request *http.Request) error {
+	return &net.DNSError{Name: request.URL.Hostname(), Err: "no such host", IsNotFound: true}
+}
+
+func testEndpointVerifier(normal, fallback *http.Client, fallbackCalls *int) *endpointVerifier {
+	return &endpointVerifier{
+		normalClient: normal,
+		quickTunnelClient: func() *http.Client {
+			*fallbackCalls = *fallbackCalls + 1
+			return fallback
+		},
+		overallTimeout: 30 * time.Millisecond,
+		attemptTimeout: 5 * time.Millisecond,
+		retryDelay:     time.Millisecond,
+	}
+}
+
+func TestVerifyPublicEndpointUsesQuickTunnelDNSFallback(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
+	cfg := validConfig()
+	cfg.Exposure.Mode = "quick_tunnel"
+	normal := &http.Client{Transport: endpointRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return nil, endpointDNSNotFound(request)
+	})}
+	var fallbackRequests int
+	fallback := &http.Client{Transport: endpointRoundTripper(func(request *http.Request) (*http.Response, error) {
+		fallbackRequests++
+		if request.URL.Hostname() != "fresh.trycloudflare.com" {
+			t.Fatalf("fallback hostname=%q", request.URL.Hostname())
+		}
+		return endpointResponse(http.StatusOK, `{"runner_id":"org/runner","boot_id":"current-boot"}`), nil
+	})}
+	factoryCalls := 0
+	verifier := testEndpointVerifier(normal, fallback, &factoryCalls)
+	if err := verifier.verify(context.Background(), cfg, "https://fresh.trycloudflare.com"); err != nil {
+		t.Fatal(err)
+	}
+	if factoryCalls != 1 || fallbackRequests != 1 {
+		t.Fatalf("fallback factory/requests=%d/%d, want 1/1", factoryCalls, fallbackRequests)
+	}
+}
+
+func TestVerifyPublicEndpointUsesNormalResolverBeforeFallback(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
+	cfg := validConfig()
+	cfg.Exposure.Mode = "quick_tunnel"
+	normal := &http.Client{Transport: endpointRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Hostname() != "fresh.trycloudflare.com" {
+			t.Fatalf("normal hostname=%q", request.URL.Hostname())
+		}
+		return endpointResponse(http.StatusOK, `{"runner_id":"org/runner","boot_id":"current-boot"}`), nil
+	})}
+	fallbackCalls := 0
+	fallback := &http.Client{Transport: endpointRoundTripper(func(*http.Request) (*http.Response, error) {
+		t.Fatal("quick-tunnel fallback was unexpectedly used")
+		return nil, nil
+	})}
+	verifier := testEndpointVerifier(normal, fallback, &fallbackCalls)
+	if err := verifier.verify(context.Background(), cfg, "https://fresh.trycloudflare.com"); err != nil {
+		t.Fatal(err)
+	}
+	if fallbackCalls != 0 {
+		t.Fatalf("fallback factory calls=%d, want 0", fallbackCalls)
+	}
+}
+
+func TestVerifyPublicEndpointDoesNotUseQuickTunnelFallbackForOtherModesOrHosts(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
+	tests := []struct {
+		name string
+		mode string
+		url  string
+	}{
+		{"manual", "manual", "https://manual.example"},
+		{"named tunnel", "named_tunnel", "https://runner.example.com"},
+		{"quick tunnel lookalike", "quick_tunnel", "https://trycloudflare.com.attacker.example"},
+		{"quick tunnel suffix lookalike", "quick_tunnel", "https://eviltrycloudflare.com"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Exposure.Mode = tc.mode
+			if tc.mode == "manual" {
+				cfg.Exposure.PublicURL = tc.url
+			}
+			calls := 0
+			normal := &http.Client{Transport: endpointRoundTripper(func(request *http.Request) (*http.Response, error) {
+				return nil, endpointDNSNotFound(request)
+			})}
+			fallback := &http.Client{Transport: endpointRoundTripper(func(*http.Request) (*http.Response, error) {
+				calls++
+				return endpointResponse(http.StatusOK, `{"runner_id":"org/runner","boot_id":"current-boot"}`), nil
+			})}
+			verifier := testEndpointVerifier(normal, fallback, &calls)
+			if err := verifier.verify(context.Background(), cfg, tc.url); err == nil {
+				t.Fatal("DNS failure unexpectedly verified")
+			}
+			if calls != 0 {
+				t.Fatalf("fallback calls=%d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestVerifyPublicEndpointRetriesWhenBothQuickTunnelResolversReturnNXDOMAIN(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
+	cfg := validConfig()
+	cfg.Exposure.Mode = "quick_tunnel"
+	var fallbackCalls int
+	normal := &http.Client{Transport: endpointRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return nil, endpointDNSNotFound(request)
+	})}
+	fallback := &http.Client{Transport: endpointRoundTripper(func(request *http.Request) (*http.Response, error) {
+		fallbackCalls++
+		return nil, endpointDNSNotFound(request)
+	})}
+	verifier := testEndpointVerifier(normal, fallback, new(int))
+	verifier.overallTimeout = 20 * time.Millisecond
+	err := verifier.verify(context.Background(), cfg, "https://fresh.trycloudflare.com")
+	if err == nil || !strings.Contains(err.Error(), "did not become resolvable") {
+		t.Fatalf("NXDOMAIN verification error=%v", err)
+	}
+	if fallbackCalls < 2 {
+		t.Fatalf("fallback calls=%d, want bounded retries", fallbackCalls)
+	}
+}
+
+func TestVerifyPublicEndpointKeepsFallbackHTTPAndIdentityFailuresVisible(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
+	for _, tc := range []struct {
+		name        string
+		body        string
+		status      int
+		want        string
+		fallbackErr error
+	}{
+		{"not ready", `not ready`, http.StatusServiceUnavailable, "fallback verification", nil},
+		{"runner mismatch", `{"runner_id":"other/runner","boot_id":"current-boot"}`, http.StatusOK, "belongs to runner", nil},
+		{"boot mismatch", `{"runner_id":"org/runner","boot_id":"old-boot"}`, http.StatusOK, "belongs to boot", nil},
+		{"TLS failure", "", 0, "fallback verification", errors.New("tls: certificate verification failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Exposure.Mode = "quick_tunnel"
+			normal := &http.Client{Transport: endpointRoundTripper(func(request *http.Request) (*http.Response, error) {
+				return nil, endpointDNSNotFound(request)
+			})}
+			fallback := &http.Client{Transport: endpointRoundTripper(func(*http.Request) (*http.Response, error) {
+				if tc.fallbackErr != nil {
+					return nil, tc.fallbackErr
+				}
+				return endpointResponse(tc.status, tc.body), nil
+			})}
+			verifier := testEndpointVerifier(normal, fallback, new(int))
+			if err := verifier.verify(context.Background(), cfg, "https://fresh.trycloudflare.com"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("verification error=%v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestTryCloudflareHostnameBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want bool
+	}{
+		{"fresh.trycloudflare.com", true},
+		{"fresh.trycloudflare.com.", true},
+		{"trycloudflare.com", false},
+		{"eviltrycloudflare.com", false},
+		{"trycloudflare.com.attacker.example", false},
+		{"fresh..trycloudflare.com", false},
+		{"-fresh.trycloudflare.com", false},
+	} {
+		if got := isTryCloudflareHostname(tc.host); got != tc.want {
+			t.Fatalf("isTryCloudflareHostname(%q)=%t, want %t", tc.host, got, tc.want)
+		}
 	}
 }
 
