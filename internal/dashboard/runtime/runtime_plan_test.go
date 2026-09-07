@@ -196,7 +196,7 @@ func TestServiceConfigFingerprintProjectsOnlyServiceTopology(t *testing.T) {
 	base.Exposure.Mode = "quick_tunnel"
 	base.Devices = []runnerconfig.DeviceConfig{{
 		ID: "org/runner/phone", Name: "Phone", Description: "old", Type: runnerconfig.DeviceAndroidPhysical, Enabled: true,
-		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "usb", Serial: "A"},
+		AndroidPhysical: &runnerconfig.AndroidPhysicalConfig{Transport: "wifi", Serial: "A"},
 	}}
 	fingerprint := func(cfg runnerconfig.Config, configured bool) string {
 		return servicemanager.ServiceConfigFingerprint(cfg, configured)
@@ -232,7 +232,7 @@ func TestServiceConfigFingerprintProjectsOnlyServiceTopology(t *testing.T) {
 		{"Dashboard port", func(cfg *runnerconfig.Config) { cfg.Server.DashboardListen = "127.0.0.1:8052" }},
 		{"runner image", func(cfg *runnerconfig.Config) { cfg.Android.RunnerImage = "runner:other" }},
 		{"network", func(cfg *runnerconfig.Config) { cfg.Android.Network = "other-network" }},
-		{"Wi-Fi to USB", func(cfg *runnerconfig.Config) { cfg.Devices[0].AndroidPhysical.Transport = "wifi" }},
+		{"Wi-Fi to USB", func(cfg *runnerconfig.Config) { cfg.Devices[0].AndroidPhysical.Transport = "usb" }},
 		{"emulator enabled", func(cfg *runnerconfig.Config) {
 			cfg.Devices = append(cfg.Devices, runnerconfig.DeviceConfig{Type: runnerconfig.DeviceAndroidEmulator, Enabled: true})
 		}},

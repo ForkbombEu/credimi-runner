@@ -112,12 +112,34 @@
     const message = String(snapshot.error || snapshot.Error || snapshot.message || snapshot.Message || 'operation did not succeed').trim();
     return `Runner operation failed: ${message}`;
   }
+  function isReplacementRecoveryOperation(operation) {
+    return Boolean(operation && operation.recovery === 'true');
+  }
   function shouldHandoffToReplacementRecovery(operation, phase, snapshot) {
-    if (!operation || operation.recovery !== 'true') return false;
+    if (!isReplacementRecoveryOperation(operation)) return false;
     if (phase === 'succeeded' || phase === 'cancelled') return true;
     if (phase !== 'failed') return false;
     const message = String(snapshot && (snapshot.error || snapshot.Error || snapshot.message || snapshot.Message) || '').trim().toLowerCase();
     return message === 'context canceled' || message === 'context cancelled';
+  }
+  async function fetchDashboardStatus(path, tokens, origins, signal) {
+    const tokenCandidates = (tokens || []).filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
+    const originCandidates = (origins || []).filter((origin, index, values) => origin && values.indexOf(origin) === index);
+    const usableTokens = tokenCandidates.length ? tokenCandidates : [undefined];
+    const usableOrigins = originCandidates.length ? originCandidates : [window.location.origin];
+    let lastError;
+    for (const origin of usableOrigins) {
+      for (const token of usableTokens) {
+        try {
+          const response = await fetch(dashboardURL(path, token, origin), { headers: { Accept: 'application/json' }, signal });
+          if (response.status === 401 || response.status === 403) continue;
+          return { response, token, origin };
+        } catch (error) {
+          lastError = error;
+        }
+      }
+    }
+    throw lastError || new Error('Dashboard status is not reachable');
   }
   // Candidate provisioning allows ten minutes and launcher quick-tunnel
   // resolution another two; retain a small reconnect margin for replacement.
@@ -137,6 +159,7 @@
     toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
   }
   function startRuntimeRecovery(operation) {
+    if (!isReplacementRecoveryOperation(operation)) return;
     operation._recovering = true;
     clearTimeout(runtimeOperationTimer);
     runtimeOperationTimer = null;
@@ -154,39 +177,21 @@
         const controller = new AbortController();
         runtimeRecoveryAbort = controller;
         timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now()));
-        const candidates = [operation.previousToken, operation.recoveryToken]
-          .filter((token, index, values) => token !== undefined && values.indexOf(token) === index);
-        const tokens = candidates.length ? candidates : [undefined];
-        const origins = [operation.recoveryOrigin, window.location.origin]
-          .filter((origin, index, values) => origin && values.indexOf(origin) === index);
-        let recovery;
-        let recoveryToken;
-        let recoveryOrigin;
-        for (const origin of origins.length ? origins : [window.location.origin]) {
-          for (const token of tokens) {
-            try {
-              const candidate = await fetch(dashboardURL('/startup/status', token, origin), { headers: { Accept: 'application/json' }, signal: controller.signal });
-              if (candidate.status === 401 || candidate.status === 403) continue;
-              recovery = candidate;
-              recoveryToken = token;
-              recoveryOrigin = origin;
-              break;
-            } catch (error) {
-              if (origin === origins[origins.length - 1] && token === tokens[tokens.length - 1]) throw error;
-            }
-          }
-          if (recovery) break;
-        }
-        if (!recovery) throw new Error('Dashboard replacement is not reachable');
+        const recovery = await fetchDashboardStatus(
+          '/startup/status',
+          [operation.previousToken, operation.recoveryToken],
+          [operation.recoveryOrigin, window.location.origin],
+          controller.signal,
+        );
         if (Date.now() >= deadline) {
           finishRuntimeRecoveryTimeout();
           return;
         }
-        if (!recovery.ok) {
+        if (!recovery.response.ok) {
           runtimeRecoveryTimer = setTimeout(poll, 1000);
           return;
         }
-        const state = await recovery.json();
+        const state = await recovery.response.json();
         if (state.phase !== 'ready' && state.phase !== 'needs_attention') {
           runtimeRecoveryTimer = setTimeout(poll, 1000);
           return;
@@ -196,16 +201,16 @@
         runtimeRecoveryAbort = null;
         runtimeOperationActive = false;
         hideBusy();
-        setDashboardToken(recoveryToken);
+        setDashboardToken(recovery.token);
         if (state.phase === 'ready') {
           toast(operation.success || 'Runner operation completed successfully.');
         } else {
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
 		if ($('.app.setup-shell')) {
-			if (state.phase === 'ready') window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken, recoveryOrigin));
-			else refreshOverview('/setup', recoveryToken, recoveryOrigin);
-		} else refreshOverview(operation.refresh || '/', recoveryToken, recoveryOrigin);
+			if (state.phase === 'ready') window.location.assign(dashboardURL(operation.refresh || '/', recovery.token, recovery.origin));
+			else refreshOverview('/setup', recovery.token, recovery.origin);
+		} else refreshOverview(operation.refresh || '/', recovery.token, recovery.origin);
       } catch (_) {
         if (Date.now() >= deadline) finishRuntimeRecoveryTimeout();
         else if (runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
@@ -215,6 +220,13 @@
     };
     void poll();
   }
+  function finishRuntimeOperationPollingFailure(operation) {
+    runtimeOperationActive = false;
+    hideBusy();
+    toast('Runner operation failed: controller status is unavailable.', 'error');
+    if ($('.app.setup-shell')) refreshOverview('/setup', operation.recoveryToken, operation.recoveryOrigin);
+    else refreshOverview(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin);
+  }
   async function pollRuntimeOperation(operation) {
     operation._pollFailures = operation._pollFailures || 0;
     try {
@@ -222,7 +234,8 @@
       if (!response.ok) {
         operation._pollFailures++;
         if (operation._pollFailures < 3) return;
-        startRuntimeRecovery(operation);
+        if (isReplacementRecoveryOperation(operation)) startRuntimeRecovery(operation);
+        else finishRuntimeOperationPollingFailure(operation);
         return;
       }
       operation._pollFailures = 0;
@@ -263,7 +276,10 @@
       setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
     } catch (_) {
       operation._pollFailures++;
-      if (operation._pollFailures >= 3) startRuntimeRecovery(operation);
+      if (operation._pollFailures >= 3) {
+        if (isReplacementRecoveryOperation(operation)) startRuntimeRecovery(operation);
+        else finishRuntimeOperationPollingFailure(operation);
+      }
     }
   }
   document.body.addEventListener('runtimeOperation', (e) => {
@@ -342,22 +358,8 @@
     const timeout = setTimeout(() => controller.abort(), Math.min(runtimeRecoveryRequestTimeout, Math.max(1, runtimeRecoveryDeadline - Date.now())));
     try {
       const url = busyStartupNextID > 0 ? `/startup/status?since=${busyStartupNextID}` : '/startup/status';
-      let res;
-      const tokens = setupRecoveryTokens.length ? setupRecoveryTokens : [undefined];
-      const origins = setupRecoveryOrigins.length ? setupRecoveryOrigins : [window.location.origin];
-      for (const origin of origins) {
-        for (const token of tokens) {
-          try {
-            const candidate = await fetch(dashboardURL(url, token, origin), { headers: { Accept: 'application/json' }, signal: controller.signal });
-            if (candidate.status === 401 || candidate.status === 403) continue;
-            res = candidate;
-            break;
-          } catch (error) {
-            if (origin === origins[origins.length - 1] && token === tokens[tokens.length - 1]) throw error;
-          }
-        }
-        if (res) break;
-      }
+      const status = await fetchDashboardStatus(url, setupRecoveryTokens, setupRecoveryOrigins, controller.signal);
+      const res = status.response;
       if (res && res.ok) {
         const data = await res.json();
         const phase = String(data.phase || '');

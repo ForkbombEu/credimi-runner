@@ -240,17 +240,14 @@ func verifyPublicEndpointAttempt(ctx context.Context, client *http.Client, endpo
 		return err
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("public endpoint returned %s", response.Status)
+	}
 	var ready struct {
 		RunnerID string `json:"runner_id"`
 		BootID   string `json:"boot_id"`
 	}
 	decodeErr := json.NewDecoder(response.Body).Decode(&ready)
-	if response.StatusCode != http.StatusOK {
-		if decodeErr != nil {
-			return fmt.Errorf("public endpoint returned %s with malformed readiness JSON: %w", response.Status, decodeErr)
-		}
-		return fmt.Errorf("public endpoint returned %s", response.Status)
-	}
 	if decodeErr != nil {
 		return fmt.Errorf("public endpoint returned %s with malformed readiness JSON: %w", response.Status, decodeErr)
 	}

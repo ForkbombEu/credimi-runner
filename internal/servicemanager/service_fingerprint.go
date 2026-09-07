@@ -81,18 +81,18 @@ func ServiceCapabilitiesFromEnvironment(values map[string]string) (ServiceCapabi
 }
 
 type serviceConfigProjection struct {
-	Configured        bool                     `json:"configured"`
-	APIListen         string                   `json:"api_listen"`
-	DashboardListen   string                   `json:"dashboard_listen"`
-	ReadHeaderTimeout string                   `json:"read_header_timeout"`
-	ShutdownTimeout   string                   `json:"shutdown_timeout"`
-	APIPublishHost    string                   `json:"api_publish_host,omitempty"`
-	NetworkMode       string                   `json:"network_mode"`
-	Android           serviceAndroidProjection `json:"android"`
-	NeedsHostADB      bool                     `json:"needs_host_adb"`
-	NeedsUSB          bool                     `json:"needs_usb"`
-	NeedsEmulator     bool                     `json:"needs_emulator"`
-	RedroidKnownHosts []string                 `json:"redroid_known_hosts,omitempty"`
+	Configured             bool                     `json:"configured"`
+	APIPublishedPort       string                   `json:"api_published_port,omitempty"`
+	DashboardPublishedPort string                   `json:"dashboard_published_port,omitempty"`
+	ReadHeaderTimeout      string                   `json:"read_header_timeout"`
+	ShutdownTimeout        string                   `json:"shutdown_timeout"`
+	APIPublishHost         string                   `json:"api_publish_host,omitempty"`
+	NetworkMode            string                   `json:"network_mode"`
+	Android                serviceAndroidProjection `json:"android"`
+	NeedsHostADB           bool                     `json:"needs_host_adb"`
+	NeedsUSB               bool                     `json:"needs_usb"`
+	NeedsEmulator          bool                     `json:"needs_emulator"`
+	RedroidKnownHosts      []string                 `json:"redroid_known_hosts,omitempty"`
 }
 
 type serviceAndroidProjection struct {
@@ -132,14 +132,13 @@ func serviceConfigProjectionFor(cfg config.Config, configured bool) serviceConfi
 
 func serviceConfigProjectionForHost(cfg config.Config, configured bool, host HostContext) serviceConfigProjection {
 	_ = config.ApplyDefaults(&cfg)
+	networkMode := ServiceNetworkModeForConfig(cfg, host)
 	projection := serviceConfigProjection{
 		Configured:        configured,
-		APIListen:         cfg.Server.APIListen,
-		DashboardListen:   cfg.Server.DashboardListen,
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration().String(),
 		ShutdownTimeout:   cfg.Server.ShutdownTimeout.Duration().String(),
 		APIPublishHost:    serviceAPIPublishHost(cfg, host),
-		NetworkMode:       ServiceNetworkModeForConfig(cfg, host),
+		NetworkMode:       networkMode,
 		NeedsHostADB:      !configured,
 		Android: serviceAndroidProjection{
 			RunnerImage:     cfg.Android.RunnerImage,
@@ -150,6 +149,10 @@ func serviceConfigProjectionForHost(cfg config.Config, configured bool, host Hos
 			SDKVolume:       cfg.Android.SDKVolume,
 			ADBKeysPath:     cfg.Android.ADBKeysPath,
 		},
+	}
+	if networkMode != "host" {
+		_, projection.APIPublishedPort = listenPort(cfg.Server.APIListen, "8050")
+		_, projection.DashboardPublishedPort = listenPort(cfg.Server.DashboardListen, "8051")
 	}
 	knownHosts := map[string]struct{}{}
 	for _, device := range cfg.Devices {
@@ -299,7 +302,7 @@ func hostLocalDependencies(cfg config.Config, host HostContext) bool {
 	if hostIsLocalURL(cfg.Credimi.URL, host) || hostIsLocalAddress(cfg.Temporal.Address, host) {
 		return true
 	}
-	return serviceExposureClass(cfg.Exposure.Mode) == "manual" && hostIsLocalURL(cfg.Exposure.PublicURL, host)
+	return isManualExposure(cfg.Exposure.Mode) && hostIsLocalURL(cfg.Exposure.PublicURL, host)
 }
 
 // serviceAPIPublishHost is the effective Docker port-publishing topology for
@@ -309,7 +312,7 @@ func serviceAPIPublishHost(cfg config.Config, host HostContext) string {
 	if ServiceNetworkModeForConfig(cfg, host) == "host" {
 		return ""
 	}
-	if strings.EqualFold(strings.TrimSpace(cfg.Exposure.Mode), "manual") {
+	if isManualExposure(cfg.Exposure.Mode) {
 		return "0.0.0.0"
 	}
 	return "127.0.0.1"
@@ -345,7 +348,7 @@ func serviceDependencyHostnames(cfg config.Config) []string {
 	} else if name := strings.Trim(strings.TrimSpace(cfg.Temporal.Address), "[]"); name != "" {
 		names = append(names, name)
 	}
-	if serviceExposureClass(cfg.Exposure.Mode) == "manual" {
+	if isManualExposure(cfg.Exposure.Mode) {
 		if parsed, err := url.Parse(strings.TrimSpace(cfg.Exposure.PublicURL)); err == nil && parsed.Hostname() != "" {
 			names = append(names, parsed.Hostname())
 		}
@@ -353,11 +356,8 @@ func serviceDependencyHostnames(cfg config.Config) []string {
 	return names
 }
 
-func serviceExposureClass(mode string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "manual") {
-		return "manual"
-	}
-	return "managed"
+func isManualExposure(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), "manual")
 }
 
 func hostIsLocalURL(raw string, host HostContext) bool {

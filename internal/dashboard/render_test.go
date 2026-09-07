@@ -401,7 +401,7 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	for _, want := range []string{
 		"const form = document.querySelector('[data-device-add-form]');",
 		"if ($('.app.setup-shell'))",
-		"window.location.assign(dashboardURL(operation.refresh || '/', recoveryToken, recoveryOrigin));",
+		"window.location.assign(dashboardURL(operation.refresh || '/', recovery.token, recovery.origin));",
 		"window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));",
 	} {
 		if !strings.Contains(string(script), want) {
@@ -570,15 +570,14 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 	for _, want := range []string{
 		"const runtimeRecoveryMaxDuration = 18 * 60 * 1000;",
 		"const deadline = Date.now() + runtimeRecoveryMaxDuration;",
-		"const candidates = [operation.previousToken, operation.recoveryToken]",
-		"dashboardURL('/startup/status', token, origin)",
-		"const origins = [operation.recoveryOrigin, window.location.origin]",
+		"function fetchDashboardStatus(path, tokens, origins, signal)",
+		"fetch(dashboardURL(path, token, origin)",
 		"runtimeRecoveryAbort.abort()",
 		"clearTimeout(timeout);",
 		"finishRuntimeRecoveryTimeout()",
 		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
-		"fetch(dashboardURL(url, token, origin), { headers: { Accept: 'application/json' }",
-		"else refreshOverview('/setup', recoveryToken, recoveryOrigin);",
+		"fetchDashboardStatus(url, setupRecoveryTokens, setupRecoveryOrigins, controller.signal)",
+		"else refreshOverview('/setup', recovery.token, recovery.origin);",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("runtime recovery is missing %q", want)
@@ -596,10 +595,14 @@ func TestStaticReplacementRecoveryHandoffsOnlyExpectedCancellation(t *testing.T)
 	}
 	content := string(script)
 	for _, want := range []string{
+		"function isReplacementRecoveryOperation(operation)",
+		"if (!isReplacementRecoveryOperation(operation)) return;",
 		"function shouldHandoffToReplacementRecovery(operation, phase, snapshot)",
 		"phase === 'cancelled'",
 		"message === 'context canceled' || message === 'context cancelled'",
 		"if (shouldHandoffToReplacementRecovery(operation, phase, snapshot))",
+		"if (isReplacementRecoveryOperation(operation)) startRuntimeRecovery(operation);",
+		"else finishRuntimeOperationPollingFailure(operation);",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("replacement recovery handoff is missing %q", want)
@@ -607,6 +610,9 @@ func TestStaticReplacementRecoveryHandoffsOnlyExpectedCancellation(t *testing.T)
 	}
 	if strings.Contains(content, "phase === 'failed' && operation.recovery === 'true'") {
 		t.Fatal("all replacement failures must not be hidden as recovery handoffs")
+	}
+	if strings.Count(content, "fetchDashboardStatus(") < 3 {
+		t.Fatal("runtime recovery callers do not share the Dashboard status fetcher")
 	}
 }
 
@@ -642,12 +648,12 @@ func TestStaticDashboardTokenRecoveryDefersRotationUntilReplacementState(t *test
 	if strings.Contains(content, "if (token) setDashboardToken(token);") {
 		t.Fatal("configuration responses must not rotate the browser token before operation acceptance")
 	}
-	if !strings.Contains(content, "const candidates = [operation.previousToken, operation.recoveryToken]") ||
-		!strings.Contains(content, "setDashboardToken(recoveryToken);") {
+	if !strings.Contains(content, "const recovery = await fetchDashboardStatus(") ||
+		!strings.Contains(content, "setDashboardToken(recovery.token);") {
 		t.Fatal("replacement recovery does not defer token rotation until a usable Dashboard responds")
 	}
 	if !strings.Contains(content, "function dashboardURL(path, tokenOverride, originOverride)") ||
-		!strings.Contains(content, "dashboardURL(url, token, origin)") {
+		!strings.Contains(content, "dashboardURL(path, token, origin)") {
 		t.Fatal("replacement recovery does not support Dashboard origin changes")
 	}
 	if !strings.Contains(content, "operation.recovery !== 'true'") {

@@ -810,6 +810,64 @@ func TestServiceAPIPublishTopologyFollowsRenderedCompose(t *testing.T) {
 	}
 }
 
+func TestServiceCompatibilityUsesEffectivePublishedListenerTopology(t *testing.T) {
+	host := testHost("/home/alice")
+	base := configForDevices()
+	base.Server.APIListen = "127.0.0.1:8050"
+	base.Server.DashboardListen = "127.0.0.1:8051"
+
+	tests := []struct {
+		name       string
+		network    string
+		mutate     func(*config.Config)
+		compatible bool
+	}{
+		{
+			name:    "host API port change",
+			network: "host",
+			mutate: func(cfg *config.Config) {
+				cfg.Server.APIListen = "0.0.0.0:9050"
+			},
+			compatible: true,
+		},
+		{
+			name:    "host API host change",
+			network: "host",
+			mutate: func(cfg *config.Config) {
+				cfg.Server.APIListen = "0.0.0.0:8050"
+			},
+			compatible: true,
+		},
+		{
+			name:    "bridge API host change",
+			network: "credimi-runner",
+			mutate: func(cfg *config.Config) {
+				cfg.Server.APIListen = "0.0.0.0:8050"
+			},
+			compatible: true,
+		},
+		{
+			name:    "bridge API port change",
+			network: "credimi-runner",
+			mutate: func(cfg *config.Config) {
+				cfg.Server.APIListen = "127.0.0.1:9050"
+			},
+			compatible: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			applied := base
+			applied.Android.Network = tc.network
+			desired := applied
+			tc.mutate(&desired)
+			if got := ServiceConfigsCompatibleWithHost(applied, desired, true, host); got != tc.compatible {
+				t.Fatalf("service compatibility=%t, want %t", got, tc.compatible)
+			}
+		})
+	}
+}
+
 func TestHostExposureModeChangeDoesNotRequireServiceReplacement(t *testing.T) {
 	host := testHost("/home/alice")
 	manual := configForDevices()
