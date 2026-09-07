@@ -236,6 +236,22 @@ func TestDockerStatusHasDefaultDashboardURLWithoutConfig(t *testing.T) {
 	}
 }
 
+func TestDockerStatusAllowsRunningBootstrapServiceWithoutConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "service-compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewDockerManager(dir, "")
+	m.Runner = &serviceMatchRunner{id: "bootstrap-runner"}
+	status, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Running || status.ServiceRestartRequired {
+		t.Fatalf("bootstrap status = %+v", status)
+	}
+}
+
 func TestDockerPreCreationStatusAndStopMakeNoDockerCalls(t *testing.T) {
 	tests := []struct {
 		name, network, dashboard, wantURL string

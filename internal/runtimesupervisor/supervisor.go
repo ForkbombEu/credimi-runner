@@ -294,6 +294,7 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (r
 
 func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 	cfg := g.cfg
+	candidatePublicURL := ""
 	if err := g.api.Start(); err != nil {
 		return fmt.Errorf("start execution API: %w", err)
 	}
@@ -309,10 +310,11 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 			edgeCtx, cancel := boundedContext(ctx, edgeStartTimeout)
 			defer cancel()
 			url, err := g.edge.Start(edgeCtx, origin)
-			if err == nil {
-				g.setPublicURL(url)
+			if err != nil {
+				return err
 			}
-			return err
+			candidatePublicURL = url
+			return nil
 		}(); err != nil {
 			return fmt.Errorf("start edge: %w", err)
 		}
@@ -320,16 +322,20 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 			return err
 		}
 	}
-	// The public endpoint is generation-scoped. Snapshot it only after this
-	// generation's edge has started, then use that same endpoint for both
-	// verification and registration before exposing ActualRunning.
-	publicURL, _ := g.snapshot()
+	// A generated edge URL is a candidate until the same endpoint has passed
+	// public verification and Credimi registration. Do not expose it through
+	// Status as an active URL while activation can still fail.
+	publicURL := candidatePublicURL
+	if publicURL != "" {
+		log.Printf("runtime public endpoint candidate acquired: %s", publicURL)
+	}
 	if s.deps.ValidateRuntimeCapabilities != nil {
 		if err := s.deps.ValidateRuntimeCapabilities(ctx, cfg); err != nil {
 			return fmt.Errorf("validate runtime capabilities: %w", err)
 		}
 	}
 	if s.deps.VerifyPublicEndpoint != nil {
+		log.Printf("verifying runtime public endpoint: %s", publicURL)
 		if err := s.deps.VerifyPublicEndpoint(ctx, cfg, publicURL); err != nil {
 			return fmt.Errorf("verify public endpoint: %w", err)
 		}
@@ -338,9 +344,14 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		return err
 	}
 	if s.deps.Register != nil {
+		log.Printf("registering runner %q public endpoint: %s", cfg.Runner.ID, publicURL)
 		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
 			return fmt.Errorf("register runtime: %w", err)
 		}
+	}
+	g.setPublicURL(publicURL)
+	if publicURL != "" {
+		log.Printf("runtime public endpoint activated: %s", publicURL)
 	}
 	if err := g.fatalError(); err != nil {
 		return err

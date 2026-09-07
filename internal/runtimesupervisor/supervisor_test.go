@@ -1257,6 +1257,33 @@ func TestSupervisorQuickTunnelStopStartRegistersCurrentGenerationURL(t *testing.
 	}
 }
 
+func TestSupervisorDoesNotExposeQuickTunnelCandidateAfterRegistrationFailure(t *testing.T) {
+	registrationErr := errors.New("Credimi unavailable")
+	edgeImpl := &testEdge{startURLs: []string{"https://candidate.trycloudflare.com"}}
+	workers := &testWorkers{}
+	s, err := New(t.TempDir(), func() (config.Config, error) {
+		cfg := validConfig()
+		cfg.Exposure.Mode = "quick_tunnel"
+		return cfg, nil
+	}, Dependencies{
+		NewAPI:               func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
+		NewEdge:              func(config.Config) (edge.Edge, error) { return edgeImpl, nil },
+		NewWorkers:           func(config.Config, *server.ProcessStore) WorkerSet { return workers },
+		VerifyPublicEndpoint: func(context.Context, config.Config, string) error { return nil },
+		Register:             func(context.Context, config.Config, string) error { return registrationErr },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); !errors.Is(err, registrationErr) {
+		t.Fatalf("start error = %v", err)
+	}
+	status := s.Status()
+	if status.Actual == ActualRunning || status.PublicURL != "" || workers.Running() {
+		t.Fatalf("failed candidate became active: %+v", status)
+	}
+}
+
 func TestSupervisorApplyEndpointVerifiesBeforeActivating(t *testing.T) {
 	api := &testAPI{}
 	edgeImpl := &testEdge{startURLs: []string{"https://old.example"}}

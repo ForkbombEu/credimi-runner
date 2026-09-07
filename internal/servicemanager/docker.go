@@ -510,7 +510,13 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 	}
 	status := Status{Autostart: autostart, Running: strings.TrimSpace(string(out)) != "", DashboardURL: "http://127.0.0.1:8051"}
 	cfg, err := m.config()
-	if err != nil {
+	configured := true
+	if errors.Is(err, os.ErrNotExist) {
+		// A bootstrap service intentionally exists before setup has written the
+		// first config.toml. It has no desired configured topology to compare.
+		configured = false
+		cfg = runnerconfig.Bootstrap()
+	} else if err != nil {
 		return Status{}, fmt.Errorf("load desired service configuration: %w", err)
 	}
 	baseHost, err := ResolveHostContext(m.ConfigDir)
@@ -524,7 +530,7 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("build desired service specification: %w", err)
 	}
 	status.DashboardURL = dashboardURLForServiceNetwork(cfg, desiredSpec.NetworkMode)
-	if status.Running {
+	if status.Running && configured {
 		id := strings.TrimSpace(string(out))
 		running, environment, err := m.containerMetadata(ctx, id)
 		if err != nil {
@@ -538,7 +544,7 @@ func (m *DockerManager) Status(ctx context.Context) (Status, error) {
 			if applied == "" {
 				return Status{}, errors.New("inspect runner service metadata: applied service fingerprint is empty")
 			}
-			status.ServiceRestartRequired = !ServiceConfigCompatibleWithFingerprint(cfg, true, applied, capabilities)
+			status.ServiceRestartRequired = !ServiceConfigCompatibleWithFingerprint(cfg, configured, applied, capabilities)
 		} else {
 			status.ServiceRestartRequired = strings.TrimSpace(string(running)) != desiredSpec.Fingerprint()
 		}
