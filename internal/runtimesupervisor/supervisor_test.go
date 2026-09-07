@@ -2,16 +2,26 @@ package runtimesupervisor
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptorand "crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1559,6 +1569,228 @@ func testEndpointVerifier(normal, fallback *http.Client, fallbackCalls *int) *en
 	}
 }
 
+type testDNSServer struct {
+	udp     *net.UDPConn
+	tcp     net.Listener
+	address string
+	ip      net.IP
+	wg      sync.WaitGroup
+}
+
+func newTestDNSServer(t *testing.T, ip string) *testDNSServer {
+	t.Helper()
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := udp.LocalAddr().(*net.UDPAddr).Port
+	tcp, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		_ = udp.Close()
+		t.Fatal(err)
+	}
+	dns := &testDNSServer{
+		udp:     udp,
+		tcp:     tcp,
+		address: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		ip:      net.ParseIP(ip).To4(),
+	}
+	dns.wg.Add(2)
+	go dns.serveUDP()
+	go dns.serveTCP()
+	t.Cleanup(func() {
+		_ = dns.udp.Close()
+		_ = dns.tcp.Close()
+		dns.wg.Wait()
+	})
+	return dns
+}
+
+func (d *testDNSServer) serveUDP() {
+	defer d.wg.Done()
+	buffer := make([]byte, 1500)
+	for {
+		n, address, err := d.udp.ReadFromUDP(buffer)
+		if err != nil {
+			return
+		}
+		response := testDNSResponse(buffer[:n], d.ip)
+		if len(response) > 0 {
+			_, _ = d.udp.WriteToUDP(response, address)
+		}
+	}
+}
+
+func (d *testDNSServer) serveTCP() {
+	defer d.wg.Done()
+	for {
+		connection, err := d.tcp.Accept()
+		if err != nil {
+			return
+		}
+		var length [2]byte
+		if _, err := io.ReadFull(connection, length[:]); err != nil {
+			_ = connection.Close()
+			continue
+		}
+		query := make([]byte, int(binary.BigEndian.Uint16(length[:])))
+		if _, err := io.ReadFull(connection, query); err != nil {
+			_ = connection.Close()
+			continue
+		}
+		response := testDNSResponse(query, d.ip)
+		if len(response) > 0 {
+			binary.BigEndian.PutUint16(length[:], uint16(len(response)))
+			_, _ = connection.Write(append(length[:], response...))
+		}
+		_ = connection.Close()
+	}
+}
+
+func testDNSResponse(query []byte, ip net.IP) []byte {
+	if len(query) < 12 {
+		return nil
+	}
+	questionEnd := 12
+	for {
+		if questionEnd >= len(query) {
+			return nil
+		}
+		labelLength := int(query[questionEnd])
+		questionEnd++
+		if labelLength == 0 {
+			break
+		}
+		if labelLength&0xc0 != 0 || questionEnd+labelLength > len(query) {
+			return nil
+		}
+		questionEnd += labelLength
+	}
+	if questionEnd+4 > len(query) {
+		return nil
+	}
+	questionType := binary.BigEndian.Uint16(query[questionEnd : questionEnd+2])
+	questionEnd += 4
+	response := make([]byte, 12)
+	copy(response[:2], query[:2])
+	binary.BigEndian.PutUint16(response[2:4], 0x8180)
+	binary.BigEndian.PutUint16(response[4:6], 1)
+	if questionType == 1 && len(ip) == net.IPv4len {
+		binary.BigEndian.PutUint16(response[6:8], 1)
+	}
+	response = append(response, query[12:questionEnd]...)
+	if questionType == 1 && len(ip) == net.IPv4len {
+		response = append(response, 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4)
+		response = append(response, ip...)
+	}
+	return response
+}
+
+func newTestTLSCertificate(t *testing.T, hostname string) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := cryptorand.Int(cryptorand.Reader, new(big.Int).Lsh(big.NewInt(1), 62))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: hostname},
+		DNSNames:     []string{hostname},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(cryptorand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateKey, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := tls.X509KeyPair(
+		pemEncode("CERTIFICATE", der),
+		pemEncode("EC PRIVATE KEY", privateKey),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(parsed)
+	return certificate, roots
+}
+
+func pemEncode(kind string, data []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: data})
+}
+
+func TestQuickTunnelHTTPClientUsesInjectedDNSAndTLSHostname(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
+	hostname := "fresh.trycloudflare.com"
+	certificate, roots := newTestTLSCertificate(t, hostname)
+	var serverName string
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS != nil {
+			serverName = r.TLS.ServerName
+		}
+		if r.URL.Path != "/readyz" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"runner_id":"org/runner","boot_id":"current-boot"}`))
+	})}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsListener := tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
+	go func() { _ = server.Serve(tlsListener) }()
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+
+	dns := newTestDNSServer(t, "127.0.0.1")
+	client := newQuickTunnelHTTPClientWithDNSServers([]string{dns.address})
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("quick tunnel client transport=%T, want *http.Transport", client.Transport)
+	}
+	if transport.TLSClientConfig != nil && transport.TLSClientConfig.InsecureSkipVerify {
+		t.Fatal("quick tunnel transport disabled TLS verification")
+	}
+	transport.Proxy = nil
+	transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+
+	cfg := validConfig()
+	cfg.Exposure.Mode = "quick_tunnel"
+	normal := &http.Client{Transport: endpointRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, endpointDNSNotFound(&http.Request{URL: &url.URL{Host: hostname}})
+	})}
+	verifier := &endpointVerifier{
+		normalClient: normal,
+		quickTunnelClient: func() *http.Client {
+			return client
+		},
+		overallTimeout: 2 * time.Second,
+		attemptTimeout: time.Second,
+		retryDelay:     time.Millisecond,
+	}
+	publicURL := "https://" + net.JoinHostPort(hostname, strconv.Itoa(listener.Addr().(*net.TCPAddr).Port))
+	if err := verifier.verify(context.Background(), cfg, publicURL); err != nil {
+		t.Fatal(err)
+	}
+	if serverName != hostname {
+		t.Fatalf("TLS SNI=%q, want %q", serverName, hostname)
+	}
+}
+
 func TestVerifyPublicEndpointUsesQuickTunnelDNSFallback(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "current-boot")
 	cfg := validConfig()
@@ -1678,10 +1910,10 @@ func TestVerifyPublicEndpointKeepsFallbackHTTPAndIdentityFailuresVisible(t *test
 		want        string
 		fallbackErr error
 	}{
-		{"not ready", `not ready`, http.StatusServiceUnavailable, "fallback verification", nil},
+		{"not ready", `not ready`, http.StatusServiceUnavailable, "503 Service Unavailable", nil},
 		{"runner mismatch", `{"runner_id":"other/runner","boot_id":"current-boot"}`, http.StatusOK, "belongs to runner", nil},
 		{"boot mismatch", `{"runner_id":"org/runner","boot_id":"old-boot"}`, http.StatusOK, "belongs to boot", nil},
-		{"TLS failure", "", 0, "fallback verification", errors.New("tls: certificate verification failed")},
+		{"TLS failure", "", 0, "tls: certificate verification failed", errors.New("tls: certificate verification failed")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := validConfig()

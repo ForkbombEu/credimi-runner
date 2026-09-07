@@ -143,10 +143,36 @@ func (d PageData) RuntimeHeadline() string {
 	if d.RuntimeHealthy() {
 		return "Running"
 	}
-	if d.RuntimeStatus().Configured {
+	status := d.RuntimeStatus()
+	if status.Actual == "starting" {
+		return "Starting"
+	}
+	if status.Configured {
 		return "Needs attention"
 	}
 	return "Not configured"
+}
+
+func (d PageData) PublicEndpointClass() string {
+	status := d.RuntimeStatus()
+	if status.Actual == "running" {
+		publicURL := strings.TrimSpace(status.PublicURL)
+		if publicURL == "" {
+			switch d.Runner.Get("CREDIMI_SERVICE_MODE") {
+			case "manual":
+				publicURL = strings.TrimSpace(d.Runner.Get("RUNNER_PUBLIC_URL"))
+			case "cloudflare-managed":
+				publicURL = strings.TrimSpace(d.Runner.Get("RUNNER_DOMAIN"))
+			}
+		}
+		if publicURL != "" {
+			return "ok"
+		}
+	}
+	if status.Actual == "starting" {
+		return "info"
+	}
+	return "warn"
 }
 
 func (d PageData) RuntimeTogglePath() string {

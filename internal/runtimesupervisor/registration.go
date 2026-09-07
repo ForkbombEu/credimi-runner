@@ -288,10 +288,14 @@ func isTryCloudflareHostname(hostname string) bool {
 }
 
 func newQuickTunnelHTTPClient() *http.Client {
+	return newQuickTunnelHTTPClientWithDNSServers([]string{"1.1.1.1:53", "1.0.0.1:53"})
+}
+
+func newQuickTunnelHTTPClientWithDNSServers(servers []string) *http.Client {
+	servers = append([]string(nil), servers...)
 	resolver := &net.Resolver{PreferGo: true}
 	var next atomic.Uint32
 	resolver.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
-		servers := [...]string{"1.1.1.1:53", "1.0.0.1:53"}
 		server := servers[(next.Add(1)-1)%uint32(len(servers))]
 		if network == "" {
 			network = "udp"

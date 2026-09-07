@@ -838,7 +838,7 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 		Data: map[string]any{
 			"Errors":        map[string]string{"RUNNER_PORT": "Must be a port number."},
 			"Flash":         "Saved",
-			"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: true},
+			"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, Actual: "running", RunnerRunning: true},
 			"Startup":       startupState{Phase: StartupReady, Message: "Ready"},
 			"RunnerVersion": "v1.2.3",
 			"Maintenance":   maintenance.Status{Runner: maintenance.Component{LatestVersion: "v1.2.4", UpdateAvailable: true}},
@@ -857,7 +857,7 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 	if d.RuntimeTogglePath() != "/runtime/stop" || d.RuntimeToggleLabel() != "Stop Runner" || !strings.Contains(d.RuntimeToggleBusyMessage(), "Stopping") {
 		t.Fatalf("runtime toggle = %q %q %q", d.RuntimeTogglePath(), d.RuntimeToggleLabel(), d.RuntimeToggleBusyMessage())
 	}
-	if d.RunnerAPIURL() != "http://127.0.0.1:9000" || d.PublicURL() != "https://runner.example:443" {
+	if d.RunnerAPIURL() != "http://127.0.0.1:9000" || d.PublicURL() != "https://runner.example:443" || d.PublicEndpointClass() != "ok" {
 		t.Fatalf("URLs api=%q public=%q", d.RunnerAPIURL(), d.PublicURL())
 	}
 	d.Runner.values["RUNNER_HOST"] = "::1"
@@ -889,12 +889,12 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 	d.Runner.values["CREDIMI_SERVICE_MODE"] = "auto"
 	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "failed"}
 	d.Snapshot.Services[0].Status = Offline
-	if d.PublicURL() != "Public endpoint unavailable" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Needs attention" {
+	if d.PublicURL() != "Public endpoint unavailable" || d.PublicEndpointClass() != "warn" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Needs attention" {
 		t.Fatalf("stopped runtime view url=%q toggle=%q headline=%q", d.PublicURL(), d.RuntimeTogglePath(), d.RuntimeHeadline())
 	}
 	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "starting"}
-	if d.PublicURL() != "Starting quick tunnel..." {
-		t.Fatalf("starting runtime view url=%q", d.PublicURL())
+	if d.PublicURL() != "Starting quick tunnel..." || d.PublicEndpointClass() != "info" || d.RuntimeHeadline() != "Starting" {
+		t.Fatalf("starting runtime view url=%q class=%q headline=%q", d.PublicURL(), d.PublicEndpointClass(), d.RuntimeHeadline())
 	}
 	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "stopped", PendingServiceRestart: true}
 	if d.RuntimeControlsAvailable() {
