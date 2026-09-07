@@ -1,6 +1,7 @@
 package servicemanager
 
 import (
+	"errors"
 	"net"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,30 @@ import (
 
 	"github.com/forkbombeu/credimi-runner/internal/config"
 )
+
+func TestResolveHostContextReadsLinuxResolvers(t *testing.T) {
+	old := readHostResolvConf
+	t.Cleanup(func() { readHostResolvConf = old })
+	readHostResolvConf = func() ([]byte, error) {
+		return []byte("nameserver 127.0.0.53\nnameserver 2001:db8::53\nnameserver 127.0.0.53\n"), nil
+	}
+	host, err := ResolveHostContext(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.OS == "linux" && strings.Join(host.DNSResolvers, ",") != "127.0.0.53,2001:db8::53" {
+		t.Fatalf("DNS resolvers = %v", host.DNSResolvers)
+	}
+}
+
+func TestHostDNSResolversReportsReadFailure(t *testing.T) {
+	old := readHostResolvConf
+	t.Cleanup(func() { readHostResolvConf = old })
+	readHostResolvConf = func() ([]byte, error) { return nil, errors.New("unavailable") }
+	if _, err := hostDNSResolvers(); err == nil || !strings.Contains(err.Error(), "read host resolver configuration") {
+		t.Fatalf("hostDNSResolvers error = %v", err)
+	}
+}
 
 func hostResolutionTestHost(configDir string) HostContext {
 	return HostContext{

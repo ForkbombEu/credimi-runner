@@ -625,10 +625,47 @@ func TestLaunchAgentIsUnsupportedOutsideDarwin(t *testing.T) {
 }
 
 func TestServiceSpecFingerprintIsOrderIndependent(t *testing.T) {
-	a := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []NamedVolume{{Name: "b", Target: "/b"}, {Name: "a", Target: "/a"}}, Devices: []DeviceMapping{{Source: "2", Target: "2"}, {Source: "1", Target: "1"}}}
-	b := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []NamedVolume{{Name: "a", Target: "/a"}, {Name: "b", Target: "/b"}}, Devices: []DeviceMapping{{Source: "1", Target: "1"}, {Source: "2", Target: "2"}}}
+	a := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []NamedVolume{{Name: "b", Target: "/b"}, {Name: "a", Target: "/a"}}, Devices: []DeviceMapping{{Source: "2", Target: "2"}, {Source: "1", Target: "1"}}, DNS: []string{"127.0.0.53", "1.1.1.1"}}
+	b := ServiceSpec{Image: "runner", PullPolicy: "never", Volumes: []NamedVolume{{Name: "a", Target: "/a"}, {Name: "b", Target: "/b"}}, Devices: []DeviceMapping{{Source: "1", Target: "1"}, {Source: "2", Target: "2"}}, DNS: []string{"127.0.0.53", "1.1.1.1"}}
 	if a.Fingerprint() != b.Fingerprint() {
 		t.Fatal("fingerprint depends on set ordering")
+	}
+}
+
+func TestBuildServiceSpecUsesHostResolversOnlyForHostNetworking(t *testing.T) {
+	host := testHost(t.TempDir())
+	host.DNSResolvers = []string{"127.0.0.53", "192.0.2.53"}
+	host.HostAddresses = []string{"192.168.178.120"}
+	bridge := configForDevices()
+	bridge.Credimi.URL = "https://credimi.example"
+	bridge.Temporal.Address = "temporal.example:7233"
+	hostNetwork := bridge
+	hostNetwork.Credimi.URL = "http://192.168.178.120:8090"
+
+	bridgeSpec, err := BuildServiceSpec(bridge, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bridgeSpec.DNS) != 0 {
+		t.Fatalf("bridge DNS override = %v", bridgeSpec.DNS)
+	}
+	hostSpec, err := BuildServiceSpec(hostNetwork, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hostSpec.NetworkMode != "host" || !reflect.DeepEqual(hostSpec.DNS, host.DNSResolvers) {
+		t.Fatalf("host topology = mode %q DNS %v", hostSpec.NetworkMode, hostSpec.DNS)
+	}
+	compose := RenderServiceCompose(hostSpec)
+	for _, resolver := range host.DNSResolvers {
+		if !strings.Contains(compose, "- \""+resolver+"\"") {
+			t.Fatalf("compose did not render DNS resolver %q:\n%s", resolver, compose)
+		}
+	}
+	changed := hostSpec
+	changed.DNS = []string{"127.0.0.1"}
+	if changed.Fingerprint() == hostSpec.Fingerprint() {
+		t.Fatal("effective host DNS change did not affect service fingerprint")
 	}
 }
 

@@ -61,6 +61,7 @@ type HostContext struct {
 	Bootstrap            BootstrapOptions
 	HostAddresses        []string
 	ResolvedHostLocality map[string]string
+	DNSResolvers         []string
 }
 
 type BindMount struct {
@@ -99,6 +100,7 @@ type ServiceSpec struct {
 	Command       []string
 	Labels        map[string]string
 	ExtraHosts    []string
+	DNS           []string
 }
 
 // Fingerprint hashes every field that can change the service container's
@@ -115,6 +117,7 @@ func (s ServiceSpec) Fingerprint() string {
 	canonical.Devices = append([]DeviceMapping(nil), s.Devices...)
 	canonical.Ports = append([]PortMapping(nil), s.Ports...)
 	canonical.ExtraHosts = append([]string(nil), s.ExtraHosts...)
+	canonical.DNS = append([]string(nil), s.DNS...)
 	canonical.Networks = append([]string(nil), s.Networks...)
 	canonical.Environment = cloneStringMap(s.Environment)
 	delete(canonical.Environment, AppliedServiceResolvedHostsEnv)
@@ -285,6 +288,13 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 	}
 	// Set this only after every input that can select host networking.
 	setEnv(ServiceNetworkModeEnv, spec.NetworkMode)
+	// Docker otherwise generates resolv.conf from its bridge gateway even for a
+	// host-networked container. That gateway is not a reliable resolver from
+	// the host namespace (notably when the host uses systemd-resolved), while a
+	// host-networked runner can reach the host's loopback resolver directly.
+	if host.OS == "linux" && spec.NetworkMode == "host" {
+		spec.DNS = append([]string(nil), host.DNSResolvers...)
+	}
 	if usesHostADB {
 		adbSocket := strings.TrimSpace(host.ADBServerSocket)
 		if adbSocket == "" {
@@ -374,6 +384,12 @@ func RenderServiceCompose(spec ServiceSpec) string {
 			fmt.Fprintf(&b, "      - %s\n", yamlQuote(host))
 		}
 	}
+	if len(spec.DNS) > 0 {
+		b.WriteString("    dns:\n")
+		for _, resolver := range spec.DNS {
+			fmt.Fprintf(&b, "      - %s\n", yamlQuote(resolver))
+		}
+	}
 	if len(spec.BindMounts)+len(spec.Volumes) > 0 {
 		b.WriteString("    volumes:\n")
 		for _, mount := range sortedBinds(spec.BindMounts) {
@@ -423,7 +439,42 @@ func ResolveHostContext(configDir string) (HostContext, error) {
 	if err != nil {
 		return HostContext{}, err
 	}
-	return HostContext{ConfigDir: configDir, HomeDir: home, UID: uid, GID: gid, AndroidDir: filepath.Join(home, ".android"), AVDHome: filepath.Join(home, ".android", "avd"), GoldenRoot: filepath.Join(home, "avd-golden"), HasKVM: fileExists("/dev/kvm"), OS: runtime.GOOS, BeforeSetup: !fileExists(filepath.Join(configDir, "config.toml")), HostAddresses: hostInterfaceAddresses()}, nil
+	host := HostContext{ConfigDir: configDir, HomeDir: home, UID: uid, GID: gid, AndroidDir: filepath.Join(home, ".android"), AVDHome: filepath.Join(home, ".android", "avd"), GoldenRoot: filepath.Join(home, "avd-golden"), HasKVM: fileExists("/dev/kvm"), OS: runtime.GOOS, BeforeSetup: !fileExists(filepath.Join(configDir, "config.toml")), HostAddresses: hostInterfaceAddresses()}
+	if host.OS == "linux" {
+		resolvers, err := hostDNSResolvers()
+		if err != nil {
+			return HostContext{}, err
+		}
+		host.DNSResolvers = resolvers
+	}
+	return host, nil
+}
+
+var readHostResolvConf = func() ([]byte, error) { return os.ReadFile("/etc/resolv.conf") }
+
+func hostDNSResolvers() ([]string, error) {
+	raw, err := readHostResolvConf()
+	if err != nil {
+		return nil, fmt.Errorf("read host resolver configuration: %w", err)
+	}
+	resolvers := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "nameserver" {
+			continue
+		}
+		resolver := strings.TrimSpace(fields[1])
+		if net.ParseIP(resolver) == nil {
+			continue
+		}
+		if _, ok := seen[resolver]; ok {
+			continue
+		}
+		seen[resolver] = struct{}{}
+		resolvers = append(resolvers, resolver)
+	}
+	return resolvers, nil
 }
 
 func hostInterfaceAddresses() []string {
