@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,6 +112,72 @@ func TestDashboardCommandUsesPublishedPublicURL(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "http://published.example:9051") {
 		t.Fatalf("output=%q", output.String())
+	}
+}
+
+func TestDashboardCommandPrintsURLWhenBrowserOpens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"controller_id":"controller","config_fingerprint":"fingerprint"}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	metadata := controller.Metadata{Schema: 1, ControllerID: "controller", ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, ProbeURL: server.URL, PublicURL: "http://published.example:9051", ConfigFingerprint: "fingerprint", IdentityToken: "token"}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "controller.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, oldOpen, oldBrowser := dashboardConfigDir, dashboardOpen, openDashboardBrowserFunc
+	dashboardConfigDir, dashboardOpen = dir, true
+	openDashboardBrowserFunc = func(string) error { return nil }
+	t.Setenv("DISPLAY", ":0")
+	t.Cleanup(func() {
+		dashboardConfigDir, dashboardOpen, openDashboardBrowserFunc = oldDir, oldOpen, oldBrowser
+	})
+	command := &cobra.Command{Use: "dashboard"}
+	command.SetContext(context.Background())
+	var output strings.Builder
+	command.SetOut(&output)
+	if err := runDashboardCommand(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "Dashboard: http://published.example:9051\n" {
+		t.Fatalf("output=%q", got)
+	}
+}
+
+func TestDashboardCommandPrintsURLWhenBrowserFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"controller_id":"controller","config_fingerprint":"fingerprint"}`))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	metadata := controller.Metadata{Schema: 1, ControllerID: "controller", ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, ProbeURL: server.URL, PublicURL: "http://published.example:9051", ConfigFingerprint: "fingerprint", IdentityToken: "token"}
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "controller.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir, oldOpen, oldBrowser := dashboardConfigDir, dashboardOpen, openDashboardBrowserFunc
+	dashboardConfigDir, dashboardOpen = dir, true
+	openDashboardBrowserFunc = func(string) error { return errors.New("browser unavailable") }
+	t.Setenv("DISPLAY", ":0")
+	t.Cleanup(func() {
+		dashboardConfigDir, dashboardOpen, openDashboardBrowserFunc = oldDir, oldOpen, oldBrowser
+	})
+	command := &cobra.Command{Use: "dashboard"}
+	command.SetContext(context.Background())
+	var output strings.Builder
+	command.SetOut(&output)
+	if err := runDashboardCommand(command, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "Dashboard: http://published.example:9051\n" {
+		t.Fatalf("output=%q", got)
 	}
 }
 

@@ -39,7 +39,7 @@
           <div class="field" data-auth-field="user" {{if eq $.Runner.AuthMode "admin"}}hidden{{end}}>
             <label><span class="lbtx">User API key</span><span class="req">*</span><span class="envkey">CREDIMI_USER_API_KEY</span></label>
             <div class="inp-wrap"><input class="inp mono" type="password" name="CREDIMI_USER_API_KEY" value="{{$.Runner.Get "CREDIMI_USER_API_KEY"}}" placeholder="credimi_..." autocomplete="new-password" spellcheck="false"><div class="acts"><span data-api-key-status style="display:none"></span><button type="button" class="minibtn" data-reveal-secret="CREDIMI_USER_API_KEY" title="Reveal">{{icon "eye"}}</button></div></div>
-            <p class="hint" style="margin-top:8px">Get your user API key at <button type="button" class="minibtn" data-api-keys-link>credimi.io/my/profile/api-keys</button></p><p class="hint" data-api-key-error style="color:var(--down);display:none"></p>
+            <p class="hint" style="margin-top:8px">Get your user API key at <button type="button" class="minibtn" data-api-keys-link>{{apiKeysURL ($.Runner.Get "CREDIMI_URL")}}</button></p><p class="hint" data-api-key-error style="color:var(--down);display:none"></p>
           </div>
           <div class="field" data-auth-field="admin" {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}>
             <label><span class="lbtx">Internal admin key</span><span class="req">*</span><span class="envkey">CREDIMI_INTERNAL_ADMIN_KEY</span></label>

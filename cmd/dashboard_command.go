@@ -27,9 +27,7 @@ func runDashboardCommand(cmd *cobra.Command, _ []string) error {
 		return errors.New("controller metadata has no Dashboard URL")
 	}
 	if dashboardOpen && dashboardCanOpenBrowser() {
-		if err := openDashboardBrowserFunc(url); err == nil {
-			return nil
-		}
+		_ = openDashboardBrowserFunc(url)
 	}
 	cmd.Printf("Dashboard: %s\n", url)
 	return nil

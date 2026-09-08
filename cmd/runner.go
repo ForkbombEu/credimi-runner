@@ -69,12 +69,9 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if dashboardOpen && dashboardCanOpenBrowser() {
-		if err := openDashboardBrowserFunc(url); err != nil {
-			cmd.Printf("Dashboard: %s\n", url)
-		}
-	} else {
-		cmd.Printf("Dashboard: %s\n", url)
+		_ = openDashboardBrowserFunc(url)
 	}
+	cmd.Printf("Dashboard: %s\n", url)
 	return followAttachedService(cmd.Context(), manager, effectiveConfigDir())
 }
 

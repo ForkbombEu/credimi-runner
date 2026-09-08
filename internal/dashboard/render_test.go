@@ -133,6 +133,15 @@ func TestRenderHelpers(t *testing.T) {
 	if !isSecret(Field{Secret: true}) || isSecret(Field{}) {
 		t.Fatal("isSecret returned unexpected result")
 	}
+	for _, tc := range []struct{ base, want string }{
+		{"http://192.168.178.120", "http://192.168.178.120/my/profile/api-keys"},
+		{"https://credimi.example/", "https://credimi.example/my/profile/api-keys"},
+		{"", "https://credimi.io/my/profile/api-keys"},
+	} {
+		if got := apiKeysURL(tc.base); got != tc.want {
+			t.Fatalf("apiKeysURL(%q)=%q, want %q", tc.base, got, tc.want)
+		}
+	}
 }
 
 func TestRenderer_FragmentPage(t *testing.T) {
@@ -204,7 +213,7 @@ func TestRendererNetworkUsesSetupServiceModeLabels(t *testing.T) {
 	manual := strings.Index(html, "Manual public URL")
 	endpoint := strings.Index(html, "Public endpoint")
 	managed := strings.Index(html, "Runner domain")
-	if endpoint < 0 || manual < endpoint || managed < manual {
+	if endpoint < 0 || manual < 0 || managed < 0 || endpoint < manual || endpoint < managed {
 		t.Fatalf("public endpoint fields are ordered incorrectly: endpoint=%d manual=%d managed=%d", endpoint, manual, managed)
 	}
 }
@@ -309,9 +318,11 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	values := cloneStringMap(Defaults)
+	values["CREDIMI_URL"] = "http://192.168.178.120/"
 	html, err := r.Page("setup", PageData{
 		Active: "setup",
-		Runner: &Config{path: "/tmp/credimi/runner/config.toml", values: Defaults},
+		Runner: &Config{path: "/tmp/credimi/runner/config.toml", values: values},
 		Pill:   PillData{OK: true, Label: "Setup"},
 	})
 	if err != nil {
@@ -319,6 +330,9 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	}
 	if !strings.Contains(html, `name="ADB_SCREEN_RECORD_SIZE"`) {
 		t.Fatalf("setup page should render the screen recording size setting: %s", html)
+	}
+	if !strings.Contains(html, "http://192.168.178.120/my/profile/api-keys") {
+		t.Fatalf("setup page should render the complete API keys URL: %s", html)
 	}
 	for _, want := range []string{
 		`data-setup-form`,
@@ -345,10 +359,13 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 	if !strings.Contains(html, `name="CREDIMI_RUNNER_SERIAL"`) || !strings.Contains(html, `placeholder="e.g. 37131JEHN05321"`) {
 		t.Fatalf("setup wizard missing explicit USB serial input: %s", html)
 	}
-	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-phone-serial`, `data-android-phone-serial-hint`, `data-android-emulator-assets-panel`, `data-device-provision-template`, `AVDCTL_SSH_TARGET`, `AVDCTL_SSH_KNOWN_HOSTS_PATH`, `AVDCTL_SUDO`, `type="password" name="AVDCTL_SSH_PASSWORD"`, `type="password" name="AVDCTL_SUDO_PASSWORD"`} {
+	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-phone-serial`, `data-android-phone-serial-hint`, `data-android-emulator-assets-panel`, `data-android-emulator-progress`, `data-android-emulator-progress-bar`, `data-android-emulator-progress-label`, `data-device-provision-template`, `AVDCTL_SSH_TARGET`, `AVDCTL_SSH_KNOWN_HOSTS_PATH`, `AVDCTL_SUDO`, `type="password" name="AVDCTL_SSH_PASSWORD"`, `type="password" name="AVDCTL_SUDO_PASSWORD"`} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("setup device provisioning missing %q", want)
 		}
+	}
+	if got := strings.Count(html, `data-android-emulator-progress`); got != 6 {
+		t.Fatalf("setup should render three progress hooks in each shared card, got %d", got)
 	}
 	if strings.Count(html, `name="CREDIMI_RUNNER_TYPE"`) != 2 || strings.Count(html, `name="CREDIMI_RUNNER_DEVICE_MODE"`) != 2 {
 		t.Fatalf("each rendered device card should have one canonical type and mode field: %s", html)
@@ -502,6 +519,9 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 		`hx-boost="false"`,
 		`IDs are created from the device name and cannot be edited`,
 		`Detected devices`,
+		`data-android-emulator-progress`,
+		`data-android-emulator-progress-bar`,
+		`data-android-emulator-progress-label`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)
@@ -509,6 +529,9 @@ func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 	}
 	if strings.Count(html, `data-device-form-cancel`) != 1 {
 		t.Fatalf("devices page should render one edit cancellation action: %s", html)
+	}
+	if strings.Count(html, `data-android-emulator-progress`) != 3 {
+		t.Fatalf("devices page should render one shared emulator progress block, got %d", strings.Count(html, `data-android-emulator-progress`))
 	}
 	if !strings.Contains(html, `<a class="sb-env" href="/devices"`) {
 		t.Fatal("runner sidebar identity should link to the Devices page")
@@ -548,6 +571,27 @@ func TestStaticRedroidSSHToggleClearsCanonicalSudo(t *testing.T) {
 	}
 	if strings.Contains(content, "setToggleValue(form, 'AVDCTL_SUDO', false)") {
 		t.Fatal("Redroid SSH toggle must not update only the visual toggle helper")
+	}
+}
+
+func TestStaticAPIKeysLinkKeepsCompleteURL(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"const apiKeysURL =",
+		"const url = apiKeysURL(base);",
+		"btn.textContent = apiKeysURL(base);",
+		"window.open(url, '_blank', 'noopener');",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("API keys link normalization missing %q", want)
+		}
+	}
+	if strings.Contains(content, "base.replace(/^https?:\\/\\//, '')") {
+		t.Fatal("API keys link still strips the visible URL scheme")
 	}
 }
 

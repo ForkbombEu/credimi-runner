@@ -23,14 +23,14 @@
         </div>
         {{end}}
         <div class="divline"></div>
-        <div class="field"><label><span class="lbtx">Public endpoint</span></label>
-          <div class="inp-wrap"><input class="inp mono" readonly value="{{.PublicURL}}"><div class="acts"><button type="button" class="minibtn" data-copy-value="{{.PublicURL}}">{{icon "copy"}} Copy</button></div></div></div>
         <div data-net-mode="manual" style="display:none">
           <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_PUBLIC_URL"}}{{template "field" .Field "RUNNER_PUBLIC_PORT"}}</div>
         </div>
         <div data-net-mode="cloudflare-managed" style="display:none">
           <div class="field-row" style="margin-top:4px">{{template "field" .Field "RUNNER_DOMAIN"}}{{template "field" .Field "CLOUDFLARE_TUNNEL_TOKEN"}}</div>
         </div>
+        <div class="field"><label><span class="lbtx">Public endpoint</span></label>
+          <div class="inp-wrap"><input class="inp mono" readonly value="{{.PublicURL}}"><div class="acts"><button type="button" class="minibtn" data-copy-value="{{.PublicURL}}">{{icon "copy"}} Copy</button></div></div></div>
       </div>
     </section>
 

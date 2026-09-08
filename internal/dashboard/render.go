@@ -29,6 +29,7 @@ var funcs = template.FuncMap{
 	"mask":        maskSecret,
 	"upper":       strings.ToUpper,
 	"hasURL":      hasURL,
+	"apiKeysURL":  apiKeysURL,
 	"add1":        add1,
 }
 
@@ -117,6 +118,14 @@ func chipClass(s Status) string {
 func isSecret(f Field) bool { return f.Secret }
 
 func hasURL(s string) bool { return strings.Contains(s, "://") }
+
+func apiKeysURL(base string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" {
+		base = "https://credimi.io"
+	}
+	return base + "/my/profile/api-keys"
+}
 
 func add1(i int) int { return i + 1 }
 

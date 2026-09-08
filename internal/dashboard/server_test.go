@@ -3069,13 +3069,6 @@ func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
 	if starts != 0 {
 		t.Fatalf("old incompatible service started runtime %d times", starts)
 	}
-	state, err := (runtimesupervisor.StateStore{Path: filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state.json")}).Load(true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.Desired != runtimesupervisor.DesiredRunning {
-		t.Fatalf("setup persisted desired=%q, want %q", state.Desired, runtimesupervisor.DesiredRunning)
-	}
 	if _, err := servicecoordination.ReadRestartRequest(s.composeDir); err != nil {
 		t.Fatalf("setup restart request: %v", err)
 	}

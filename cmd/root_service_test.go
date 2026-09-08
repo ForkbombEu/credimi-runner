@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
@@ -58,6 +59,35 @@ func TestRootStartsStoppedService(t *testing.T) {
 	}
 	if fake.started != 1 {
 		t.Fatalf("service starts=%d", fake.started)
+	}
+}
+
+func TestRootPrintsDashboardURLWhenBrowserOpens(t *testing.T) {
+	isolateRootConfig(t)
+	oldFactory, oldWait, oldOpen, oldBrowser := serviceManagerFactory, waitForDashboardFunc, dashboardOpen, openDashboardBrowserFunc
+	t.Cleanup(func() {
+		serviceManagerFactory, waitForDashboardFunc, dashboardOpen, openDashboardBrowserFunc = oldFactory, oldWait, oldOpen, oldBrowser
+	})
+	fake := &rootManagerFake{}
+	serviceManagerFactory = func(string, servicemanager.BootstrapOptions) servicemanager.Manager { return fake }
+	waitForDashboardFunc = func(context.Context) (string, error) { return "http://127.0.0.1:8051", nil }
+	dashboardOpen = true
+	openDashboardBrowserFunc = func(string) error { return nil }
+	t.Setenv("DISPLAY", ":0")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	command := &cobra.Command{Use: "test"}
+	command.SetContext(ctx)
+	var output strings.Builder
+	command.SetOut(&output)
+	done := make(chan error, 1)
+	go func() { done <- runRoot(command, nil) }()
+	cancel()
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "Dashboard: http://127.0.0.1:8051\n" {
+		t.Fatalf("output=%q", got)
 	}
 }
 

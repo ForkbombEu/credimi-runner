@@ -2068,12 +2068,13 @@
   });
 
   // ── API keys link button (reads from CREDIMI_URL field) ─────────────────
+  const apiKeysURL = (base) => `${(base || 'https://credimi.io').replace(/\/+$/, '')}/my/profile/api-keys`;
   document.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-api-keys-link]');
     if (!btn) return;
     e.preventDefault();
     const base = (document.querySelector('[name="CREDIMI_URL"]') || {}).value || 'https://credimi.io';
-    const url = base.replace(/\/+$/, '') + '/my/profile/api-keys';
+    const url = apiKeysURL(base);
     window.open(url, '_blank', 'noopener');
   });
   document.addEventListener('input', (e) => {
@@ -2081,7 +2082,7 @@
       const btn = document.querySelector('[data-api-keys-link]');
       if (btn) {
         const base = e.target.value || 'https://credimi.io';
-        btn.textContent = base.replace(/^https?:\/\//, '') + '/my/profile/api-keys';
+        btn.textContent = apiKeysURL(base);
       }
     }
   });
