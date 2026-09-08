@@ -19,7 +19,7 @@ import (
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 )
 
-type stage3Manager struct {
+type restartTestManager struct {
 	mu           sync.Mutex
 	status       servicemanager.Status
 	restarts     int
@@ -31,11 +31,11 @@ type stage3Manager struct {
 	logOnce      sync.Once
 }
 
-func (m *stage3Manager) Start(context.Context) error   { return nil }
-func (m *stage3Manager) Stop(context.Context) error    { return nil }
-func (m *stage3Manager) Enable(context.Context) error  { return nil }
-func (m *stage3Manager) Disable(context.Context) error { return nil }
-func (m *stage3Manager) Logs(ctx context.Context, _ servicemanager.LogOptions) error {
+func (m *restartTestManager) Start(context.Context) error   { return nil }
+func (m *restartTestManager) Stop(context.Context) error    { return nil }
+func (m *restartTestManager) Enable(context.Context) error  { return nil }
+func (m *restartTestManager) Disable(context.Context) error { return nil }
+func (m *restartTestManager) Logs(ctx context.Context, _ servicemanager.LogOptions) error {
 	m.mu.Lock()
 	m.logs++
 	call := m.logs
@@ -51,12 +51,12 @@ func (m *stage3Manager) Logs(ctx context.Context, _ servicemanager.LogOptions) e
 	<-ctx.Done()
 	return ctx.Err()
 }
-func (m *stage3Manager) Status(context.Context) (servicemanager.Status, error) {
+func (m *restartTestManager) Status(context.Context) (servicemanager.Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.status, nil
 }
-func (m *stage3Manager) Restart(context.Context) error {
+func (m *restartTestManager) Restart(context.Context) error {
 	m.mu.Lock()
 	m.restarts++
 	if m.restartErr != nil {
@@ -74,7 +74,7 @@ func (m *stage3Manager) Restart(context.Context) error {
 	return nil
 }
 
-func stage3Config(t *testing.T, dir string) runnerconfig.Config {
+func restartTestConfig(t *testing.T, dir string) runnerconfig.Config {
 	t.Helper()
 	cfg := runnerconfig.Bootstrap()
 	cfg.Runner.ID = "org/runner"
@@ -89,7 +89,7 @@ func stage3Config(t *testing.T, dir string) runnerconfig.Config {
 	return cfg
 }
 
-func stage3ConfigDigest(t *testing.T, dir string) string {
+func restartTestConfigDigest(t *testing.T, dir string) string {
 	t.Helper()
 	digest, err := runnerconfig.ConfigFileDigest(filepath.Join(dir, "config.toml"))
 	if err != nil {
@@ -124,7 +124,7 @@ func TestApplyServiceRestartRequestWaitsForReplacementAndVerifiesFingerprint(t *
 	}))
 	defer probe.Close()
 
-	manager := &stage3Manager{status: servicemanager.Status{Running: false, ServiceRestartRequired: true}}
+	manager := &restartTestManager{status: servicemanager.Status{Running: false, ServiceRestartRequired: true}}
 	manager.restart = func() {
 		metadata := controller.Metadata{
 			Schema: 1, ControllerID: "replacement", ConfigDir: dir, ListenPort: 8051,
@@ -168,7 +168,7 @@ func TestApplyServiceRestartRequestWaitsForReplacementAndVerifiesFingerprint(t *
 
 func TestApplyServiceRestartRequestRejectsSupersededConfig(t *testing.T) {
 	dir := t.TempDir()
-	stage3Config(t, dir)
+	restartTestConfig(t, dir)
 	request, err := servicecoordination.NewRestartRequest("obsolete-fingerprint", false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestApplyServiceRestartRequestRejectsSupersededConfig(t *testing.T) {
 	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
 		t.Fatal(err)
 	}
-	manager := &stage3Manager{}
+	manager := &restartTestManager{}
 	if err := applyServiceRestartRequest(context.Background(), manager, dir, request); err != nil {
 		t.Fatal(err)
 	}
@@ -191,10 +191,10 @@ func TestApplyServiceRestartRequestRejectsSupersededConfig(t *testing.T) {
 
 func TestApplyServiceRestartRequestUsesTheVerifiedConfigSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	active := stage3Config(t, dir)
+	active := restartTestConfig(t, dir)
 	desired := active
 	desired.Android.RunnerImage = "credimi-runner:replacement"
-	digest := stage3ConfigDigest(t, dir)
+	digest := restartTestConfigDigest(t, dir)
 	request, err := servicecoordination.NewRestartRequest(digest, false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +213,7 @@ func TestApplyServiceRestartRequestUsesTheVerifiedConfigSnapshot(t *testing.T) {
 		return cfg, gotDigest, err
 	}
 	t.Cleanup(func() { loadServiceConfigSnapshot = oldSnapshot })
-	manager := &stage3Manager{status: servicemanager.Status{Running: true}}
+	manager := &restartTestManager{status: servicemanager.Status{Running: true}}
 	if err := applyServiceRestartRequest(context.Background(), manager, dir, request); err != nil {
 		t.Fatal(err)
 	}
@@ -231,15 +231,15 @@ func TestApplyServiceRestartRequestUsesTheVerifiedConfigSnapshot(t *testing.T) {
 
 func TestApplyServiceRestartRequestRecordsRestartFailure(t *testing.T) {
 	dir := t.TempDir()
-	stage3Config(t, dir)
-	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
+	restartTestConfig(t, dir)
+	request, err := servicecoordination.NewRestartRequest(restartTestConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
 		t.Fatal(err)
 	}
-	manager := &stage3Manager{restartErr: errors.New("restart unavailable")}
+	manager := &restartTestManager{restartErr: errors.New("restart unavailable")}
 	if err := applyServiceRestartRequest(context.Background(), manager, dir, request); err == nil {
 		t.Fatal("restart failure was not returned")
 	}
@@ -254,16 +254,16 @@ func TestApplyServiceRestartRequestRecordsRestartFailure(t *testing.T) {
 
 func TestApplyServiceRestartRequestDoesNotRestartAlreadyAppliedService(t *testing.T) {
 	dir := t.TempDir()
-	cfg := stage3Config(t, dir)
+	cfg := restartTestConfig(t, dir)
 	fingerprint := servicemanager.ServiceConfigFingerprint(cfg, true)
-	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
+	request, err := servicecoordination.NewRestartRequest(restartTestConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
 		t.Fatal(err)
 	}
-	manager := &stage3Manager{status: servicemanager.Status{Running: true}}
+	manager := &restartTestManager{status: servicemanager.Status{Running: true}}
 	if err := applyServiceRestartRequest(context.Background(), manager, dir, request); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestApplyServiceRestartRequestRecordsConfigurationLoadFailure(t *testing.T)
 	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
 		t.Fatal(err)
 	}
-	if err := applyServiceRestartRequest(context.Background(), &stage3Manager{}, dir, request); err == nil {
+	if err := applyServiceRestartRequest(context.Background(), &restartTestManager{}, dir, request); err == nil {
 		t.Fatal("missing configuration was not returned")
 	}
 	result, err := servicecoordination.ReadRestartResult(dir)
@@ -299,8 +299,8 @@ func TestApplyServiceRestartRequestRecordsConfigurationLoadFailure(t *testing.T)
 
 func TestApplyServiceRestartRequestRecordsReplacementReadinessFailure(t *testing.T) {
 	dir := t.TempDir()
-	stage3Config(t, dir)
-	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
+	restartTestConfig(t, dir)
+	request, err := servicecoordination.NewRestartRequest(restartTestConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +309,7 @@ func TestApplyServiceRestartRequestRecordsReplacementReadinessFailure(t *testing
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := applyServiceRestartRequest(ctx, &stage3Manager{}, dir, request); err == nil {
+	if err := applyServiceRestartRequest(ctx, &restartTestManager{}, dir, request); err == nil {
 		t.Fatal("canceled replacement was not returned")
 	}
 	result, err := servicecoordination.ReadRestartResult(dir)
@@ -337,7 +337,7 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"controller_id": "replacement", "config_fingerprint": "runtime-plan"})
 	}))
 	defer probe.Close()
-	manager := &stage3Manager{
+	manager := &restartTestManager{
 		status:     servicemanager.Status{ServiceRestartRequired: true},
 		logStarted: make(chan struct{}),
 	}
@@ -352,7 +352,7 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	request, err := servicecoordination.NewRestartRequest(stage3ConfigDigest(t, dir), false, nowForTest())
+	request, err := servicecoordination.NewRestartRequest(restartTestConfigDigest(t, dir), false, nowForTest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	manager := &stage3Manager{logsExitOnce: true, logStarted: make(chan struct{})}
+	manager := &restartTestManager{logsExitOnce: true, logStarted: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- followAttachedService(ctx, manager, dir) }()
@@ -440,7 +440,7 @@ func TestAttachedHostStopsAfterCoordinatorOwnershipIsReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	manager := &stage3Manager{logStarted: make(chan struct{})}
+	manager := &restartTestManager{logStarted: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)

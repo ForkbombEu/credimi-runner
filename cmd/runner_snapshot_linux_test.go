@@ -82,7 +82,7 @@ func (r *snapshotDockerRunner) Output(_ context.Context, _ string, args []string
 
 func TestApplyServiceRestartRequestBindsDockerRestartToVerifiedSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	active := stage3Config(t, dir)
+	active := restartTestConfig(t, dir)
 	active.Android.RunnerImage = "image:a"
 	active.Android.PullPolicy = "never"
 	active.Credimi.URL = "http://203.0.113.10:8090"
@@ -96,7 +96,7 @@ func TestApplyServiceRestartRequestBindsDockerRestartToVerifiedSnapshot(t *testi
 	}
 	desired := active
 	desired.Android.RunnerImage = "image:b"
-	digest := stage3ConfigDigest(t, dir)
+	digest := restartTestConfigDigest(t, dir)
 	request, err := servicecoordination.NewRestartRequest(digest, true, nowForTest())
 	if err != nil {
 		t.Fatal(err)

@@ -83,6 +83,7 @@ func ServiceCapabilitiesFromEnvironment(values map[string]string) (ServiceCapabi
 type serviceConfigProjection struct {
 	Configured             bool                     `json:"configured"`
 	APIPublishedPort       string                   `json:"api_published_port,omitempty"`
+	DashboardListen        string                   `json:"dashboard_listen,omitempty"`
 	DashboardPublishedPort string                   `json:"dashboard_published_port,omitempty"`
 	ReadHeaderTimeout      string                   `json:"read_header_timeout"`
 	ShutdownTimeout        string                   `json:"shutdown_timeout"`
@@ -150,7 +151,10 @@ func serviceConfigProjectionForHost(cfg config.Config, configured bool, host Hos
 			ADBKeysPath:     cfg.Android.ADBKeysPath,
 		},
 	}
-	if networkMode != "host" {
+	if networkMode == "host" {
+		host, port := effectiveDashboardListen(cfg.Server.DashboardListen)
+		projection.DashboardListen = net.JoinHostPort(host, port)
+	} else {
 		_, projection.APIPublishedPort = listenPort(cfg.Server.APIListen, "8050")
 		_, projection.DashboardPublishedPort = listenPort(cfg.Server.DashboardListen, "8051")
 	}

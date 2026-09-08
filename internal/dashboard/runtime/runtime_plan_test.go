@@ -456,6 +456,106 @@ func TestDiffValuesForOSClassifiesNativeRuntimeSettings(t *testing.T) {
 	}
 }
 
+func TestDiffValuesForOSUsesEffectiveLinuxListenerTopology(t *testing.T) {
+	base := runnerconfig.Bootstrap()
+	base.Android.Network = "host"
+	base.Server.APIListen = "127.0.0.1:8050"
+	base.Server.DashboardListen = "127.0.0.1:8051"
+
+	tests := []struct {
+		name    string
+		mutate  func(*runnerconfig.Config)
+		service bool
+	}{
+		{
+			name: "host runner port",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.APIListen = "127.0.0.1:9050"
+			},
+		},
+		{
+			name: "host runner host",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.APIListen = "0.0.0.0:8050"
+			},
+		},
+		{
+			name: "host dashboard port",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.DashboardListen = "127.0.0.1:9051"
+			},
+			service: true,
+		},
+		{
+			name: "host dashboard host",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.DashboardListen = "127.0.0.2:8051"
+			},
+			service: true,
+		},
+		{
+			name: "host dashboard wildcard equivalent",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.DashboardListen = "[::]:8051"
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			desired := base
+			tc.mutate(&desired)
+			diff := DiffValuesForOS(ValuesFromTypedConfig(base), ValuesFromTypedConfig(desired), "linux")
+			if got := hasClass(diff, ApplyServiceRestartRequired); got != tc.service {
+				t.Fatalf("service restart=%t want %t: %+v", got, tc.service, diff)
+			}
+		})
+	}
+
+	bridge := base
+	bridge.Android.Network = "credimi-runner"
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*runnerconfig.Config)
+		service bool
+	}{
+		{
+			name: "bridge runner host",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.APIListen = "0.0.0.0:8050"
+			},
+		},
+		{
+			name: "bridge runner port",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.APIListen = "127.0.0.1:9050"
+			},
+			service: true,
+		},
+		{
+			name: "bridge dashboard host",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.DashboardListen = "127.0.0.2:8051"
+			},
+		},
+		{
+			name: "bridge dashboard port",
+			mutate: func(cfg *runnerconfig.Config) {
+				cfg.Server.DashboardListen = "127.0.0.1:9051"
+			},
+			service: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desired := bridge
+			tc.mutate(&desired)
+			diff := DiffValuesForOS(ValuesFromTypedConfig(bridge), ValuesFromTypedConfig(desired), "linux")
+			if got := hasClass(diff, ApplyServiceRestartRequired); got != tc.service {
+				t.Fatalf("service restart=%t want %t: %+v", got, tc.service, diff)
+			}
+		})
+	}
+}
+
 func TestServiceRestartRequiredUsesAppliedFingerprint(t *testing.T) {
 	cfg := runnerconfig.Bootstrap()
 	values := ValuesFromTypedConfig(cfg)
