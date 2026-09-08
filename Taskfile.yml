@@ -50,6 +50,42 @@ tasks:
         -t {{.LOCAL_DOCKER_IMAGE}}
         .
 
+  "docker:coolify:build-local":
+    desc: Build and tag the unified image for local Coolify-style testing
+    cmds:
+      - task docker:build-local
+      - docker tag {{.LOCAL_DOCKER_IMAGE}} ghcr.io/forkbombeu/credimi-runner:latest
+
+  "docker:coolify:up-local":
+    desc: Start the local Coolify-style emulator runner and leave it running
+    deps: ["docker:coolify:build-local"]
+    cmds:
+      - |
+        set -euo pipefail
+        command -v docker >/dev/null || { echo "Docker is required" >&2; exit 1; }
+        docker info >/dev/null
+        test "$(docker info --format '{{"{{"}}.Architecture{{"}}"}}')" = amd64 || { echo "local Coolify testing requires an amd64 Docker daemon" >&2; exit 1; }
+        test -r /dev/kvm && test -w /dev/kvm || { echo "/dev/kvm must exist and be readable and writable" >&2; exit 1; }
+        for key in CREDIMI_URL CREDIMI_INTERNAL_ADMIN_KEY TEMPORAL_ADDRESS CREDIMI_RUNNER_ID CREDIMI_DEVICE_ID BASE_NAME GOLDEN_PATH ADB_PRIVATE_KEY ADB_PUBLIC_KEY PORT COOLIFY_URL; do
+          test -n "${!key:-}" || { echo "$key is required" >&2; exit 1; }
+        done
+        test -d "${HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}" || { echo "HOST_AVD_HOME_PATH must name an existing directory" >&2; exit 1; }
+        test -d "${HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}" || { echo "HOST_AVD_GOLDEN_PATH must name an existing directory" >&2; exit 1; }
+        echo "Warning: successful startup will register/update ${CREDIMI_RUNNER_ID} and ${CREDIMI_DEVICE_ID} against ${CREDIMI_URL}."
+        docker compose -p credimi-runner-coolify-local -f docker-compose.coolify.yaml -f docker-compose.coolify.local.yaml config >/dev/null
+        docker compose -p credimi-runner-coolify-local -f docker-compose.coolify.yaml -f docker-compose.coolify.local.yaml up --detach --force-recreate --pull never runner_emulator
+        printf '\nCoolify-style runner is running.\n\nFollow logs:\n  task docker:coolify:logs\n\nCheck health from host:\n  curl %s/health\n\nCheck readiness from host:\n  curl %s/readyz\n\nInspect directly:\n  docker compose -p credimi-runner-coolify-local -f docker-compose.coolify.yaml -f docker-compose.coolify.local.yaml exec runner_emulator bash\n\nStop:\n  task docker:coolify:down\n' "${COOLIFY_URL%%,*}" "${COOLIFY_URL%%,*}"
+
+  "docker:coolify:logs":
+    desc: Follow local Coolify-style runner logs
+    cmds:
+      - docker compose -p credimi-runner-coolify-local -f docker-compose.coolify.yaml -f docker-compose.coolify.local.yaml logs -f --tail=200 runner_emulator
+
+  "docker:coolify:down":
+    desc: Stop and remove the local Coolify-style test stack without volumes
+    cmds:
+      - docker compose -p credimi-runner-coolify-local -f docker-compose.coolify.yaml -f docker-compose.coolify.local.yaml down
+
   format:
     desc: Format Go code
     cmds:

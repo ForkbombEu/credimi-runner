@@ -1,0 +1,116 @@
+services:
+  runner_emulator:
+    image: ghcr.io/forkbombeu/credimi-runner:latest
+    pull_policy: always
+    platform: linux/amd64
+    restart: unless-stopped
+    privileged: true
+    cpuset: "${CPUSET:-3-6}"
+    cpus: "${CPUS:-4.0}"
+
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+    devices:
+      - /dev/kvm:/dev/kvm
+
+    volumes:
+      - type: bind
+        source: "${HOST_AVD_HOME_PATH:-/srv/credimi/avd-home}"
+        target: /avd-home
+      - type: bind
+        source: "${HOST_AVD_GOLDEN_PATH:-/srv/credimi/avd-golden}"
+        target: /avd-golden
+      - type: volume
+        source: android_sdk
+        target: /opt/android-sdk
+      - type: volume
+        source: runner_state
+        target: /var/lib/credimi-runner
+
+    environment:
+      QEMU_AUDIO_DRV: none
+      CREDIMI_RUNNER_CONFIG_DIR: /etc/credimi-runner
+      ANDROID_AVD_HOME: /avd-home
+      ADB_VENDOR_KEYS: /root/.android
+      CREDIMI_URL: ${CREDIMI_URL:?https://credimi.io}
+      CREDIMI_INTERNAL_ADMIN_KEY: ${CREDIMI_INTERNAL_ADMIN_KEY:?}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:?temporal.credimi.io:7233}
+      OTEL_ENABLED: ${OTEL_ENABLED:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-credimi-runner}
+      BASE_NAME: ${BASE_NAME:?credimi}
+      GOLDEN_PATH: ${GOLDEN_PATH:-/avd-golden/credimi-golden}
+      CREDIMI_RUNNER_ID: ${CREDIMI_RUNNER_ID:?}
+      CREDIMI_DEVICE_ID: ${CREDIMI_DEVICE_ID:?}
+      ADB_PRIVATE_KEY: ${ADB_PRIVATE_KEY:?}
+      ADB_PUBLIC_KEY: ${ADB_PUBLIC_KEY:?}
+      PORT: ${PORT:-8060}
+      COOLIFY_URL: ${COOLIFY_URL:?an absolute execution API URL is required}
+
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - |
+        set -euo pipefail
+        umask 077
+
+        toml_string() {
+          local value="$$1"
+          case "$$value" in
+            *$$'\n'*|*$$'\r'*|*[[:cntrl:]]*)
+              echo "TOML values must not contain control characters" >&2
+              exit 1
+              ;;
+          esac
+          value="$${value//\\/\\\\}"
+          value="$${value//\"/\\\"}"
+          printf '"%s"' "$$value"
+        }
+
+        public_url=""
+        IFS=, read -r -a coolify_urls <<< "$$COOLIFY_URL"
+        for candidate in "$${coolify_urls[@]}"; do
+          candidate="$${candidate#"$${candidate%%[![:space:]]*}"}"
+          candidate="$${candidate%"$${candidate##*[![:space:]]}"}"
+          if [[ "$$candidate" =~ ^https?://[^[:space:]/]+(/[^[:space:]]*)?$$ ]]; then
+            public_url="$$candidate"
+            break
+          fi
+        done
+        if [[ -z "$$public_url" ]]; then
+          echo "COOLIFY_URL must contain an absolute HTTP(S) URL" >&2
+          exit 1
+        fi
+        case "$$OTEL_ENABLED" in true|false) ;; *) echo "OTEL_ENABLED must be true or false" >&2; exit 1 ;; esac
+
+        runner_name="$${CREDIMI_RUNNER_ID##*/}"
+        runner_organization="$${CREDIMI_RUNNER_ID%%/*}"
+        device_name="$${CREDIMI_DEVICE_ID##*/}"
+
+        mkdir -p /etc/credimi-runner /root/.android
+        printf '%s' "$$ADB_PRIVATE_KEY" > /root/.android/adbkey
+        chmod 0600 /root/.android/adbkey
+        printf '%s' "$$ADB_PUBLIC_KEY" > /root/.android/adbkey.pub
+        chmod 0644 /root/.android/adbkey.pub
+
+        {
+          printf 'schema_version = 1\n\n'
+          printf '[runner]\nid = '; toml_string "$$CREDIMI_RUNNER_ID"; printf '\nname = '; toml_string "$$runner_name"; printf '\norganization = '; toml_string "$$runner_organization"; printf '\npublished = true\n\n'
+          printf '[credimi]\nurl = '; toml_string "$$CREDIMI_URL"; printf '\nauth_mode = "internal_admin"\ninternal_admin_key = '; toml_string "$$CREDIMI_INTERNAL_ADMIN_KEY"; printf '\n\n'
+          printf '[temporal]\naddress = '; toml_string "$$TEMPORAL_ADDRESS"; printf '\n\n'
+          printf '[observability]\nenabled = %s\notlp_endpoint = ' "$$OTEL_ENABLED"; toml_string "$$OTEL_EXPORTER_OTLP_ENDPOINT"; printf '\nservice_name = '; toml_string "$$OTEL_SERVICE_NAME"; printf '\n\n'
+          printf '[server]\napi_listen = "0.0.0.0:%s"\ndashboard_listen = "127.0.0.1:8051"\nopen_browser = false\n\n' "$$PORT"
+          printf '[exposure]\nmode = "manual"\npublic_url = '; toml_string "$$public_url"; printf '\n\n'
+          printf '[storage]\nstate_dir = "/var/lib/credimi-runner"\n\n'
+          printf '[[devices]]\nid = '; toml_string "$$CREDIMI_DEVICE_ID"; printf '\nname = '; toml_string "$$device_name"; printf '\ntype = "android_emulator"\nenabled = true\n\n'
+          printf '[devices.android_emulator]\napi_level = 35\nabi = "x86_64"\nsystem_image = "system-images;android-35;google_apis;x86_64"\nbase_name = '; toml_string "$$BASE_NAME"; printf '\ngolden_source = '; toml_string "$$GOLDEN_PATH"; printf '\nheadless = true\nmemory_mb = 2048\ncores = 2\n'
+        } > /etc/credimi-runner/config.toml
+        chmod 0600 /etc/credimi-runner/config.toml
+        exec /usr/local/bin/credimi-runner internal-service
+
+volumes:
+  android_sdk:
+  runner_state:
