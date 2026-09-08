@@ -193,9 +193,9 @@ func TestRootStartsServiceOnceWhenStatusUnavailable(t *testing.T) {
 
 func TestRootPassesBootstrapOptionsToServiceManager(t *testing.T) {
 	isolateRootConfig(t)
-	oldFactory, oldWait, oldOpen, oldImage, oldPolicy := serviceManagerFactory, waitForDashboardFunc, dashboardOpen, bootstrapImage, bootstrapPullPolicy
+	oldFactory, oldWait, oldOpen, oldImage, oldPolicy, oldDashboardListen := serviceManagerFactory, waitForDashboardFunc, dashboardOpen, bootstrapImage, bootstrapPullPolicy, dashboardListen
 	t.Cleanup(func() {
-		serviceManagerFactory, waitForDashboardFunc, dashboardOpen, bootstrapImage, bootstrapPullPolicy = oldFactory, oldWait, oldOpen, oldImage, oldPolicy
+		serviceManagerFactory, waitForDashboardFunc, dashboardOpen, bootstrapImage, bootstrapPullPolicy, dashboardListen = oldFactory, oldWait, oldOpen, oldImage, oldPolicy, oldDashboardListen
 	})
 	fake := &rootManagerFake{}
 	var got servicemanager.BootstrapOptions
@@ -207,6 +207,7 @@ func TestRootPassesBootstrapOptionsToServiceManager(t *testing.T) {
 	dashboardOpen = false
 	bootstrapImage = "credimi-runner:local"
 	bootstrapPullPolicy = "never"
+	dashboardListen = "192.0.2.10:8051"
 	ctx, cancel := context.WithCancel(context.Background())
 	command := &cobra.Command{Use: "test"}
 	command.SetContext(ctx)
@@ -216,7 +217,7 @@ func TestRootPassesBootstrapOptionsToServiceManager(t *testing.T) {
 	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	if got.Image != bootstrapImage || got.PullPolicy != bootstrapPullPolicy {
+	if got.Image != bootstrapImage || got.PullPolicy != bootstrapPullPolicy || got.DashboardListen != dashboardListen {
 		t.Fatalf("bootstrap options = %+v", got)
 	}
 }

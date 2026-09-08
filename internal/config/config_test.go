@@ -359,7 +359,7 @@ func TestDefaultsPathsAndLoadResolution(t *testing.T) {
 
 func TestBootstrapProvidesFirstRunServerDefaults(t *testing.T) {
 	cfg := Bootstrap()
-	if cfg.SchemaVersion != SchemaVersion || cfg.Server.APIListen != "0.0.0.0:8050" || cfg.Server.DashboardListen != "127.0.0.1:8051" || cfg.Exposure.Mode != "quick_tunnel" || !cfg.Server.OpenBrowser {
+	if cfg.SchemaVersion != SchemaVersion || cfg.Server.APIListen != "0.0.0.0:8050" || cfg.Server.DashboardListen != "0.0.0.0:8051" || cfg.Exposure.Mode != "quick_tunnel" || !cfg.Server.OpenBrowser {
 		t.Fatalf("bootstrap config = %#v", cfg)
 	}
 }

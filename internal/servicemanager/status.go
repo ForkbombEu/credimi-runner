@@ -49,6 +49,14 @@ func effectiveDashboardListen(listen string) (string, string) {
 	return normalizeListenerHost(host), port
 }
 
+func dashboardBindListen(listen string) (string, string) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listen))
+	if err != nil || port == "" {
+		return "0.0.0.0", "8051"
+	}
+	return host, port
+}
+
 func isEquivalentListener(wantHost, wantPort, actualHost, actualPort string) bool {
 	if wantPort != actualPort {
 		return false

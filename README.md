@@ -46,6 +46,7 @@ service.
 ```bash
 credimi-runner
 credimi-runner service start
+credimi-runner --dashboard-listen 0.0.0.0:8051
 credimi-runner service status
 credimi-runner logs --follow
 
@@ -61,9 +62,10 @@ a per-user LaunchAgent. Runtime stop keeps the Dashboard alive while closing
 the runner API, workers, heartbeat and edge exposure. Service restart preserves
 the runtime desired state and lets the application restore it after startup.
 
-The Dashboard control API listens on `127.0.0.1:8051`. The execution API is
-owned by the active runtime generation (normally port `8050`). Useful endpoints
-include:
+The Dashboard control API listens on `0.0.0.0:8051` by default. Set
+`server.dashboard_listen` in `config.toml`, or pass `--dashboard-listen` when
+starting the CLI service, to use another address. The execution API is owned by
+the active runtime generation (normally port `8050`). Useful endpoints include:
 
 ```text
 GET  /healthz

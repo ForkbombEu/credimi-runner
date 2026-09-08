@@ -276,6 +276,9 @@ func dashboardControllerHost(desiredHost, bindHost, serviceNetworkMode string) s
 	if serviceNetworkMode == "bridge" {
 		return "127.0.0.1"
 	}
+	if bindHost == "0.0.0.0" || bindHost == "::" {
+		return "127.0.0.1"
+	}
 	return bindHost
 }
 
@@ -330,8 +333,8 @@ func (a *Application) shutdown() error {
 }
 func dashboardHostPort(values map[string]string) (string, string) {
 	host := strings.TrimSpace(values["DASHBOARD_HOST"])
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
+	if host == "" {
+		host = "0.0.0.0"
 	}
 	port := values["DASHBOARD_PORT"]
 	if port == "" {

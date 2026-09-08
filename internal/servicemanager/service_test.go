@@ -512,6 +512,43 @@ func TestDockerManagerAppliesBootstrapOptionsBeforeConfigExists(t *testing.T) {
 	}
 }
 
+func TestDockerManagerPersistsDashboardListenOverride(t *testing.T) {
+	dir := t.TempDir()
+	cfg := configForDevices()
+	cfg.Runner = config.RunnerConfig{ID: "org/runner", Name: "runner", Organization: "org"}
+	cfg.Credimi = config.CredimiConfig{URL: "https://credimi.example", AuthMode: "user", UserAPIKey: "key"}
+	cfg.Temporal.Address = "temporal.example:7233"
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	m := NewDockerManagerWithBootstrap(dir, "", BootstrapOptions{DashboardListen: "0.0.0.0:9051"})
+	m.Runner = &fakeCommandRunner{}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := config.LoadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Server.DashboardListen != "0.0.0.0:9051" {
+		t.Fatalf("dashboard listen = %q", persisted.Server.DashboardListen)
+	}
+}
+
+func TestBuildServiceSpecPublishesDefaultDashboardOnAllInterfaces(t *testing.T) {
+	cfg := configForDevices()
+	spec, err := BuildServiceSpec(cfg, testHost(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, port := range spec.Ports {
+		if port.ContainerPort == "8051" && port.HostIP == "0.0.0.0" {
+			return
+		}
+	}
+	t.Fatalf("default dashboard binding missing from %#v", spec.Ports)
+}
+
 func TestDockerManagerRejectsInvalidBootstrapPullPolicy(t *testing.T) {
 	m := NewDockerManagerWithBootstrap(t.TempDir(), "", BootstrapOptions{PullPolicy: "later"})
 	m.Runner = &fakeCommandRunner{}
@@ -901,7 +938,7 @@ func TestServiceCompatibilityUsesEffectiveDashboardListenerTopology(t *testing.T
 			mutate: func(cfg *config.Config) {
 				cfg.Server.DashboardListen = "0.0.0.0:8051"
 			},
-			compatible: true,
+			compatible: false,
 		},
 		{
 			name:    "host dashboard ipv6 wildcard equivalent",
@@ -909,7 +946,7 @@ func TestServiceCompatibilityUsesEffectiveDashboardListenerTopology(t *testing.T
 			mutate: func(cfg *config.Config) {
 				cfg.Server.DashboardListen = "[::]:8051"
 			},
-			compatible: true,
+			compatible: false,
 		},
 		{
 			name:    "bridge dashboard host change",
@@ -917,7 +954,7 @@ func TestServiceCompatibilityUsesEffectiveDashboardListenerTopology(t *testing.T
 			mutate: func(cfg *config.Config) {
 				cfg.Server.DashboardListen = "127.0.0.2:8051"
 			},
-			compatible: true,
+			compatible: false,
 		},
 		{
 			name:    "bridge dashboard port change",

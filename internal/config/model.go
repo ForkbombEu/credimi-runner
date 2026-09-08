@@ -79,7 +79,7 @@ func ActiveConfigOf(cfg Config) *ActiveConfig { return cfg.active }
 
 // Bootstrap is used by the first-run dashboard before a TOML file exists.
 func Bootstrap() Config {
-	return Config{SchemaVersion: SchemaVersion, Credimi: CredimiConfig{AuthMode: "user"}, Runner: RunnerConfig{}, Server: ServerConfig{APIListen: "0.0.0.0:8050", DashboardListen: "127.0.0.1:8051", OpenBrowser: true}, Exposure: ExposureConfig{Mode: "quick_tunnel"}}
+	return Config{SchemaVersion: SchemaVersion, Credimi: CredimiConfig{AuthMode: "user"}, Runner: RunnerConfig{}, Server: ServerConfig{APIListen: "0.0.0.0:8050", DashboardListen: "0.0.0.0:8051", OpenBrowser: true}, Exposure: ExposureConfig{Mode: "quick_tunnel"}}
 }
 
 type RunnerConfig struct {

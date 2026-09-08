@@ -25,7 +25,7 @@ import (
 
 func TestDashboardHostPortDefaults(t *testing.T) {
 	host, port := dashboardHostPort(map[string]string{"DASHBOARD_HOST": "0.0.0.0"})
-	if host != "127.0.0.1" || port != "8051" {
+	if host != "0.0.0.0" || port != "8051" {
 		t.Fatalf("got %s:%s", host, port)
 	}
 	host, port = dashboardHostPort(map[string]string{"DASHBOARD_HOST": "127.0.0.2", "DASHBOARD_PORT": "9000"})
@@ -304,8 +304,8 @@ func TestApplicationPublishesReachableControllerURLs(t *testing.T) {
 		{"native ipv4", "127.0.0.1:9051", "", "127.0.0.1:9051", "http://127.0.0.1:9051"},
 		{"native alternate loopback", "127.0.0.2:9051", "", "127.0.0.2:9051", "http://127.0.0.2:9051"},
 		{"native ipv6", "[::1]:9051", "", "[::1]:9051", "http://[::1]:9051"},
-		{"native wildcard ipv4", "0.0.0.0:9051", "", "127.0.0.1:9051", "http://127.0.0.1:9051"},
-		{"native wildcard ipv6", "[::]:9051", "", "127.0.0.1:9051", "http://127.0.0.1:9051"},
+		{"native wildcard ipv4", "0.0.0.0:9051", "", "0.0.0.0:9051", "http://127.0.0.1:9051"},
+		{"native wildcard ipv6", "[::]:9051", "", "[::]:9051", "http://127.0.0.1:9051"},
 		{"bridge", "127.0.0.1:9051", "bridge", "0.0.0.0:9051", "http://127.0.0.1:9051"},
 		{"bridge explicit address", "192.0.2.10:9051", "bridge", "0.0.0.0:9051", "http://127.0.0.1:9051"},
 		{"bridge ipv6 loopback", "[::1]:9051", "bridge", "0.0.0.0:9051", "http://127.0.0.1:9051"},

@@ -494,10 +494,11 @@ func TestDiffValuesForOSUsesEffectiveLinuxListenerTopology(t *testing.T) {
 			service: true,
 		},
 		{
-			name: "host dashboard wildcard equivalent",
+			name: "host dashboard wildcard binding change",
 			mutate: func(cfg *runnerconfig.Config) {
 				cfg.Server.DashboardListen = "[::]:8051"
 			},
+			service: true,
 		},
 	}
 	for _, tc := range tests {
@@ -536,6 +537,7 @@ func TestDiffValuesForOSUsesEffectiveLinuxListenerTopology(t *testing.T) {
 			mutate: func(cfg *runnerconfig.Config) {
 				cfg.Server.DashboardListen = "127.0.0.2:8051"
 			},
+			service: true,
 		},
 		{
 			name: "bridge dashboard port",

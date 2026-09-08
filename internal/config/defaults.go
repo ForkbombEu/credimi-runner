@@ -10,7 +10,7 @@ func ApplyDefaults(cfg *Config) error {
 		cfg.Server.APIListen = "0.0.0.0:8050"
 	}
 	if cfg.Server.DashboardListen == "" {
-		cfg.Server.DashboardListen = "127.0.0.1:8051"
+		cfg.Server.DashboardListen = "0.0.0.0:8051"
 	}
 	if cfg.Server.ReadHeaderTimeout == 0 {
 		cfg.Server.ReadHeaderTimeout = Duration(time.Minute)

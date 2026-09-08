@@ -22,6 +22,7 @@ var debugVerbose bool
 var configPath string
 var bootstrapImage string
 var bootstrapPullPolicy string
+var dashboardListen string
 
 var rootCmd = &cobra.Command{Use: "credimi-runner", Short: "Credimi mobile runner", Version: buildinfo.String(), SilenceErrors: true, SilenceUsage: true, RunE: runRoot}
 
@@ -40,7 +41,7 @@ type snapshotServiceMatcher interface {
 }
 
 func currentServiceManager() servicemanager.Manager {
-	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy})
+	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy, DashboardListen: dashboardListen})
 }
 
 var waitForDashboardFunc = func(ctx context.Context) (string, error) {
@@ -223,6 +224,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to config.toml")
 	rootCmd.PersistentFlags().StringVar(&bootstrapImage, "bootstrap-image", "", "Runner image to use before the first config.toml is saved")
 	rootCmd.PersistentFlags().StringVar(&bootstrapPullPolicy, "bootstrap-pull-policy", "", "Runner image pull policy to use before the first config.toml is saved")
+	rootCmd.PersistentFlags().StringVar(&dashboardListen, "dashboard-listen", "", "Dashboard bind address for this start (default: 0.0.0.0:8051)")
 }
 
 func effectiveConfigDir() string {

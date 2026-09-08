@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,6 +79,17 @@ func (m *DockerManager) Start(ctx context.Context) error {
 				return fmt.Errorf("invalid bootstrap pull policy %q: use always, if-not-present, or never", policy)
 			}
 			cfg.Android.PullPolicy = policy
+		}
+	}
+	if listen := strings.TrimSpace(m.Bootstrap.DashboardListen); listen != "" {
+		if _, _, listenErr := net.SplitHostPort(listen); listenErr != nil {
+			return fmt.Errorf("invalid dashboard listen address %q: %w", listen, listenErr)
+		}
+		cfg.Server.DashboardListen = listen
+		if !errors.Is(err, os.ErrNotExist) {
+			if writeErr := runnerconfig.WriteFile(filepath.Join(m.ConfigDir, "config.toml"), cfg); writeErr != nil {
+				return fmt.Errorf("save dashboard listen address: %w", writeErr)
+			}
 		}
 	}
 	return m.startWithConfig(ctx, cfg)

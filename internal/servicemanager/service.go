@@ -16,12 +16,15 @@ type LogOptions struct {
 
 const ComposeProjectEnv = "CREDIMI_COMPOSE_PROJECT"
 
-// BootstrapOptions overrides the image used while the first service
-// configuration is being prepared. It is intentionally owned by the service
-// manager because only that manager renders and starts the service.
+// BootstrapOptions configures CLI-owned service startup. Image and PullPolicy
+// apply while the first service configuration is being prepared; an explicit
+// DashboardListen override is persisted before an existing service is started.
+// It is intentionally owned by the service manager because only that manager
+// renders and starts the service.
 type BootstrapOptions struct {
-	Image      string
-	PullPolicy string
+	Image           string
+	PullPolicy      string
+	DashboardListen string
 }
 
 type Status struct {

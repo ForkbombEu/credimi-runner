@@ -85,6 +85,7 @@ type serviceConfigProjection struct {
 	APIPublishedPort       string                   `json:"api_published_port,omitempty"`
 	DashboardListen        string                   `json:"dashboard_listen,omitempty"`
 	DashboardPublishedPort string                   `json:"dashboard_published_port,omitempty"`
+	DashboardPublishHost   string                   `json:"dashboard_publish_host,omitempty"`
 	ReadHeaderTimeout      string                   `json:"read_header_timeout"`
 	ShutdownTimeout        string                   `json:"shutdown_timeout"`
 	APIPublishHost         string                   `json:"api_publish_host,omitempty"`
@@ -152,11 +153,12 @@ func serviceConfigProjectionForHost(cfg config.Config, configured bool, host Hos
 		},
 	}
 	if networkMode == "host" {
-		host, port := effectiveDashboardListen(cfg.Server.DashboardListen)
+		host, port := dashboardBindListen(cfg.Server.DashboardListen)
 		projection.DashboardListen = net.JoinHostPort(host, port)
 	} else {
 		_, projection.APIPublishedPort = listenPort(cfg.Server.APIListen, "8050")
 		_, projection.DashboardPublishedPort = listenPort(cfg.Server.DashboardListen, "8051")
+		projection.DashboardPublishHost = serviceDashboardPublishHost(cfg)
 	}
 	knownHosts := map[string]struct{}{}
 	for _, device := range cfg.Devices {
@@ -320,6 +322,11 @@ func serviceAPIPublishHost(cfg config.Config, host HostContext) string {
 		return "0.0.0.0"
 	}
 	return "127.0.0.1"
+}
+
+func serviceDashboardPublishHost(cfg config.Config) string {
+	host, _ := dashboardBindListen(cfg.Server.DashboardListen)
+	return host
 }
 
 // ServiceHostLocalityUnknown reports whether a hostname relevant to the
