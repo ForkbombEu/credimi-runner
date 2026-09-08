@@ -1252,6 +1252,9 @@ func (s *Server) requestServiceRestart() error {
 }
 
 func (s *Server) preserveRuntimeIntentForServiceRestart() error {
+	// Ordinary saves preserve the user's existing runtime intent. Setup uses
+	// requestRuntimeStartForServiceRestart because successful setup has an
+	// explicit target: the newly configured runner must start.
 	if s.runtime.Status().Desired != runtimesupervisor.DesiredRunning {
 		return nil
 	}
@@ -1261,6 +1264,17 @@ func (s *Server) preserveRuntimeIntentForServiceRestart() error {
 	}
 	if err := requester.RequestStart(); err != nil {
 		return fmt.Errorf("persist runtime start request: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) requestRuntimeStartForServiceRestart() error {
+	requester, ok := s.runtime.(runtimeStartRequester)
+	if !ok {
+		return errors.New("runtime controller cannot persist setup start request")
+	}
+	if err := requester.RequestStart(); err != nil {
+		return fmt.Errorf("persist setup start request: %w", err)
 	}
 	return nil
 }
@@ -1519,7 +1533,7 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
 	if s.serviceRestartRequiredFor(diff) {
-		if err := s.preserveRuntimeIntentForServiceRestart(); err != nil {
+		if err := s.requestRuntimeStartForServiceRestart(); err != nil {
 			return err
 		}
 		s.setPendingDiff(pendingDiffForPlatform(diff, runtimeGOOS()))

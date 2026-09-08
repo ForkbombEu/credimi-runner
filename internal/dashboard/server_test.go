@@ -711,6 +711,7 @@ func TestServiceTopologyChangeRequestsAttachedHostRestart(t *testing.T) {
 	newValues := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
 	newValues["ANDROID_RUNNER_IMAGE"] = "credimi-runner:replacement"
 	s := newTestServer(t)
+	s.runtime.(*fakeRuntimeController).status = runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped}
 	s.cfg = persistDashboardValues(t, path, newValues)
 	s.composeDir = filepath.Dir(path)
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(loaded.Snapshot()), newValues, "linux")
@@ -816,6 +817,7 @@ func TestServiceTopologyChangeWaitsForAttachedHost(t *testing.T) {
 	newValues := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
 	newValues["ANDROID_RUNNER_IMAGE"] = "credimi-runner:replacement"
 	s := newTestServer(t)
+	s.runtime.(*fakeRuntimeController).status = runtimesupervisor.Status{Desired: runtimesupervisor.DesiredRunning}
 	s.cfg = persistDashboardValues(t, path, newValues)
 	s.composeDir = filepath.Dir(path)
 	if err := writeCoordinatorPresenceFixture(s.composeDir, time.Now()); err != nil {
@@ -828,6 +830,42 @@ func TestServiceTopologyChangeWaitsForAttachedHost(t *testing.T) {
 	got := s.startupSnapshot()
 	if got.Phase != StartupStarting || !strings.Contains(got.Message, "attached") {
 		t.Fatalf("attached startup state=%+v", got)
+	}
+	if got := s.runtime.(*fakeRuntimeController).requestedStarts(); got != 1 {
+		t.Fatalf("attached running runtime start requests=%d, want 1", got)
+	}
+}
+
+func TestServiceTopologyChangeWaitsForAttachedHostWithoutStartingStoppedRuntime(t *testing.T) {
+	loaded, path := testSavedConfig(t)
+	oldTyped, err := runnerconfig.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, servicemanager.ServiceConfigFingerprint(oldTyped, true))
+	newValues := dashboardruntime.Values(cloneStringMap(loaded.Snapshot()))
+	newValues["ANDROID_RUNNER_IMAGE"] = "credimi-runner:replacement"
+	s := newTestServer(t)
+	s.runtime.(*fakeRuntimeController).status = runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped}
+	s.cfg = persistDashboardValues(t, path, newValues)
+	s.composeDir = filepath.Dir(path)
+	if err := writeCoordinatorPresenceFixture(s.composeDir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(loaded.Snapshot()), newValues, "linux")
+	if err := s.applySavedConfig(context.Background(), diff); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.startupSnapshot(); got.Phase != StartupStarting || !strings.Contains(got.Message, "attached") {
+		t.Fatalf("attached stopped startup state=%+v", got)
+	}
+	fake := s.runtime.(*fakeRuntimeController)
+	if got := fake.requestedStarts(); got != 0 {
+		t.Fatalf("attached stopped runtime start requests=%d, want 0", got)
+	}
+	starts, _, _, _ := fake.counts()
+	if starts != 0 {
+		t.Fatalf("attached stopped runtime starts=%d, want 0", starts)
 	}
 }
 
@@ -2984,5 +3022,61 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	}
 	if startup := s.startupSnapshot(); startup.Phase != StartupReady {
 		t.Fatalf("setup startup phase = %q: %s", startup.Phase, startup.Message)
+	}
+}
+
+func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
+	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "previous-service")
+	s := newTestServer(t)
+	s.runtime.(*fakeRuntimeController).status = runtimesupervisor.Status{Desired: runtimesupervisor.DesiredStopped}
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/mobile-device/preview-id":
+			body = `{"device_id":"acme/runner/pixel"}`
+		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
+		default:
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	form := url.Values{
+		"CREDIMI_URL":                 {"https://credimi.example"},
+		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_RUNNER_ID":           {"acme/runner"},
+		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
+		"CREDIMI_SERVICE_MODE":        {"manual"},
+		"RUNNER_PUBLIC_URL":           {"https://runner.example"},
+		"SETUP_DEVICE_COUNT":          {"1"},
+		"SETUP_DEVICE_1_NAME":         {"Pixel"},
+		"SETUP_DEVICE_1_TYPE":         {"redroid"},
+		"SETUP_DEVICE_1_MODE":         {"no_device"},
+		"SETUP_DEVICE_1_WIFI_IP":      {"192.0.2.10"},
+		"SETUP_DEVICE_1_SERIAL":       {"redroid:5555"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := s.finishSetupSync(request, func(string) {}, true); err != nil {
+		t.Fatal(err)
+	}
+	fake := s.runtime.(*fakeRuntimeController)
+	if fake.requestedStarts() != 1 {
+		t.Fatalf("setup RequestStart calls=%d, want 1", fake.requestedStarts())
+	}
+	starts, _, _, _ := fake.counts()
+	if starts != 0 {
+		t.Fatalf("old incompatible service started runtime %d times", starts)
+	}
+	state, err := (runtimesupervisor.StateStore{Path: filepath.Join(filepath.Dir(s.cfg.Path()), "runtime-state.json")}).Load(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Desired != runtimesupervisor.DesiredRunning {
+		t.Fatalf("setup persisted desired=%q, want %q", state.Desired, runtimesupervisor.DesiredRunning)
+	}
+	if _, err := servicecoordination.ReadRestartRequest(s.composeDir); err != nil {
+		t.Fatalf("setup restart request: %v", err)
 	}
 }
