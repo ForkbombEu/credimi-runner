@@ -374,16 +374,16 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 		t.Fatal("attached log follower did not start")
 	}
 	deadline := time.After(3 * time.Second)
+	var result servicecoordination.RestartResult
 	for {
-		manager.mu.Lock()
-		restarts := manager.restarts
-		manager.mu.Unlock()
-		if restarts == 1 {
+		candidate, readErr := servicecoordination.ReadRestartResult(dir)
+		if readErr == nil {
+			result = candidate
 			break
 		}
 		select {
 		case <-deadline:
-			t.Fatal("attached host did not handle restart request")
+			t.Fatal("attached host did not finish restart request")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -391,9 +391,11 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	result, err := servicecoordination.ReadRestartResult(dir)
-	if err != nil || !result.Success {
-		t.Fatalf("result=%+v err=%v", result, err)
+	manager.mu.Lock()
+	restarts := manager.restarts
+	manager.mu.Unlock()
+	if !result.Success || restarts != 1 {
+		t.Fatalf("result=%+v restarts=%d", result, restarts)
 	}
 }
 
