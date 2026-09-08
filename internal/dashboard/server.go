@@ -1251,6 +1251,20 @@ func (s *Server) requestServiceRestart() error {
 	return nil
 }
 
+func (s *Server) preserveRuntimeIntentForServiceRestart() error {
+	if s.runtime.Status().Desired != runtimesupervisor.DesiredRunning {
+		return nil
+	}
+	requester, ok := s.runtime.(runtimeStartRequester)
+	if !ok {
+		return errors.New("runtime controller cannot persist desired running state")
+	}
+	if err := requester.RequestStart(); err != nil {
+		return fmt.Errorf("persist runtime start request: %w", err)
+	}
+	return nil
+}
+
 func (s *Server) recoveryOrigin(request *http.Request) string {
 	values := s.cfg.Snapshot()
 	if request != nil {
@@ -1347,6 +1361,9 @@ func (s *Server) applySavedConfig(ctx context.Context, diff dashboardruntime.Con
 	pending := mergeConfigDiff(s.currentPendingDiff(), pendingDiffForPlatform(diff, runtimeGOOS()))
 	if s.serviceRestartRequiredFor(pending) {
 		s.setPendingDiff(pending)
+		if err := s.preserveRuntimeIntentForServiceRestart(); err != nil {
+			return err
+		}
 		return s.requestServiceRestart()
 	}
 	if runtimeGOOS() == "darwin" {
@@ -1502,10 +1519,8 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	newValues := dashboardruntime.Values(s.cfg.Snapshot())
 	diff := dashboardruntime.DiffValuesForOS(oldValues, newValues, runtimeGOOS())
 	if s.serviceRestartRequiredFor(diff) {
-		if requester, ok := s.runtime.(runtimeStartRequester); ok {
-			if err := requester.RequestStart(); err != nil {
-				return fmt.Errorf("persist runtime start request: %w", err)
-			}
+		if err := s.preserveRuntimeIntentForServiceRestart(); err != nil {
+			return err
 		}
 		s.setPendingDiff(pendingDiffForPlatform(diff, runtimeGOOS()))
 		if err := s.requestServiceRestart(); err != nil {

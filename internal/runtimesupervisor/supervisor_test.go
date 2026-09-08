@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1574,6 +1575,7 @@ type testDNSServer struct {
 	tcp     net.Listener
 	address string
 	ip      net.IP
+	queries atomic.Int32
 	wg      sync.WaitGroup
 }
 
@@ -1614,6 +1616,7 @@ func (d *testDNSServer) serveUDP() {
 		if err != nil {
 			return
 		}
+		d.queries.Add(1)
 		response := testDNSResponse(buffer[:n], d.ip)
 		if len(response) > 0 {
 			_, _ = d.udp.WriteToUDP(response, address)
@@ -1628,6 +1631,7 @@ func (d *testDNSServer) serveTCP() {
 		if err != nil {
 			return
 		}
+		d.queries.Add(1)
 		var length [2]byte
 		if _, err := io.ReadFull(connection, length[:]); err != nil {
 			_ = connection.Close()
@@ -1785,6 +1789,9 @@ func TestQuickTunnelHTTPClientUsesInjectedDNSAndTLSHostname(t *testing.T) {
 	publicURL := "https://" + net.JoinHostPort(hostname, strconv.Itoa(listener.Addr().(*net.TCPAddr).Port))
 	if err := verifier.verify(context.Background(), cfg, publicURL); err != nil {
 		t.Fatal(err)
+	}
+	if dns.queries.Load() == 0 {
+		t.Fatal("quick-tunnel fallback did not query the injected DNS server")
 	}
 	if serverName != hostname {
 		t.Fatalf("TLS SNI=%q, want %q", serverName, hostname)

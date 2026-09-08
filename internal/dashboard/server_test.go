@@ -1183,6 +1183,9 @@ func TestPureServiceSaveDoesNotReconcileRunningRuntime(t *testing.T) {
 	if starts, stops, restarts, reconciles := fake.counts(); starts != 0 || stops != 0 || restarts != 0 || reconciles != 0 {
 		t.Fatalf("service-only save activated runtime: %d/%d/%d/%d", starts, stops, restarts, reconciles)
 	}
+	if fake.requestedStarts() != 1 {
+		t.Fatalf("desired running state was persisted %d times, want once", fake.requestedStarts())
+	}
 	if len(s.pendingDiff.Classes) != 0 || !s.serviceRestartRequired() {
 		t.Fatalf("service-only save state: pending=%+v stale=%t", s.pendingDiff, s.serviceRestartRequired())
 	}
@@ -1369,6 +1372,9 @@ func TestRuntimeOnlySaveWhileStoppedDoesNotCreateRuntime(t *testing.T) {
 	}
 	if starts, stops, restarts, reconciles := fake.counts(); starts != 0 || stops != 0 || restarts != 0 || reconciles != 0 {
 		t.Fatalf("stopped save activated runtime: %d/%d/%d/%d", starts, stops, restarts, reconciles)
+	}
+	if fake.requestedStarts() != 0 {
+		t.Fatalf("stopped runtime unexpectedly persisted start request: %d", fake.requestedStarts())
 	}
 	if !hasApplyClass(s.pendingDiff, dashboardruntime.ApplyRuntimeReconcile) {
 		t.Fatalf("pending runtime change lost: %+v", s.pendingDiff)

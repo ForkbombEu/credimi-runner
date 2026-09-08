@@ -60,7 +60,7 @@ func TestWriteServiceComposeHasOnePersistentRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"runner:", "restart: on-failure", "internal-service", "CREDIMI_RUNNER_CONFIG_DIR", "pull_policy: never"} {
+	for _, want := range []string{"runner:", `restart: "no"`, "internal-service", "CREDIMI_RUNNER_CONFIG_DIR", "pull_policy: never"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("compose missing %q: %s", want, text)
 		}

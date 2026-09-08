@@ -199,7 +199,7 @@ func (m *DockerManager) setAutostart(ctx context.Context, enabled bool) error {
 		return fmt.Errorf("save autostart setting: %w", err)
 	}
 	if containerID != "" {
-		policy := "on-failure"
+		policy := "no"
 		if enabled {
 			policy = "always"
 		}

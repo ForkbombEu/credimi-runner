@@ -25,7 +25,7 @@ func TestBuildServiceSpecUsesAutostartRestartPolicy(t *testing.T) {
 		autostart bool
 		want      string
 	}{
-		{"disabled", false, "on-failure"},
+		{"disabled", false, "no"},
 		{"enabled", true, "always"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -131,7 +131,7 @@ func TestEnableDisableRunningUpdatesPolicyWithoutRecreation(t *testing.T) {
 		policy string
 	}{
 		{"enable", true, "always"},
-		{"disable", false, "on-failure"},
+		{"disable", false, "no"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -164,7 +164,7 @@ func TestEnableDisableStoppedContainerUpdatesPolicyWithoutStarting(t *testing.T)
 		policy string
 	}{
 		{"enable", true, "always"},
-		{"disable", false, "on-failure"},
+		{"disable", false, "no"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -202,7 +202,7 @@ func TestStopRetainsContainerAndAutostartPolicy(t *testing.T) {
 		policy string
 	}{
 		{"enabled", true, "always"},
-		{"disabled", false, "on-failure"},
+		{"disabled", false, "no"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -230,7 +230,11 @@ func TestStopRetainsContainerAndAutostartPolicy(t *testing.T) {
 				t.Fatalf("autostart=%v err=%v", got, err)
 			}
 			raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
-			if err != nil || !strings.Contains(string(raw), "restart: "+tc.policy) {
+			wantPolicy := "restart: " + tc.policy
+			if tc.policy == "no" {
+				wantPolicy = `restart: "no"`
+			}
+			if err != nil || !strings.Contains(string(raw), wantPolicy) {
 				t.Fatalf("compose policy missing: %q err=%v", raw, err)
 			}
 		})
@@ -244,7 +248,7 @@ func TestStartUsesSavedAutostartRestartPolicy(t *testing.T) {
 		policy string
 	}{
 		{"enabled", true, "always"},
-		{"disabled", false, "on-failure"},
+		{"disabled", false, "no"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -268,7 +272,11 @@ func TestStartUsesSavedAutostartRestartPolicy(t *testing.T) {
 			}
 			r.done()
 			raw, err := os.ReadFile(filepath.Join(dir, "service-compose.yaml"))
-			if err != nil || !strings.Contains(string(raw), "restart: "+tc.policy) {
+			wantPolicy := "restart: " + tc.policy
+			if tc.policy == "no" {
+				wantPolicy = `restart: "no"`
+			}
+			if err != nil || !strings.Contains(string(raw), wantPolicy) {
 				t.Fatalf("compose policy missing: %q err=%v", raw, err)
 			}
 		})
@@ -336,7 +344,7 @@ func TestStatusReportsAutostart(t *testing.T) {
 }
 
 func TestRestartPolicyDoesNotMakeFingerprintStale(t *testing.T) {
-	base := ServiceSpec{Image: "runner", PullPolicy: "never", NetworkMode: "bridge", RestartPolicy: "on-failure"}
+	base := ServiceSpec{Image: "runner", PullPolicy: "never", NetworkMode: "bridge", RestartPolicy: "no"}
 	other := base
 	other.RestartPolicy = "always"
 	if base.Fingerprint() != other.Fingerprint() {

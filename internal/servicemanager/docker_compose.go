@@ -163,7 +163,7 @@ func BuildServiceSpecWithAutostart(cfg runnerconfig.Config, host HostContext, au
 		PullPolicy:    composePullPolicy(cfg.Android.PullPolicy),
 		NetworkMode:   "bridge",
 		Environment:   map[string]string{},
-		RestartPolicy: "on-failure",
+		RestartPolicy: "no",
 		Command:       []string{"internal-service"},
 		Labels: map[string]string{
 			serviceManagedLabel: "true",
@@ -347,7 +347,11 @@ func WriteServiceComposeWithHostAndAutostart(dir string, cfg runnerconfig.Config
 func RenderServiceCompose(spec ServiceSpec) string {
 	var b strings.Builder
 	fingerprint := spec.Fingerprint()
-	fmt.Fprintf(&b, "services:\n  runner:\n    image: %s\n    pull_policy: %s\n    restart: %s\n    command:\n", spec.Image, spec.PullPolicy, spec.RestartPolicy)
+	restartPolicy := spec.RestartPolicy
+	if restartPolicy == "no" {
+		restartPolicy = `"no"`
+	}
+	fmt.Fprintf(&b, "services:\n  runner:\n    image: %s\n    pull_policy: %s\n    restart: %s\n    command:\n", spec.Image, spec.PullPolicy, restartPolicy)
 	for _, command := range spec.Command {
 		fmt.Fprintf(&b, "      - %s\n", yamlQuote(command))
 	}

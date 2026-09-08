@@ -291,6 +291,9 @@ func newQuickTunnelHTTPClient() *http.Client {
 func newQuickTunnelHTTPClientWithDNSServers(servers []string) *http.Client {
 	servers = append([]string(nil), servers...)
 	resolver := &net.Resolver{PreferGo: true}
+	if len(servers) == 0 {
+		return &http.Client{Transport: http.DefaultTransport}
+	}
 	var next atomic.Uint32
 	resolver.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
 		server := servers[(next.Add(1)-1)%uint32(len(servers))]
@@ -305,8 +308,49 @@ func newQuickTunnelHTTPClientWithDNSServers(servers []string) *http.Client {
 	} else {
 		transport = transport.Clone()
 	}
-	transport.DialContext = (&net.Dialer{Resolver: resolver}).DialContext
+	// A proxy can resolve the URL host on its own, bypassing the explicit DNS
+	// path below. Quick-tunnel verification must connect directly so the
+	// configured resolver remains authoritative for this request.
+	transport.Proxy = nil
+	transport.DialContext = quickTunnelDialContext(resolver)
 	return &http.Client{Transport: transport}
+}
+
+func quickTunnelDialContext(resolver *net.Resolver) func(context.Context, string, string) (net.Conn, error) {
+	var dialer net.Dialer
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := resolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		ordered := make([]net.IPAddr, 0, len(ips))
+		for _, ip := range ips {
+			if ip.IP.To4() != nil {
+				ordered = append(ordered, ip)
+			}
+		}
+		for _, ip := range ips {
+			if ip.IP.To4() == nil {
+				ordered = append(ordered, ip)
+			}
+		}
+		var lastErr error
+		for _, ip := range ordered {
+			conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if lastErr == nil {
+			return nil, fmt.Errorf("quick tunnel DNS returned no addresses for %s", host)
+		}
+		return nil, lastErr
+	}
 }
 
 func publicEndpointVerificationURL(cfg config.Config, publicURL string) (string, error) {
