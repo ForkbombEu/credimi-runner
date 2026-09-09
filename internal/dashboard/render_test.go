@@ -458,6 +458,7 @@ func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 		Active: "overview",
 		Title:  "Overview",
 		Runner: &Config{values: map[string]string{
+			"CREDIMI_AUTH_MODE":           "internal_admin",
 			"CREDIMI_RUNNER_ORGANIZATION": "acme",
 			"CREDIMI_INTERNAL_ADMIN_KEY":  "secret",
 		}},
@@ -467,7 +468,7 @@ func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(html, ">Admin<") {
+	if !strings.Contains(html, ">Internal_admin<") {
 		t.Fatalf("sidebar should show auth mode, got: %s", html)
 	}
 	if strings.Contains(html, ">ops<") {

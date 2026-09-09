@@ -189,9 +189,14 @@ func TypedConfigFromValues(values Values) (runnerconfig.Config, error) {
 	}
 	cfg.Runner.Description, cfg.Runner.Published = values["CREDIMI_RUNNER_DESCRIPTION"], published
 	cfg.Credimi.URL, cfg.Credimi.UserAPIKey, cfg.Credimi.InternalAdminKey = values["CREDIMI_URL"], values["CREDIMI_USER_API_KEY"], values["CREDIMI_INTERNAL_ADMIN_KEY"]
-	cfg.Credimi.AuthMode = defaultIfEmpty(values["CREDIMI_AUTH_MODE"], cfg.Credimi.AuthMode)
-	if values["CREDIMI_AUTH_MODE"] == "" && cfg.Credimi.InternalAdminKey != "" {
+	cfg.Credimi.AuthMode = strings.TrimSpace(values["CREDIMI_AUTH_MODE"])
+	// Old compatibility maps did not record a mode.  Keep inference only at
+	// this load boundary; all new setup submissions provide the canonical key.
+	if cfg.Credimi.AuthMode == "" && cfg.Credimi.InternalAdminKey != "" {
 		cfg.Credimi.AuthMode = "internal_admin"
+	}
+	if cfg.Credimi.AuthMode == "" {
+		cfg.Credimi.AuthMode = "user"
 	}
 	cfg.Temporal.Address = values["TEMPORAL_ADDRESS"]
 	cfg.Server.APIListen, cfg.Server.DashboardListen = net.JoinHostPort(values["RUNNER_HOST"], values["RUNNER_PORT"]), net.JoinHostPort(values["DASHBOARD_HOST"], values["DASHBOARD_PORT"])

@@ -679,6 +679,16 @@
 	  reindexSetupDeviceCards(form);
 	  $$('[data-legacy-setup-devices] input, [data-legacy-setup-devices] select, [data-legacy-setup-devices] textarea', form).forEach((field) => { field.disabled = true; });
       let current = 0;
+	  let draftSaveTimer = null;
+	  const draftIDField = () => $('[data-setup-draft-id]', form);
+	  const saveSetupDraft = async () => {
+		const values = {};
+		new FormData(form).forEach((entry, key) => { if (key !== 'SETUP_DRAFT_ID') values[key] = String(entry); });
+		const response = await fetch(dashboardURL('/setup/draft'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: (draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '', step: current, values }) });
+		if (!response.ok) throw new Error('Could not save setup draft.');
+		const data = await response.json(); const field = draftIDField(); if (field) field.value = data.id || ''; if (data.id) sessionStorage.setItem('credimi-runner:setup-draft-id', data.id);
+	  };
+	  const scheduleDraftSave = () => { clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(() => { saveSetupDraft().catch(() => {}); }, 300); };
       let connectedAndroidTimer = null;
       const buttons = $$('.wizard-step', form);
       const panels = $$('.wizard-panel', form);
@@ -686,12 +696,14 @@
       const next = $('[data-step-next]', form);
       const submit = $('[data-step-submit]', form);
       let runnerPreview = null;
+      let credentialValidation = { status: 'idle', organization: '', error: '' };
       const errBox = () => $('[data-setup-error]', panels[current]);
       const setError = (msg) => {
         const box = errBox();
-        if (!box) return;
+        if (!box) { console.error('setup panel is missing data-setup-error'); return; }
         box.hidden = !msg;
         box.textContent = msg || '';
+		if (msg) { box.focus({ preventScroll: true }); box.scrollIntoView({ block: 'nearest' }); }
       };
       const valueMissing = (name) => !String(value(name) || '').trim();
       const validManualPublicURL = () => {
@@ -740,12 +752,12 @@
         if (!panel) return false;
         switch (panel.dataset.step) {
           case 'identity':
-            if (authMode() === 'admin') {
+            if (authMode() === 'internal_admin') {
               if (valueMissing('CREDIMI_INTERNAL_ADMIN_KEY') || valueMissing('CREDIMI_RUNNER_NAME') || valueMissing('CREDIMI_RUNNER_ORGANIZATION')) return false;
             } else {
               if (valueMissing('CREDIMI_USER_API_KEY') || valueMissing('CREDIMI_RUNNER_NAME')) return false;
             }
-            return true;
+            return credentialValidation.status === 'valid';
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
             if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');
@@ -762,7 +774,7 @@
         if (!panel) return 'Complete the required fields before continuing.';
         switch (panel.dataset.step) {
           case 'identity':
-            if (authMode() === 'admin') {
+            if (authMode() === 'internal_admin') {
               if (valueMissing('CREDIMI_INTERNAL_ADMIN_KEY')) return 'Internal admin key is required.';
               if (valueMissing('CREDIMI_RUNNER_ORGANIZATION')) return 'Organization is required.';
             } else {
@@ -813,6 +825,7 @@
         if (current === panels.length - 1) syncReview();
         form.dispatchEvent(new CustomEvent('dashboard:step-shown', { bubbles: true, detail: { step: panels[current] && panels[current].dataset.step } }));
         syncStepActions();
+		scheduleDraftSave();
       };
       const jsonPost = async (url, body) => {
         const res = await fetch(dashboardURL(url), {
@@ -820,7 +833,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+		if (!res.ok) { const contentType = res.headers.get('content-type') || ''; let message = ''; if (contentType.includes('application/json')) { try { const data = await res.json(); message = data.message || data.error || ''; } catch (_) {} } else { message = (await res.text()).trim(); } if (!message || message.startsWith('<')) message = `Request failed (HTTP ${res.status})`; throw new Error(message); }
         return res.json();
       };
       const field = (name) => $(`[name="${name}"]`, form);
@@ -829,11 +842,8 @@
         if (radio) return radio.value || '';
         return (field(name) || {}).value || '';
       };
-      const authMode = () => {
-        const admin = $('[data-auth-field="admin"]', form);
-        return admin && !admin.hidden ? 'admin' : 'user';
-      };
-      const selectedAPIKey = () => authMode() === 'admin' ? value('CREDIMI_INTERNAL_ADMIN_KEY') : value('CREDIMI_USER_API_KEY');
+      const authMode = () => value('CREDIMI_AUTH_MODE');
+      const selectedAPIKey = () => authMode() === 'internal_admin' ? value('CREDIMI_INTERNAL_ADMIN_KEY') : value('CREDIMI_USER_API_KEY');
       const orgPreview = () => $('[data-org-preview]', form);
       const setOrgPreview = (text) => {
         const el = orgPreview();
@@ -845,23 +855,30 @@
         const adminOrg = $('[data-admin-org-input]', form);
         if (!adminOrg) return;
         const orgValue = field('CREDIMI_RUNNER_ORGANIZATION');
-        if (orgValue && authMode() === 'admin') orgValue.value = adminOrg.value.trim();
+        if (orgValue && authMode() === 'internal_admin') orgValue.value = adminOrg.value.trim();
         setOrgPreview((orgValue && orgValue.value) || 'org');
       };
       const resolveOrganization = async () => {
-        if (authMode() === 'admin') {
-          syncAdminOrganization();
-          return value('CREDIMI_RUNNER_ORGANIZATION');
-        }
-        const org = await jsonPost('/setup/organization', {
+        if (authMode() === 'internal_admin') syncAdminOrganization();
+        const org = await jsonPost('/setup/credentials/verify', {
           instance_url: value('CREDIMI_URL'),
+          auth_mode: authMode(),
           api_key: selectedAPIKey(),
+          organization: value('CREDIMI_RUNNER_ORGANIZATION'),
         });
-        const orgName = org.canonified_name || '';
+        const orgName = org.organization || '';
         const orgValue = field('CREDIMI_RUNNER_ORGANIZATION');
         if (orgValue) orgValue.value = orgName;
         setOrgPreview(orgName);
         return orgName;
+      };
+      const invalidateIdentityDependents = () => {
+        credentialValidation = { status: 'idle', organization: '', error: '' };
+        runnerPreview = null;
+        const runnerID = field('CREDIMI_RUNNER_ID'); if (runnerID) runnerID.value = '';
+        const action = $('[data-runner-conflict-action]', form); if (action) action.value = '';
+        $$('[data-device-id], [data-device-conflict-action]', form).forEach((input) => { input.value = ''; });
+        if (authMode() === 'user') { const org = field('CREDIMI_RUNNER_ORGANIZATION'); if (org) org.value = ''; }
       };
       // Live API-key validation: calls /setup/organization and shows feedback.
       let apiKeyTimer;
@@ -886,14 +903,14 @@
           }
           apiKeyTimer = setTimeout(async () => {
             try {
-              await resolveOrganization();
+              const organization = await resolveOrganization(); credentialValidation = { status: 'valid', organization, error: '' };
               if (st) { st.style.display = 'flex'; st.innerHTML = check(); st.style.color = 'var(--ok)'; }
               if (err) err.style.display = 'none';
               showIdentityFields();
             } catch (e) {
               if (st) { st.style.display = 'flex'; st.innerHTML = xmark(); st.style.color = 'var(--down)'; }
               if (err) { err.style.display = 'block'; err.textContent = (e && e.message) || 'Invalid API key'; }
-              if (idf) idf.style.display = 'none';
+              credentialValidation = { status: 'invalid', organization: '', error: (e && e.message) || 'Invalid API key' }; if (idf) idf.style.display = 'none';
             } finally {
               syncStepActions();
             }
@@ -902,9 +919,9 @@
       }
       const adminKeyField = field('CREDIMI_INTERNAL_ADMIN_KEY');
       const adminOrgField = $('[data-admin-org-input]', form);
-      if (adminKeyField) adminKeyField.addEventListener('input', () => { if (adminKeyField.value.trim()) showIdentityFields(); });
-      if (adminOrgField) adminOrgField.addEventListener('input', () => { syncAdminOrganization(); previewRunnerID(); });
-      if (authMode() === 'admin' && selectedAPIKey()) showIdentityFields();
+      const scheduleCredentialValidation = () => { clearTimeout(apiKeyTimer); invalidateIdentityDependents(); if (!selectedAPIKey().trim() || (authMode() === 'internal_admin' && !value('CREDIMI_RUNNER_ORGANIZATION').trim())) { syncStepActions(); return; } apiKeyTimer = setTimeout(async () => { try { const organization = await resolveOrganization(); credentialValidation = { status: 'valid', organization, error: '' }; showIdentityFields(); } catch (e) { credentialValidation = { status: 'invalid', organization: '', error: (e && e.message) || 'Credential validation failed' }; setError(credentialValidation.error); } finally { syncStepActions(); } }, 600); };
+      if (adminKeyField) adminKeyField.addEventListener('input', scheduleCredentialValidation);
+      if (adminOrgField) adminOrgField.addEventListener('input', scheduleCredentialValidation);
       const canonifyName = async () => {
         const name = value('CREDIMI_RUNNER_NAME');
         const canonified = $('[data-canonified]', form);
@@ -1000,20 +1017,10 @@
         const apiKey = selectedAPIKey();
         const organization = value('CREDIMI_RUNNER_ORGANIZATION');
         const name = value('CREDIMI_RUNNER_NAME');
-        if (!instanceURL || !apiKey || !organization || !name) {
-          const fallback = [organization || 'org', (name || 'runner-name').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')].join('/');
-          const runnerID = field('CREDIMI_RUNNER_ID');
-          if (runnerID) runnerID.value = fallback;
-          const runnerPreview = $('[data-runner-id-preview]', form);
-          if (runnerPreview) runnerPreview.textContent = fallback;
-          syncOTELServiceName(fallback);
-          setConflictState(null);
-          return;
-        }
+        if (!instanceURL || !apiKey || !organization || !name) throw new Error('Verify credentials and enter a runner name before previewing its ID.');
         let rid = '';
         let previewData = null;
-        try {
-          const data = await jsonPost('/setup/runner-id', {
+        const data = await jsonPost('/setup/runner-id', {
             instance_url: instanceURL,
             api_key: apiKey,
             organization: organization,
@@ -1026,10 +1033,6 @@
           rid = (actionInput && actionInput.value === 'create' ? data.runner_id : data.existing_runner_id) || data.runner_id || '';
           setConflictState(data);
           previewData = data;
-        } catch (e) {
-          rid = [organization, name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')].join('/');
-          setConflictState(null);
-        }
         const runnerID = field('CREDIMI_RUNNER_ID');
         if (runnerID) runnerID.value = rid;
         const runnerPreview = $('[data-runner-id-preview]', form);
@@ -1041,6 +1044,7 @@
       // Live-canonify as the user types the runner name.
       const nameField = field('CREDIMI_RUNNER_NAME');
       if (nameField) nameField.addEventListener('input', () => {
+        invalidateIdentityDependents();
         canonifyName();
         syncStepActions();
       });
@@ -1087,7 +1091,7 @@
       }));
       if (prev) prev.addEventListener('click', () => show(current - 1));
       if (next) next.addEventListener('click', async () => {
-        next.disabled = true;
+		const originalLabel = next.textContent; next.disabled = true; next.textContent = 'Checking…';
         try {
           if (!currentStepValid()) {
             setError(currentStepError());
@@ -1099,13 +1103,19 @@
         } catch (err) {
           setError(err && err.message ? err.message : 'Setup step failed');
         } finally {
-          next.disabled = false;
+		  next.disabled = false; next.textContent = originalLabel;
         }
       });
       form.addEventListener('input', syncStepActions);
       form.addEventListener('change', syncStepActions);
+		form.addEventListener('input', scheduleDraftSave);
+		form.addEventListener('change', scheduleDraftSave);
       form.addEventListener('dashboard:device-ready-change', syncStepActions);
-      show(0);
+		const restoreDraft = async () => {
+			const id = sessionStorage.getItem('credimi-runner:setup-draft-id'); if (!id) { show(0); return; }
+			try { const response = await fetch(dashboardURL('/setup/draft/' + encodeURIComponent(id))); if (!response.ok) throw new Error(); const draft = await response.json(); Object.entries(draft.values || {}).forEach(([name, entry]) => { const input = field(name); if (input) input.value = entry; }); const idField = draftIDField(); if (idField) idField.value = id; credentialValidation = { status: 'idle', organization: '', error: '' }; show(Number(draft.step) || 0); } catch (_) { sessionStorage.removeItem('credimi-runner:setup-draft-id'); show(0); }
+		};
+		restoreDraft();
     });
   }
   initSetupWizard();
@@ -1559,6 +1569,7 @@
       hostAVDGoldenPath: homeDir + '/avd-golden',
     };
   };
+	const setDefaultIfEmpty = (root, name, value) => { if (!String(fieldValue(root, name) || '').trim()) setFieldValue(root, name, value); };
   const applyRunnerTypeDefaults = (root, type) => {
     const derived = deriveHomeDefaults(root);
     const wifiPort = root.dataset.defaultWifiPort || '';
@@ -1571,11 +1582,11 @@
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
-        setFieldValue(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
+		setDefaultIfEmpty(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
         if (derived.androidKeysDir) setFieldValue(root, 'ANDROID_KEYS_DIR', derived.androidKeysDir);
         if (derived.hostAVDHomePath) setFieldValue(root, 'HOST_AVD_HOME_PATH', derived.hostAVDHomePath);
         if (derived.hostAVDGoldenPath) setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', derived.hostAVDGoldenPath);
-        setFieldValue(root, 'GOLDEN_PATH', TYPE_DEFAULTS.goldenPath);
+		setDefaultIfEmpty(root, 'GOLDEN_PATH', TYPE_DEFAULTS.goldenPath);
         setFieldValue(root, 'REDROID_DATA_DIR', '');
         setFieldValue(root, 'REDROID_DATA_TAR', '');
         break;
@@ -1584,7 +1595,7 @@
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', '');
-        setFieldValue(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
+		setDefaultIfEmpty(root, 'BASE_NAME', TYPE_DEFAULTS.baseName);
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
         setFieldValue(root, 'GOLDEN_PATH', '');
@@ -1595,19 +1606,19 @@
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'no_device');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
-        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
+		setDefaultIfEmpty(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
         setFieldValue(root, 'BASE_NAME', '');
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
         setFieldValue(root, 'GOLDEN_PATH', '');
-        setFieldValue(root, 'REDROID_DATA_DIR', redroidDataDir);
-        setFieldValue(root, 'REDROID_DATA_TAR', redroidDataTar);
+		setDefaultIfEmpty(root, 'REDROID_DATA_DIR', redroidDataDir);
+		setDefaultIfEmpty(root, 'REDROID_DATA_TAR', redroidDataTar);
         break;
       default:
         setFieldValue(root, 'CREDIMI_RUNNER_DEVICE_MODE', 'usb');
         setFieldValue(root, 'CREDIMI_RUNNER_SERIAL', '');
         setFieldValue(root, 'CREDIMI_RUNNER_WIFI_IP', '');
-        setFieldValue(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
+		setDefaultIfEmpty(root, 'CREDIMI_RUNNER_WIFI_PORT', wifiPort);
         setFieldValue(root, 'BASE_NAME', '');
         setFieldValue(root, 'HOST_AVD_HOME_PATH', '');
         setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', '');
@@ -1759,7 +1770,6 @@
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
-      initializeDeviceProvisionCard(root);
 		applyRunnerTypeDefaults(root, radio.value);
 		initializeDeviceProvisionCard(root);
       markDirty();
@@ -2189,12 +2199,16 @@
     $$('[data-val]', seg).forEach((b) => b.classList.remove('on'));
     btn.classList.add('on');
     const mode = btn.dataset.val;
+	const form = btn.closest('form');
+	const modeField = form && form.querySelector('[data-auth-mode]');
+	if (modeField) modeField.value = mode;
     $$('[data-auth-field]').forEach((f) => (f.hidden = f.dataset.authField !== mode));
-    $$('[data-admin-org-field]').forEach((f) => (f.hidden = mode !== 'admin'));
-    $$('[data-identity-fields]').forEach((f) => { if (mode === 'admin') f.style.display = 'contents'; });
+    $$('[data-admin-org-field]').forEach((f) => (f.hidden = mode !== 'internal_admin'));
+    $$('[data-identity-fields]').forEach((f) => { if (mode === 'internal_admin') f.style.display = 'contents'; });
     // clear the non-selected key so exactly one is persisted
     const clearKey = mode === 'user' ? seg.dataset.admin : seg.dataset.user;
-    const inp = document.querySelector(`[name="${clearKey}"]`); if (inp) inp.value = '';
+    const inp = form && form.querySelector(`[name="${clearKey}"]`); if (inp) inp.value = '';
+	if (modeField) modeField.dispatchEvent(new Event('input', { bubbles: true }));
     markDirty();
   });
 
@@ -2202,10 +2216,8 @@
   let pendingPublishControl = null;
   let pendingPublishSubmitForm = null;
   const formAuthMode = (form) => {
-    const adminField = form && form.querySelector('[data-auth-field="admin"]');
-    if (adminField && !adminField.hidden) return 'admin';
-    const adminKey = form && form.querySelector('[name="CREDIMI_INTERNAL_ADMIN_KEY"]');
-    return adminKey && adminKey.value.trim() ? 'admin' : 'user';
+	const mode = form && form.querySelector('[data-auth-mode]');
+	return mode ? mode.value : 'user';
   };
   const publishIsOn = (control) => {
     const box = control && control.querySelector('input[type=checkbox]');

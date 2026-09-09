@@ -151,10 +151,14 @@ func (c *Config) Snapshot() map[string]string {
 	return out
 }
 
-// AuthMode reports "admin" when an internal admin key is set, else "user".
+// AuthMode returns the persisted canonical mode.  The fallback only supports
+// configurations written before auth_mode existed.
 func (c *Config) AuthMode() string {
+	if mode := strings.TrimSpace(c.Get("CREDIMI_AUTH_MODE")); mode != "" {
+		return mode
+	}
 	if c.Get("CREDIMI_INTERNAL_ADMIN_KEY") != "" {
-		return "admin"
+		return "internal_admin"
 	}
 	return "user"
 }
@@ -245,7 +249,19 @@ func normalizedConfigValues(current, incoming map[string]string, goos string) (d
 			next[f.Key] = strings.TrimSpace(v)
 		}
 	}
+	mergeCanonicalHostValues(next, incoming)
 	return dashboardruntime.NormalizeValues(dashboardruntime.Values(next), goos)
+}
+
+// mergeCanonicalHostValues accepts host configuration that is intentionally
+// not a visible dashboard field.  It keeps setup canonical without expanding
+// the ordinary configuration registry.
+func mergeCanonicalHostValues(next, incoming map[string]string) {
+	for _, key := range []string{"CREDIMI_AUTH_MODE"} {
+		if value, ok := incoming[key]; ok {
+			next[key] = strings.TrimSpace(value)
+		}
+	}
 }
 
 // writeValues converts the candidate compatibility values to typed TOML atomically.

@@ -11,6 +11,8 @@
 
   <form hx-post="/setup" hx-target="main" hx-select="main" hx-swap="outerHTML" data-setup-form data-config-form data-busy-message="Writing runner configuration.">
     <input type="hidden" name="SETUP_DEVICE_COUNT" data-setup-device-count value="1">
+	<input type="hidden" name="SETUP_DRAFT_ID" data-setup-draft-id value="">
+	<input type="hidden" name="CREDIMI_AUTH_MODE" value="{{or ($.Runner.Get "CREDIMI_AUTH_MODE") "user"}}" data-auth-mode>
     <nav class="wizard-steps" aria-label="Setup steps">
       {{range $i, $s := .SetupSteps}}
       <button type="button" class="wizard-step {{if eq $i 0}}on{{end}}" data-step-target="{{$s.ID}}">
@@ -23,6 +25,7 @@
     <section class="card wizard-panel" data-step="{{$s.ID}}" {{if ne $i 0}}hidden{{end}}>
       <header class="card-h">{{icon "check"}}<div><h3>{{$s.Title}}</h3><div class="sub">{{$s.Summary}}</div></div><div class="right"><span class="tag">Step {{add1 $i}} / {{len $.SetupSteps}}</span></div></header>
       <div class="card-b">
+		<div class="callout danger" data-setup-error role="alert" tabindex="-1" hidden></div>
         {{if eq $s.ID "identity"}}
         <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" data-org-value>
         <input type="hidden" name="CREDIMI_RUNNER_ID" value="{{$.Runner.Get "CREDIMI_RUNNER_ID"}}" data-runner-id-value>
@@ -31,22 +34,22 @@
           <div class="field" style="grid-column:1/-1">
             <label><span class="lbtx">Authentication mode</span></label>
             <div class="seg" data-auth-seg data-user="CREDIMI_USER_API_KEY" data-admin="CREDIMI_INTERNAL_ADMIN_KEY">
-              <button type="button" class="{{if ne $.Runner.AuthMode "admin"}}on{{end}}" data-val="user">User API key</button>
-              <button type="button" class="{{if eq $.Runner.AuthMode "admin"}}on{{end}}" data-val="admin">Internal admin key</button>
+              <button type="button" class="{{if ne $.Runner.AuthMode "internal_admin"}}on{{end}}" data-val="user">User API key</button>
+              <button type="button" class="{{if eq $.Runner.AuthMode "internal_admin"}}on{{end}}" data-val="internal_admin">Internal admin key</button>
             </div>
           </div>
           <div class="field" style="grid-column:1/-1"><details class="gear-panel"><summary>{{icon "gear"}} Credimi platform defaults</summary><div class="field-row">{{template "field" $.Field "CREDIMI_URL"}}{{template "field" $.Field "TEMPORAL_ADDRESS"}}</div>{{template "field" ($.FieldWithLabel "RUNNER_PORT" "Runner port")}}</details></div>
-          <div class="field" data-auth-field="user" {{if eq $.Runner.AuthMode "admin"}}hidden{{end}}>
+          <div class="field" data-auth-field="user" {{if eq $.Runner.AuthMode "internal_admin"}}hidden{{end}}>
             <label><span class="lbtx">User API key</span><span class="req">*</span><span class="envkey">CREDIMI_USER_API_KEY</span></label>
             <div class="inp-wrap"><input class="inp mono" type="password" name="CREDIMI_USER_API_KEY" value="{{$.Runner.Get "CREDIMI_USER_API_KEY"}}" placeholder="credimi_..." autocomplete="new-password" spellcheck="false"><div class="acts"><span data-api-key-status style="display:none"></span><button type="button" class="minibtn" data-reveal-secret="CREDIMI_USER_API_KEY" title="Reveal">{{icon "eye"}}</button></div></div>
             <p class="hint" style="margin-top:8px">Get your user API key at <button type="button" class="minibtn" data-api-keys-link>{{apiKeysURL ($.Runner.Get "CREDIMI_URL")}}</button></p><p class="hint" data-api-key-error style="color:var(--down);display:none"></p>
           </div>
-          <div class="field" data-auth-field="admin" {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}>
+          <div class="field" data-auth-field="admin" {{if ne $.Runner.AuthMode "internal_admin"}}hidden{{end}}>
             <label><span class="lbtx">Internal admin key</span><span class="req">*</span><span class="envkey">CREDIMI_INTERNAL_ADMIN_KEY</span></label>
             <div class="inp-wrap"><input class="inp mono" type="password" name="CREDIMI_INTERNAL_ADMIN_KEY" value="{{$.Runner.Get "CREDIMI_INTERNAL_ADMIN_KEY"}}" placeholder="internal key" autocomplete="new-password" spellcheck="false"><div class="acts"><button type="button" class="minibtn" data-reveal-secret="CREDIMI_INTERNAL_ADMIN_KEY" title="Reveal">{{icon "eye"}}</button></div></div>
           </div>
           <div data-identity-fields style="grid-column:1/-1;display:none">
-            <div class="field" data-admin-org-field {{if ne $.Runner.AuthMode "admin"}}hidden{{end}}><label><span class="lbtx">Organization</span><span class="req">*</span></label><input class="inp mono" name="CREDIMI_RUNNER_ORGANIZATION_ADMIN" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" placeholder="organization-slug" data-admin-org-input></div>
+            <div class="field" data-admin-org-field {{if ne $.Runner.AuthMode "internal_admin"}}hidden{{end}}><label><span class="lbtx">Organization</span><span class="req">*</span></label><input class="inp mono" name="CREDIMI_RUNNER_ORGANIZATION_ADMIN" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" placeholder="organization-slug" data-admin-org-input></div>
             <div class="field" style="grid-column:1/-1"><label><span class="lbtx">Runner name</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_NAME</span></label><div style="display:flex;align-items:center;gap:0;border:2px solid var(--border)"><span style="background:var(--bg-muted);padding:0 12px;height:38px;display:flex;align-items:center;font:600 13px var(--font-mono);white-space:nowrap;border-right:2px solid var(--border)" data-org-preview>{{or ($.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "org"}}</span><span style="padding:0 6px;font:600 14px var(--font-mono)">/</span><input class="inp mono" name="CREDIMI_RUNNER_NAME" value="{{$.Runner.Get "CREDIMI_RUNNER_NAME"}}" placeholder="runner-name" style="border:none;border-radius:0;flex:1" required></div><p class="hint" style="margin-top:6px">Runner ID: <span class="tag mono" data-runner-id-preview>{{or ($.Runner.Get "CREDIMI_RUNNER_ID") "org/runner-name"}}</span><span data-canonified hidden></span></p></div>
             <div class="field"><label><span class="lbtx">Runner description</span></label><textarea class="ta mono" name="CREDIMI_RUNNER_DESCRIPTION" rows="3" placeholder="Optional note about this runner...">{{$.Runner.Get "CREDIMI_RUNNER_DESCRIPTION"}}</textarea></div>
             <div data-publish-control data-initial="{{$.Runner.Get "CREDIMI_RUNNER_PUBLISHED"}}" data-publish-confirmed="0">{{template "field" $.Field "CREDIMI_RUNNER_PUBLISHED"}}</div>

@@ -1732,11 +1732,6 @@ func TestServerSetupRenderHelpers(t *testing.T) {
 		t.Fatalf("plain renderSetupComplete = %d headers=%v", rec.Code, rec.Header())
 	}
 
-	rec = httptest.NewRecorder()
-	s.renderSetupError(rec, map[string]string{"CREDIMI_RUNNER_NAME": "runner"}, "broken")
-	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "broken") {
-		t.Fatalf("renderSetupError = %d %s", rec.Code, rec.Body.String())
-	}
 }
 
 func TestValidateSetupInputRejectsManualURLWithoutScheme(t *testing.T) {
@@ -1792,7 +1787,7 @@ func TestServerSetupHelperEndpoints(t *testing.T) {
 		case "/api/canonify/identifier/validate":
 			body = `{"record":{"slug":"runner-slug"}}`
 		case "/api/mobile-runner/preview-id":
-			body = `{"organization":"acme","runner_id":"acme/runner-slug-2"}`
+			body = `{"organization":"acme","runner_id":"acme/runner-slug-2","existing_runner_id":"acme/runner-slug"}`
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -2976,6 +2971,8 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body := `{}`
 		switch req.URL.Path {
+		case "/api/organizations/my":
+			body = `{"canonified_name":"acme"}`
 		case "/api/mobile-device/preview-id":
 			body = `{"device_id":"acme/runner/pixel"}`
 		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
@@ -2986,6 +2983,7 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	})
 	t.Cleanup(func() { http.DefaultTransport = transport })
 	form := url.Values{
+		"CREDIMI_AUTH_MODE":           {"user"},
 		"CREDIMI_URL":                 {"https://credimi.example"},
 		"CREDIMI_USER_API_KEY":        {"user-key"},
 		"CREDIMI_RUNNER_ID":           {"acme/runner"},
@@ -3033,6 +3031,8 @@ func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		body := `{}`
 		switch req.URL.Path {
+		case "/api/organizations/my":
+			body = `{"canonified_name":"acme"}`
 		case "/api/mobile-device/preview-id":
 			body = `{"device_id":"acme/runner/pixel"}`
 		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
@@ -3043,6 +3043,7 @@ func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
 	})
 	t.Cleanup(func() { http.DefaultTransport = transport })
 	form := url.Values{
+		"CREDIMI_AUTH_MODE":           {"user"},
 		"CREDIMI_URL":                 {"https://credimi.example"},
 		"CREDIMI_USER_API_KEY":        {"user-key"},
 		"CREDIMI_RUNNER_ID":           {"acme/runner"},

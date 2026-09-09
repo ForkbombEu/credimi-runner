@@ -236,8 +236,9 @@ func TestConfigAuthMode(t *testing.T) {
 	if runner.AuthMode() != "user" {
 		t.Fatal(runner.AuthMode())
 	}
+	runner.values["CREDIMI_AUTH_MODE"] = "internal_admin"
 	runner.values["CREDIMI_INTERNAL_ADMIN_KEY"] = "admin"
-	if runner.AuthMode() != "admin" {
+	if runner.AuthMode() != "internal_admin" {
 		t.Fatal(runner.AuthMode())
 	}
 }

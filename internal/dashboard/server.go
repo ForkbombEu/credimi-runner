@@ -90,6 +90,7 @@ type Server struct {
 	maintenanceChecker      func(context.Context, string, time.Time) maintenance.Status
 	systemMonitor           *SystemMonitor
 	mutationMu              sync.Mutex
+	setupDrafts             *setupDraftStore
 	mu                      sync.RWMutex
 }
 
@@ -172,6 +173,7 @@ func NewHandler(parent context.Context, configDir, controllerID, identityToken, 
 		appliedServerSettings:   persistentServerSettings(typedCfg),
 		runtime:                 runtime,
 		operations:              operations,
+		setupDrafts:             newSetupDraftStore(),
 		lookupPath:              lookupPath,
 		startup: startupState{
 			Phase: StartupIdle,
@@ -282,6 +284,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /config/diff", s.configDiff)
 	mux.HandleFunc("POST /config/normalize", s.normalizeConfigPreview)
 	mux.HandleFunc("POST /setup", s.finishSetup)
+	mux.HandleFunc("POST /setup/draft", s.saveSetupDraft)
+	mux.HandleFunc("GET /setup/draft/{id}", s.getSetupDraft)
+	mux.HandleFunc("DELETE /setup/draft/{id}", s.deleteSetupDraft)
+	mux.HandleFunc("POST /setup/credentials/verify", s.verifySetupCredentials)
 	mux.HandleFunc("POST /setup/organization", s.lookupSetupOrganization)
 	mux.HandleFunc("POST /setup/runner-id", s.previewSetupRunnerID)
 	mux.HandleFunc("POST /setup/device-id", s.previewSetupDeviceID)
@@ -354,9 +360,10 @@ func (s *Server) devicePreviewID(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name is required", 400)
 		return
 	}
-	key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-	if key == "" {
-		key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+	key, err := selectedCredimiAPIKey(values)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	client := &dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}
 	preview, err := client.PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], name, values["CREDIMI_RUNNER_ORGANIZATION"])
@@ -1481,12 +1488,55 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) saveSetupDraft(w http.ResponseWriter, r *http.Request) {
+	if s.setupDrafts == nil {
+		http.Error(w, "setup drafts are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var draft setupDraft
+	if err := json.NewDecoder(r.Body).Decode(&draft); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if draft.Values == nil {
+		draft.Values = map[string]string{}
+	}
+	saved, err := s.setupDrafts.save(draft)
+	if err != nil {
+		http.Error(w, "could not save setup draft", http.StatusInternalServerError)
+		return
+	}
+	// The browser only needs the opaque identifier. Never return values here.
+	writeJSON(w, map[string]any{"id": saved.ID, "step": saved.Step})
+}
+
+func (s *Server) getSetupDraft(w http.ResponseWriter, r *http.Request) {
+	if s.setupDrafts == nil {
+		http.NotFound(w, r)
+		return
+	}
+	draft, ok := s.setupDrafts.get(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, draft)
+}
+
+func (s *Server) deleteSetupDraft(w http.ResponseWriter, r *http.Request) {
+	if s.setupDrafts != nil {
+		s.setupDrafts.delete(r.PathValue("id"))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferStart bool) error {
 	if err := r.ParseForm(); err != nil {
 		return err
 	}
 	incoming := formValuesMap(r.PostForm)
 	oldValues := dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
+	wasConfigured := s.cfg.Exists()
 	// Setup resolves the runner and every device through Credimi before it can
 	// persist the inventory. Do not let an unavailable Credimi endpoint leave
 	// the wizard's request open forever while its startup status stays idle.
@@ -1504,6 +1554,9 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	}
 	if errs := Validate(map[string]string(candidate)); len(errs) > 0 {
 		return fmt.Errorf("configuration validation failed: %v", errs)
+	}
+	if _, err := dashboardruntime.TypedConfigFromValues(candidate); err != nil {
+		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 	devices, err := s.setupDevices(r.WithContext(setupCtx), map[string]string(candidate))
 	if err != nil {
@@ -1525,6 +1578,9 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	if err := store.SaveRuntimeConfig(dashboardruntime.RunnerRuntimeConfig{Host: candidate, Devices: devices}); err != nil {
 		return fmt.Errorf("device inventory failed: %w", err)
 	}
+	if draftID := strings.TrimSpace(incoming["SETUP_DRAFT_ID"]); draftID != "" && s.setupDrafts != nil {
+		s.setupDrafts.delete(draftID)
+	}
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	cfg, err := runnerconfig.LoadFile(s.cfg.Path())
 	if err != nil {
@@ -1539,6 +1595,14 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 		s.setPendingDiff(pendingDiffForPlatform(diff, runtimeGOOS()))
 		if err := s.requestServiceRestart(); err != nil {
 			return err
+		}
+		if !wasConfigured {
+			active, activeErr := servicecoordination.CoordinatorActive(s.composeDir, dashboardNow())
+			if activeErr == nil && active {
+				s.setStartupState(StartupStarting, "Setup saved. Waiting for the attached Credimi Runner to replace the bootstrap service.")
+			} else {
+				s.setStartupState(StartupNeedsAttention, "Setup was saved, but the bootstrap service must be replaced before the runner can start. Run: credimi-runner service restart")
+			}
 		}
 		return nil
 	}
@@ -1561,9 +1625,9 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 	if err != nil || count < 1 {
 		return nil, errors.New("add at least one device")
 	}
-	apiKey := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+	apiKey, err := selectedCredimiAPIKey(values)
+	if err != nil {
+		return nil, err
 	}
 	client := &dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: apiKey, HTTPClient: http.DefaultClient}
 	devices := make([]dashboardruntime.DeviceRuntimeConfig, 0, count)
@@ -1716,8 +1780,31 @@ func validateSetupInput(values map[string]string) map[string]string {
 	if strings.TrimSpace(values["CREDIMI_URL"]) == "" {
 		errs["CREDIMI_URL"] = "Required."
 	}
-	if strings.TrimSpace(values["CREDIMI_USER_API_KEY"]) == "" && strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) == "" {
-		errs["CREDIMI_USER_API_KEY"] = "Required."
+	mode := strings.TrimSpace(values["CREDIMI_AUTH_MODE"])
+	if mode == "" {
+		// Compatibility for a request from the immediately preceding wizard.
+		// Current setup always sends this canonical field.
+		if strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
+			mode = "internal_admin"
+		} else {
+			mode = "user"
+		}
+		values["CREDIMI_AUTH_MODE"] = mode
+	}
+	switch mode {
+	case "user":
+		if strings.TrimSpace(values["CREDIMI_USER_API_KEY"]) == "" || strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
+			errs["CREDIMI_USER_API_KEY"] = "User authentication requires exactly a user API key."
+		}
+	case "internal_admin":
+		if strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) == "" || strings.TrimSpace(values["CREDIMI_USER_API_KEY"]) != "" {
+			errs["CREDIMI_INTERNAL_ADMIN_KEY"] = "Internal-admin authentication requires exactly an internal admin key."
+		}
+		if strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"]) == "" {
+			errs["CREDIMI_RUNNER_ORGANIZATION"] = "Organization is required."
+		}
+	default:
+		errs["CREDIMI_AUTH_MODE"] = "Authentication mode must be user or internal_admin."
 	}
 	if strings.TrimSpace(values["CREDIMI_RUNNER_NAME"]) == "" && strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
 		errs["CREDIMI_RUNNER_NAME"] = "Required."
@@ -1730,19 +1817,6 @@ func validateSetupInput(values map[string]string) map[string]string {
 		}
 	}
 	return errs
-}
-
-func (s *Server) renderSetupError(w http.ResponseWriter, incoming map[string]string, message string) {
-	s.cfg.mu.Lock()
-	for key, value := range incoming {
-		s.cfg.values[key] = value
-	}
-	s.cfg.mu.Unlock()
-	d := s.pageData("setup", map[string]any{"SetupError": message})
-	html, _ := s.render.FragmentPage("setup", d)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusBadGateway)
-	w.Write([]byte(html))
 }
 
 func (s *Server) validateRuntimeRequirements(values map[string]string) error {
@@ -1785,20 +1859,31 @@ func (s *Server) lookupSetupOrganization(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	req.InstanceURL = strings.TrimSpace(req.InstanceURL)
-	req.APIKey = strings.TrimSpace(req.APIKey)
-	if req.InstanceURL == "" || req.APIKey == "" {
-		http.Error(w, "Credimi URL and user API key are required", http.StatusBadRequest)
-		return
-	}
+	req.AuthMode = "user"
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	org, err := fetchCredimiOrganization(ctx, req.InstanceURL, req.APIKey)
+	org, err := verifySetupCredential(ctx, req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, org)
+}
+
+func (s *Server) verifySetupCredentials(w http.ResponseWriter, r *http.Request) {
+	var req setupCredentialRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	result, err := verifySetupCredential(ctx, req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]string{"organization": result.Namespace})
 }
 
 func (s *Server) canonifySetupName(w http.ResponseWriter, r *http.Request) {
@@ -1845,11 +1930,8 @@ func (s *Server) previewSetupRunnerID(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	preview, err := fetchCredimiRunnerPreview(ctx, req)
 	if err != nil {
-		preview = setupRunnerPreview{
-			Organization:  req.Organization,
-			RunnerID:      req.Organization + "/" + canonifyPlain(req.Name),
-			DefaultAction: "update",
-		}
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
 	writeJSON(w, preview)
 }
@@ -2305,30 +2387,27 @@ func (s *Server) resolveConfigIdentity(ctx context.Context, current, incoming ma
 }
 
 func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]string) error {
-	apiKey := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
-	}
-	if apiKey == "" {
-		return errors.New("a Credimi API key is required")
-	}
-
-	baseURL := strings.TrimSpace(values["CREDIMI_URL"])
-	organization := strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION"])
-	client := &dashboardruntime.CredimiClient{BaseURL: baseURL, APIKey: apiKey, HTTPClient: http.DefaultClient}
-
-	if organization == "" {
-		if strings.TrimSpace(values["CREDIMI_USER_API_KEY"]) != "" {
-			org, err := client.MyOrganization(ctx)
-			if err != nil {
-				return err
-			}
-			organization = org.Namespace
-			values["CREDIMI_RUNNER_ORGANIZATION"] = organization
+	if strings.TrimSpace(values["CREDIMI_AUTH_MODE"]) == "" {
+		if strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
+			values["CREDIMI_AUTH_MODE"] = "internal_admin"
 		} else {
-			return errors.New("organization is required when using an internal admin key")
+			values["CREDIMI_AUTH_MODE"] = "user"
 		}
 	}
+	apiKey, err := selectedCredimiAPIKey(values)
+	if err != nil {
+		return err
+	}
+	baseURL := strings.TrimSpace(values["CREDIMI_URL"])
+	verification, err := verifySetupCredential(ctx, setupCredentialRequest{
+		InstanceURL: baseURL, AuthMode: values["CREDIMI_AUTH_MODE"], APIKey: apiKey, Organization: values["CREDIMI_RUNNER_ORGANIZATION"],
+	})
+	if err != nil {
+		return err
+	}
+	organization := verification.Namespace
+	values["CREDIMI_RUNNER_ORGANIZATION"] = organization
+	client := &dashboardruntime.CredimiClient{BaseURL: baseURL, APIKey: apiKey, HTTPClient: http.DefaultClient}
 
 	if strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
 		name := strings.TrimSpace(values["CREDIMI_RUNNER_NAME"])
@@ -2364,6 +2443,35 @@ func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]str
 		values["OTEL_SERVICE_NAME"] = values["CREDIMI_RUNNER_ID"]
 	}
 	return nil
+}
+
+func selectedCredimiAPIKey(values map[string]string) (string, error) {
+	mode := strings.TrimSpace(values["CREDIMI_AUTH_MODE"])
+	// This compatibility branch serves callers that constructed the old
+	// in-memory value map directly. The setup form always posts auth_mode.
+	if mode == "" {
+		if strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
+			mode = "internal_admin"
+		} else {
+			mode = "user"
+		}
+	}
+	switch mode {
+	case "user":
+		key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
+		if key == "" || strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
+			return "", errors.New("user authentication requires exactly a user API key")
+		}
+		return key, nil
+	case "internal_admin":
+		key := strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+		if key == "" || strings.TrimSpace(values["CREDIMI_USER_API_KEY"]) != "" {
+			return "", errors.New("internal-admin authentication requires exactly an internal admin key")
+		}
+		return key, nil
+	default:
+		return "", errors.New("authentication mode must be user or internal_admin")
+	}
 }
 
 func describeDiffImpact(diff dashboardruntime.ConfigDiff) string {

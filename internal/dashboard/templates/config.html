@@ -61,14 +61,15 @@
       <header class="card-h">{{icon "key"}}<div><h3>Authentication</h3><div class="sub">Credentials the runner presents to Credimi</div></div>
         <div class="right"><span class="tag kind">{{title .Runner.AuthMode}} scope</span></div></header>
       <div class="card-b">
+		<input type="hidden" name="CREDIMI_AUTH_MODE" value="{{.Runner.AuthMode}}" data-auth-mode>
         <div class="field"><label><span class="lbtx">Authentication mode</span></label>
           <div class="seg" data-auth-seg data-user="CREDIMI_USER_API_KEY" data-admin="CREDIMI_INTERNAL_ADMIN_KEY">
-            <button type="button" class="{{if ne .Runner.AuthMode "admin"}}on{{end}}" data-val="user">User API key</button>
-            <button type="button" class="{{if eq .Runner.AuthMode "admin"}}on{{end}}" data-val="admin">Internal admin key</button>
+            <button type="button" class="{{if ne .Runner.AuthMode "internal_admin"}}on{{end}}" data-val="user">User API key</button>
+            <button type="button" class="{{if eq .Runner.AuthMode "internal_admin"}}on{{end}}" data-val="internal_admin">Internal admin key</button>
           </div>
         </div>
-        <div data-auth-field="user" {{if eq .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_USER_API_KEY"}}</div>
-        <div data-auth-field="admin" {{if ne .Runner.AuthMode "admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_INTERNAL_ADMIN_KEY"}}</div>
+        <div data-auth-field="user" {{if eq .Runner.AuthMode "internal_admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_USER_API_KEY"}}</div>
+        <div data-auth-field="admin" {{if ne .Runner.AuthMode "internal_admin"}}hidden{{end}}>{{template "field" .Field "CREDIMI_INTERNAL_ADMIN_KEY"}}</div>
         <div class="divline"></div>
         {{template "field" .Field "DASHBOARD_TOKEN"}}
         <div class="callout warn">{{icon "warn"}}<div>Keys are stored in <b>plaintext</b> in private <span class="tag mono">config.toml</span> with <span class="tag mono">chmod 600</span>. Anyone with read access to this file can act as this runner.</div></div>

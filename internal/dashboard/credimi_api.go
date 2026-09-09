@@ -12,13 +12,49 @@ import (
 )
 
 type setupCredentialRequest struct {
-	InstanceURL string `json:"instance_url"`
-	APIKey      string `json:"api_key"`
+	InstanceURL  string `json:"instance_url"`
+	AuthMode     string `json:"auth_mode"`
+	APIKey       string `json:"api_key"`
+	Organization string `json:"organization"`
 }
 
 type setupOrganization struct {
 	Name      string `json:"name"`
 	Namespace string `json:"canonified_name"`
+}
+
+// verifySetupCredential is the one authentication boundary used by the setup
+// wizard.  A user key determines its organization; an internal-admin key must
+// be paired with an existing namespace.  Keeping that distinction here avoids
+// letting UI state or key presence choose an authentication mode.
+func verifySetupCredential(ctx context.Context, request setupCredentialRequest) (setupOrganization, error) {
+	request.InstanceURL = strings.TrimSpace(request.InstanceURL)
+	request.AuthMode = strings.TrimSpace(request.AuthMode)
+	request.APIKey = strings.TrimSpace(request.APIKey)
+	request.Organization = strings.TrimSpace(request.Organization)
+	if request.InstanceURL == "" || request.APIKey == "" {
+		return setupOrganization{}, fmt.Errorf("Credimi URL and authentication key are required")
+	}
+	switch request.AuthMode {
+	case "user":
+		return fetchCredimiOrganization(ctx, request.InstanceURL, request.APIKey)
+	case "internal_admin":
+		if request.Organization == "" {
+			return setupOrganization{}, fmt.Errorf("organization is required when using internal-admin authentication")
+		}
+		namespaces, err := fetchCredimiOrganizationNamespaces(ctx, request.InstanceURL, request.APIKey)
+		if err != nil {
+			return setupOrganization{}, err
+		}
+		for _, namespace := range namespaces {
+			if namespace == request.Organization {
+				return setupOrganization{Namespace: namespace}, nil
+			}
+		}
+		return setupOrganization{}, fmt.Errorf("organization %q does not exist in Credimi", request.Organization)
+	default:
+		return setupOrganization{}, fmt.Errorf("authentication mode must be user or internal_admin")
+	}
 }
 
 type setupRunnerPreviewRequest struct {
@@ -69,6 +105,29 @@ func fetchCredimiOrganization(ctx context.Context, instanceURL, apiKey string) (
 	return org, nil
 }
 
+func fetchCredimiOrganizationNamespaces(ctx context.Context, instanceURL, apiKey string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, utils.JoinURL(instanceURL, "api", "organizations", "namespaces"), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Credimi-Api-Key", apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("organization namespace lookup failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("organization namespace lookup failed: %s", resp.Status)
+	}
+	var body struct {
+		Namespaces []string `json:"namespaces"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("organization namespace lookup returned invalid JSON: %w", err)
+	}
+	return body.Namespaces, nil
+}
+
 func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRequest) (setupRunnerPreview, error) {
 	body, err := json.Marshal(map[string]string{
 		"name":         reqData.Name,
@@ -95,10 +154,9 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
 		return setupRunnerPreview{}, fmt.Errorf("runner ID preview returned invalid JSON: %w", err)
 	}
-	baseRunnerID := reqData.Organization + "/" + canonifyPlain(reqData.Name)
 	preview.RunnerID = strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
 	if preview.RunnerID == "" {
-		preview.RunnerID = baseRunnerID
+		return setupRunnerPreview{}, fmt.Errorf("runner ID preview returned an empty runner ID")
 	}
 	organization := preview.Organization
 	if organization == "" {
@@ -106,9 +164,10 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	}
 	preview.Organization = organization
 	preview.ExistingRunnerID = strings.TrimPrefix(strings.TrimSpace(preview.ExistingRunnerID), "/")
+	baseRunnerID := reqData.Organization + "/" + canonifyPlain(reqData.Name)
 	preview.Conflict = preview.Conflict || preview.RunnerID != baseRunnerID
 	if preview.Conflict && preview.ExistingRunnerID == "" {
-		preview.ExistingRunnerID = baseRunnerID
+		return setupRunnerPreview{}, fmt.Errorf("runner ID preview returned a conflict without an existing runner ID")
 	}
 	preview.DefaultAction = "update"
 	return preview, nil

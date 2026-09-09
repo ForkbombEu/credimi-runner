@@ -53,6 +53,7 @@ func TestHubSnapshotAccessors(t *testing.T) {
 
 func TestHubDeriveWorkers(t *testing.T) {
 	cfg := &Config{values: map[string]string{
+		"CREDIMI_AUTH_MODE":           "internal_admin",
 		"CREDIMI_INTERNAL_ADMIN_KEY":  "adm",
 		"CREDIMI_RUNNER_ORGANIZATION": "acme",
 		"CREDIMI_URL":                 "https://credimi.example",
@@ -63,7 +64,7 @@ func TestHubDeriveWorkers(t *testing.T) {
 	if len(workers) != 1 {
 		t.Fatalf("workers len = %d", len(workers))
 	}
-	if workers[0].Scope != "admin" || workers[0].Queue != "mobile-runner.acme" || workers[0].Status != Online {
+	if workers[0].Scope != "internal_admin" || workers[0].Queue != "mobile-runner.acme" || workers[0].Status != Online {
 		t.Fatalf("runner worker = %#v", workers[0])
 	}
 
