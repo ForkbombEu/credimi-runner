@@ -147,6 +147,9 @@ func (d PageData) RuntimeHeadline() string {
 	if status.Actual == "starting" {
 		return "Starting"
 	}
+	if status.Actual == "failed" {
+		return "Runtime failed"
+	}
 	if status.Configured {
 		return "Needs attention"
 	}

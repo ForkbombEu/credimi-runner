@@ -266,6 +266,20 @@ func TestRuntimeStatusOmitsInternalRunnerAPIAddress(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusSurfacesRuntimeFailure(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := renderer.Fragment("runtime_status", PageData{
+		Runner: &Config{values: map[string]string{"CREDIMI_SERVICE_MODE": "manual"}},
+		Data:   map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, Actual: "failed", LastError: "verify public endpoint failed"}},
+	})
+	if !strings.Contains(html, "Runtime failed") || !strings.Contains(html, "verify public endpoint failed") {
+		t.Fatalf("runtime failure not visible: %s", html)
+	}
+}
+
 func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {
@@ -430,6 +444,27 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 		if !strings.Contains(string(script), want) {
 			t.Fatalf("dashboard script missing %q", want)
 		}
+	}
+}
+
+func TestSetupCredentialFeedbackIsShared(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := cloneStringMap(Defaults)
+	html, err := r.Page("setup", PageData{Active: "setup", Runner: &Config{values: values}, Pill: PillData{OK: true, Label: "Setup"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(html, `data-api-key-status`) != 1 || strings.Count(html, `data-api-key-error`) != 1 {
+		t.Fatalf("credential feedback should have one shared status/error region: %s", html)
+	}
+	if !strings.Contains(html, `data-credential-feedback`) {
+		t.Fatal("shared credential feedback region is missing")
+	}
+	if strings.Contains(html, `data-api-key-status style=`) || strings.Contains(html, `data-api-key-error style=`) {
+		t.Fatal("credential feedback still uses inline visibility styles")
 	}
 }
 
@@ -615,11 +650,23 @@ func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
 		"if (input.disabled) return;",
 		"let runnerIdentityRevision = 0;",
 		"const devicePreviewRevision = new WeakMap();",
+		"const isCurrent = () => revision === (devicePreviewRevision.get(root) || 0);",
+		"if (!isCurrent()) return;",
+		"input[type=\"checkbox\"][name=\"${CSS.escape(name)}\"]",
+		"if (markup) el.innerHTML = markup;",
+		"else el.textContent = val;",
 		"if (i > current) return;",
 		"st.innerHTML = check();",
 		"setFieldValueQuietly(root, 'IOS_UDID', data.udid || '');",
+		"const hydrateNamedControls = (controls, entry) => {",
+		"hidden.value = 'false';",
+		"box.dispatchEvent(new Event('change', { bubbles: true }));",
+		"count.dispatchEvent(new Event('change', { bubbles: true }));",
 		"function clearSetupDraftID()",
 		"clearSetupDraftID();\n\t\t\t\t\twindow.location.assign",
+		"if (phase === 'ready') clearSetupDraftID();",
+		"const returnedID = String(data.id || '').trim();",
+		"if (!returnedID) throw new Error('Setup draft response did not include an ID.');",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("setup state contract missing %q", want)
@@ -636,6 +683,9 @@ func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
 	}
 	if strings.Contains(content, "actionInput.value = data.default_action") {
 		t.Fatal("runner conflict action must not default from preview response")
+	}
+	if strings.Contains(content, "el.innerHTML = val") {
+		t.Fatal("review values must not be interpreted as HTML")
 	}
 }
 
@@ -981,9 +1031,9 @@ func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
 		t.Fatalf("managed public URL = %q", d.PublicURL())
 	}
 	d.Runner.values["CREDIMI_SERVICE_MODE"] = "auto"
-	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "failed"}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "failed", LastError: "verify public endpoint failed"}
 	d.Snapshot.Services[0].Status = Offline
-	if d.PublicURL() != "Public endpoint unavailable" || d.PublicEndpointClass() != "warn" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Needs attention" {
+	if d.PublicURL() != "Public endpoint unavailable" || d.PublicEndpointClass() != "warn" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Runtime failed" {
 		t.Fatalf("stopped runtime view url=%q toggle=%q headline=%q", d.PublicURL(), d.RuntimeTogglePath(), d.RuntimeHeadline())
 	}
 	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "starting"}

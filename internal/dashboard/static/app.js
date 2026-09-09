@@ -382,14 +382,15 @@
           terminal = true;
           const destinationOrigin = setupRecoveryOrigins[0];
           sessionStorage.removeItem(setupBusyKey);
+          if (phase === 'ready') clearSetupDraftID();
           setupRecoveryTokens = [];
           setupRecoveryOrigins = [];
           if (phase === 'ready') appendBusyLog('Setup complete. Opening dashboard.');
           if (phase === 'needs_attention') appendBusyLog('Setup needs attention. Check the dashboard message.');
           clearTimeout(busyStartupTimer);
           busyStartupTimer = null;
-          const delay = phase === 'needs_attention' ? 2500 : 1000;
-          const destination = phase === 'needs_attention' ? '/setup' : '/';
+		  const delay = phase === 'ready' ? 1000 : 2500;
+		  const destination = phase === 'ready' ? '/' : '/setup';
           setTimeout(() => { window.location.assign(dashboardURL(destination, undefined, destinationOrigin)); }, delay);
         }
       }
@@ -629,23 +630,25 @@
     const form = document.querySelector('[data-setup-form]');
     if (!form) return;
     const get = (name) => {
-      // For radio buttons, find the checked one.
-      const radio = form.querySelector(`[name="${name}"]:checked`);
+      const checkbox = form.querySelector(`input[type="checkbox"][name="${CSS.escape(name)}"]`);
+      if (checkbox) return checkbox.checked ? 'true' : 'false';
+      const radio = form.querySelector(`input[type="radio"][name="${CSS.escape(name)}"]:checked`);
       if (radio) return radio.value || '';
-      const el = form.querySelector(`[name="${name}"]`);
+      const el = form.querySelector(`[name="${CSS.escape(name)}"]`);
       if (!el) return '';
-      if (el.type === 'checkbox') return el.checked ? 'true' : 'false';
       if (el.tagName === 'SELECT') return el.options[el.selectedIndex]?.value || '';
       return el.value || '';
     };
     form.querySelectorAll('[data-review]').forEach(el => {
       const key = el.dataset.review;
       let val = get(key);
-      if (val === 'true') val = '<span class="chip online"><span class="d"></span>Enabled</span>';
-      else if (val === 'false') val = '<span class="chip idle"><span class="d"></span>Disabled</span>';
+      let markup = '';
+      if (val === 'true') markup = '<span class="chip online"><span class="d"></span>Enabled</span>';
+      else if (val === 'false') markup = '<span class="chip idle"><span class="d"></span>Disabled</span>';
       else if (!val) val = '—';
-      if (el.dataset.reviewSecret && val !== '—') val = '••••••••';
-      el.innerHTML = val;
+      if (el.dataset.reviewSecret && val !== '—') { val = '••••••••'; markup = ''; }
+      if (markup) el.innerHTML = markup;
+      else el.textContent = val;
     });
     const netMode = get('CREDIMI_SERVICE_MODE');
     form.querySelectorAll('[data-review-net]').forEach(el => {
@@ -676,6 +679,10 @@
       });
     });
   };
+  const notifySetupDeviceCountChanged = (form) => {
+    const count = form && form.querySelector('[data-setup-device-count]');
+    if (count) count.dispatchEvent(new Event('change', { bubbles: true }));
+  };
   function initSetupWizard(root = document) {
     $$('[data-setup-form]', root).forEach((form) => {
       if (form.dataset.setupReady) return;
@@ -700,7 +707,10 @@
 			const values = serializeSetupDraft();
 			const response = await fetch(dashboardURL('/setup/draft'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: draftID(), step: current, values }) });
 			if (!response.ok) throw new Error('Could not save setup draft.');
-			const data = await response.json(); const field = draftIDField(); if (field) field.value = data.id || ''; if (data.id) sessionStorage.setItem('credimi-runner:setup-draft-id', data.id);
+			const data = await response.json();
+			const returnedID = String(data.id || '').trim();
+			if (!returnedID) throw new Error('Setup draft response did not include an ID.');
+			const field = draftIDField(); if (field) field.value = returnedID; sessionStorage.setItem('credimi-runner:setup-draft-id', returnedID);
 			persistedDraftRevision = Math.max(persistedDraftRevision, revision);
 			return data;
 		})();
@@ -950,12 +960,12 @@
         const key = selectedAPIKey().trim();
         const organization = value('CREDIMI_RUNNER_ORGANIZATION').trim();
         const st = statusEl(); const err = errorEl();
-        if (st) st.style.display = 'none';
+        if (st) { st.hidden = true; st.textContent = ''; }
         if (err) { err.hidden = true; err.textContent = ''; }
         if (!key || (authMode() === 'internal_admin' && !organization)) { syncStepActions(); return; }
         const run = async () => {
           credentialValidation.status = 'pending';
-          if (st) { st.style.display = 'flex'; st.textContent = 'Checking…'; }
+          if (st) { st.hidden = false; st.textContent = 'Checking…'; }
           credentialAbort = new AbortController();
           try {
             const resolved = await resolveOrganization(credentialAbort.signal);
@@ -967,7 +977,7 @@
           } catch (e) {
             if (generation !== credentialValidation.generation) return;
             credentialValidation = { status: 'invalid', organization: '', error: (e && e.message) || 'Credential validation failed', generation };
-            if (st) { st.style.display = 'flex'; st.innerHTML = xmark(); st.style.color = 'var(--down)'; }
+            if (st) { st.hidden = false; st.innerHTML = xmark(); st.style.color = 'var(--down)'; }
             if (err) { err.hidden = false; err.textContent = credentialValidation.error; }
           } finally { if (generation === credentialValidation.generation) syncStepActions(); }
         };
@@ -999,7 +1009,7 @@
         const otelName = field('OTEL_SERVICE_NAME');
         if (otelName && runnerID) otelName.value = runnerID;
       };
-      const setConflictState = (preview) => {
+      const clearRunnerConflictAction = () => {
         const actionInput = $('[data-runner-conflict-action]', form);
         if (!actionInput) return;
         actionInput.value = '';
@@ -1079,7 +1089,7 @@
           if (revision !== runnerIdentityRevision || source.instanceURL !== value('CREDIMI_URL') || source.apiKey !== selectedAPIKey() || source.organization !== value('CREDIMI_RUNNER_ORGANIZATION') || source.name !== value('CREDIMI_RUNNER_NAME')) {
             throw new Error('Runner identity changed while it was being checked. Retry.');
           }
-          setConflictState(data);
+          clearRunnerConflictAction();
 		  rid = data.conflict ? '' : data.runner_id;
           previewData = data;
         const runnerID = field('CREDIMI_RUNNER_ID');
@@ -1201,11 +1211,13 @@
       form.addEventListener('dashboard:device-ready-change', syncStepActions);
 		form.addEventListener('input', (event) => {
 			const card = event.target.closest('[data-device-provision]'); if (!card) return;
-			if (event.target.matches('[data-setup-device-field="NAME"]')) invalidateDevicePreview(card);
-			else if (event.target.matches('[data-setup-device-field="TYPE"], [data-setup-device-field="MODE"], [data-setup-device-field="SERIAL"], [data-setup-device-field="WIFI_IP"], [data-setup-device-field="WIFI_PORT"], [data-setup-device-field="BASE_NAME"], [data-setup-device-field="GOLDEN_PATH"], [data-setup-device-field="HOST_AVD_HOME_PATH"], [data-setup-device-field="HOST_AVD_GOLDEN_PATH"]')) updateDeviceFields(card);
+			if (event.target.matches('[data-setup-device-field="NAME"], [data-setup-device-field="TYPE"], [data-setup-device-field="MODE"], [data-setup-device-field="SERIAL"], [data-setup-device-field="WIFI_IP"], [data-setup-device-field="WIFI_PORT"], [data-setup-device-field="BASE_NAME"], [data-setup-device-field="GOLDEN_PATH"], [data-setup-device-field="HOST_AVD_HOME_PATH"], [data-setup-device-field="HOST_AVD_GOLDEN_PATH"]')) {
+				invalidateDevicePreview(card);
+				if (!event.target.matches('[data-setup-device-field="NAME"]')) updateDeviceFields(card);
+			}
 		});
 		form.addEventListener('dashboard:device-type-change', (event) => invalidateDevicePreview(event.detail.card));
-		form.addEventListener('dashboard:device-mode-change', (event) => updateDeviceFields(event.detail.card));
+		form.addEventListener('dashboard:device-mode-change', (event) => { invalidateDevicePreview(event.detail.card); updateDeviceFields(event.detail.card); });
 		const serializeSetupDraft = () => {
 			const values = {};
 			$$('input, select, textarea', form).forEach((input) => {
@@ -1229,6 +1241,21 @@
 			reindexSetupDeviceCards(form);
 			list.querySelectorAll('[data-device-provision]').forEach((card) => initializeDeviceProvisionCard(card));
 		};
+		const hydrateNamedControls = (controls, entry) => {
+			const value = String(entry);
+			const checkboxes = controls.filter((control) => control.type === 'checkbox');
+			if (checkboxes.length) {
+				checkboxes.forEach((checkbox) => { checkbox.checked = value === 'true'; });
+				controls.filter((control) => control.type === 'hidden').forEach((hidden) => { hidden.value = 'false'; });
+				return;
+			}
+			const radios = controls.filter((control) => control.type === 'radio');
+			if (radios.length) {
+				radios.forEach((radio) => { radio.checked = radio.value === value; });
+				return;
+			}
+			controls.forEach((control) => { control.value = value; });
+		};
 		const hydrateSetupDraft = (draft) => {
 			hydratingDraft = true;
 			const values = draft.values || {};
@@ -1237,11 +1264,7 @@
 			Object.entries(values).forEach(([name, entry]) => {
 				if (name === 'SETUP_DRAFT_ID' || name === 'SETUP_STEP' || name.includes('_ui_') || name.endsWith('_ui')) return;
 				const controls = $$(`[name="${CSS.escape(name)}"]`, form);
-				controls.forEach((input) => {
-					if (input.type === 'radio') input.checked = input.value === String(entry);
-					else if (input.type === 'checkbox') input.checked = String(entry) === 'true';
-					else input.value = String(entry);
-				});
+				hydrateNamedControls(controls, entry);
 			});
 			form.querySelectorAll('[data-device-provision]').forEach((card) => {
 				const type = setupDeviceFieldValue(card, 'TYPE') || 'android_phone';
@@ -1291,6 +1314,7 @@
         newCard.querySelector('[data-setup-device-remove]').hidden = false;
         initializeDeviceProvisionCard(newCard);
         reindexSetupDeviceCards(form);
+        notifySetupDeviceCountChanged(form);
       }
       return;
     }
@@ -1301,6 +1325,7 @@
         const form = remove.closest('[data-setup-form]');
         card.remove();
         reindexSetupDeviceCards(form);
+        notifySetupDeviceCountChanged(form);
       }
     }
   });
@@ -1616,6 +1641,8 @@
     const message = panel.querySelector('[data-ios-simulator-message]');
     const selects = panel.querySelector('[data-ios-simulator-selects]');
     const create = panel.querySelector('[data-ios-simulator-create]');
+    const revision = devicePreviewRevision.get(root) || 0;
+    const isCurrent = () => revision === (devicePreviewRevision.get(root) || 0);
     panel.dataset.exists = '0';
 	setFieldValueQuietly(root, 'IOS_UDID', '');
     if (selects) selects.hidden = true;
@@ -1630,6 +1657,7 @@
       const res = await fetch(dashboardURL(`/devices/ios-simulator/status?name=${encodeURIComponent(name)}`));
       if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
       const data = await res.json();
+      if (!isCurrent()) return;
       if (!data.supported) {
         setCallout(message, 'warn', 'xcrun simctl is not available on this machine.');
         return;
@@ -1647,9 +1675,10 @@
       if (create) create.hidden = false;
       setCallout(message, 'warn', `No simulator named ${name} exists yet. Choose a device type and runtime to create it.`);
     } catch (error) {
+      if (!isCurrent()) return;
       setCallout(message, 'danger', error && error.message ? error.message : 'Failed to load simulator status.');
     } finally {
-      root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+      if (isCurrent()) root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
     }
   };
   const refreshAndroidEmulatorAssetsPanel = async (root) => {
@@ -1667,6 +1696,8 @@
     const applyAVD = panel.querySelector('[data-android-emulator-apply-avd]');
     const applyGolden = panel.querySelector('[data-android-emulator-apply-golden]');
     const download = panel.querySelector('[data-android-emulator-download]');
+    const revision = devicePreviewRevision.get(root) || 0;
+    const isCurrent = () => revision === (devicePreviewRevision.get(root) || 0);
     panel.dataset.ready = '0';
     panel.dataset.checking = '1';
     if (avdControls) avdControls.hidden = true;
@@ -1686,6 +1717,7 @@
       const res = await fetch(dashboardURL(`/devices/android-emulator/assets/status?${query.toString()}`));
       if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
       const data = await res.json();
+      if (!isCurrent()) return;
 		if (!fieldValue(root, 'ANDROID_KEYS_DIR') && data.android_keys_dir) setFieldValue(root, 'ANDROID_KEYS_DIR', data.android_keys_dir);
 		if (!fieldValue(root, 'HOST_AVD_HOME_PATH') && data.avd_home) setFieldValue(root, 'HOST_AVD_HOME_PATH', data.avd_home);
 		if (!fieldValue(root, 'HOST_AVD_GOLDEN_PATH') && data.golden_root) setFieldValue(root, 'HOST_AVD_GOLDEN_PATH', data.golden_root);
@@ -1714,10 +1746,11 @@
       if (!goldenReady) missing.push(`golden image ${data.golden_leaf || ''}`.trim());
       setCallout(message, 'warn', `${missing.join(' and ')} missing. Choose an existing asset or download Credimi assets.`);
     } catch (error) {
+      if (!isCurrent()) return;
       setCallout(message, 'danger', error && error.message ? error.message : 'Failed to load emulator asset status.');
     } finally {
       delete panel.dataset.checking;
-      root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
+      if (isCurrent()) root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
     }
   };
   const deriveHomeDefaults = (root) => {
@@ -1791,16 +1824,19 @@
     }
   };
   const applyNormalizedPreview = async (root) => {
+    const revision = devicePreviewRevision.get(root) || 0;
     const res = await fetch(dashboardURL('/config/normalize'), {
       method: 'POST',
       body: formParams(root),
     });
     if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
     const data = await res.json();
+    if (revision !== (devicePreviewRevision.get(root) || 0)) return;
     const values = data && data.values ? data.values : {};
     TYPE_PREVIEW_KEYS.forEach((key) => {
-      if (Object.prototype.hasOwnProperty.call(values, key)) setFieldValue(root, key, values[key] || '');
+      if (Object.prototype.hasOwnProperty.call(values, key)) setFieldValueQuietly(root, key, values[key] || '');
     });
+    root.dispatchEvent(new Event('change', { bubbles: true }));
   };
   async function refreshConnectedAndroidDevices(root = document) {
     try {
@@ -2395,7 +2431,7 @@
       tog.classList.toggle('on', on);
       tog.setAttribute('aria-checked', on ? 'true' : 'false');
     }
-    if (box) box.checked = on;
+    if (box) { box.checked = on; box.dispatchEvent(new Event('change', { bubbles: true })); }
     control.dataset.publishConfirmed = on ? '1' : '0';
     markDirty();
     syncReview();
@@ -2463,7 +2499,7 @@
     const on = tog.classList.contains('on');
     tog.setAttribute('aria-checked', on);
     const box = tog.parentElement.querySelector('input[type=checkbox]');
-    if (box) box.checked = on;
+    if (box) { box.checked = on; box.dispatchEvent(new Event('change', { bubbles: true })); }
     const publishControl = tog.closest('[data-publish-control]');
     if (publishControl) {
       publishControl.dataset.publishConfirmed = on ? publishControl.dataset.publishConfirmed : '0';

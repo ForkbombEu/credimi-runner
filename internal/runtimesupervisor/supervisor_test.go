@@ -2153,6 +2153,27 @@ func TestSupervisorCreateAndVerifyFailures(t *testing.T) {
 	}
 }
 
+func TestSupervisorEndpointFailureDoesNotPauseBeforeRegistration(t *testing.T) {
+	life := &testLife{}
+	verifyErr := errors.New("endpoint unavailable")
+	registers := 0
+	s, err := New(t.TempDir(), func() (config.Config, error) { return validConfig(), nil }, Dependencies{
+		NewAPI:               func(config.Config, context.Context, *server.ProcessStore) (API, error) { return &testAPI{}, nil },
+		NewLifecycleClient:   func(config.Config, *server.ProcessStore) LifecycleClient { return life },
+		VerifyPublicEndpoint: func(context.Context, config.Config, string) error { return verifyErr },
+		Register:             func(context.Context, config.Config, string) error { registers++; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(context.Background()); !errors.Is(err, verifyErr) {
+		t.Fatalf("start error=%v", err)
+	}
+	if registers != 0 || life.pauses != 0 {
+		t.Fatalf("registration=%d pauses=%d, want no remote cleanup before registration", registers, life.pauses)
+	}
+}
+
 func TestSupervisorGenerationConstructionFailures(t *testing.T) {
 	cfg := validConfig()
 	apiErr := errors.New("api construction")

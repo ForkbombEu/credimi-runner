@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,7 +86,7 @@ func runtimeDependencies(configDir string) runtimesupervisor.Dependencies {
 		NewAPI: func(cfg runnerconfig.Config, ctx context.Context, store *server.ProcessStore) (runtimesupervisor.API, error) {
 			applyEnvironment(cfg)
 			apiCfg := cfg
-			listen, err := executionAPIBindAddress(cfg.Server.APIListen, os.Getenv(servicemanager.ServiceNetworkModeEnv))
+			listen, err := executionAPIBindAddressForConfig(cfg, os.Getenv(servicemanager.ServiceNetworkModeEnv))
 			if err != nil {
 				return nil, err
 			}
@@ -295,6 +296,34 @@ func executionAPIBindAddress(desiredListen, serviceNetworkMode string) (string, 
 		host = "0.0.0.0"
 	}
 	return net.JoinHostPort(host, port), nil
+}
+
+func executionAPIBindAddressForConfig(cfg runnerconfig.Config, serviceNetworkMode string) (string, error) {
+	listen, err := executionAPIBindAddress(cfg.Server.APIListen, serviceNetworkMode)
+	if err != nil || serviceNetworkMode != "" || cfg.Exposure.Mode != "manual" {
+		return listen, err
+	}
+	parsed, parseErr := url.Parse(strings.TrimSpace(cfg.Exposure.PublicURL))
+	if parseErr != nil || parsed.Hostname() == "" {
+		return listen, err
+	}
+	host, port, splitErr := net.SplitHostPort(listen)
+	if splitErr != nil {
+		return listen, splitErr
+	}
+	publicHost := parsed.Hostname()
+	loopback := publicHost == "localhost"
+	if ip := net.ParseIP(publicHost); ip != nil {
+		loopback = ip.IsLoopback()
+	}
+	bindLoopback := host == "localhost"
+	if ip := net.ParseIP(host); ip != nil {
+		bindLoopback = ip.IsLoopback()
+	}
+	if !loopback && bindLoopback {
+		return net.JoinHostPort("0.0.0.0", port), nil
+	}
+	return listen, nil
 }
 
 func atoiPort(port string) int {

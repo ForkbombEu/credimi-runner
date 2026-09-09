@@ -88,7 +88,7 @@
   <div class="stat">
     <div class="k">{{icon "activity"}} Runtime</div>
     <div class="v">{{.RuntimeHeadline}}</div>
-    <div class="meta">{{if .StartupMessage}}{{.StartupMessage}}{{else if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
+    <div class="meta">{{if .RuntimeStatus.LastError}}{{.RuntimeStatus.LastError}}{{else if .StartupMessage}}{{.StartupMessage}}{{else if .RuntimeStatus.Configured}}configured runner{{else}}setup required{{end}}</div>
   </div>
   <div class="stat">
     <div class="k">{{icon "cloud"}} Public URL <button type="button" class="minibtn" data-copy-value="{{.PublicURL}}" title="Copy public URL">{{icon "copy"}} Copy</button></div>

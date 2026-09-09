@@ -75,6 +75,18 @@ type Dependencies struct {
 	NewProcessStore             func() *server.ProcessStore
 }
 
+type registrationObserverKey struct{}
+
+func withRegistrationObserver(ctx context.Context, observer func()) context.Context {
+	return context.WithValue(ctx, registrationObserverKey{}, observer)
+}
+
+func registrationSucceeded(ctx context.Context) {
+	if observer, ok := ctx.Value(registrationObserverKey{}).(func()); ok && observer != nil {
+		observer()
+	}
+}
+
 type Supervisor struct {
 	transitionMu sync.Mutex
 	mu           sync.RWMutex
@@ -239,7 +251,7 @@ func (s *Supervisor) newGeneration(parent context.Context, cfg config.Config) (r
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	activeConfig := config.NewActiveConfig(cfg)
 	cfg = config.WithActiveConfig(cfg, activeConfig)
-	g := &generation{cfg: cfg, activeConfig: activeConfig, ctx: ctx, cancel: cancel, fatal: make(chan error, 1), workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}}
+	g := &generation{cfg: cfg, activeConfig: activeConfig, ctx: ctx, cancel: cancel, fatal: make(chan error, 1), workersClosed: true, apiClosed: true, edgeClosed: true, otelClosed: true, contextClosed: false, stopHeartbeat: func() {}, remoteRegistered: s.deps.Register == nil}
 	created := false
 	defer func() {
 		if created {
@@ -335,9 +347,11 @@ func (s *Supervisor) activate(ctx context.Context, g *generation) error {
 		return err
 	}
 	if s.deps.Register != nil {
-		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
+		registrationCtx := withRegistrationObserver(ctx, g.markRemoteRegistered)
+		if err := registerWithRetry(registrationCtx, s.deps.Register, cfg, publicURL); err != nil {
 			return fmt.Errorf("register runtime: %w", err)
 		}
+		g.markRemoteRegistered()
 	}
 	if err := g.fatalError(); err != nil {
 		return err
@@ -595,9 +609,11 @@ func (s *Supervisor) ApplyInventory(ctx context.Context, cfg config.Config) erro
 	}
 	publicURL, _ := g.snapshot()
 	if s.deps.Register != nil {
-		if err := registerWithRetry(ctx, s.deps.Register, cfg, publicURL); err != nil {
+		registrationCtx := withRegistrationObserver(ctx, g.markRemoteRegistered)
+		if err := registerWithRetry(registrationCtx, s.deps.Register, cfg, publicURL); err != nil {
 			return fmt.Errorf("register inventory: %w", err)
 		}
+		g.markRemoteRegistered()
 	}
 	g.activeConfig.Store(cfg)
 	g.mu.Lock()
@@ -647,9 +663,11 @@ func (s *Supervisor) ApplyEndpoint(ctx context.Context, cfg config.Config) error
 		}
 	}
 	if s.deps.Register != nil {
-		if err := registerWithRetry(ctx, s.deps.Register, cfg, candidate); err != nil {
+		registrationCtx := withRegistrationObserver(ctx, g.markRemoteRegistered)
+		if err := registerWithRetry(registrationCtx, s.deps.Register, cfg, candidate); err != nil {
 			return fmt.Errorf("register endpoint: %w", err)
 		}
+		g.markRemoteRegistered()
 	}
 	if cfg.Exposure.Mode == "manual" {
 		g.setPublicURL(candidate)
@@ -754,7 +772,7 @@ func (s *Supervisor) teardownGeneration(ctx context.Context, g *generation, reas
 		return nil, nil
 	}
 	g.stopHeartbeat()
-	if pause && g.lifecycle != nil {
+	if pause && g.lifecycle != nil && g.isRemoteRegistered() {
 		pauseCtx, cancel := boundedContext(ctx, pauseTimeout)
 		remoteErr = g.lifecycle.Pause(pauseCtx, reason)
 		cancel()
@@ -821,6 +839,19 @@ type generation struct {
 	shutdownObservability                                           func(context.Context) error
 	executing, heartbeatActive                                      bool
 	workersClosed, apiClosed, edgeClosed, otelClosed, contextClosed bool
+	remoteRegistered                                                bool
+}
+
+func (g *generation) markRemoteRegistered() {
+	g.mu.Lock()
+	g.remoteRegistered = true
+	g.mu.Unlock()
+}
+
+func (g *generation) isRemoteRegistered() bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.remoteRegistered
 }
 
 func (g *generation) watchFailureSource(component any) {

@@ -2414,9 +2414,6 @@ func (s *Server) resolveConfigIdentity(ctx context.Context, current, incoming ma
 		return err
 	}
 	runnerID := strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
-	if runnerID == "" {
-		runnerID = nextOrg + "/" + canonifyPlain(nextName)
-	}
 	incoming["CREDIMI_RUNNER_NAME"] = nextName
 	incoming["CREDIMI_RUNNER_ORGANIZATION"] = nextOrg
 	incoming["CREDIMI_RUNNER_ID"] = runnerID

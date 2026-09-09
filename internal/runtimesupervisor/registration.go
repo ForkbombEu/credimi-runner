@@ -47,6 +47,9 @@ func Register(ctx context.Context, cfg config.Config, publicURL string) error {
 	}); err != nil {
 		return err
 	}
+	// The runner record may already exist if a later device registration fails.
+	// Notify the supervisor so rollback can pause only remotely owned runners.
+	registrationSucceeded(ctx)
 	inventory := dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.ValuesFromTypedConfig(cfg)}
 	parsed, err := dashboardruntime.ParseRuntimeConfig(inventory.Host)
 	if err != nil {
