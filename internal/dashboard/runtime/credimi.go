@@ -210,6 +210,14 @@ func (c *CredimiClient) PreviewDeviceID(ctx context.Context, runnerID, name, org
 	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
 		return DevicePreview{}, fmt.Errorf("device ID preview returned invalid JSON: %w", err)
 	}
+	preview.DeviceID = strings.TrimPrefix(strings.TrimSpace(preview.DeviceID), "/")
+	preview.ExistingDeviceID = strings.TrimPrefix(strings.TrimSpace(preview.ExistingDeviceID), "/")
+	if preview.DeviceID == "" {
+		return DevicePreview{}, errors.New("device ID preview returned an empty device ID")
+	}
+	if preview.Conflict && preview.ExistingDeviceID == "" {
+		return DevicePreview{}, errors.New("device ID preview returned a conflict without an existing device ID")
+	}
 	return preview, nil
 }
 

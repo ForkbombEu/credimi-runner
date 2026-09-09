@@ -79,7 +79,6 @@ type setupRunnerPreview struct {
 	RunnerID         string `json:"runner_id"`
 	ExistingRunnerID string `json:"existing_runner_id,omitempty"`
 	Conflict         bool   `json:"conflict"`
-	DefaultAction    string `json:"default_action"`
 }
 
 func fetchCredimiOrganization(ctx context.Context, instanceURL, apiKey string) (setupOrganization, error) {
@@ -170,7 +169,6 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	if preview.Conflict && preview.ExistingRunnerID == "" {
 		return setupRunnerPreview{}, errors.New("runner ID preview returned a conflict without an existing runner ID")
 	}
-	preview.DefaultAction = "update"
 	return preview, nil
 }
 

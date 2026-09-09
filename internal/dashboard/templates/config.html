@@ -59,7 +59,7 @@
 
     <section class="card">
       <header class="card-h">{{icon "key"}}<div><h3>Authentication</h3><div class="sub">Credentials the runner presents to Credimi</div></div>
-        <div class="right"><span class="tag kind">{{title .Runner.AuthMode}} scope</span></div></header>
+        <div class="right"><span class="tag kind">{{if eq .Runner.AuthMode "internal_admin"}}Internal admin{{else}}User{{end}} scope</span></div></header>
       <div class="card-b">
 		<input type="hidden" name="CREDIMI_AUTH_MODE" value="{{.Runner.AuthMode}}" data-auth-mode>
         <div class="field"><label><span class="lbtx">Authentication mode</span></label>

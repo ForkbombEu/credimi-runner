@@ -162,6 +162,24 @@ func TestCredimiClientRejectsInvalidDeviceResponses(t *testing.T) {
 	}
 }
 
+func TestCredimiClientRejectsIncompleteDevicePreview(t *testing.T) {
+	for name, payload := range map[string]DevicePreview{
+		"empty device id":     {Conflict: false},
+		"missing existing id": {DeviceID: "acme/runner/pixel", Conflict: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(payload)
+			}))
+			defer server.Close()
+			client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
+			if _, err := client.PreviewDeviceID(context.Background(), "acme/runner", "Pixel", "acme"); err == nil {
+				t.Fatal("expected malformed device preview error")
+			}
+		})
+	}
+}
+
 func TestCredimiClientDetectsRunnerNameConflict(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)

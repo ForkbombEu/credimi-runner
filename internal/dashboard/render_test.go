@@ -602,6 +602,43 @@ func TestStaticAPIKeysLinkKeepsCompleteURL(t *testing.T) {
 	}
 }
 
+func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"let draftRevision = 0;",
+		"let persistedDraftRevision = 0;",
+		"while (persistedDraftRevision < draftRevision || !draftID())",
+		"if (input.disabled) return;",
+		"let runnerIdentityRevision = 0;",
+		"const devicePreviewRevision = new WeakMap();",
+		"if (i > current) return;",
+		"st.innerHTML = check();",
+		"setFieldValueQuietly(root, 'IOS_UDID', data.udid || '');",
+		"function clearSetupDraftID()",
+		"clearSetupDraftID();\n\t\t\t\t\twindow.location.assign",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("setup state contract missing %q", want)
+		}
+	}
+	if strings.Contains(content, `data-setup-device-field="IOS_UDID"]')) updateDeviceFields`) {
+		t.Fatal("derived iOS UDID must not trigger another simulator status refresh")
+	}
+	if strings.Contains(content, "st.textContent = check();") {
+		t.Fatal("success icon must be rendered as HTML")
+	}
+	if strings.Contains(content, "draftPersistence") {
+		t.Fatal("obsolete draftPersistence state remains")
+	}
+	if strings.Contains(content, "actionInput.value = data.default_action") {
+		t.Fatal("runner conflict action must not default from preview response")
+	}
+}
+
 func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
 	script, err := os.ReadFile("static/app.js")
 	if err != nil {

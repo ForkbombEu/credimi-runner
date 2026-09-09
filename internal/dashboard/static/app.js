@@ -115,6 +115,9 @@
   function isReplacementRecoveryOperation(operation) {
     return Boolean(operation && operation.recovery === 'true');
   }
+  function clearSetupDraftID() {
+    sessionStorage.removeItem('credimi-runner:setup-draft-id');
+  }
   function shouldHandoffToReplacementRecovery(operation, phase, snapshot) {
     if (!isReplacementRecoveryOperation(operation)) return false;
     if (phase === 'succeeded' || phase === 'cancelled') return true;
@@ -208,7 +211,7 @@
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
 		if ($('.app.setup-shell')) {
-			if (state.phase === 'ready') window.location.assign(dashboardURL(operation.refresh || '/', recovery.token, recovery.origin));
+			if (state.phase === 'ready') { clearSetupDraftID(); window.location.assign(dashboardURL(operation.refresh || '/', recovery.token, recovery.origin)); }
 			else refreshOverview('/setup', recovery.token, recovery.origin);
 		} else refreshOverview(operation.refresh || '/', recovery.token, recovery.origin);
       } catch (_) {
@@ -265,6 +268,7 @@
         }
 			if ($('.app.setup-shell')) {
 				if (phase === 'succeeded') {
+					clearSetupDraftID();
 					window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));
 				} else {
 					refreshOverview('/setup', operation.recoveryToken, operation.recoveryOrigin);
@@ -678,41 +682,50 @@
       form.dataset.setupReady = '1';
 	  reindexSetupDeviceCards(form);
 	  $$('[data-legacy-setup-devices] input, [data-legacy-setup-devices] select, [data-legacy-setup-devices] textarea', form).forEach((field) => { field.disabled = true; });
-      let current = 0;
+	  let current = 0;
 	  let draftSaveTimer = null;
 	  let draftSavePromise = null;
-	  let draftPersistence = { dirty: false, saving: false, error: '' };
+	  let draftRevision = 0;
+	  let persistedDraftRevision = 0;
 	  const draftIDField = () => $('[data-setup-draft-id]', form);
+	  const draftID = () => String((draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '').trim();
+  const reportDraftSaveFailure = () => {
+		setError('Unable to save the setup draft.');
+	  };
 	  const saveSetupDraft = async () => {
 		if (hydratingDraft) return;
 		if (draftSavePromise) return draftSavePromise;
-		draftPersistence.saving = true;
-		draftPersistence.error = '';
+		const revision = draftRevision;
 		const save = (async () => {
 			const values = serializeSetupDraft();
-			const response = await fetch(dashboardURL('/setup/draft'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: (draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '', step: current, values }) });
+			const response = await fetch(dashboardURL('/setup/draft'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: draftID(), step: current, values }) });
 			if (!response.ok) throw new Error('Could not save setup draft.');
 			const data = await response.json(); const field = draftIDField(); if (field) field.value = data.id || ''; if (data.id) sessionStorage.setItem('credimi-runner:setup-draft-id', data.id);
-			draftPersistence.dirty = false;
+			persistedDraftRevision = Math.max(persistedDraftRevision, revision);
 			return data;
 		})();
 		draftSavePromise = save;
+		let saved = false;
 		try {
-			return await save;
-		} catch (error) {
-			draftPersistence.error = error && error.message ? error.message : 'Could not save setup draft.';
-			throw error;
+			const result = await save;
+			saved = true;
+			return result;
 		} finally {
-			draftPersistence.saving = false;
 			if (draftSavePromise === save) draftSavePromise = null;
+			if (saved && !hydratingDraft && persistedDraftRevision < draftRevision && !draftSaveTimer) {
+				draftSaveTimer = setTimeout(() => { draftSaveTimer = null; saveSetupDraft().catch(() => reportDraftSaveFailure()); }, 0);
+			}
 		}
 	  };
-      const scheduleDraftSave = () => { if (hydratingDraft) return; draftPersistence.dirty = true; clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(() => { saveSetupDraft().catch(() => { setError('Unable to save the setup draft.'); }); }, 300); };
+      const scheduleDraftSave = () => { if (hydratingDraft) return; draftRevision++; clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(() => { draftSaveTimer = null; saveSetupDraft().catch(() => reportDraftSaveFailure()); }, 300); };
       const flushSetupDraft = async () => {
 		clearTimeout(draftSaveTimer);
-		if (draftSavePromise) await draftSavePromise;
-		if (draftPersistence.dirty || !String((draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '').trim()) await saveSetupDraft();
-		if (!String((draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '').trim()) throw new Error('Unable to preserve the setup draft.');
+		draftSaveTimer = null;
+		while (persistedDraftRevision < draftRevision || !draftID()) {
+			if (draftSavePromise) await draftSavePromise;
+			else await saveSetupDraft();
+		}
+		if (!draftID()) throw new Error('Unable to preserve the setup draft.');
 	  };
       let connectedAndroidTimer = null;
       const buttons = $$('.wizard-step', form);
@@ -723,6 +736,8 @@
       let credentialValidation = { status: 'idle', organization: '', error: '', generation: 0 };
       let hydratingDraft = false;
       let credentialAbort = null;
+      let runnerIdentityRevision = 0;
+      const devicePreviewRevision = new WeakMap();
       const errBox = () => $('[data-setup-error]', panels[current]);
       const setError = (msg) => {
         const box = errBox();
@@ -897,20 +912,30 @@
           api_key: selectedAPIKey(),
           organization: value('CREDIMI_RUNNER_ORGANIZATION'),
         }, signal);
-        const orgName = org.organization || '';
+        return org.organization || '';
+      };
+      const applyResolvedOrganization = (organization) => {
         const orgValue = field('CREDIMI_RUNNER_ORGANIZATION');
-        if (orgValue) orgValue.value = orgName;
-        setOrgPreview(orgName);
-        return orgName;
+        if (orgValue) orgValue.value = organization;
+        setOrgPreview(organization);
       };
       const invalidateCredentialValidation = (clearOrganization = true) => {
         credentialValidation = { status: 'idle', organization: clearOrganization ? '' : credentialValidation.organization, error: '', generation: credentialValidation.generation + 1 };
         if (credentialAbort) credentialAbort.abort();
         if (clearOrganization && authMode() === 'user') { const org = field('CREDIMI_RUNNER_ORGANIZATION'); if (org) org.value = ''; }
       };
-      const invalidateDevicePreview = (card) => { const id = card.querySelector('[data-device-id]'); const action = card.querySelector('[data-device-conflict-action]'); if (id) id.value = ''; if (action) action.value = ''; };
+      const invalidateDevicePreview = (card) => {
+        devicePreviewRevision.set(card, (devicePreviewRevision.get(card) || 0) + 1);
+        const id = card.querySelector('[data-device-id]'); const action = card.querySelector('[data-device-conflict-action]');
+        if (id) id.value = ''; if (action) action.value = '';
+      };
       const invalidateAllDevicePreviews = () => $$('[data-device-provision]', form).forEach(invalidateDevicePreview);
-      const invalidateRunnerIdentity = () => { const id = field('CREDIMI_RUNNER_ID'); if (id) id.value = ''; const action = $('[data-runner-conflict-action]', form); if (action) action.value = ''; invalidateAllDevicePreviews(); };
+      const invalidateRunnerIdentity = () => {
+        runnerIdentityRevision++;
+        const id = field('CREDIMI_RUNNER_ID'); if (id) id.value = '';
+        const action = $('[data-runner-conflict-action]', form); if (action) action.value = '';
+        invalidateAllDevicePreviews();
+      };
       let apiKeyTimer;
       const statusEl = () => $('[data-api-key-status]', form);
       const errorEl = () => $('[data-api-key-error]', form);
@@ -935,8 +960,9 @@
           try {
             const resolved = await resolveOrganization(credentialAbort.signal);
             if (generation !== credentialValidation.generation) return;
+            applyResolvedOrganization(resolved);
             credentialValidation = { status: 'valid', organization: resolved, error: '', generation };
-            if (st) { st.textContent = check(); st.style.color = 'var(--ok)'; }
+            if (st) { st.innerHTML = check(); st.style.color = 'var(--ok)'; }
             showIdentityFields();
           } catch (e) {
             if (generation !== credentialValidation.generation) return;
@@ -976,11 +1002,7 @@
       const setConflictState = (preview) => {
         const actionInput = $('[data-runner-conflict-action]', form);
         if (!actionInput) return;
-        if (!preview || !preview.conflict) {
-		  actionInput.value = '';
-          return;
-        }
-        actionInput.value = actionInput.value || preview.default_action || 'update';
+        actionInput.value = '';
       };
       const applyConflictDecision = (preview, action) => {
         const actionInput = $('[data-runner-conflict-action]', form);
@@ -1046,17 +1068,19 @@
         if (!instanceURL || !apiKey || !organization || !name) throw new Error('Verify credentials and enter a runner name before previewing its ID.');
         let rid = '';
         let previewData = null;
-        let data;
-        try { data = await jsonPost('/setup/runner-id', {
+        const revision = runnerIdentityRevision;
+        const source = { instanceURL, apiKey, organization, name };
+        const data = await jsonPost('/setup/runner-id', {
             instance_url: instanceURL,
             api_key: apiKey,
             organization: organization,
             name: name,
-		}); } catch (error) { throw error; }
-          const actionInput = $('[data-runner-conflict-action]', form);
-		  if (actionInput && data.conflict && !actionInput.value) actionInput.value = data.default_action || 'update';
-		  rid = data.conflict && actionInput && actionInput.value === 'create' ? data.runner_id : (data.conflict ? data.existing_runner_id : data.runner_id);
+		});
+          if (revision !== runnerIdentityRevision || source.instanceURL !== value('CREDIMI_URL') || source.apiKey !== selectedAPIKey() || source.organization !== value('CREDIMI_RUNNER_ORGANIZATION') || source.name !== value('CREDIMI_RUNNER_NAME')) {
+            throw new Error('Runner identity changed while it was being checked. Retry.');
+          }
           setConflictState(data);
+		  rid = data.conflict ? '' : data.runner_id;
           previewData = data;
         const runnerID = field('CREDIMI_RUNNER_ID');
         if (runnerID) runnerID.value = rid;
@@ -1077,12 +1101,15 @@
         const panel = panels[current];
         if (!panel) return;
         if (panel.dataset.step === 'identity') {
-          await resolveOrganization();
+          const runnerRevision = runnerIdentityRevision;
+          const resolved = await resolveOrganization();
+          if (authMode() === 'user') applyResolvedOrganization(resolved);
           await canonifyName();
           const preview = await previewRunnerID();
           if (preview && preview.conflict) {
             const decision = await openRunnerConflictModal(preview);
             if (decision === 'cancel') return false;
+            if (runnerIdentityRevision !== runnerRevision) return false;
             applyConflictDecision(preview, decision);
           }
         }
@@ -1094,10 +1121,19 @@
           for (const card of $$('[data-device-provision]', form)) {
           const name = (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim();
             if (!instanceURL || !apiKey || !organization || !runnerID || !name) continue;
-            let preview;
-            preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
+            const revision = devicePreviewRevision.get(card) || 0;
+            const previewSource = { instanceURL, apiKey, organization, runnerID, name };
             const action = $('[data-device-conflict-action]', card);
             const id = $('[data-device-id]', card);
+            if (action) action.value = '';
+            if (id) id.value = '';
+            const preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
+            if (revision !== (devicePreviewRevision.get(card) || 0) || previewSource.instanceURL !== value('CREDIMI_URL') || previewSource.apiKey !== selectedAPIKey() || previewSource.organization !== value('CREDIMI_RUNNER_ORGANIZATION') || previewSource.runnerID !== value('CREDIMI_RUNNER_ID') || previewSource.name !== (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim()) {
+              throw new Error('Device identity changed while it was being checked. Retry.');
+            }
+            if (!preview || !String(preview.device_id || '').trim() || (preview.conflict && !String(preview.existing_device_id || '').trim())) {
+              throw new Error('Device ID preview returned an incomplete identity. Retry.');
+            }
             if (!preview || !preview.conflict) {
               if (action) action.value = '';
               if (id) id.value = preview && preview.device_id ? preview.device_id : '';
@@ -1105,6 +1141,7 @@
             }
             const decision = await openRunnerConflictModal(preview, 'device');
             if (decision === 'cancel') return false;
+            if (revision !== (devicePreviewRevision.get(card) || 0)) return false;
             if (action) action.value = decision;
             if (id) id.value = decision === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
           }
@@ -1112,11 +1149,7 @@
         return true;
       };
       buttons.forEach((b, i) => b.addEventListener('click', () => {
-        if (i > current && !currentStepValid()) {
-          setError(currentStepError());
-          syncStepActions();
-          return;
-        }
+        if (i > current) return;
         show(i);
       }));
       if (prev) prev.addEventListener('click', () => show(current - 1));
@@ -1169,7 +1202,7 @@
 		form.addEventListener('input', (event) => {
 			const card = event.target.closest('[data-device-provision]'); if (!card) return;
 			if (event.target.matches('[data-setup-device-field="NAME"]')) invalidateDevicePreview(card);
-			else if (event.target.matches('[data-setup-device-field="TYPE"], [data-setup-device-field="MODE"], [data-setup-device-field="SERIAL"], [data-setup-device-field="WIFI_IP"], [data-setup-device-field="WIFI_PORT"], [data-setup-device-field="BASE_NAME"], [data-setup-device-field="GOLDEN_PATH"], [data-setup-device-field="HOST_AVD_HOME_PATH"], [data-setup-device-field="HOST_AVD_GOLDEN_PATH"], [data-setup-device-field="IOS_UDID"]')) updateDeviceFields(card);
+			else if (event.target.matches('[data-setup-device-field="TYPE"], [data-setup-device-field="MODE"], [data-setup-device-field="SERIAL"], [data-setup-device-field="WIFI_IP"], [data-setup-device-field="WIFI_PORT"], [data-setup-device-field="BASE_NAME"], [data-setup-device-field="GOLDEN_PATH"], [data-setup-device-field="HOST_AVD_HOME_PATH"], [data-setup-device-field="HOST_AVD_GOLDEN_PATH"]')) updateDeviceFields(card);
 		});
 		form.addEventListener('dashboard:device-type-change', (event) => invalidateDevicePreview(event.detail.card));
 		form.addEventListener('dashboard:device-mode-change', (event) => updateDeviceFields(event.detail.card));
@@ -1177,6 +1210,7 @@
 			const values = {};
 			$$('input, select, textarea', form).forEach((input) => {
 				if (!input.name || input.name === 'SETUP_DRAFT_ID' || input.name === 'SETUP_STEP' || input.name.startsWith('device_') || input.name.includes('_ui_') || input.name.endsWith('_ui')) return;
+				if (input.disabled) return;
 				if (input.type === 'radio') { if (input.checked) values[input.name] = input.value; return; }
 				if (input.type === 'checkbox') { values[input.name] = input.checked ? 'true' : 'false'; return; }
 				values[input.name] = String(input.value || '');
@@ -1418,6 +1452,10 @@
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   };
+  const setFieldValueQuietly = (root, name, value) => {
+    const input = setupDeviceField(root, name);
+    if (input) input.value = value;
+  };
   const formParams = (root) => {
     const params = new URLSearchParams();
     root.querySelectorAll('[name]').forEach((input) => {
@@ -1579,7 +1617,7 @@
     const selects = panel.querySelector('[data-ios-simulator-selects]');
     const create = panel.querySelector('[data-ios-simulator-create]');
     panel.dataset.exists = '0';
-	setFieldValue(root, 'IOS_UDID', '');
+	setFieldValueQuietly(root, 'IOS_UDID', '');
     if (selects) selects.hidden = true;
     if (create) create.hidden = true;
 
@@ -1598,7 +1636,7 @@
       }
       if (data.exists) {
         panel.dataset.exists = '1';
-		setFieldValue(root, 'IOS_UDID', data.udid || '');
+		setFieldValueQuietly(root, 'IOS_UDID', data.udid || '');
         setCallout(message, 'info', `Simulator ${name} already exists and can be used.`);
         root.dispatchEvent(new CustomEvent('dashboard:device-ready-change', { bubbles: true }));
         return;
@@ -1945,7 +1983,7 @@
         });
         if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
 		const data = await res.json();
-		setFieldValue(root, 'IOS_UDID', data.udid || '');
+		setFieldValueQuietly(root, 'IOS_UDID', data.udid || '');
 		setCallout(message, 'info', 'Simulator created.');
 		await refreshIOSSimulatorPanel(root);
       } catch (error) {
@@ -2331,7 +2369,7 @@
 	if (modeField) modeField.value = mode;
     $$('[data-auth-field]', form || document).forEach((f) => (f.hidden = f.dataset.authField !== mode));
     $$('[data-admin-org-field]', form || document).forEach((f) => (f.hidden = mode !== 'internal_admin'));
-    $$('[data-identity-fields]', form || document).forEach((f) => { f.style.display = mode === 'internal_admin' ? 'contents' : ''; });
+    $$('[data-identity-fields]', form || document).forEach((f) => { f.style.display = 'none'; });
     // clear the non-selected key so exactly one is persisted
     const clearKey = mode === 'user' ? seg.dataset.admin : seg.dataset.user;
     const inp = form && form.querySelector(`[name="${clearKey}"]`); if (inp) inp.value = '';

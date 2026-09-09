@@ -30,7 +30,7 @@
         {{if eq $s.ID "identity"}}
         <input type="hidden" name="CREDIMI_RUNNER_ORGANIZATION" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" data-org-value>
         <input type="hidden" name="CREDIMI_RUNNER_ID" value="{{$.Runner.Get "CREDIMI_RUNNER_ID"}}" data-runner-id-value>
-        <input type="hidden" name="CREDIMI_RUNNER_NAME_CONFLICT_ACTION" value="update" data-runner-conflict-action>
+		<input type="hidden" name="CREDIMI_RUNNER_NAME_CONFLICT_ACTION" value="" data-runner-conflict-action>
         <div class="wizard-fields">
           <div class="field" style="grid-column:1/-1">
             <label><span class="lbtx">Authentication mode</span></label>
@@ -49,8 +49,8 @@
             <label><span class="lbtx">Internal admin key</span><span class="req">*</span><span class="envkey">CREDIMI_INTERNAL_ADMIN_KEY</span></label>
             <div class="inp-wrap"><input class="inp mono" type="password" name="CREDIMI_INTERNAL_ADMIN_KEY" value="{{$.Runner.Get "CREDIMI_INTERNAL_ADMIN_KEY"}}" placeholder="internal key" autocomplete="new-password" spellcheck="false"><div class="acts"><button type="button" class="minibtn" data-reveal-secret="CREDIMI_INTERNAL_ADMIN_KEY" title="Reveal">{{icon "eye"}}</button></div></div>
           </div>
+          <div class="field" data-admin-org-field style="grid-column:1/-1" {{if ne $.Runner.AuthMode "internal_admin"}}hidden{{end}}><label><span class="lbtx">Organization</span><span class="req">*</span></label><input class="inp mono" name="CREDIMI_RUNNER_ORGANIZATION_ADMIN" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" placeholder="organization-slug" data-admin-org-input></div>
           <div data-identity-fields style="grid-column:1/-1;display:none">
-            <div class="field" data-admin-org-field {{if ne $.Runner.AuthMode "internal_admin"}}hidden{{end}}><label><span class="lbtx">Organization</span><span class="req">*</span></label><input class="inp mono" name="CREDIMI_RUNNER_ORGANIZATION_ADMIN" value="{{$.Runner.Get "CREDIMI_RUNNER_ORGANIZATION"}}" placeholder="organization-slug" data-admin-org-input></div>
             <div class="field" style="grid-column:1/-1"><label><span class="lbtx">Runner name</span><span class="req">*</span><span class="envkey">CREDIMI_RUNNER_NAME</span></label><div style="display:flex;align-items:center;gap:0;border:2px solid var(--border)"><span style="background:var(--bg-muted);padding:0 12px;height:38px;display:flex;align-items:center;font:600 13px var(--font-mono);white-space:nowrap;border-right:2px solid var(--border)" data-org-preview>{{or ($.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "org"}}</span><span style="padding:0 6px;font:600 14px var(--font-mono)">/</span><input class="inp mono" name="CREDIMI_RUNNER_NAME" value="{{$.Runner.Get "CREDIMI_RUNNER_NAME"}}" placeholder="runner-name" style="border:none;border-radius:0;flex:1" required></div><p class="hint" style="margin-top:6px">Runner ID: <span class="tag mono" data-runner-id-preview>{{or ($.Runner.Get "CREDIMI_RUNNER_ID") "org/runner-name"}}</span><span data-canonified hidden></span></p></div>
             <div class="field"><label><span class="lbtx">Runner description</span></label><textarea class="ta mono" name="CREDIMI_RUNNER_DESCRIPTION" rows="3" placeholder="Optional note about this runner...">{{$.Runner.Get "CREDIMI_RUNNER_DESCRIPTION"}}</textarea></div>
             <div data-publish-control data-initial="{{$.Runner.Get "CREDIMI_RUNNER_PUBLISHED"}}" data-publish-confirmed="0">{{template "field" $.Field "CREDIMI_RUNNER_PUBLISHED"}}</div>
