@@ -415,6 +415,12 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 			t.Fatalf("setup manual URL validation missing %q", want)
 		}
 	}
+	if !strings.Contains(string(script), "flushSetupDraft") || !strings.Contains(string(script), "Unable to preserve the setup draft") {
+		t.Fatalf("setup submit must flush and surface draft failures")
+	}
+	if strings.Contains(string(script), "saveSetupDraft().catch(() => {})") {
+		t.Fatalf("setup draft autosave failure is silently swallowed")
+	}
 	for _, want := range []string{
 		"const form = document.querySelector('[data-device-add-form]');",
 		"if ($('.app.setup-shell'))",

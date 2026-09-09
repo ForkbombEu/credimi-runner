@@ -302,6 +302,14 @@ func TestBuildCandidateTypedConfigClassifiesConfigurationErrors(t *testing.T) {
 	if _, err := buildCandidateTypedConfig(values); err == nil || !strings.Contains(err.Error(), "candidate typed configuration") {
 		t.Fatalf("typed candidate error = %v", err)
 	}
+	minimal := dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}
+	if _, err := buildCandidateTypedConfig(minimal); err != nil {
+		t.Fatalf("host-only candidate rejected without inventory: %v", err)
+	}
+	minimal["CREDIMI_DEVICE_1_UNKNOWN"] = "bad"
+	if _, err := buildCandidateTypedConfig(minimal); err == nil || !strings.Contains(err.Error(), "candidate runtime configuration") {
+		t.Fatalf("malformed uncounted inventory error = %v", err)
+	}
 }
 
 func TestDarwinAppliedServerTimeoutReversionClearsRestart(t *testing.T) {
@@ -538,7 +546,7 @@ func TestDashboardRemainingControllerAndMutationHandlers(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("identity status = %d", recorder.Code)
 	}
-	if got := dashboardRefreshPath("devices"); got != "/devices" || dashboardRefreshPath("setup") != "/setup" || dashboardRefreshPath("other") != "/" {
+	if got := dashboardRefreshPath("devices"); got != "/devices" || dashboardRefreshPath("setup") != "/" || dashboardRefreshPath("config") != "/config" || dashboardRefreshPath("overview") != "/" {
 		t.Fatalf("refresh paths = %q", got)
 	}
 	recorder = httptest.NewRecorder()
@@ -2245,7 +2253,7 @@ func TestResolveSetupIdentityBranches(t *testing.T) {
 		case "/api/mobile-runner/preview-id":
 			payload, _ := io.ReadAll(req.Body)
 			if strings.Contains(string(payload), `"name":"Runner Two"`) {
-				body = `{"organization":"acme","runner_id":"acme/runner-two-2"}`
+				body = `{"organization":"acme","runner_id":"acme/runner-two-2","existing_runner_id":"acme/runner-two"}`
 			} else {
 				body = `{"organization":"acme","runner_id":"acme/runner-one"}`
 			}
@@ -2260,7 +2268,7 @@ func TestResolveSetupIdentityBranches(t *testing.T) {
 
 	s := newTestServer(t)
 	values := map[string]string{
-		"CREDIMI_URL":          "https://credimi.example",
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_AUTH_MODE": "user",
 		"CREDIMI_USER_API_KEY": "user-key",
 		"CREDIMI_RUNNER_NAME":  "Runner One",
 	}
@@ -2272,7 +2280,7 @@ func TestResolveSetupIdentityBranches(t *testing.T) {
 	}
 
 	values = map[string]string{
-		"CREDIMI_URL":                         "https://credimi.example",
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_AUTH_MODE": "user",
 		"CREDIMI_USER_API_KEY":                "user-key",
 		"CREDIMI_RUNNER_NAME":                 "Runner Two",
 		"CREDIMI_RUNNER_ORGANIZATION":         "acme",
@@ -2292,7 +2300,7 @@ func TestResolveSetupIdentityBranches(t *testing.T) {
 	}
 
 	values = map[string]string{
-		"CREDIMI_URL":                         "https://credimi.example",
+		"CREDIMI_URL": "https://credimi.example", "CREDIMI_AUTH_MODE": "user",
 		"CREDIMI_USER_API_KEY":                "user-key",
 		"CREDIMI_RUNNER_NAME":                 "Runner Two",
 		"CREDIMI_RUNNER_ID":                   "existing/id",
@@ -3018,6 +3026,13 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("setup response = %d redirect=%q body=%s", recorder.Code, recorder.Header().Get("HX-Redirect"), recorder.Body.String())
+	}
+	var trigger map[string]map[string]string
+	if err := json.Unmarshal([]byte(recorder.Header().Get("HX-Trigger")), &trigger); err != nil {
+		t.Fatalf("setup trigger = %v", err)
+	}
+	if got := trigger["runtimeOperation"]["refresh"]; got != "/" {
+		t.Fatalf("successful setup refresh = %q, want /", got)
 	}
 	waitForQueuedOperation(t, s, recorder)
 	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {

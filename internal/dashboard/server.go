@@ -286,7 +286,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /setup", s.finishSetup)
 	mux.HandleFunc("POST /setup/draft", s.saveSetupDraft)
 	mux.HandleFunc("GET /setup/draft/{id}", s.getSetupDraft)
-	mux.HandleFunc("DELETE /setup/draft/{id}", s.deleteSetupDraft)
 	mux.HandleFunc("POST /setup/credentials/verify", s.verifySetupCredentials)
 	mux.HandleFunc("POST /setup/runner-id", s.previewSetupRunnerID)
 	mux.HandleFunc("POST /setup/device-id", s.previewSetupDeviceID)
@@ -508,14 +507,28 @@ func provisionCandidateCapabilities(ctx context.Context, values dashboardruntime
 }
 
 func buildCandidateTypedConfig(values dashboardruntime.Values) (runnerconfig.Config, error) {
-	if _, err := dashboardruntime.ParseRuntimeConfig(values); err != nil && strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
-		return runnerconfig.Config{}, fmt.Errorf("candidate runtime configuration: %w", err)
+	if hasRuntimeDeviceInventory(values) {
+		if _, err := dashboardruntime.ParseRuntimeConfig(values); err != nil {
+			return runnerconfig.Config{}, fmt.Errorf("candidate runtime configuration: %w", err)
+		}
 	}
 	cfg, err := dashboardruntime.TypedConfigFromValues(values)
 	if err != nil {
 		return runnerconfig.Config{}, fmt.Errorf("candidate typed configuration: %w", err)
 	}
 	return cfg, nil
+}
+
+func hasRuntimeDeviceInventory(values dashboardruntime.Values) bool {
+	if strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
+		return true
+	}
+	for key := range values {
+		if strings.HasPrefix(key, "CREDIMI_DEVICE_") && key != "CREDIMI_DEVICE_COUNT" {
+			return true
+		}
+	}
+	return false
 }
 
 func provisionCandidateCapabilitiesWithConfig(ctx context.Context, cfg runnerconfig.Config, progress func(string)) error {
@@ -1487,6 +1500,10 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	incoming := formValuesMap(r.PostForm)
 	canonicalizeSetupInput(incoming)
+	r.PostForm.Set("CREDIMI_AUTH_MODE", incoming["CREDIMI_AUTH_MODE"])
+	if organization := incoming["CREDIMI_RUNNER_ORGANIZATION"]; organization != "" {
+		r.PostForm.Set("CREDIMI_RUNNER_ORGANIZATION", organization)
+	}
 	s.rememberSetupDraft(incoming)
 	if incoming["SETUP_DRAFT_ID"] != "" {
 		r.PostForm.Set("SETUP_DRAFT_ID", incoming["SETUP_DRAFT_ID"])
@@ -1570,20 +1587,11 @@ func (s *Server) getSetupDraft(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, draft)
 }
 
-func (s *Server) deleteSetupDraft(w http.ResponseWriter, r *http.Request) {
-	if s.setupDrafts != nil {
-		s.setupDrafts.delete(r.PathValue("id"))
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferStart bool) error {
 	if err := r.ParseForm(); err != nil {
 		return err
 	}
 	incoming := formValuesMap(r.PostForm)
-	canonicalizeSetupInput(incoming)
-	s.rememberSetupDraft(incoming)
 	oldValues := dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
 	wasConfigured := s.cfg.Exists()
 	// Setup resolves the runner and every device through Credimi before it can
@@ -1837,7 +1845,6 @@ func (s *Server) startupSnapshot() startupState {
 
 func validateSetupInput(values map[string]string) map[string]string {
 	errs := map[string]string{}
-	canonicalizeSetupInput(values)
 	if strings.TrimSpace(values["CREDIMI_URL"]) == "" {
 		errs["CREDIMI_URL"] = "Required."
 	}
@@ -2303,8 +2310,6 @@ func (s *Server) queueConfigPageSave(w http.ResponseWriter, r *http.Request, pag
 
 func dashboardRefreshPath(page string) string {
 	switch page {
-	case "setup":
-		return "/setup"
 	case "devices":
 		return "/devices"
 	case "config":
@@ -2419,7 +2424,6 @@ func (s *Server) resolveConfigIdentity(ctx context.Context, current, incoming ma
 }
 
 func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]string) error {
-	canonicalizeSetupInput(values)
 	apiKey, err := selectedCredimiAPIKey(values)
 	if err != nil {
 		return err

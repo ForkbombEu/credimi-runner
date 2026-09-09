@@ -125,6 +125,18 @@ func TestVerifySetupCredentialUsesCanonicalMode(t *testing.T) {
 	}
 }
 
+func TestFetchCredimiRunnerPreviewRejectsIncompleteConflict(t *testing.T) {
+	original := http.DefaultClient
+	t.Cleanup(func() { http.DefaultClient = original })
+	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"runner_id":"acme/runner-2","conflict":true}`))}, nil
+	})}
+	_, err := fetchCredimiRunnerPreview(context.Background(), setupRunnerPreviewRequest{InstanceURL: "https://credimi.example", APIKey: "key", Organization: "acme", Name: "Runner"})
+	if err == nil || !strings.Contains(err.Error(), "conflict without an existing runner ID") {
+		t.Fatalf("incomplete conflict error = %v", err)
+	}
+}
+
 func TestSelectedCredimiAPIKeyUsesCanonicalMode(t *testing.T) {
 	tests := []struct {
 		name, mode, user, admin string

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -167,9 +168,7 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	baseRunnerID := reqData.Organization + "/" + canonifyPlain(reqData.Name)
 	preview.Conflict = preview.Conflict || preview.RunnerID != baseRunnerID
 	if preview.Conflict && preview.ExistingRunnerID == "" {
-		// The preview endpoint returns the next available ID. The conflicting
-		// name's canonical existing ID is the deterministic base identity.
-		preview.ExistingRunnerID = baseRunnerID
+		return setupRunnerPreview{}, errors.New("runner ID preview returned a conflict without an existing runner ID")
 	}
 	preview.DefaultAction = "update"
 	return preview, nil

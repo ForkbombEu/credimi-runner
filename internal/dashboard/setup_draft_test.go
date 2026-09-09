@@ -81,13 +81,7 @@ func TestSetupDraftHTTPHandlers(t *testing.T) {
 	if get.Code != http.StatusOK || get.Header().Get("Cache-Control") != "no-store" || !strings.Contains(get.Body.String(), "secret") {
 		t.Fatalf("get draft response = %d, headers %#v, body %q", get.Code, get.Header(), get.Body.String())
 	}
-	deleteReq := httptest.NewRequest(http.MethodDelete, "/setup/draft/"+saved.ID, nil)
-	deleteReq.SetPathValue("id", saved.ID)
-	deleted := httptest.NewRecorder()
-	server.deleteSetupDraft(deleted, deleteReq)
-	if deleted.Code != http.StatusNoContent {
-		t.Fatalf("delete draft status = %d", deleted.Code)
-	}
+	server.setupDrafts.delete(saved.ID)
 	missingReq := httptest.NewRequest(http.MethodGet, "/setup/draft/"+saved.ID, nil)
 	missingReq.SetPathValue("id", saved.ID)
 	missing := httptest.NewRecorder()

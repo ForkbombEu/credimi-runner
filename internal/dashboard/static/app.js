@@ -680,14 +680,40 @@
 	  $$('[data-legacy-setup-devices] input, [data-legacy-setup-devices] select, [data-legacy-setup-devices] textarea', form).forEach((field) => { field.disabled = true; });
       let current = 0;
 	  let draftSaveTimer = null;
+	  let draftSavePromise = null;
+	  let draftPersistence = { dirty: false, saving: false, error: '' };
 	  const draftIDField = () => $('[data-setup-draft-id]', form);
 	  const saveSetupDraft = async () => {
-		const values = serializeSetupDraft();
-		const response = await fetch(dashboardURL('/setup/draft'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: (draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '', step: current, values }) });
-		if (!response.ok) throw new Error('Could not save setup draft.');
-		const data = await response.json(); const field = draftIDField(); if (field) field.value = data.id || ''; if (data.id) sessionStorage.setItem('credimi-runner:setup-draft-id', data.id);
+		if (hydratingDraft) return;
+		if (draftSavePromise) return draftSavePromise;
+		draftPersistence.saving = true;
+		draftPersistence.error = '';
+		const save = (async () => {
+			const values = serializeSetupDraft();
+			const response = await fetch(dashboardURL('/setup/draft'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: (draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '', step: current, values }) });
+			if (!response.ok) throw new Error('Could not save setup draft.');
+			const data = await response.json(); const field = draftIDField(); if (field) field.value = data.id || ''; if (data.id) sessionStorage.setItem('credimi-runner:setup-draft-id', data.id);
+			draftPersistence.dirty = false;
+			return data;
+		})();
+		draftSavePromise = save;
+		try {
+			return await save;
+		} catch (error) {
+			draftPersistence.error = error && error.message ? error.message : 'Could not save setup draft.';
+			throw error;
+		} finally {
+			draftPersistence.saving = false;
+			if (draftSavePromise === save) draftSavePromise = null;
+		}
 	  };
-      const scheduleDraftSave = () => { if (hydratingDraft) return; clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(() => { saveSetupDraft().catch(() => {}); }, 300); };
+      const scheduleDraftSave = () => { if (hydratingDraft) return; draftPersistence.dirty = true; clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(() => { saveSetupDraft().catch(() => { setError('Unable to save the setup draft.'); }); }, 300); };
+      const flushSetupDraft = async () => {
+		clearTimeout(draftSaveTimer);
+		if (draftSavePromise) await draftSavePromise;
+		if (draftPersistence.dirty || !String((draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '').trim()) await saveSetupDraft();
+		if (!String((draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '').trim()) throw new Error('Unable to preserve the setup draft.');
+	  };
       let connectedAndroidTimer = null;
       const buttons = $$('.wizard-step', form);
       const panels = $$('.wizard-panel', form);
@@ -695,8 +721,6 @@
       const next = $('[data-step-next]', form);
       const submit = $('[data-step-submit]', form);
       let credentialValidation = { status: 'idle', organization: '', error: '', generation: 0 };
-      let runnerIdentityState = { status: 'idle', preview: null, conflictAction: '', effectiveID: '', error: '' };
-      const deviceStates = new WeakMap();
       let hydratingDraft = false;
       let credentialAbort = null;
       const errBox = () => $('[data-setup-error]', panels[current]);
@@ -826,7 +850,7 @@
           pollConnectedAndroid();
         }
         if (prev) prev.disabled = current === 0;
-        if (next) next.hidden = current === panels.length - 1;
+      if (next) next.hidden = current === panels.length - 1;
         if (submit) submit.style.display = current === panels.length - 1 ? '' : 'none';
         if (current === panels.length - 1) syncReview();
         form.dispatchEvent(new CustomEvent('dashboard:step-shown', { bubbles: true, detail: { step: panels[current] && panels[current].dataset.step } }));
@@ -879,16 +903,14 @@
         setOrgPreview(orgName);
         return orgName;
       };
-      const stateForDevice = (card) => { if (!deviceStates.has(card)) deviceStates.set(card, { previewStatus: 'idle', preview: null, conflictAction: '', readinessStatus: 'idle', readinessError: '' }); return deviceStates.get(card); };
       const invalidateCredentialValidation = (clearOrganization = true) => {
         credentialValidation = { status: 'idle', organization: clearOrganization ? '' : credentialValidation.organization, error: '', generation: credentialValidation.generation + 1 };
         if (credentialAbort) credentialAbort.abort();
         if (clearOrganization && authMode() === 'user') { const org = field('CREDIMI_RUNNER_ORGANIZATION'); if (org) org.value = ''; }
       };
-      const invalidateDeviceReadiness = (card) => { const state = stateForDevice(card); state.readinessStatus = 'idle'; state.readinessError = ''; };
-      const invalidateDevicePreview = (card) => { const state = stateForDevice(card); state.previewStatus = 'idle'; state.preview = null; state.conflictAction = ''; invalidateDeviceReadiness(card); const id = card.querySelector('[data-device-id]'); const action = card.querySelector('[data-device-conflict-action]'); if (id) id.value = ''; if (action) action.value = ''; };
+      const invalidateDevicePreview = (card) => { const id = card.querySelector('[data-device-id]'); const action = card.querySelector('[data-device-conflict-action]'); if (id) id.value = ''; if (action) action.value = ''; };
       const invalidateAllDevicePreviews = () => $$('[data-device-provision]', form).forEach(invalidateDevicePreview);
-      const invalidateRunnerIdentity = () => { runnerIdentityState = { status: 'idle', preview: null, conflictAction: '', effectiveID: '', error: '' }; const id = field('CREDIMI_RUNNER_ID'); if (id) id.value = ''; const action = $('[data-runner-conflict-action]', form); if (action) action.value = ''; invalidateAllDevicePreviews(); };
+      const invalidateRunnerIdentity = () => { const id = field('CREDIMI_RUNNER_ID'); if (id) id.value = ''; const action = $('[data-runner-conflict-action]', form); if (action) action.value = ''; invalidateAllDevicePreviews(); };
       let apiKeyTimer;
       const statusEl = () => $('[data-api-key-status]', form);
       const errorEl = () => $('[data-api-key-error]', form);
@@ -953,16 +975,12 @@
       };
       const setConflictState = (preview) => {
         const actionInput = $('[data-runner-conflict-action]', form);
-        runnerIdentityState.preview = preview;
-        runnerIdentityState.status = preview ? 'valid' : 'idle';
-        runnerIdentityState.conflictAction = '';
         if (!actionInput) return;
         if (!preview || !preview.conflict) {
 		  actionInput.value = '';
           return;
         }
         actionInput.value = actionInput.value || preview.default_action || 'update';
-		runnerIdentityState.conflictAction = actionInput.value;
       };
       const applyConflictDecision = (preview, action) => {
         const actionInput = $('[data-runner-conflict-action]', form);
@@ -973,8 +991,6 @@
         const runnerPreviewEl = $('[data-runner-id-preview]', form);
         if (runnerPreviewEl) runnerPreviewEl.textContent = nextRunnerID || '';
         syncOTELServiceName(nextRunnerID || '');
-		runnerIdentityState.conflictAction = action;
-		runnerIdentityState.effectiveID = nextRunnerID || '';
 		invalidateAllDevicePreviews();
       };
       const openRunnerConflictModal = (preview, kind = 'runner') => new Promise((resolve) => {
@@ -1030,14 +1046,13 @@
         if (!instanceURL || !apiKey || !organization || !name) throw new Error('Verify credentials and enter a runner name before previewing its ID.');
         let rid = '';
         let previewData = null;
-        runnerIdentityState.status = 'pending';
         let data;
         try { data = await jsonPost('/setup/runner-id', {
             instance_url: instanceURL,
             api_key: apiKey,
             organization: organization,
             name: name,
-		}); } catch (error) { runnerIdentityState.status = 'invalid'; runnerIdentityState.error = error && error.message ? error.message : 'Runner identity preview failed'; throw error; }
+		}); } catch (error) { throw error; }
           const actionInput = $('[data-runner-conflict-action]', form);
 		  if (actionInput && data.conflict && !actionInput.value) actionInput.value = data.default_action || 'update';
 		  rid = data.conflict && actionInput && actionInput.value === 'create' ? data.runner_id : (data.conflict ? data.existing_runner_id : data.runner_id);
@@ -1048,7 +1063,6 @@
         const runnerPreview = $('[data-runner-id-preview]', form);
         if (runnerPreview) runnerPreview.textContent = rid;
         syncOTELServiceName(rid);
-		runnerIdentityState.effectiveID = rid;
         syncStepActions();
         return previewData;
       };
@@ -1080,30 +1094,17 @@
           for (const card of $$('[data-device-provision]', form)) {
           const name = (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim();
             if (!instanceURL || !apiKey || !organization || !runnerID || !name) continue;
-            const state = stateForDevice(card);
-            state.previewStatus = 'pending';
             let preview;
-            try {
-              preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
-            } catch (error) {
-              state.previewStatus = 'invalid';
-              state.preview = null;
-              state.conflictAction = '';
-              throw error;
-            }
-            state.previewStatus = 'valid';
-            state.preview = preview;
+            preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
             const action = $('[data-device-conflict-action]', card);
             const id = $('[data-device-id]', card);
             if (!preview || !preview.conflict) {
-              state.conflictAction = '';
               if (action) action.value = '';
               if (id) id.value = preview && preview.device_id ? preview.device_id : '';
               continue;
             }
             const decision = await openRunnerConflictModal(preview, 'device');
-            if (decision === 'cancel') { state.previewStatus = 'idle'; return false; }
-            state.conflictAction = decision;
+            if (decision === 'cancel') return false;
             if (action) action.value = decision;
             if (id) id.value = decision === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
           }
@@ -1130,12 +1131,33 @@
           if (okToProceed === false) return;
           show(current + 1);
         } catch (err) {
-		  runnerIdentityState.status = 'invalid'; runnerIdentityState.error = err && err.message ? err.message : 'Setup step failed';
           setError(err && err.message ? err.message : 'Setup step failed');
         } finally {
 		  next.disabled = false; next.textContent = originalLabel;
-        }
+		}
       });
+	  form.addEventListener('submit', async (event) => {
+		if (form.dataset.setupDraftFlushed === '1') {
+			delete form.dataset.setupDraftFlushed;
+			return;
+		}
+		event.preventDefault();
+		if (form.dataset.setupSubmitPending === '1') return;
+		form.dataset.setupSubmitPending = '1';
+		const submitLabel = submit && submit.innerHTML;
+		if (submit) { submit.disabled = true; submit.textContent = 'Checking…'; }
+		setError('');
+		try {
+			await flushSetupDraft();
+			form.dataset.setupDraftFlushed = '1';
+			form.requestSubmit();
+		} catch (error) {
+			setError('Unable to preserve the setup draft. Retry before starting the runner.');
+		} finally {
+			delete form.dataset.setupSubmitPending;
+			if (submit) { submit.disabled = false; submit.innerHTML = submitLabel; }
+		}
+	  });
       form.addEventListener('input', syncStepActions);
       form.addEventListener('change', syncStepActions);
 		form.addEventListener('input', (event) => {
@@ -1147,10 +1169,10 @@
 		form.addEventListener('input', (event) => {
 			const card = event.target.closest('[data-device-provision]'); if (!card) return;
 			if (event.target.matches('[data-setup-device-field="NAME"]')) invalidateDevicePreview(card);
-			else if (event.target.matches('[data-setup-device-field="TYPE"], [data-setup-device-field="MODE"], [data-setup-device-field="SERIAL"], [data-setup-device-field="WIFI_IP"], [data-setup-device-field="WIFI_PORT"], [data-setup-device-field="BASE_NAME"], [data-setup-device-field="GOLDEN_PATH"], [data-setup-device-field="HOST_AVD_HOME_PATH"], [data-setup-device-field="HOST_AVD_GOLDEN_PATH"], [data-setup-device-field="IOS_UDID"]')) invalidateDeviceReadiness(card);
+			else if (event.target.matches('[data-setup-device-field="TYPE"], [data-setup-device-field="MODE"], [data-setup-device-field="SERIAL"], [data-setup-device-field="WIFI_IP"], [data-setup-device-field="WIFI_PORT"], [data-setup-device-field="BASE_NAME"], [data-setup-device-field="GOLDEN_PATH"], [data-setup-device-field="HOST_AVD_HOME_PATH"], [data-setup-device-field="HOST_AVD_GOLDEN_PATH"], [data-setup-device-field="IOS_UDID"]')) updateDeviceFields(card);
 		});
 		form.addEventListener('dashboard:device-type-change', (event) => invalidateDevicePreview(event.detail.card));
-		form.addEventListener('dashboard:device-mode-change', (event) => invalidateDeviceReadiness(event.detail.card));
+		form.addEventListener('dashboard:device-mode-change', (event) => updateDeviceFields(event.detail.card));
 		const serializeSetupDraft = () => {
 			const values = {};
 			$$('input, select, textarea', form).forEach((input) => {
