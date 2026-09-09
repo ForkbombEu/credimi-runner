@@ -304,7 +304,8 @@ func validateManualExposureBind(values map[string]string) error {
 // while rejecting a newly selected contradictory manual endpoint or bind host.
 func validateChangedManualExposureBind(current, candidate map[string]string) error {
 	if strings.TrimSpace(current["RUNNER_HOST"]) == strings.TrimSpace(candidate["RUNNER_HOST"]) &&
-		strings.TrimSpace(current["RUNNER_PUBLIC_URL"]) == strings.TrimSpace(candidate["RUNNER_PUBLIC_URL"]) {
+		strings.TrimSpace(current["RUNNER_PUBLIC_URL"]) == strings.TrimSpace(candidate["RUNNER_PUBLIC_URL"]) &&
+		strings.TrimSpace(current["CREDIMI_SERVICE_MODE"]) == strings.TrimSpace(candidate["CREDIMI_SERVICE_MODE"]) {
 		return nil
 	}
 	return validateManualExposureBind(candidate)

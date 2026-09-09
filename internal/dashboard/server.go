@@ -1134,6 +1134,10 @@ func (s *Server) configDiff(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	if err := validateChangedManualExposureBind(current, normalized); err != nil {
+		http.Error(w, "configuration validation failed: "+err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	diff := dashboardruntime.DiffValuesForOS(dashboardruntime.Values(current), normalized, runtimeGOOS())
 	confirmRequired := diffNeedsConfirmation(diff)
 	writeJSON(w, map[string]any{

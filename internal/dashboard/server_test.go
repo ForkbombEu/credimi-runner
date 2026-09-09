@@ -556,6 +556,29 @@ func TestDashboardRemainingControllerAndMutationHandlers(t *testing.T) {
 	}
 }
 
+func TestConfigDiffValidatesManualModeTransition(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_SERVICE_MODE"] = "auto"
+	s.cfg.values["RUNNER_HOST"] = "127.0.0.1"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "http://192.168.178.120:8050"
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(url.Values{"CREDIMI_SERVICE_MODE": {"manual"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("incompatible manual transition status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	s.cfg.values["RUNNER_HOST"] = "0.0.0.0"
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(url.Values{"CREDIMI_SERVICE_MODE": {"manual"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("compatible manual transition status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestDashboardConfigAndViewHelperBranches(t *testing.T) {
 	s := newTestServer(t)
 	if !(PageData{Snapshot: Snapshot{Services: []Service{{Expected: true, Critical: true, Status: Online}}}}.HasCriticalServices()) {

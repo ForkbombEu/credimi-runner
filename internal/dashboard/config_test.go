@@ -233,6 +233,45 @@ func TestManualExposureBindValidationPreservesExplicitHostIntent(t *testing.T) {
 	}
 }
 
+func TestManualExposureModeTransitionValidatesBind(t *testing.T) {
+	for _, tc := range []struct {
+		name, host string
+		wantError  bool
+	}{
+		{"loopback rejected", "127.0.0.1", true},
+		{"wildcard accepted", "0.0.0.0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initial := dashboardTestConfig(dir)
+			initial.Exposure.Mode = "quick_tunnel"
+			initial.Exposure.PublicURL = "http://192.168.178.120:8050"
+			initial.Server.APIListen = tc.host + ":8050"
+			if err := config.WriteFile(filepath.Join(dir, "config.toml"), initial); err != nil {
+				t.Fatal(err)
+			}
+			runner, err := LoadConfig(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runner.Apply(map[string]string{"CREDIMI_SERVICE_MODE": "manual"})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("mode-only transition error = %v, want error=%t", err, tc.wantError)
+			}
+			persisted, loadErr := config.LoadFile(filepath.Join(dir, "config.toml"))
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if tc.wantError && persisted.Exposure.Mode != "quick_tunnel" {
+				t.Fatalf("rejected transition persisted mode %q", persisted.Exposure.Mode)
+			}
+			if !tc.wantError && persisted.Exposure.Mode != "manual" {
+				t.Fatalf("accepted transition persisted mode %q", persisted.Exposure.Mode)
+			}
+		})
+	}
+}
+
 func TestSetupManualExposureKeepsLoopbackAndIPv6DefaultsCoherent(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode, endpoint, want string
