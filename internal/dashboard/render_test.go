@@ -407,7 +407,7 @@ func TestSetupRendersProgressiveHostWizard(t *testing.T) {
 		"syncManualPublicURLError",
 		"data-manual-public-url-error",
 		"Enter a complete URL starting with http:// or https://.",
-		"if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');",
+		"if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL') && validManualPublicURL();",
 		"setupDeviceFieldValue(card, fieldName)",
 		"fields.find((field) => !field.disabled)",
 	} {
@@ -468,7 +468,7 @@ func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(html, ">Internal_admin<") {
+	if !strings.Contains(html, ">Internal admin<") {
 		t.Fatalf("sidebar should show auth mode, got: %s", html)
 	}
 	if strings.Contains(html, ">ops<") {

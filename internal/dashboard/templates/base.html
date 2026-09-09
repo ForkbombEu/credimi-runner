@@ -16,7 +16,7 @@
     <aside class="sb">
       <div class="sb-brand"><img src="/static/credimi_logo.svg" alt="Credimi"><span class="tag">Runner</span></div>
       <a class="sb-env" href="/devices" hx-get="/devices" hx-target="main" hx-select="main" hx-swap="outerHTML" hx-push-url="true">
-        <span class="dot" style="background:{{if eq .Runner.AuthMode "admin"}}var(--warn){{else}}var(--ok){{end}}"></span>
+        <span class="dot" style="background:{{if eq .Runner.AuthMode "internal_admin"}}var(--warn){{else}}var(--ok){{end}}"></span>
         <span class="meta"><b>{{or (.Runner.Get "CREDIMI_RUNNER_NAME") "runner"}}</b><span>{{or (.Runner.Get "CREDIMI_RUNNER_ID") "unconfigured"}}</span></span>
       </a>
       <nav class="sb-nav">
@@ -31,7 +31,7 @@
       </nav>
       <div class="sb-foot">
         <span class="av">{{.AvatarInitials}}</span>
-        <span class="who"><b>{{or (.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "Acme Labs"}}</b><span>{{title .Runner.AuthMode}}</span></span>
+        <span class="who"><b>{{or (.Runner.Get "CREDIMI_RUNNER_ORGANIZATION") "Acme Labs"}}</b><span>{{if eq .Runner.AuthMode "internal_admin"}}Internal admin{{else}}User{{end}}</span></span>
       </div>
     </aside>
     {{end}}

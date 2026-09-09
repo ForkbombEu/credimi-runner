@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,7 +157,7 @@ func (c *CredimiClient) PreviewRunnerID(ctx context.Context, name, organization 
 		return RunnerPreview{}, fmt.Errorf("runner ID preview returned invalid JSON: %w", err)
 	}
 	if preview.RunnerID == "" {
-		preview.RunnerID = strings.TrimSpace(organization) + "/" + canonifyPlain(name)
+		return RunnerPreview{}, errors.New("runner ID preview returned an empty runner ID")
 	}
 	if preview.Organization == "" {
 		preview.Organization = strings.TrimSpace(organization)

@@ -279,6 +279,31 @@ func newTestServer(t *testing.T) *Server {
 	}
 }
 
+func TestBuildCandidateTypedConfigClassifiesConfigurationErrors(t *testing.T) {
+	values := dashboardruntime.Values{
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_RUNNER_NAME":         "runner",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_DEVICE_COUNT":        "1",
+		"CREDIMI_DEVICE_1_ID":         "acme/runner/device",
+		"CREDIMI_DEVICE_1_TYPE":       "android_phone",
+		"CREDIMI_DEVICE_1_MODE":       "usb",
+		"CREDIMI_DEVICE_1_SERIAL":     "serial",
+	}
+	if _, err := buildCandidateTypedConfig(values); err != nil {
+		t.Fatalf("valid candidate rejected: %v", err)
+	}
+	values["CREDIMI_DEVICE_1_UNKNOWN"] = "invalid"
+	if _, err := buildCandidateTypedConfig(values); err == nil || !strings.Contains(err.Error(), "candidate runtime configuration") {
+		t.Fatalf("invalid candidate error = %v", err)
+	}
+	delete(values, "CREDIMI_DEVICE_1_UNKNOWN")
+	values["OTEL_ENABLED"] = "not-a-boolean"
+	if _, err := buildCandidateTypedConfig(values); err == nil || !strings.Contains(err.Error(), "candidate typed configuration") {
+		t.Fatalf("typed candidate error = %v", err)
+	}
+}
+
 func TestDarwinAppliedServerTimeoutReversionClearsRestart(t *testing.T) {
 	t.Setenv("GOOS_OVERRIDE", "darwin")
 	s := newTestServer(t)
@@ -1800,14 +1825,7 @@ func TestServerSetupHelperEndpoints(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
-	s.lookupSetupOrganization(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified_name":"acme"`) {
-		t.Fatalf("lookupSetupOrganization = %d %s", rec.Code, rec.Body.String())
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup/canonify?name=Runner+Slug", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	req := httptest.NewRequest(http.MethodPost, "/setup/canonify?name=Runner+Slug", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
 	s.canonifySetupName(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"canonified":"runner-slug"`) {
 		t.Fatalf("canonifySetupName = %d %s", rec.Code, rec.Body.String())
@@ -1825,14 +1843,7 @@ func TestServerSetupHelperEndpointValidation(t *testing.T) {
 	s := newTestServer(t)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/setup/organization", strings.NewReader(`{`))
-	s.lookupSetupOrganization(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("lookupSetupOrganization invalid JSON = %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/setup/canonify", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
+	req := httptest.NewRequest(http.MethodPost, "/setup/canonify", strings.NewReader(`{"instance_url":"https://credimi.example","api_key":"key"}`))
 	s.canonifySetupName(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("canonifySetupName missing name = %d", rec.Code)
@@ -2281,17 +2292,18 @@ func TestResolveSetupIdentityBranches(t *testing.T) {
 	}
 
 	values = map[string]string{
-		"CREDIMI_URL":                 "https://credimi.example",
-		"CREDIMI_USER_API_KEY":        "user-key",
-		"CREDIMI_RUNNER_NAME":         "Runner Two",
-		"CREDIMI_RUNNER_ID":           "existing/id",
-		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"CREDIMI_URL":                         "https://credimi.example",
+		"CREDIMI_USER_API_KEY":                "user-key",
+		"CREDIMI_RUNNER_NAME":                 "Runner Two",
+		"CREDIMI_RUNNER_ID":                   "existing/id",
+		"CREDIMI_RUNNER_ORGANIZATION":         "acme",
+		"CREDIMI_RUNNER_NAME_CONFLICT_ACTION": "create",
 	}
 	if err := s.resolveSetupIdentity(context.Background(), values); err != nil {
 		t.Fatal(err)
 	}
-	if values["CREDIMI_RUNNER_ID"] != "existing/id" {
-		t.Fatalf("existing runner ID should be preserved: %#v", values)
+	if values["CREDIMI_RUNNER_ID"] != "acme/runner-two-2" {
+		t.Fatalf("stale runner ID should be replaced by preview: %#v", values)
 	}
 }
 
@@ -2460,8 +2472,6 @@ func TestServerSetupValidationHandlers(t *testing.T) {
 		body    string
 		want    string
 	}{
-		{"organization invalid json", s.lookupSetupOrganization, "/setup/organization", "{", "invalid JSON"},
-		{"organization missing fields", s.lookupSetupOrganization, "/setup/organization", `{}`, "required"},
 		{"canonify invalid json", s.canonifySetupName, "/setup/canonify?name=Runner", "{", "invalid JSON"},
 		{"canonify missing name", s.canonifySetupName, "/setup/canonify", `{"instance_url":"https://credimi.io","api_key":"key"}`, "name query parameter"},
 		{"preview invalid json", s.previewSetupRunnerID, "/setup/runner-id", "{", "invalid JSON"},
@@ -2973,6 +2983,8 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 		switch req.URL.Path {
 		case "/api/organizations/my":
 			body = `{"canonified_name":"acme"}`
+		case "/api/mobile-runner/preview-id":
+			body = `{"organization":"acme","runner_id":"acme/runner"}`
 		case "/api/mobile-device/preview-id":
 			body = `{"device_id":"acme/runner/pixel"}`
 		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
@@ -2986,6 +2998,7 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 		"CREDIMI_AUTH_MODE":           {"user"},
 		"CREDIMI_URL":                 {"https://credimi.example"},
 		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_RUNNER_NAME":         {"runner"},
 		"CREDIMI_RUNNER_ID":           {"acme/runner"},
 		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
 		"CREDIMI_SERVICE_MODE":        {"manual"},
@@ -3023,6 +3036,46 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	}
 }
 
+func TestServerFinishSetupInternalAdminAuth(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_USER_API_KEY"] = ""
+	s.cfg.values["CREDIMI_AUTH_MODE"] = "internal_admin"
+	transport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch req.URL.Path {
+		case "/api/organizations/namespaces":
+			if req.Header.Get("Credimi-Api-Key") != "admin-key" {
+				return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"message":"forbidden"}`))}, nil
+			}
+			body = `{"namespaces":["acme"]}`
+		case "/api/mobile-runner/preview-id":
+			body = `{"organization":"acme","runner_id":"acme/admin-runner"}`
+		case "/api/mobile-device/preview-id":
+			body = `{"device_id":"acme/admin-runner/pixel"}`
+		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
+		default:
+			return nil, errors.New("unexpected path: " + req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = transport })
+	form := url.Values{
+		"CREDIMI_AUTH_MODE": {"internal_admin"}, "CREDIMI_URL": {"https://credimi.example"}, "CREDIMI_INTERNAL_ADMIN_KEY": {"admin-key"},
+		"CREDIMI_RUNNER_ORGANIZATION_ADMIN": {"acme"}, "CREDIMI_RUNNER_ORGANIZATION": {"acme"}, "CREDIMI_RUNNER_NAME": {"admin-runner"},
+		"CREDIMI_SERVICE_MODE": {"manual"}, "RUNNER_PUBLIC_URL": {"https://runner.example"}, "SETUP_DEVICE_COUNT": {"1"},
+		"SETUP_DEVICE_1_NAME": {"Pixel"}, "SETUP_DEVICE_1_TYPE": {"redroid"}, "SETUP_DEVICE_1_MODE": {"no_device"}, "SETUP_DEVICE_1_WIFI_IP": {"192.0.2.10"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if err := s.finishSetupSync(request, func(string) {}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.cfg.Get("CREDIMI_AUTH_MODE"); got != "internal_admin" || s.cfg.Get("CREDIMI_INTERNAL_ADMIN_KEY") != "admin-key" || s.cfg.Get("CREDIMI_USER_API_KEY") != "" {
+		t.Fatalf("internal-admin config = %#v", s.cfg.Snapshot())
+	}
+}
+
 func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
 	t.Setenv(servicemanager.AppliedServiceConfigFingerprintEnv, "previous-service")
 	s := newTestServer(t)
@@ -3033,6 +3086,8 @@ func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
 		switch req.URL.Path {
 		case "/api/organizations/my":
 			body = `{"canonified_name":"acme"}`
+		case "/api/mobile-runner/preview-id":
+			body = `{"organization":"acme","runner_id":"acme/runner"}`
 		case "/api/mobile-device/preview-id":
 			body = `{"device_id":"acme/runner/pixel"}`
 		case "/api/mobile-runner", "/api/mobile-device", "/api/mobile-device/reconcile":
@@ -3046,6 +3101,7 @@ func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
 		"CREDIMI_AUTH_MODE":           {"user"},
 		"CREDIMI_URL":                 {"https://credimi.example"},
 		"CREDIMI_USER_API_KEY":        {"user-key"},
+		"CREDIMI_RUNNER_NAME":         {"runner"},
 		"CREDIMI_RUNNER_ID":           {"acme/runner"},
 		"CREDIMI_RUNNER_ORGANIZATION": {"acme"},
 		"CREDIMI_SERVICE_MODE":        {"manual"},
@@ -3072,5 +3128,9 @@ func TestFinishSetupRequestsRunningBeforeServiceReplacement(t *testing.T) {
 	}
 	if _, err := servicecoordination.ReadRestartRequest(s.composeDir); err != nil {
 		t.Fatalf("setup restart request: %v", err)
+	}
+	startup := s.startupSnapshot()
+	if !strings.HasPrefix(startup.Message, "Setup was saved") || strings.Contains(startup.Message, "configuration changed") {
+		t.Fatalf("first-run restart message = %q", startup.Message)
 	}
 }

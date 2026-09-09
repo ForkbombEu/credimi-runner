@@ -288,7 +288,6 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /setup/draft/{id}", s.getSetupDraft)
 	mux.HandleFunc("DELETE /setup/draft/{id}", s.deleteSetupDraft)
 	mux.HandleFunc("POST /setup/credentials/verify", s.verifySetupCredentials)
-	mux.HandleFunc("POST /setup/organization", s.lookupSetupOrganization)
 	mux.HandleFunc("POST /setup/runner-id", s.previewSetupRunnerID)
 	mux.HandleFunc("POST /setup/device-id", s.previewSetupDeviceID)
 	mux.HandleFunc("POST /setup/canonify", s.canonifySetupName)
@@ -496,33 +495,34 @@ func loadConfigSnapshot(store *dashboardruntime.Store, current *Config) *Config 
 }
 
 // provisionCandidateCapabilities validates and provisions an in-memory
-// inventory before it can replace the active TOML. The temporary TOML is
-// private scratch state; the active configuration is untouched on failure.
+// inventory before it can replace the active TOML.
 func provisionCandidateCapabilities(ctx context.Context, values dashboardruntime.Values, progress func(string)) error {
 	if progress == nil {
 		progress = func(string) {}
 	}
+	cfg, err := buildCandidateTypedConfig(values)
+	if err != nil {
+		return err
+	}
+	return provisionCandidateCapabilitiesWithConfig(ctx, cfg, progress)
+}
+
+func buildCandidateTypedConfig(values dashboardruntime.Values) (runnerconfig.Config, error) {
+	if _, err := dashboardruntime.ParseRuntimeConfig(values); err != nil && strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) != "" {
+		return runnerconfig.Config{}, fmt.Errorf("candidate runtime configuration: %w", err)
+	}
+	cfg, err := dashboardruntime.TypedConfigFromValues(values)
+	if err != nil {
+		return runnerconfig.Config{}, fmt.Errorf("candidate typed configuration: %w", err)
+	}
+	return cfg, nil
+}
+
+func provisionCandidateCapabilitiesWithConfig(ctx context.Context, cfg runnerconfig.Config, progress func(string)) error {
+	if progress == nil {
+		progress = func(string) {}
+	}
 	progress("Checking Android SDK")
-	inventory, err := dashboardruntime.ParseRuntimeConfig(values)
-	if err != nil {
-		if strings.TrimSpace(values["CREDIMI_DEVICE_COUNT"]) == "" {
-			return nil
-		}
-		return fmt.Errorf("load candidate runtime configuration: %w", err)
-	}
-	dir, err := os.MkdirTemp("", "credimi-runner-candidate-")
-	if err != nil {
-		return fmt.Errorf("create candidate configuration: %w", err)
-	}
-	defer os.RemoveAll(dir)
-	store := &dashboardruntime.Store{Path: filepath.Join(dir, "config.toml"), Values: dashboardruntime.Values{}}
-	if err := store.SaveRuntimeConfig(inventory); err != nil {
-		return fmt.Errorf("write candidate configuration: %w", err)
-	}
-	cfg, err := runnerconfig.LoadFile(store.Path)
-	if err != nil {
-		return fmt.Errorf("load candidate typed configuration: %w", err)
-	}
 	return ensureCandidateEmulatorReady(ctx, cfg, runtime.GOOS, progress)
 }
 
@@ -898,12 +898,9 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 				delete(device.Values, "AVDCTL_SUDO_PASSWORD")
 			}
 			if namePosted && strings.TrimSpace(name) != strings.TrimSpace(existing.Name) {
-				key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-				if key == "" {
-					key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
-				}
-				if key == "" {
-					return errors.New("a Credimi API key is required to rename a device")
+				key, err := selectedCredimiAPIKey(values)
+				if err != nil {
+					return err
 				}
 				preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
 				if err != nil {
@@ -943,9 +940,9 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
 			return err
 		}
-		key := strings.TrimSpace(values["CREDIMI_USER_API_KEY"])
-		if key == "" {
-			key = strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"])
+		key, err := selectedCredimiAPIKey(values)
+		if err != nil {
+			return err
 		}
 		if deviceID == "" {
 			preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
@@ -1234,6 +1231,10 @@ func serviceRestartResultFailure(configDir string) string {
 var loadDashboardConfigSnapshot = runnerconfig.LoadFileSnapshot
 
 func (s *Server) requestServiceRestart() error {
+	return s.requestServiceRestartWithMessages("", "")
+}
+
+func (s *Server) requestServiceRestartWithMessages(activeMessage, inactiveMessage string) error {
 	if strings.TrimSpace(s.composeDir) == "" {
 		return errors.New("service coordination directory is empty")
 	}
@@ -1251,9 +1252,19 @@ func (s *Server) requestServiceRestart() error {
 	}
 	active, activeErr := servicecoordination.CoordinatorActive(s.composeDir, dashboardNow())
 	if activeErr == nil && active {
-		s.setStartupState(StartupStarting, "Configuration saved. Waiting for the attached Credimi Runner to restart the service.")
+		message := activeMessage
+		if message == "" {
+			s.setStartupState(StartupStarting, "Configuration saved. Waiting for the attached Credimi Runner to restart the service.")
+		} else {
+			s.setStartupState(StartupStarting, message)
+		}
 	} else {
-		s.setStartupState(StartupNeedsAttention, serviceRestartManualMessage)
+		message := inactiveMessage
+		if message == "" {
+			s.setStartupState(StartupNeedsAttention, serviceRestartManualMessage)
+		} else {
+			s.setStartupState(StartupNeedsAttention, message)
+		}
 	}
 	return nil
 }
@@ -1475,6 +1486,11 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	incoming := formValuesMap(r.PostForm)
+	canonicalizeSetupInput(incoming)
+	s.rememberSetupDraft(incoming)
+	if incoming["SETUP_DRAFT_ID"] != "" {
+		r.PostForm.Set("SETUP_DRAFT_ID", incoming["SETUP_DRAFT_ID"])
+	}
 	if errs := validateSetupInput(incoming); len(errs) > 0 {
 		d := s.pageData("setup", map[string]any{"Errors": errs, "SetupError": "Some fields need attention."})
 		html, _ := s.render.FragmentPage("setup", d)
@@ -1486,6 +1502,33 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request) {
 	s.queueConfigMutation(w, r, "setup", func(_ context.Context, innerR *http.Request, progress func(string)) error {
 		return s.finishSetupSync(innerR, progress, true)
 	})
+}
+
+func (s *Server) rememberSetupDraft(values map[string]string) {
+	if s.setupDrafts == nil {
+		return
+	}
+	step, _ := strconv.Atoi(strings.TrimSpace(values["SETUP_STEP"]))
+	draftValues := cloneStringMap(values)
+	delete(draftValues, "SETUP_STEP")
+	if draft, err := s.setupDrafts.save(setupDraft{ID: values["SETUP_DRAFT_ID"], Step: step, Values: draftValues}); err == nil {
+		values["SETUP_DRAFT_ID"] = draft.ID
+	}
+}
+
+func canonicalizeSetupInput(values map[string]string) {
+	if strings.TrimSpace(values["CREDIMI_AUTH_MODE"]) == "" {
+		if strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
+			values["CREDIMI_AUTH_MODE"] = "internal_admin"
+		} else {
+			values["CREDIMI_AUTH_MODE"] = "user"
+		}
+	}
+	if values["CREDIMI_AUTH_MODE"] == "internal_admin" {
+		if organization := strings.TrimSpace(values["CREDIMI_RUNNER_ORGANIZATION_ADMIN"]); organization != "" {
+			values["CREDIMI_RUNNER_ORGANIZATION"] = organization
+		}
+	}
 }
 
 func (s *Server) saveSetupDraft(w http.ResponseWriter, r *http.Request) {
@@ -1507,6 +1550,8 @@ func (s *Server) saveSetupDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The browser only needs the opaque identifier. Never return values here.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, map[string]any{"id": saved.ID, "step": saved.Step})
 }
 
@@ -1520,6 +1565,8 @@ func (s *Server) getSetupDraft(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, draft)
 }
 
@@ -1535,6 +1582,8 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 		return err
 	}
 	incoming := formValuesMap(r.PostForm)
+	canonicalizeSetupInput(incoming)
+	s.rememberSetupDraft(incoming)
 	oldValues := dashboardruntime.Values(cloneStringMap(s.cfg.Snapshot()))
 	wasConfigured := s.cfg.Exists()
 	// Setup resolves the runner and every device through Credimi before it can
@@ -1563,12 +1612,16 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 		return fmt.Errorf("device setup failed: %w", err)
 	}
 	values := dashboardruntime.ValuesWithRuntimeDevices(candidate, devices)
+	typedCandidate, err := buildCandidateTypedConfig(values)
+	if err != nil {
+		return fmt.Errorf("configuration validation failed: %w", err)
+	}
 	if err := s.validateRuntimeRequirements(map[string]string(values)); err != nil {
 		return fmt.Errorf("runtime requirement check failed: %w", err)
 	}
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
-	if err := provisionCandidateCapabilities(provisionCtx, values, progress); err != nil {
+	if err := provisionCandidateCapabilitiesWithConfig(provisionCtx, typedCandidate, progress); err != nil {
 		return fmt.Errorf("Android capabilities are unavailable: %w", err)
 	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
@@ -1593,16 +1646,13 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 			return err
 		}
 		s.setPendingDiff(pendingDiffForPlatform(diff, runtimeGOOS()))
-		if err := s.requestServiceRestart(); err != nil {
-			return err
-		}
+		activeRestartMessage, inactiveRestartMessage := "", ""
 		if !wasConfigured {
-			active, activeErr := servicecoordination.CoordinatorActive(s.composeDir, dashboardNow())
-			if activeErr == nil && active {
-				s.setStartupState(StartupStarting, "Setup saved. Waiting for the attached Credimi Runner to replace the bootstrap service.")
-			} else {
-				s.setStartupState(StartupNeedsAttention, "Setup was saved, but the bootstrap service must be replaced before the runner can start. Run: credimi-runner service restart")
-			}
+			activeRestartMessage = "Setup saved. Waiting for the attached Credimi Runner to replace the bootstrap service."
+			inactiveRestartMessage = "Setup was saved, but the bootstrap service must be replaced before the runner can start. Run: credimi-runner service restart"
+		}
+		if err := s.requestServiceRestartWithMessages(activeRestartMessage, inactiveRestartMessage); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -1702,10 +1752,20 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 			return nil, fmt.Errorf("resolve device %q ID: %w", device.Name, err)
 		}
 		action := value("CONFLICT_ACTION")
-		if preview.Conflict && action == "update" {
-			device.ID = strings.TrimPrefix(preview.ExistingDeviceID, "/")
+		if preview.Conflict {
+			switch action {
+			case "update":
+				device.ID = strings.TrimPrefix(preview.ExistingDeviceID, "/")
+			case "create":
+				device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+			default:
+				return nil, fmt.Errorf("device %q conflicts with an existing Credimi device; choose create or update explicitly", device.Name)
+			}
 		} else {
 			device.ID = strings.TrimPrefix(preview.DeviceID, "/")
+		}
+		if device.ID == "" {
+			return nil, fmt.Errorf("resolve device %q ID: Credimi returned an empty device ID", device.Name)
 		}
 		devices = append(devices, device)
 	}
@@ -1777,20 +1837,11 @@ func (s *Server) startupSnapshot() startupState {
 
 func validateSetupInput(values map[string]string) map[string]string {
 	errs := map[string]string{}
+	canonicalizeSetupInput(values)
 	if strings.TrimSpace(values["CREDIMI_URL"]) == "" {
 		errs["CREDIMI_URL"] = "Required."
 	}
 	mode := strings.TrimSpace(values["CREDIMI_AUTH_MODE"])
-	if mode == "" {
-		// Compatibility for a request from the immediately preceding wizard.
-		// Current setup always sends this canonical field.
-		if strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
-			mode = "internal_admin"
-		} else {
-			mode = "user"
-		}
-		values["CREDIMI_AUTH_MODE"] = mode
-	}
 	switch mode {
 	case "user":
 		if strings.TrimSpace(values["CREDIMI_USER_API_KEY"]) == "" || strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
@@ -1853,23 +1904,6 @@ func (s *Server) validateRuntimeRequirements(values map[string]string) error {
 	return nil
 }
 
-func (s *Server) lookupSetupOrganization(w http.ResponseWriter, r *http.Request) {
-	var req setupCredentialRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid JSON", http.StatusBadRequest)
-		return
-	}
-	req.AuthMode = "user"
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-	org, err := verifySetupCredential(ctx, req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, org)
-}
-
 func (s *Server) verifySetupCredentials(w http.ResponseWriter, r *http.Request) {
 	var req setupCredentialRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1883,6 +1917,8 @@ func (s *Server) verifySetupCredentials(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	writeJSON(w, map[string]string{"organization": result.Namespace})
 }
 
@@ -2354,23 +2390,19 @@ func (s *Server) resolveConfigIdentity(ctx context.Context, current, incoming ma
 		return errors.New("organization is required")
 	}
 
-	apiKey := strings.TrimSpace(incoming["CREDIMI_USER_API_KEY"])
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(current["CREDIMI_USER_API_KEY"])
+	identityValues := cloneStringMap(current)
+	for key, value := range incoming {
+		identityValues[key] = value
 	}
-	if adminKey := strings.TrimSpace(incoming["CREDIMI_INTERNAL_ADMIN_KEY"]); adminKey != "" {
-		apiKey = adminKey
-	} else if currentAdminKey := strings.TrimSpace(current["CREDIMI_INTERNAL_ADMIN_KEY"]); currentAdminKey != "" {
-		apiKey = currentAdminKey
+	apiKey, err := selectedCredimiAPIKey(identityValues)
+	if err != nil {
+		return err
 	}
 	if apiKey == "" {
 		return errors.New("a Credimi API key is required to update runner identity")
 	}
 
-	baseURL := strings.TrimSpace(incoming["CREDIMI_URL"])
-	if baseURL == "" {
-		baseURL = strings.TrimSpace(current["CREDIMI_URL"])
-	}
+	baseURL := strings.TrimSpace(identityValues["CREDIMI_URL"])
 	client := &dashboardruntime.CredimiClient{BaseURL: baseURL, APIKey: apiKey, HTTPClient: http.DefaultClient}
 	preview, err := client.PreviewRunnerID(ctx, nextName, nextOrg)
 	if err != nil {
@@ -2387,13 +2419,7 @@ func (s *Server) resolveConfigIdentity(ctx context.Context, current, incoming ma
 }
 
 func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]string) error {
-	if strings.TrimSpace(values["CREDIMI_AUTH_MODE"]) == "" {
-		if strings.TrimSpace(values["CREDIMI_INTERNAL_ADMIN_KEY"]) != "" {
-			values["CREDIMI_AUTH_MODE"] = "internal_admin"
-		} else {
-			values["CREDIMI_AUTH_MODE"] = "user"
-		}
-	}
+	canonicalizeSetupInput(values)
 	apiKey, err := selectedCredimiAPIKey(values)
 	if err != nil {
 		return err
@@ -2407,36 +2433,37 @@ func (s *Server) resolveSetupIdentity(ctx context.Context, values map[string]str
 	}
 	organization := verification.Namespace
 	values["CREDIMI_RUNNER_ORGANIZATION"] = organization
-	client := &dashboardruntime.CredimiClient{BaseURL: baseURL, APIKey: apiKey, HTTPClient: http.DefaultClient}
-
-	if strings.TrimSpace(values["CREDIMI_RUNNER_ID"]) == "" {
-		name := strings.TrimSpace(values["CREDIMI_RUNNER_NAME"])
-		if name == "" {
-			return errors.New("runner name is required")
+	name := strings.TrimSpace(values["CREDIMI_RUNNER_NAME"])
+	if name == "" {
+		return errors.New("runner name is required")
+	}
+	preview, err := fetchCredimiRunnerPreview(ctx, setupRunnerPreviewRequest{InstanceURL: baseURL, APIKey: apiKey, Organization: organization, Name: name})
+	if err != nil {
+		return fmt.Errorf("resolve runner identity: %w", err)
+	}
+	baseRunnerID := organization + "/" + canonifyPlain(name)
+	previewRunnerID := strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
+	if previewRunnerID == "" {
+		return errors.New("resolve runner identity: Credimi returned an empty runner ID")
+	}
+	if strings.TrimSpace(preview.Organization) != "" {
+		organization = strings.TrimSpace(preview.Organization)
+		values["CREDIMI_RUNNER_ORGANIZATION"] = organization
+		baseRunnerID = organization + "/" + canonifyPlain(name)
+	}
+	action := strings.TrimSpace(values["CREDIMI_RUNNER_NAME_CONFLICT_ACTION"])
+	switch {
+	case !preview.Conflict && previewRunnerID == baseRunnerID:
+		values["CREDIMI_RUNNER_ID"] = previewRunnerID
+	case preview.Conflict && action == "update":
+		if strings.TrimSpace(preview.ExistingRunnerID) == "" {
+			return errors.New("resolve runner identity: Credimi returned a conflict without an existing runner ID")
 		}
-		preview, err := client.PreviewRunnerID(ctx, name, organization)
-		if err != nil {
-			return err
-		}
-		baseRunnerID := organization + "/" + canonifyPlain(name)
-		previewRunnerID := strings.TrimPrefix(strings.TrimSpace(preview.RunnerID), "/")
-		if previewRunnerID == "" {
-			previewRunnerID = baseRunnerID
-		}
-		action := strings.TrimSpace(values["CREDIMI_RUNNER_NAME_CONFLICT_ACTION"])
-		if action == "" {
-			action = "update"
-		}
-		switch {
-		case previewRunnerID == baseRunnerID:
-			values["CREDIMI_RUNNER_ID"] = baseRunnerID
-		case action == "update":
-			values["CREDIMI_RUNNER_ID"] = baseRunnerID
-		case action == "create":
-			values["CREDIMI_RUNNER_ID"] = previewRunnerID
-		default:
-			return fmt.Errorf("unsupported runner conflict action %q", action)
-		}
+		values["CREDIMI_RUNNER_ID"] = strings.TrimPrefix(preview.ExistingRunnerID, "/")
+	case preview.Conflict && action == "create":
+		values["CREDIMI_RUNNER_ID"] = previewRunnerID
+	default:
+		return fmt.Errorf("runner identity conflict requires create or update decision")
 	}
 
 	if strings.TrimSpace(values["OTEL_SERVICE_NAME"]) == "" {

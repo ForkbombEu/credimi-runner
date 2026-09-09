@@ -291,9 +291,8 @@ func TestCredimiClientPreviewFallbackAndVisibleRunnerLookup(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &CredimiClient{BaseURL: server.URL, APIKey: "key", HTTPClient: server.Client()}
-	preview, err := client.PreviewRunnerID(context.Background(), "Runner Name", "acme")
-	if err != nil || preview.RunnerID != "acme/runner-name" || preview.Organization != "acme" {
-		t.Fatalf("preview fallback = %#v, %v", preview, err)
+	if _, err := client.PreviewRunnerID(context.Background(), "Runner Name", "acme"); err == nil {
+		t.Fatal("empty preview response must fail instead of fabricating an ID")
 	}
 	name, err := client.MobileRunnerName(context.Background(), "/acme/runner")
 	if err != nil || name != "Saved Runner" {

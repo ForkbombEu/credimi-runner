@@ -682,21 +682,23 @@
 	  let draftSaveTimer = null;
 	  const draftIDField = () => $('[data-setup-draft-id]', form);
 	  const saveSetupDraft = async () => {
-		const values = {};
-		new FormData(form).forEach((entry, key) => { if (key !== 'SETUP_DRAFT_ID') values[key] = String(entry); });
+		const values = serializeSetupDraft();
 		const response = await fetch(dashboardURL('/setup/draft'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: (draftIDField() || {}).value || sessionStorage.getItem('credimi-runner:setup-draft-id') || '', step: current, values }) });
 		if (!response.ok) throw new Error('Could not save setup draft.');
 		const data = await response.json(); const field = draftIDField(); if (field) field.value = data.id || ''; if (data.id) sessionStorage.setItem('credimi-runner:setup-draft-id', data.id);
 	  };
-	  const scheduleDraftSave = () => { clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(() => { saveSetupDraft().catch(() => {}); }, 300); };
+      const scheduleDraftSave = () => { if (hydratingDraft) return; clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(() => { saveSetupDraft().catch(() => {}); }, 300); };
       let connectedAndroidTimer = null;
       const buttons = $$('.wizard-step', form);
       const panels = $$('.wizard-panel', form);
       const prev = $('[data-step-prev]', form);
       const next = $('[data-step-next]', form);
       const submit = $('[data-step-submit]', form);
-      let runnerPreview = null;
-      let credentialValidation = { status: 'idle', organization: '', error: '' };
+      let credentialValidation = { status: 'idle', organization: '', error: '', generation: 0 };
+      let runnerIdentityState = { status: 'idle', preview: null, conflictAction: '', effectiveID: '', error: '' };
+      const deviceStates = new WeakMap();
+      let hydratingDraft = false;
+      let credentialAbort = null;
       const errBox = () => $('[data-setup-error]', panels[current]);
       const setError = (msg) => {
         const box = errBox();
@@ -760,7 +762,7 @@
             return credentialValidation.status === 'valid';
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
-            if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL');
+            if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL') && validManualPublicURL();
             if (mode === 'cloudflare-managed') return !valueMissing('RUNNER_DOMAIN') && !valueMissing('CLOUDFLARE_TUNNEL_TOKEN');
             return true;
           }
@@ -781,6 +783,9 @@
               if (valueMissing('CREDIMI_USER_API_KEY')) return 'User API key is required.';
             }
             if (valueMissing('CREDIMI_RUNNER_NAME')) return 'Runner name is required.';
+			if (credentialValidation.status === 'pending') return 'Checking Credimi credentials…';
+			if (credentialValidation.status === 'invalid') return credentialValidation.error || 'Credimi credential verification failed.';
+			if (credentialValidation.status !== 'valid') return 'Verify the Credimi credentials before continuing.';
             return '';
           case 'network': {
             const mode = value('CREDIMI_SERVICE_MODE');
@@ -802,6 +807,7 @@
       const show = (idx) => {
         setError('');
         current = Math.max(0, Math.min(idx, panels.length - 1));
+		const stepField = $('[data-setup-step]', form); if (stepField) stepField.value = String(current);
         panels.forEach((p, i) => (p.hidden = i !== current));
         buttons.forEach((b, i) => {
           b.classList.toggle('on', i === current);
@@ -825,12 +831,13 @@
         if (current === panels.length - 1) syncReview();
         form.dispatchEvent(new CustomEvent('dashboard:step-shown', { bubbles: true, detail: { step: panels[current] && panels[current].dataset.step } }));
         syncStepActions();
-		scheduleDraftSave();
+		if (!hydratingDraft) scheduleDraftSave();
       };
-      const jsonPost = async (url, body) => {
+      const jsonPost = async (url, body, signal) => {
         const res = await fetch(dashboardURL(url), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal,
           body: JSON.stringify(body),
         });
 		if (!res.ok) { const contentType = res.headers.get('content-type') || ''; let message = ''; if (contentType.includes('application/json')) { try { const data = await res.json(); message = data.message || data.error || ''; } catch (_) {} } else { message = (await res.text()).trim(); } if (!message || message.startsWith('<')) message = `Request failed (HTTP ${res.status})`; throw new Error(message); }
@@ -842,7 +849,7 @@
         if (radio) return radio.value || '';
         return (field(name) || {}).value || '';
       };
-      const authMode = () => value('CREDIMI_AUTH_MODE');
+      const authMode = () => value('CREDIMI_AUTH_MODE') || 'user';
       const selectedAPIKey = () => authMode() === 'internal_admin' ? value('CREDIMI_INTERNAL_ADMIN_KEY') : value('CREDIMI_USER_API_KEY');
       const orgPreview = () => $('[data-org-preview]', form);
       const setOrgPreview = (text) => {
@@ -858,70 +865,66 @@
         if (orgValue && authMode() === 'internal_admin') orgValue.value = adminOrg.value.trim();
         setOrgPreview((orgValue && orgValue.value) || 'org');
       };
-      const resolveOrganization = async () => {
+      const resolveOrganization = async (signal) => {
         if (authMode() === 'internal_admin') syncAdminOrganization();
         const org = await jsonPost('/setup/credentials/verify', {
           instance_url: value('CREDIMI_URL'),
           auth_mode: authMode(),
           api_key: selectedAPIKey(),
           organization: value('CREDIMI_RUNNER_ORGANIZATION'),
-        });
+        }, signal);
         const orgName = org.organization || '';
         const orgValue = field('CREDIMI_RUNNER_ORGANIZATION');
         if (orgValue) orgValue.value = orgName;
         setOrgPreview(orgName);
         return orgName;
       };
-      const invalidateIdentityDependents = () => {
-        credentialValidation = { status: 'idle', organization: '', error: '' };
-        runnerPreview = null;
-        const runnerID = field('CREDIMI_RUNNER_ID'); if (runnerID) runnerID.value = '';
-        const action = $('[data-runner-conflict-action]', form); if (action) action.value = '';
-        $$('[data-device-id], [data-device-conflict-action]', form).forEach((input) => { input.value = ''; });
-        if (authMode() === 'user') { const org = field('CREDIMI_RUNNER_ORGANIZATION'); if (org) org.value = ''; }
+      const stateForDevice = (card) => { if (!deviceStates.has(card)) deviceStates.set(card, { previewStatus: 'idle', preview: null, conflictAction: '', readinessStatus: 'idle', readinessError: '' }); return deviceStates.get(card); };
+      const invalidateCredentialValidation = (clearOrganization = true) => {
+        credentialValidation = { status: 'idle', organization: clearOrganization ? '' : credentialValidation.organization, error: '', generation: credentialValidation.generation + 1 };
+        if (credentialAbort) credentialAbort.abort();
+        if (clearOrganization && authMode() === 'user') { const org = field('CREDIMI_RUNNER_ORGANIZATION'); if (org) org.value = ''; }
       };
-      // Live API-key validation: calls /setup/organization and shows feedback.
+      const invalidateDeviceReadiness = (card) => { const state = stateForDevice(card); state.readinessStatus = 'idle'; state.readinessError = ''; };
+      const invalidateDevicePreview = (card) => { const state = stateForDevice(card); state.previewStatus = 'idle'; state.preview = null; state.conflictAction = ''; invalidateDeviceReadiness(card); const id = card.querySelector('[data-device-id]'); const action = card.querySelector('[data-device-conflict-action]'); if (id) id.value = ''; if (action) action.value = ''; };
+      const invalidateAllDevicePreviews = () => $$('[data-device-provision]', form).forEach(invalidateDevicePreview);
+      const invalidateRunnerIdentity = () => { runnerIdentityState = { status: 'idle', preview: null, conflictAction: '', effectiveID: '', error: '' }; const id = field('CREDIMI_RUNNER_ID'); if (id) id.value = ''; const action = $('[data-runner-conflict-action]', form); if (action) action.value = ''; invalidateAllDevicePreviews(); };
       let apiKeyTimer;
-      const apiKeyField = field('CREDIMI_USER_API_KEY');
       const statusEl = () => $('[data-api-key-status]', form);
       const errorEl = () => $('[data-api-key-error]', form);
       const identityFields = () => $('[data-identity-fields]', form);
       const showIdentityFields = () => { const idf = identityFields(); if (idf) idf.style.display = 'contents'; };
-      if (apiKeyField) {
-        apiKeyField.addEventListener('input', () => {
-          clearTimeout(apiKeyTimer);
-          const key = apiKeyField.value.trim();
-          const st = statusEl();
-          const err = errorEl();
-          const idf = identityFields();
-          if (!key) {
-            if (st) st.style.display = 'none';
-            if (err) err.style.display = 'none';
-            if (idf) idf.style.display = 'none';
-            syncStepActions();
-            return;
-          }
-          apiKeyTimer = setTimeout(async () => {
-            try {
-              const organization = await resolveOrganization(); credentialValidation = { status: 'valid', organization, error: '' };
-              if (st) { st.style.display = 'flex'; st.innerHTML = check(); st.style.color = 'var(--ok)'; }
-              if (err) err.style.display = 'none';
-              showIdentityFields();
-            } catch (e) {
-              if (st) { st.style.display = 'flex'; st.innerHTML = xmark(); st.style.color = 'var(--down)'; }
-              if (err) { err.style.display = 'block'; err.textContent = (e && e.message) || 'Invalid API key'; }
-              credentialValidation = { status: 'invalid', organization: '', error: (e && e.message) || 'Invalid API key' }; if (idf) idf.style.display = 'none';
-            } finally {
-              syncStepActions();
-            }
-          }, 600);
-        });
-      }
-      const adminKeyField = field('CREDIMI_INTERNAL_ADMIN_KEY');
-      const adminOrgField = $('[data-admin-org-input]', form);
-      const scheduleCredentialValidation = () => { clearTimeout(apiKeyTimer); invalidateIdentityDependents(); if (!selectedAPIKey().trim() || (authMode() === 'internal_admin' && !value('CREDIMI_RUNNER_ORGANIZATION').trim())) { syncStepActions(); return; } apiKeyTimer = setTimeout(async () => { try { const organization = await resolveOrganization(); credentialValidation = { status: 'valid', organization, error: '' }; showIdentityFields(); } catch (e) { credentialValidation = { status: 'invalid', organization: '', error: (e && e.message) || 'Credential validation failed' }; setError(credentialValidation.error); } finally { syncStepActions(); } }, 600); };
-      if (adminKeyField) adminKeyField.addEventListener('input', scheduleCredentialValidation);
-      if (adminOrgField) adminOrgField.addEventListener('input', scheduleCredentialValidation);
+      const scheduleCredentialValidation = (immediate = false) => {
+        clearTimeout(apiKeyTimer);
+        if (authMode() === 'internal_admin') syncAdminOrganization();
+        invalidateCredentialValidation(true);
+        invalidateRunnerIdentity();
+        const generation = credentialValidation.generation;
+        const key = selectedAPIKey().trim();
+        const organization = value('CREDIMI_RUNNER_ORGANIZATION').trim();
+        const st = statusEl(); const err = errorEl();
+        if (st) st.style.display = 'none';
+        if (err) { err.hidden = true; err.textContent = ''; }
+        if (!key || (authMode() === 'internal_admin' && !organization)) { syncStepActions(); return; }
+        const run = async () => {
+          credentialValidation.status = 'pending';
+          if (st) { st.style.display = 'flex'; st.textContent = 'Checking…'; }
+          credentialAbort = new AbortController();
+          try {
+            const resolved = await resolveOrganization(credentialAbort.signal);
+            if (generation !== credentialValidation.generation) return;
+            credentialValidation = { status: 'valid', organization: resolved, error: '', generation };
+            if (st) { st.textContent = check(); st.style.color = 'var(--ok)'; }
+            showIdentityFields();
+          } catch (e) {
+            if (generation !== credentialValidation.generation) return;
+            credentialValidation = { status: 'invalid', organization: '', error: (e && e.message) || 'Credential validation failed', generation };
+            if (st) { st.style.display = 'flex'; st.innerHTML = xmark(); st.style.color = 'var(--down)'; }
+            if (err) { err.hidden = false; err.textContent = credentialValidation.error; }
+          } finally { if (generation === credentialValidation.generation) syncStepActions(); }
+        };
+        if (immediate) run(); else apiKeyTimer = setTimeout(run, 600);
+      };
       const canonifyName = async () => {
         const name = value('CREDIMI_RUNNER_NAME');
         const canonified = $('[data-canonified]', form);
@@ -950,12 +953,16 @@
       };
       const setConflictState = (preview) => {
         const actionInput = $('[data-runner-conflict-action]', form);
+        runnerIdentityState.preview = preview;
+        runnerIdentityState.status = preview ? 'valid' : 'idle';
+        runnerIdentityState.conflictAction = '';
         if (!actionInput) return;
-        runnerPreview = preview;
         if (!preview || !preview.conflict) {
+		  actionInput.value = '';
           return;
         }
         actionInput.value = actionInput.value || preview.default_action || 'update';
+		runnerIdentityState.conflictAction = actionInput.value;
       };
       const applyConflictDecision = (preview, action) => {
         const actionInput = $('[data-runner-conflict-action]', form);
@@ -966,6 +973,9 @@
         const runnerPreviewEl = $('[data-runner-id-preview]', form);
         if (runnerPreviewEl) runnerPreviewEl.textContent = nextRunnerID || '';
         syncOTELServiceName(nextRunnerID || '');
+		runnerIdentityState.conflictAction = action;
+		runnerIdentityState.effectiveID = nextRunnerID || '';
+		invalidateAllDevicePreviews();
       };
       const openRunnerConflictModal = (preview, kind = 'runner') => new Promise((resolve) => {
         const modal = $('#runner-conflict-modal');
@@ -1020,17 +1030,17 @@
         if (!instanceURL || !apiKey || !organization || !name) throw new Error('Verify credentials and enter a runner name before previewing its ID.');
         let rid = '';
         let previewData = null;
-        const data = await jsonPost('/setup/runner-id', {
+        runnerIdentityState.status = 'pending';
+        let data;
+        try { data = await jsonPost('/setup/runner-id', {
             instance_url: instanceURL,
             api_key: apiKey,
             organization: organization,
             name: name,
-          });
+		}); } catch (error) { runnerIdentityState.status = 'invalid'; runnerIdentityState.error = error && error.message ? error.message : 'Runner identity preview failed'; throw error; }
           const actionInput = $('[data-runner-conflict-action]', form);
-          if (actionInput && !actionInput.value) {
-            actionInput.value = data.default_action || 'update';
-          }
-          rid = (actionInput && actionInput.value === 'create' ? data.runner_id : data.existing_runner_id) || data.runner_id || '';
+		  if (actionInput && data.conflict && !actionInput.value) actionInput.value = data.default_action || 'update';
+		  rid = data.conflict && actionInput && actionInput.value === 'create' ? data.runner_id : (data.conflict ? data.existing_runner_id : data.runner_id);
           setConflictState(data);
           previewData = data;
         const runnerID = field('CREDIMI_RUNNER_ID');
@@ -1038,13 +1048,14 @@
         const runnerPreview = $('[data-runner-id-preview]', form);
         if (runnerPreview) runnerPreview.textContent = rid;
         syncOTELServiceName(rid);
+		runnerIdentityState.effectiveID = rid;
         syncStepActions();
         return previewData;
       };
       // Live-canonify as the user types the runner name.
       const nameField = field('CREDIMI_RUNNER_NAME');
       if (nameField) nameField.addEventListener('input', () => {
-        invalidateIdentityDependents();
+		invalidateRunnerIdentity();
         canonifyName();
         syncStepActions();
       });
@@ -1067,14 +1078,32 @@
           const organization = value('CREDIMI_RUNNER_ORGANIZATION');
           const runnerID = value('CREDIMI_RUNNER_ID');
           for (const card of $$('[data-device-provision]', form)) {
-            const name = (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim();
+          const name = (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim();
             if (!instanceURL || !apiKey || !organization || !runnerID || !name) continue;
-            const preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
-            if (!preview || !preview.conflict) continue;
-            const decision = await openRunnerConflictModal(preview, 'device');
-            if (decision === 'cancel') return false;
+            const state = stateForDevice(card);
+            state.previewStatus = 'pending';
+            let preview;
+            try {
+              preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
+            } catch (error) {
+              state.previewStatus = 'invalid';
+              state.preview = null;
+              state.conflictAction = '';
+              throw error;
+            }
+            state.previewStatus = 'valid';
+            state.preview = preview;
             const action = $('[data-device-conflict-action]', card);
             const id = $('[data-device-id]', card);
+            if (!preview || !preview.conflict) {
+              state.conflictAction = '';
+              if (action) action.value = '';
+              if (id) id.value = preview && preview.device_id ? preview.device_id : '';
+              continue;
+            }
+            const decision = await openRunnerConflictModal(preview, 'device');
+            if (decision === 'cancel') { state.previewStatus = 'idle'; return false; }
+            state.conflictAction = decision;
             if (action) action.value = decision;
             if (id) id.value = decision === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
           }
@@ -1101,6 +1130,7 @@
           if (okToProceed === false) return;
           show(current + 1);
         } catch (err) {
+		  runnerIdentityState.status = 'invalid'; runnerIdentityState.error = err && err.message ? err.message : 'Setup step failed';
           setError(err && err.message ? err.message : 'Setup step failed');
         } finally {
 		  next.disabled = false; next.textContent = originalLabel;
@@ -1108,12 +1138,84 @@
       });
       form.addEventListener('input', syncStepActions);
       form.addEventListener('change', syncStepActions);
+		form.addEventListener('input', (event) => {
+			if (['CREDIMI_URL', 'CREDIMI_AUTH_MODE', 'CREDIMI_USER_API_KEY', 'CREDIMI_INTERNAL_ADMIN_KEY', 'CREDIMI_RUNNER_ORGANIZATION_ADMIN'].includes(event.target.name)) scheduleCredentialValidation();
+		});
 		form.addEventListener('input', scheduleDraftSave);
-		form.addEventListener('change', scheduleDraftSave);
+      form.addEventListener('change', scheduleDraftSave);
       form.addEventListener('dashboard:device-ready-change', syncStepActions);
+		form.addEventListener('input', (event) => {
+			const card = event.target.closest('[data-device-provision]'); if (!card) return;
+			if (event.target.matches('[data-setup-device-field="NAME"]')) invalidateDevicePreview(card);
+			else if (event.target.matches('[data-setup-device-field="TYPE"], [data-setup-device-field="MODE"], [data-setup-device-field="SERIAL"], [data-setup-device-field="WIFI_IP"], [data-setup-device-field="WIFI_PORT"], [data-setup-device-field="BASE_NAME"], [data-setup-device-field="GOLDEN_PATH"], [data-setup-device-field="HOST_AVD_HOME_PATH"], [data-setup-device-field="HOST_AVD_GOLDEN_PATH"], [data-setup-device-field="IOS_UDID"]')) invalidateDeviceReadiness(card);
+		});
+		form.addEventListener('dashboard:device-type-change', (event) => invalidateDevicePreview(event.detail.card));
+		form.addEventListener('dashboard:device-mode-change', (event) => invalidateDeviceReadiness(event.detail.card));
+		const serializeSetupDraft = () => {
+			const values = {};
+			$$('input, select, textarea', form).forEach((input) => {
+				if (!input.name || input.name === 'SETUP_DRAFT_ID' || input.name === 'SETUP_STEP' || input.name.startsWith('device_') || input.name.includes('_ui_') || input.name.endsWith('_ui')) return;
+				if (input.type === 'radio') { if (input.checked) values[input.name] = input.value; return; }
+				if (input.type === 'checkbox') { values[input.name] = input.checked ? 'true' : 'false'; return; }
+				values[input.name] = String(input.value || '');
+			});
+			return values;
+		};
+		const ensureSetupDeviceCardCount = (count) => {
+			const list = form.querySelector('[data-setup-devices]:not([data-legacy-setup-devices])');
+			const template = form.querySelector('template[data-device-provision-template]');
+			if (!list || !template) return;
+			while (list.querySelectorAll('[data-device-provision]').length < count) {
+				list.appendChild(template.content.cloneNode(true));
+				const card = list.lastElementChild; card.querySelector('[data-setup-device-remove]').hidden = false;
+			}
+			while (list.querySelectorAll('[data-device-provision]').length > count) list.lastElementChild.remove();
+			reindexSetupDeviceCards(form);
+			list.querySelectorAll('[data-device-provision]').forEach((card) => initializeDeviceProvisionCard(card));
+		};
+		const hydrateSetupDraft = (draft) => {
+			hydratingDraft = true;
+			const values = draft.values || {};
+			const count = Math.max(1, Number.parseInt(values.SETUP_DEVICE_COUNT || '1', 10) || 1);
+			ensureSetupDeviceCardCount(count);
+			Object.entries(values).forEach(([name, entry]) => {
+				if (name === 'SETUP_DRAFT_ID' || name === 'SETUP_STEP' || name.includes('_ui_') || name.endsWith('_ui')) return;
+				const controls = $$(`[name="${CSS.escape(name)}"]`, form);
+				controls.forEach((input) => {
+					if (input.type === 'radio') input.checked = input.value === String(entry);
+					else if (input.type === 'checkbox') input.checked = String(entry) === 'true';
+					else input.value = String(entry);
+				});
+			});
+			form.querySelectorAll('[data-device-provision]').forEach((card) => {
+				const type = setupDeviceFieldValue(card, 'TYPE') || 'android_phone';
+				const mode = setupDeviceFieldValue(card, 'MODE') || (type === 'android_phone' ? 'usb' : 'no_device');
+				const typeRadio = card.querySelector(`[data-device-type-ui][value="${CSS.escape(type)}"]`); if (typeRadio) typeRadio.checked = true;
+				const modeRadio = card.querySelector(`[data-device-mode-ui][value="${CSS.escape(mode)}"]`); if (modeRadio) modeRadio.checked = true;
+				const sshEnabled = card.querySelector('[data-avdctl-ssh-enabled]');
+				if (sshEnabled) sshEnabled.checked = !!String(setupDeviceFieldValue(card, 'AVDCTL_SSH_TARGET') || '').trim();
+				const sudoEnabled = card.querySelector('[data-avdctl-sudo-enabled]');
+				if (sudoEnabled) sudoEnabled.checked = String(setupDeviceFieldValue(card, 'AVDCTL_SUDO') || '').toLowerCase() === 'true';
+				initializeDeviceProvisionCard(card);
+				syncAVDCTLSSH(card);
+				const sudoToggle = card.querySelector('[data-avdctl-sudo-toggle]');
+				if (sudoToggle) { const on = !!(sudoEnabled && sudoEnabled.checked); sudoToggle.classList.toggle('on', on); sudoToggle.setAttribute('aria-checked', on ? 'true' : 'false'); }
+				invalidateDevicePreview(card);
+			});
+			const auth = authMode(); $$('[data-auth-seg] [data-val]', form).forEach((button) => button.classList.toggle('on', button.dataset.val === auth));
+			$$('[data-auth-field]', form).forEach((panel) => { panel.hidden = panel.dataset.authField !== auth; });
+			$$('[data-admin-org-field]', form).forEach((panel) => { panel.hidden = auth !== 'internal_admin'; });
+			syncNetMode(value('CREDIMI_SERVICE_MODE'));
+			$$('[data-toggle]', form).forEach((toggle) => { const name = toggle.dataset.toggle; const checkbox = form.querySelector(`input[type="checkbox"][name="${CSS.escape(name)}"]`); const hidden = form.querySelector(`input[type="hidden"][name="${CSS.escape(name)}"]`); const on = checkbox ? checkbox.checked : String((hidden || {}).value) === 'true'; toggle.classList.toggle('on', on); toggle.setAttribute('aria-checked', on ? 'true' : 'false'); });
+			invalidateRunnerIdentity();
+			hydratingDraft = false;
+			credentialValidation = { status: 'idle', organization: '', error: '', generation: credentialValidation.generation };
+			show(Number(draft.step) || 0);
+			if (selectedAPIKey().trim()) scheduleCredentialValidation(true);
+		};
 		const restoreDraft = async () => {
 			const id = sessionStorage.getItem('credimi-runner:setup-draft-id'); if (!id) { show(0); return; }
-			try { const response = await fetch(dashboardURL('/setup/draft/' + encodeURIComponent(id))); if (!response.ok) throw new Error(); const draft = await response.json(); Object.entries(draft.values || {}).forEach(([name, entry]) => { const input = field(name); if (input) input.value = entry; }); const idField = draftIDField(); if (idField) idField.value = id; credentialValidation = { status: 'idle', organization: '', error: '' }; show(Number(draft.step) || 0); } catch (_) { sessionStorage.removeItem('credimi-runner:setup-draft-id'); show(0); }
+			try { const response = await fetch(dashboardURL('/setup/draft/' + encodeURIComponent(id)), { cache: 'no-store' }); if (!response.ok) throw new Error(); const draft = await response.json(); const idField = draftIDField(); if (idField) idField.value = id; hydrateSetupDraft(draft); } catch (_) { sessionStorage.removeItem('credimi-runner:setup-draft-id'); show(0); }
 		};
 		restoreDraft();
     });
@@ -1770,6 +1872,7 @@
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
+		root.dispatchEvent(new CustomEvent('dashboard:device-type-change', { bubbles: true, detail: { card: root } }));
 		applyRunnerTypeDefaults(root, radio.value);
 		initializeDeviceProvisionCard(root);
       markDirty();
@@ -1789,7 +1892,7 @@
   });
   document.addEventListener('change', (e) => {
     if (e.target.matches('[data-device-mode-ui]')) {
-      initializeDeviceProvisionCard(e.target.closest('[data-device-provision]'));
+		const card = e.target.closest('[data-device-provision]'); initializeDeviceProvisionCard(card); card?.dispatchEvent(new CustomEvent('dashboard:device-mode-change', { bubbles: true, detail: { card } }));
       return;
     }
     if (e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
@@ -1997,15 +2100,17 @@
     if (!radio) return;
     radio.checked = true;
     card.querySelectorAll('[data-dev-pick]').forEach((pick) => pick.classList.toggle('on', pick.dataset.devPick === type));
-    initializeDeviceProvisionCard(card);
 		applyRunnerTypeDefaults(card, type);
 		initializeDeviceProvisionCard(card);
+		const form = card.closest('[data-setup-form]');
+		if (form && form.dataset.setupReady) form.dispatchEvent(new CustomEvent('dashboard:device-type-change', { bubbles: true, detail: { card } }));
   };
   const selectDeviceMode = (card, mode) => {
     const radio = card.querySelector(`[data-device-mode-ui][value="${CSS.escape(mode)}"]`);
     if (radio) radio.checked = true;
     setFieldValue(card, 'CREDIMI_RUNNER_DEVICE_MODE', mode);
     initializeDeviceProvisionCard(card);
+	card.dispatchEvent(new CustomEvent('dashboard:device-mode-change', { bubbles: true, detail: { card } }));
   };
   const populateDeviceEdit = (button) => {
 		const form = document.querySelector('[data-device-add-form]');
@@ -2202,9 +2307,9 @@
 	const form = btn.closest('form');
 	const modeField = form && form.querySelector('[data-auth-mode]');
 	if (modeField) modeField.value = mode;
-    $$('[data-auth-field]').forEach((f) => (f.hidden = f.dataset.authField !== mode));
-    $$('[data-admin-org-field]').forEach((f) => (f.hidden = mode !== 'internal_admin'));
-    $$('[data-identity-fields]').forEach((f) => { if (mode === 'internal_admin') f.style.display = 'contents'; });
+    $$('[data-auth-field]', form || document).forEach((f) => (f.hidden = f.dataset.authField !== mode));
+    $$('[data-admin-org-field]', form || document).forEach((f) => (f.hidden = mode !== 'internal_admin'));
+    $$('[data-identity-fields]', form || document).forEach((f) => { f.style.display = mode === 'internal_admin' ? 'contents' : ''; });
     // clear the non-selected key so exactly one is persisted
     const clearKey = mode === 'user' ? seg.dataset.admin : seg.dataset.user;
     const inp = form && form.querySelector(`[name="${clearKey}"]`); if (inp) inp.value = '';

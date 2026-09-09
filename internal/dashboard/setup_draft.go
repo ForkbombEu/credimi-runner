@@ -28,6 +28,9 @@ func (s *setupDraftStore) save(draft setupDraft) (setupDraft, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pruneLocked(time.Now())
+	if draft.ID != "" && !validSetupDraftID(draft.ID) {
+		draft.ID = ""
+	}
 	if draft.ID == "" {
 		raw := make([]byte, 24)
 		if _, err := rand.Read(raw); err != nil {
@@ -38,6 +41,14 @@ func (s *setupDraftStore) save(draft setupDraft) (setupDraft, error) {
 	draft.Values, draft.UpdatedAt = cloneStringMap(draft.Values), time.Now()
 	s.drafts[draft.ID] = draft
 	return draft, nil
+}
+
+func validSetupDraftID(id string) bool {
+	if len(id) != 48 {
+		return false
+	}
+	_, err := hex.DecodeString(id)
+	return err == nil
 }
 func (s *setupDraftStore) get(id string) (setupDraft, bool) {
 	s.mu.Lock()

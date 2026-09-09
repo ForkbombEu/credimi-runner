@@ -167,7 +167,9 @@ func fetchCredimiRunnerPreview(ctx context.Context, reqData setupRunnerPreviewRe
 	baseRunnerID := reqData.Organization + "/" + canonifyPlain(reqData.Name)
 	preview.Conflict = preview.Conflict || preview.RunnerID != baseRunnerID
 	if preview.Conflict && preview.ExistingRunnerID == "" {
-		return setupRunnerPreview{}, fmt.Errorf("runner ID preview returned a conflict without an existing runner ID")
+		// The preview endpoint returns the next available ID. The conflicting
+		// name's canonical existing ID is the deterministic base identity.
+		preview.ExistingRunnerID = baseRunnerID
 	}
 	preview.DefaultAction = "update"
 	return preview, nil

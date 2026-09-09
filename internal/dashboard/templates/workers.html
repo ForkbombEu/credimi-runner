@@ -8,7 +8,7 @@
 
   <div class="grid-3" style="margin-bottom:16px">
     <div class="stat"><div class="k">{{icon "workers"}} Polling</div><div class="v">{{.WorkersOnline}}<small>/ {{.WorkersTotal}}</small></div><div class="meta">across environments</div></div>
-    <div class="stat"><div class="k">{{icon "shield"}} Auth scope</div><div class="v" style="font-size:18px">{{title .Runner.AuthMode}}</div><div class="meta">{{if eq .Runner.AuthMode "admin"}}internal admin key{{else}}user API key{{end}}</div></div>
+    <div class="stat"><div class="k">{{icon "shield"}} Auth scope</div><div class="v" style="font-size:18px">{{if eq .Runner.AuthMode "internal_admin"}}Internal admin{{else}}User{{end}}</div><div class="meta">{{if eq .Runner.AuthMode "internal_admin"}}internal admin key{{else}}user API key{{end}}</div></div>
     <div class="stat"><div class="k">{{icon "activity"}} Temporal</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "TEMPORAL_ADDRESS"}}</div><div class="meta">workflow backend</div></div>
   </div>
 
