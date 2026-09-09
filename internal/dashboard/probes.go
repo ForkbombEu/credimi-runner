@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,15 +67,23 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	return string(out), err
 }
 
+func runADB(ctx context.Context, args ...string) (string, error) {
+	adbPath, err := androidtools.ResolveADB()
+	if err != nil {
+		return "", err
+	}
+	return run(ctx, adbPath, args...)
+}
+
 // ── ADB ──────────────────────────────────────────────────────────────────────
 
 var adbModelRe = mustCompile(`model:(\S+)`)
 
 func probeAndroid(ctx context.Context) []Device {
-	if !has("adb") {
+	if _, err := androidtools.ResolveADB(); err != nil {
 		return nil
 	}
-	out, err := run(ctx, "adb", "devices", "-l")
+	out, err := runADB(ctx, "devices", "-l")
 	if err != nil {
 		return nil
 	}
@@ -122,7 +132,7 @@ func probeAndroid(ctx context.Context) []Device {
 }
 
 func adbBattery(ctx context.Context, serial string) int {
-	out, err := run(ctx, "adb", "-s", serial, "shell", "dumpsys", "battery")
+	out, err := runADB(ctx, "-s", serial, "shell", "dumpsys", "battery")
 	if err != nil {
 		return 0
 	}
@@ -139,7 +149,7 @@ func adbBattery(ctx context.Context, serial string) int {
 
 // adbLoad is a cheap best-effort CPU/mem read; returns 0,0 if unavailable.
 func adbLoad(ctx context.Context, serial string) (cpu, mem int) {
-	out, err := run(ctx, "adb", "-s", serial, "shell", "dumpsys", "cpuinfo")
+	out, err := runADB(ctx, "-s", serial, "shell", "dumpsys", "cpuinfo")
 	if err != nil {
 		return 0, 0
 	}

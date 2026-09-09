@@ -3,7 +3,6 @@ package androidtools
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -12,8 +11,11 @@ import (
 )
 
 var adbConnect = func(ctx context.Context, endpoint string) (string, error) {
-	command := exec.CommandContext(ctx, "adb", "connect", endpoint)
-	command.Env = os.Environ()
+	adbPath, err := ResolveADB()
+	if err != nil {
+		return "", err
+	}
+	command := exec.CommandContext(ctx, adbPath, "connect", endpoint)
 	output, err := command.CombinedOutput()
 	return string(output), err
 }

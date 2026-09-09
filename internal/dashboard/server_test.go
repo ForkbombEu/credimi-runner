@@ -577,6 +577,16 @@ func TestConfigDiffValidatesManualModeTransition(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("compatible manual transition status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
+
+	s.cfg.values["RUNNER_HOST"] = "127.0.0.1"
+	s.cfg.values["RUNNER_PUBLIC_URL"] = "https://runner.example.com"
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/config/diff", strings.NewReader(url.Values{"CREDIMI_SERVICE_MODE": {"manual"}}.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.configDiff(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("reverse-proxy manual transition status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestDashboardConfigAndViewHelperBranches(t *testing.T) {
@@ -3096,8 +3106,8 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
 		t.Fatalf("setup was not persisted: exists=%t values=%#v", s.cfg.Exists(), s.cfg.Snapshot())
 	}
-	if got := s.cfg.Get("RUNNER_HOST"); got != "0.0.0.0" {
-		t.Fatalf("manual setup bind host = %q, want persisted wildcard", got)
+	if got := s.cfg.Get("RUNNER_HOST"); got != "127.0.0.1" {
+		t.Fatalf("manual reverse-proxy bind host = %q, want loopback", got)
 	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {

@@ -18,6 +18,9 @@ func TestADBDeviceState(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
+	t.Setenv("ANDROID_SDK_ROOT", "")
+	t.Setenv("ANDROID_HOME", "")
+	t.Setenv("HOME", t.TempDir())
 	if got := adbDeviceState("serial-1"); got != "device" {
 		t.Fatalf("adb device state = %q", got)
 	}

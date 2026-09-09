@@ -3,7 +3,6 @@ package androidtools
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -12,8 +11,11 @@ import (
 )
 
 var adbGetState = func(ctx context.Context, serial string) (string, error) {
-	command := exec.CommandContext(ctx, "adb", "-s", serial, "get-state")
-	command.Env = os.Environ()
+	adbPath, err := ResolveADB()
+	if err != nil {
+		return "", err
+	}
+	command := exec.CommandContext(ctx, adbPath, "-s", serial, "get-state")
 	output, err := command.CombinedOutput()
 	return string(output), err
 }

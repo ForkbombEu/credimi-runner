@@ -320,6 +320,12 @@ func manualExposureEndpoint(values map[string]string) (endpoint, wildcard string
 		return "", "", false, false
 	}
 	host := parsed.Hostname()
+	if net.ParseIP(host) == nil {
+		// A DNS name may terminate at a reverse proxy which forwards to a
+		// loopback-only execution API. Do not resolve it here: that would make
+		// validation nondeterministic and incorrectly reject that topology.
+		return parsed.Host, "", false, true
+	}
 	if isLoopbackHost(host) {
 		return parsed.Host, "", false, true
 	}

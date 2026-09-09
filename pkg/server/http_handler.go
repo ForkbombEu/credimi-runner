@@ -29,6 +29,9 @@ func NewHTTPHandler(ctx context.Context, rs *runnerService, dbg bool) http.Handl
 
 func NewHTTPHandlerWithReadiness(ctx context.Context, rs *runnerService, dbg bool, readiness http.Handler) http.Handler {
 	healthService := NewHealthService()
+	if managedReadiness, ok := readiness.(*ReadinessService); ok {
+		healthService.RuntimeConfig = managedReadiness.RuntimeConfig
+	}
 
 	workerEndpoints := worker.NewEndpoints(rs)
 	workerEndpoints.Use(debug.LogPayloads())

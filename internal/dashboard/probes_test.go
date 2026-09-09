@@ -159,6 +159,9 @@ case "$*" in
 esac
 `)
 	t.Setenv("PATH", bin)
+	t.Setenv("ANDROID_SDK_ROOT", "")
+	t.Setenv("ANDROID_HOME", "")
+	t.Setenv("HOME", t.TempDir())
 
 	devices := probeAndroid(context.Background())
 	if len(devices) != 3 {
@@ -182,6 +185,9 @@ func TestConnectedAndroidDevicesEndpointReturnsLiveProbe(t *testing.T) {
 `)
 	server := newTestServer(t)
 	t.Setenv("PATH", bin)
+	t.Setenv("ANDROID_SDK_ROOT", "")
+	t.Setenv("ANDROID_HOME", "")
+	t.Setenv("HOME", t.TempDir())
 	response := httptest.NewRecorder()
 	server.connectedAndroidDevices(response, httptest.NewRequest(http.MethodGet, "/devices/android/connected", nil))
 	if response.Code != http.StatusOK {

@@ -2745,12 +2745,12 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case dtype == "android_phone" && mode == "wifi":
 		if pair != "" {
-			if out, err := run(ctx, "adb", "pair", addr, pair); err != nil {
+			if out, err := runADB(ctx, "pair", addr, pair); err != nil {
 				s.deviceError(w, "adb pair failed: "+strings.TrimSpace(out)+err.Error())
 				return
 			}
 		}
-		if out, err := run(ctx, "adb", "connect", addr); err != nil {
+		if out, err := runADB(ctx, "connect", addr); err != nil {
 			s.deviceError(w, "adb connect failed: "+strings.TrimSpace(out))
 			return
 		}
@@ -2777,7 +2777,7 @@ func (s *Server) deviceReconnect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if strings.Contains(serial, ":") {
-		run(ctx, "adb", "connect", serial)
+		runADB(ctx, "connect", serial)
 	}
 	s.hub.poll(ctx)
 	w.Write([]byte(s.render.Fragment("device_rows", s.hub.CurrentSnapshot().Devices)))
@@ -2788,7 +2788,7 @@ func (s *Server) deviceDisconnect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	if strings.Contains(serial, ":") {
-		run(ctx, "adb", "disconnect", serial)
+		runADB(ctx, "disconnect", serial)
 	}
 	s.hub.poll(ctx)
 	w.Write([]byte(s.render.Fragment("device_rows", s.hub.CurrentSnapshot().Devices)))

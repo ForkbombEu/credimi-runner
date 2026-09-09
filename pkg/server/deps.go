@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
@@ -121,5 +122,12 @@ func (osFileStore) RemoveAll(path string) error {
 type execCommandRunner struct{}
 
 func (execCommandRunner) Run(name string, args ...string) ([]byte, error) {
+	if name == "adb" {
+		resolved, err := androidtools.ResolveADB()
+		if err != nil {
+			return nil, err
+		}
+		name = resolved
+	}
 	return exec.Command(name, args...).CombinedOutput()
 }

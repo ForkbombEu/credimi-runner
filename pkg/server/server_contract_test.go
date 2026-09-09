@@ -563,6 +563,9 @@ func TestServerContract_TouchFingerprint(t *testing.T) {
 	adbContent := "#!/bin/sh\nexit 0\n"
 	require.NoError(t, os.WriteFile(adbPath, []byte(adbContent), 0755))
 	t.Setenv("PATH", adbDir)
+	t.Setenv("ANDROID_SDK_ROOT", "")
+	t.Setenv("ANDROID_HOME", "")
+	t.Setenv("HOME", t.TempDir())
 
 	service := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{UserAPIKey: "test-api-key"}, Deps{
 		Sleeper: func(time.Duration) {},

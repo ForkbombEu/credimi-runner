@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
@@ -129,7 +130,11 @@ func (s *ReadinessService) environment(key string) string {
 func adbDeviceState(serial string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "adb", "-s", serial, "get-state").Output()
+	adbPath, err := androidtools.ResolveADB()
+	if err != nil {
+		return "missing"
+	}
+	out, err := exec.CommandContext(ctx, adbPath, "-s", serial, "get-state").Output()
 	if err != nil {
 		return "missing"
 	}

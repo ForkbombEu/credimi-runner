@@ -277,6 +277,7 @@ func TestSetupManualExposureKeepsLoopbackAndIPv6DefaultsCoherent(t *testing.T) {
 		name, mode, endpoint, want string
 	}{
 		{"loopback", "manual", "http://127.0.0.1:8050", "127.0.0.1"},
+		{"reverse proxy hostname", "manual", "https://runner.example.com", "127.0.0.1"},
 		{"ipv6", "manual", "http://[2001:db8::1]:8050", "::"},
 		{"quick tunnel", "auto", "http://192.168.178.120:8050", "127.0.0.1"},
 	} {
@@ -291,6 +292,27 @@ func TestSetupManualExposureKeepsLoopbackAndIPv6DefaultsCoherent(t *testing.T) {
 				t.Fatalf("bind host = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestManualExposureBindAllowsReverseProxyHostname(t *testing.T) {
+	dir := t.TempDir()
+	initial := dashboardTestConfig(dir)
+	initial.Exposure.Mode = "quick_tunnel"
+	initial.Exposure.PublicURL = "https://runner.example.com"
+	initial.Server.APIListen = "127.0.0.1:8050"
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), initial); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Apply(map[string]string{"CREDIMI_SERVICE_MODE": "manual"}); err != nil {
+		t.Fatalf("reverse-proxy manual endpoint rejected: %v", err)
+	}
+	if got := runner.Get("RUNNER_HOST"); got != "127.0.0.1" {
+		t.Fatalf("reverse-proxy bind host = %q, want loopback", got)
 	}
 }
 
