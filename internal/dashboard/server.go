@@ -1061,6 +1061,9 @@ func (s *Server) saveConfigPageSync(r *http.Request, page string, progress func(
 	if err != nil {
 		return fmt.Errorf("configuration validation failed: %w", err)
 	}
+	if err := validateChangedManualExposureBind(oldSnapshot, candidateSnapshot); err != nil {
+		return fmt.Errorf("configuration validation failed: %w", err)
+	}
 	provisionCtx, cancelProvision := context.WithTimeout(r.Context(), capabilityProvisionTimeout)
 	defer cancelProvision()
 	if err := provisionCandidateCapabilitiesForChange(provisionCtx, oldSnapshot, candidateSnapshot, progress); err != nil {
@@ -1607,6 +1610,9 @@ func (s *Server) finishSetupSync(r *http.Request, progress func(string), deferSt
 	}
 	candidate, err := normalizedConfigValues(s.cfg.Snapshot(), incoming, runtimeGOOS())
 	if err != nil {
+		return fmt.Errorf("configuration validation failed: %w", err)
+	}
+	if err := normalizeSetupManualExposureBind(candidate, incoming); err != nil {
 		return fmt.Errorf("configuration validation failed: %w", err)
 	}
 	if errs := Validate(map[string]string(candidate)); len(errs) > 0 {
@@ -2301,6 +2307,9 @@ func (s *Server) queueConfigPageSave(w http.ResponseWriter, r *http.Request, pag
 		return
 	} else if errs := Validate(map[string]string(normalized)); len(errs) > 0 {
 		http.Error(w, "configuration validation failed", http.StatusUnprocessableEntity)
+		return
+	} else if err := validateChangedManualExposureBind(s.cfg.Snapshot(), normalized); err != nil {
+		http.Error(w, "configuration validation failed: "+err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	s.queueConfigMutation(w, r, page, func(_ context.Context, innerR *http.Request, progress func(string)) error {

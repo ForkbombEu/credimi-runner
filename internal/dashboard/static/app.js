@@ -30,6 +30,15 @@
     'REDROID_DATA_DIR',
     'REDROID_DATA_TAR',
   ];
+  // Readiness and normalization results are tied to a card's current source
+  // values in both setup and post-setup editing.
+  const deviceDerivedRevision = new WeakMap();
+  const currentDeviceDerivedRevision = (root) => deviceDerivedRevision.get(root) || 0;
+  const bumpDeviceDerivedRevision = (root) => {
+    const revision = currentDeviceDerivedRevision(root) + 1;
+    deviceDerivedRevision.set(root, revision);
+    return revision;
+  };
 
   // ── Toast (driven by HX-Trigger {"toast":"…"}) ───────────────────────────
   function toast(msg, tone = 'success') {
@@ -747,7 +756,6 @@
       let hydratingDraft = false;
       let credentialAbort = null;
       let runnerIdentityRevision = 0;
-      const devicePreviewRevision = new WeakMap();
       const errBox = () => $('[data-setup-error]', panels[current]);
       const setError = (msg) => {
         const box = errBox();
@@ -935,7 +943,7 @@
         if (clearOrganization && authMode() === 'user') { const org = field('CREDIMI_RUNNER_ORGANIZATION'); if (org) org.value = ''; }
       };
       const invalidateDevicePreview = (card) => {
-        devicePreviewRevision.set(card, (devicePreviewRevision.get(card) || 0) + 1);
+        bumpDeviceDerivedRevision(card);
         const id = card.querySelector('[data-device-id]'); const action = card.querySelector('[data-device-conflict-action]');
         if (id) id.value = ''; if (action) action.value = '';
       };
@@ -1131,14 +1139,14 @@
           for (const card of $$('[data-device-provision]', form)) {
           const name = (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim();
             if (!instanceURL || !apiKey || !organization || !runnerID || !name) continue;
-            const revision = devicePreviewRevision.get(card) || 0;
+            const revision = currentDeviceDerivedRevision(card);
             const previewSource = { instanceURL, apiKey, organization, runnerID, name };
             const action = $('[data-device-conflict-action]', card);
             const id = $('[data-device-id]', card);
             if (action) action.value = '';
             if (id) id.value = '';
             const preview = await jsonPost('/setup/device-id', { instance_url: instanceURL, api_key: apiKey, organization, runner_id: runnerID, name });
-            if (revision !== (devicePreviewRevision.get(card) || 0) || previewSource.instanceURL !== value('CREDIMI_URL') || previewSource.apiKey !== selectedAPIKey() || previewSource.organization !== value('CREDIMI_RUNNER_ORGANIZATION') || previewSource.runnerID !== value('CREDIMI_RUNNER_ID') || previewSource.name !== (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim()) {
+            if (revision !== currentDeviceDerivedRevision(card) || previewSource.instanceURL !== value('CREDIMI_URL') || previewSource.apiKey !== selectedAPIKey() || previewSource.organization !== value('CREDIMI_RUNNER_ORGANIZATION') || previewSource.runnerID !== value('CREDIMI_RUNNER_ID') || previewSource.name !== (($('[data-setup-device-field="NAME"]', card) || {}).value || '').trim()) {
               throw new Error('Device identity changed while it was being checked. Retry.');
             }
             if (!preview || !String(preview.device_id || '').trim() || (preview.conflict && !String(preview.existing_device_id || '').trim())) {
@@ -1151,7 +1159,7 @@
             }
             const decision = await openRunnerConflictModal(preview, 'device');
             if (decision === 'cancel') return false;
-            if (revision !== (devicePreviewRevision.get(card) || 0)) return false;
+            if (revision !== currentDeviceDerivedRevision(card)) return false;
             if (action) action.value = decision;
             if (id) id.value = decision === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
           }
@@ -1641,8 +1649,8 @@
     const message = panel.querySelector('[data-ios-simulator-message]');
     const selects = panel.querySelector('[data-ios-simulator-selects]');
     const create = panel.querySelector('[data-ios-simulator-create]');
-    const revision = devicePreviewRevision.get(root) || 0;
-    const isCurrent = () => revision === (devicePreviewRevision.get(root) || 0);
+    const revision = currentDeviceDerivedRevision(root);
+    const isCurrent = () => revision === currentDeviceDerivedRevision(root);
     panel.dataset.exists = '0';
 	setFieldValueQuietly(root, 'IOS_UDID', '');
     if (selects) selects.hidden = true;
@@ -1696,8 +1704,8 @@
     const applyAVD = panel.querySelector('[data-android-emulator-apply-avd]');
     const applyGolden = panel.querySelector('[data-android-emulator-apply-golden]');
     const download = panel.querySelector('[data-android-emulator-download]');
-    const revision = devicePreviewRevision.get(root) || 0;
-    const isCurrent = () => revision === (devicePreviewRevision.get(root) || 0);
+    const revision = currentDeviceDerivedRevision(root);
+    const isCurrent = () => revision === currentDeviceDerivedRevision(root);
     panel.dataset.ready = '0';
     panel.dataset.checking = '1';
     if (avdControls) avdControls.hidden = true;
@@ -1824,14 +1832,14 @@
     }
   };
   const applyNormalizedPreview = async (root) => {
-    const revision = devicePreviewRevision.get(root) || 0;
+    const revision = currentDeviceDerivedRevision(root);
     const res = await fetch(dashboardURL('/config/normalize'), {
       method: 'POST',
       body: formParams(root),
     });
     if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
     const data = await res.json();
-    if (revision !== (devicePreviewRevision.get(root) || 0)) return;
+    if (revision !== currentDeviceDerivedRevision(root)) return;
     const values = data && data.values ? data.values : {};
     TYPE_PREVIEW_KEYS.forEach((key) => {
       if (Object.prototype.hasOwnProperty.call(values, key)) setFieldValueQuietly(root, key, values[key] || '');
@@ -1968,6 +1976,7 @@
     const radio = pick.querySelector('input[type="radio"]');
     if (radio) {
       radio.checked = true;
+      bumpDeviceDerivedRevision(root);
 		root.dispatchEvent(new CustomEvent('dashboard:device-type-change', { bubbles: true, detail: { card: root } }));
 		applyRunnerTypeDefaults(root, radio.value);
 		initializeDeviceProvisionCard(root);
@@ -1988,11 +1997,16 @@
   });
   document.addEventListener('change', (e) => {
     if (e.target.matches('[data-device-mode-ui]')) {
-		const card = e.target.closest('[data-device-provision]'); initializeDeviceProvisionCard(card); card?.dispatchEvent(new CustomEvent('dashboard:device-mode-change', { bubbles: true, detail: { card } }));
+      const card = e.target.closest('[data-device-provision]');
+      if (card) bumpDeviceDerivedRevision(card);
+      initializeDeviceProvisionCard(card);
+      card?.dispatchEvent(new CustomEvent('dashboard:device-mode-change', { bubbles: true, detail: { card } }));
       return;
     }
-    if (e.target.name === 'BASE_NAME' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
-      updateDeviceFields(e.target.closest('[data-device-provision]') || e.target.closest('form') || document);
+    if (e.target.name === 'BASE_NAME' || e.target.name === 'GOLDEN_PATH' || e.target.name === 'HOST_AVD_HOME_PATH' || e.target.name === 'HOST_AVD_GOLDEN_PATH') {
+      const root = e.target.closest('[data-device-provision]') || e.target.closest('form') || document;
+      bumpDeviceDerivedRevision(root);
+      updateDeviceFields(root);
     }
   });
   document.addEventListener('dashboard:step-shown', (e) => {

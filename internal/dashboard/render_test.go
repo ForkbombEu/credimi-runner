@@ -649,8 +649,11 @@ func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
 		"while (persistedDraftRevision < draftRevision || !draftID())",
 		"if (input.disabled) return;",
 		"let runnerIdentityRevision = 0;",
-		"const devicePreviewRevision = new WeakMap();",
-		"const isCurrent = () => revision === (devicePreviewRevision.get(root) || 0);",
+		"const deviceDerivedRevision = new WeakMap();",
+		"const currentDeviceDerivedRevision = (root) => deviceDerivedRevision.get(root) || 0;",
+		"const bumpDeviceDerivedRevision = (root) => {",
+		"bumpDeviceDerivedRevision(card);",
+		"const isCurrent = () => revision === currentDeviceDerivedRevision(root);",
 		"if (!isCurrent()) return;",
 		"input[type=\"checkbox\"][name=\"${CSS.escape(name)}\"]",
 		"if (markup) el.innerHTML = markup;",
@@ -680,6 +683,22 @@ func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
 	}
 	if strings.Contains(content, "draftPersistence") {
 		t.Fatal("obsolete draftPersistence state remains")
+	}
+	if strings.Contains(content, "devicePreviewRevision") {
+		t.Fatal("obsolete setup-local device revision map remains")
+	}
+	if got := strings.Count(content, "const deviceDerivedRevision = new WeakMap();"); got != 1 {
+		t.Fatalf("device derived revision owners = %d, want exactly one shared owner", got)
+	}
+	for _, function := range []string{"refreshIOSSimulatorPanel", "refreshAndroidEmulatorAssetsPanel", "applyNormalizedPreview"} {
+		start := strings.Index(content, "const "+function)
+		if start < 0 {
+			t.Fatalf("missing %s", function)
+		}
+		body := content[start:]
+		if !strings.Contains(body, "currentDeviceDerivedRevision(root)") {
+			t.Fatalf("%s does not use the shared device revision", function)
+		}
 	}
 	if strings.Contains(content, "actionInput.value = data.default_action") {
 		t.Fatal("runner conflict action must not default from preview response")

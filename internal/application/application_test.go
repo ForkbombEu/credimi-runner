@@ -74,29 +74,6 @@ func TestExecutionAPIBindAddressWildcardsAllServiceNetworks(t *testing.T) {
 	}
 }
 
-func TestExecutionAPIBindAddressForManualExposure(t *testing.T) {
-	cfg := runnerconfig.Bootstrap()
-	cfg.Server.APIListen = "127.0.0.1:8050"
-	cfg.Exposure.Mode = "manual"
-	for _, tc := range []struct {
-		name, desired, publicURL, want string
-	}{
-		{"lan", "127.0.0.1:8050", "http://192.168.178.120:8050", "0.0.0.0:8050"},
-		{"loopback", "127.0.0.1:8050", "http://127.0.0.1:8050", "127.0.0.1:8050"},
-		{"loopback bind alias", "127.0.0.2:8050", "http://192.168.178.120:8050", "0.0.0.0:8050"},
-		{"quick tunnel", "127.0.0.1:8050", "", "127.0.0.1:8050"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg.Server.APIListen = tc.desired
-			cfg.Exposure.PublicURL = tc.publicURL
-			got, err := executionAPIBindAddressForConfig(cfg, "")
-			if err != nil || got != tc.want {
-				t.Fatalf("effective bind=%q err=%v, want %q", got, err, tc.want)
-			}
-		})
-	}
-}
-
 func TestApplicationBuildsRuntimeHandlerWithOrdinaryContext(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CREDIMI_RUNNER_BOOT_ID", "")

@@ -176,6 +176,85 @@ func TestConfigApplyPersistsManualPublicPortEdit(t *testing.T) {
 	}
 }
 
+func TestSetupManualExposurePersistsCompatibleDefaultBind(t *testing.T) {
+	values := dashboardruntime.DefaultValues()
+	values["CREDIMI_SERVICE_MODE"] = "manual"
+	values["RUNNER_PUBLIC_URL"] = "http://192.168.178.120:8050"
+	if err := normalizeSetupManualExposureBind(values, map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := values["RUNNER_HOST"]; got != "0.0.0.0" {
+		t.Fatalf("setup manual bind host = %q, want wildcard", got)
+	}
+	typed, err := dashboardruntime.TypedConfigFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := typed.Server.APIListen; got != "0.0.0.0:8050" {
+		t.Fatalf("persisted API listener = %q, want 0.0.0.0:8050", got)
+	}
+}
+
+func TestManualExposureBindValidationPreservesExplicitHostIntent(t *testing.T) {
+	dir := t.TempDir()
+	if err := config.WriteFile(filepath.Join(dir, "config.toml"), dashboardTestConfig(dir)); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := runner.Snapshot()
+	_, err = runner.Apply(map[string]string{
+		"RUNNER_HOST":       "127.0.0.1",
+		"RUNNER_PUBLIC_URL": "http://192.168.178.120:8050",
+	})
+	if err == nil || !strings.Contains(err.Error(), "validation failed") {
+		t.Fatalf("explicit incompatible manual bind error = %v", err)
+	}
+	if got := runner.Snapshot(); !mapsEqual(got, before) {
+		t.Fatalf("incompatible manual bind changed in-memory config: got %#v want %#v", got, before)
+	}
+	persisted, err := config.LoadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := persisted.Server.APIListen; got != "127.0.0.1:8050" {
+		t.Fatalf("incompatible manual bind changed persisted listener to %q", got)
+	}
+	if _, err := runner.Apply(map[string]string{
+		"RUNNER_HOST":       "0.0.0.0",
+		"RUNNER_PUBLIC_URL": "http://192.168.178.120:8050",
+	}); err != nil {
+		t.Fatalf("compatible manual bind rejected: %v", err)
+	}
+	if got := runner.Get("RUNNER_HOST"); got != "0.0.0.0" {
+		t.Fatalf("compatible manual bind host = %q", got)
+	}
+}
+
+func TestSetupManualExposureKeepsLoopbackAndIPv6DefaultsCoherent(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode, endpoint, want string
+	}{
+		{"loopback", "manual", "http://127.0.0.1:8050", "127.0.0.1"},
+		{"ipv6", "manual", "http://[2001:db8::1]:8050", "::"},
+		{"quick tunnel", "auto", "http://192.168.178.120:8050", "127.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := dashboardruntime.DefaultValues()
+			values["CREDIMI_SERVICE_MODE"] = tc.mode
+			values["RUNNER_PUBLIC_URL"] = tc.endpoint
+			if err := normalizeSetupManualExposureBind(values, map[string]string{}); err != nil {
+				t.Fatal(err)
+			}
+			if got := values["RUNNER_HOST"]; got != tc.want {
+				t.Fatalf("bind host = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidatePortRange(t *testing.T) {
 	for _, value := range []string{"abc", "0", "65536", "99999", "00000"} {
 		if errs := Validate(map[string]string{"RUNNER_PUBLIC_PORT": value}); errs["RUNNER_PUBLIC_PORT"] == "" {

@@ -3038,6 +3038,9 @@ func TestServerFinishSetupAcceptsValidHTMXSubmission(t *testing.T) {
 	if !s.cfg.Exists() || s.cfg.Get("CREDIMI_RUNNER_ID") != "acme/runner" {
 		t.Fatalf("setup was not persisted: exists=%t values=%#v", s.cfg.Exists(), s.cfg.Snapshot())
 	}
+	if got := s.cfg.Get("RUNNER_HOST"); got != "0.0.0.0" {
+		t.Fatalf("manual setup bind host = %q, want persisted wildcard", got)
+	}
 	store, err := dashboardruntime.LoadStore(filepath.Dir(s.cfg.Path()))
 	if err != nil {
 		t.Fatal(err)

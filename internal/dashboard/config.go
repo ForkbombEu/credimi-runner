@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -227,6 +228,9 @@ func (c *Config) Apply(incoming map[string]string) (map[string]string, error) {
 	if errs := Validate(next); len(errs) > 0 {
 		return errs, fmt.Errorf("validation failed")
 	}
+	if err := validateChangedManualExposureBind(c.Snapshot(), next); err != nil {
+		return map[string]string{"RUNNER_HOST": err.Error()}, fmt.Errorf("validation failed")
+	}
 	if err := c.writeValues(next); err != nil {
 		return nil, err
 	}
@@ -262,6 +266,78 @@ func mergeCanonicalHostValues(next, incoming map[string]string) {
 			next[key] = strings.TrimSpace(value)
 		}
 	}
+}
+
+// normalizeSetupManualExposureBind makes the setup default listener match a
+// non-loopback manual endpoint before the configuration is persisted. An
+// explicitly submitted bind host is never widened here; validation reports an
+// incompatible explicit choice instead.
+func normalizeSetupManualExposureBind(values dashboardruntime.Values, incoming map[string]string) error {
+	_, wildcard, nonLoopback, ok := manualExposureEndpoint(values)
+	if !ok || !nonLoopback {
+		return nil
+	}
+	explicitlySet := strings.TrimSpace(incoming["RUNNER_HOST"]) != ""
+	if !explicitlySet && strings.TrimSpace(values["RUNNER_HOST"]) == dashboardruntime.DefaultRunnerHost {
+		values["RUNNER_HOST"] = wildcard
+	}
+	return validateManualExposureBind(values)
+}
+
+func validateManualExposureBind(values map[string]string) error {
+	endpoint, wildcard, nonLoopback, ok := manualExposureEndpoint(values)
+	if !ok || !nonLoopback {
+		return nil
+	}
+	bindHost := strings.Trim(strings.TrimSpace(values["RUNNER_HOST"]), "[]")
+	if !isLoopbackHost(bindHost) {
+		return nil
+	}
+	port := strings.TrimSpace(values["RUNNER_PORT"])
+	if port == "" {
+		port = dashboardruntime.DefaultRunnerPort
+	}
+	return fmt.Errorf("manual public endpoint %s cannot be served by an execution API bound only to %s; use a non-loopback bind address such as %s", endpoint, net.JoinHostPort(bindHost, port), wildcard)
+}
+
+// validateChangedManualExposureBind preserves existing legacy configurations
+// while rejecting a newly selected contradictory manual endpoint or bind host.
+func validateChangedManualExposureBind(current, candidate map[string]string) error {
+	if strings.TrimSpace(current["RUNNER_HOST"]) == strings.TrimSpace(candidate["RUNNER_HOST"]) &&
+		strings.TrimSpace(current["RUNNER_PUBLIC_URL"]) == strings.TrimSpace(candidate["RUNNER_PUBLIC_URL"]) {
+		return nil
+	}
+	return validateManualExposureBind(candidate)
+}
+
+func manualExposureEndpoint(values map[string]string) (endpoint, wildcard string, nonLoopback, ok bool) {
+	if strings.TrimSpace(values["CREDIMI_SERVICE_MODE"]) != "manual" {
+		return "", "", false, false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(values["RUNNER_PUBLIC_URL"]))
+	if err != nil || parsed.Hostname() == "" {
+		return "", "", false, false
+	}
+	host := parsed.Hostname()
+	if isLoopbackHost(host) {
+		return parsed.Host, "", false, true
+	}
+	wildcard = "0.0.0.0"
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		wildcard = "::"
+	}
+	return parsed.Host, wildcard, true, true
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // writeValues converts the candidate compatibility values to typed TOML atomically.
