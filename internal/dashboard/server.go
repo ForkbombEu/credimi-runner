@@ -957,12 +957,20 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 		if err != nil {
 			return err
 		}
-		if deviceID == "" {
-			preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
-			if err != nil {
-				return err
+		preview, err := (&dashboardruntime.CredimiClient{BaseURL: values["CREDIMI_URL"], APIKey: key, HTTPClient: http.DefaultClient}).PreviewDeviceID(r.Context(), values["CREDIMI_RUNNER_ID"], device.Name, values["CREDIMI_RUNNER_ORGANIZATION"])
+		if err != nil {
+			return err
+		}
+		deviceID = preview.DeviceID
+		if preview.Conflict {
+			switch conflictAction {
+			case "create":
+				// Keep the fresh canonical ID returned for this explicit choice.
+			case "update":
+				deviceID = preview.ExistingDeviceID
+			default:
+				return errors.New("device creation conflicts with an existing Credimi device; choose create or update explicitly")
 			}
-			deviceID = preview.DeviceID
 		}
 		device.ID = strings.TrimPrefix(deviceID, "/")
 		applyDeviceDefaults(&device)

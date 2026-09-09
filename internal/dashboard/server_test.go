@@ -2792,10 +2792,14 @@ func TestSaveConfigPageIgnoresStaleDashboardCache(t *testing.T) {
 func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Path != "/api/mobile-device" {
+		if req.URL.Path != "/api/mobile-device/preview-id" && req.URL.Path != "/api/mobile-device" {
 			return nil, fmt.Errorf("unexpected Credimi path %s", req.URL.Path)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		body := `{}`
+		if req.URL.Path == "/api/mobile-device/preview-id" {
+			body = `{"device_id":"acme/runner/canonical-second-phone"}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
 	t.Cleanup(func() { http.DefaultTransport = originalTransport })
 	s := newTestServer(t)
@@ -2813,7 +2817,7 @@ func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	s.cfg = loadConfigSnapshot(store, s.cfg)
 	form := url.Values{
 		"CREDIMI_DEVICE_CONFLICT_ACTION": {"create"},
-		"CREDIMI_DEVICE_ID":              {"acme/runner/second-phone"},
+		"CREDIMI_DEVICE_ID":              {"stale/browser-device-id"},
 		"name":                           {"Second phone"},
 		"type":                           {"android_phone"},
 		"mode":                           {"usb"},
@@ -2832,8 +2836,39 @@ func TestServerSaveDevicesConfigCreatesPreviewedDeviceID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(config.Devices) != 2 || config.Devices[1].ID != "acme/runner/second-phone" || config.Devices[1].Serial != "usb-2" {
+	if len(config.Devices) != 2 || config.Devices[1].ID != "acme/runner/canonical-second-phone" || config.Devices[1].Serial != "usb-2" {
 		t.Fatalf("created device inventory = %#v", config.Devices)
+	}
+}
+
+func TestServerSaveDevicesConfigCreationConflictRequiresExplicitChoice(t *testing.T) {
+	s := newTestServer(t)
+	s.cfg.values["CREDIMI_URL"] = "https://credimi.example"
+	s.cfg.values["CREDIMI_USER_API_KEY"] = "user-key"
+	s.cfg.values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	s.cfg.values["CREDIMI_RUNNER_ORGANIZATION"] = "acme"
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path != "/api/mobile-device/preview-id" {
+			return nil, fmt.Errorf("unexpected Credimi path %s", req.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_id":"acme/runner/pixel-2","existing_device_id":"acme/runner/pixel","conflict":true}`))}, nil
+	})
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	form := url.Values{
+		"name":   {"Pixel"},
+		"type":   {"android_phone"},
+		"mode":   {"usb"},
+		"serial": {"usb-1"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/devices/config", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	err := s.saveDevicesConfigSync(request, nil)
+	if err == nil || !strings.Contains(err.Error(), "choose create or update explicitly") {
+		t.Fatalf("creation conflict error = %v", err)
+	}
+	if s.cfg.Exists() {
+		t.Fatal("unresolved creation conflict persisted configuration")
 	}
 }
 

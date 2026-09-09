@@ -708,6 +708,29 @@ func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
 	}
 }
 
+func TestStaticDeviceAddDefersCanonicalIdentityToServer(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	start := strings.Index(content, "const form = e.target.closest('[data-device-add-form]');")
+	end := strings.Index(content[start:], "// ── Review step")
+	if start < 0 || end < 0 {
+		t.Fatal("device-add submit handler is missing")
+	}
+	handler := content[start : start+end]
+	if strings.Contains(handler, "id.value = preview.device_id || ''") || strings.Contains(handler, "id.value = choice === 'update'") {
+		t.Fatal("device-add browser preview must not submit a canonical device ID")
+	}
+	if !strings.Contains(handler, "if (action) action.value = '';") || !strings.Contains(handler, "if (!form.dataset.deviceEditing && id) id.value = '';") {
+		t.Fatal("device-add must clear stale browser-derived identity before saving")
+	}
+	if !strings.Contains(handler, "if (action) action.value = choice;") {
+		t.Fatal("device-add conflict choice must remain explicit")
+	}
+}
+
 func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
 	script, err := os.ReadFile("static/app.js")
 	if err != nil {

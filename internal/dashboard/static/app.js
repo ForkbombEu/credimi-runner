@@ -614,6 +614,8 @@
       if (!res.ok) throw new Error(preview.message || 'Unable to resolve device ID');
       const action = form.querySelector('[data-device-conflict-action]');
       const id = form.querySelector('[data-device-id]');
+      if (action) action.value = '';
+      if (!form.dataset.deviceEditing && id) id.value = '';
       if (preview.conflict) {
         const choice = await chooseDeviceConflict(name, preview);
         if (!choice) {
@@ -621,9 +623,6 @@
           return;
         }
         if (action) action.value = choice;
-        if (!form.dataset.deviceEditing && id) id.value = choice === 'update' ? (preview.existing_device_id || '') : (preview.device_id || '');
-      } else if (!form.dataset.deviceEditing && id) {
-        id.value = preview.device_id || '';
       }
       form.dataset.deviceConflictResolved = '1';
       await save();
