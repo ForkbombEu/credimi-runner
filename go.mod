@@ -3,7 +3,7 @@ module github.com/forkbombeu/credimi-runner
 go 1.26.6
 
 require (
-	github.com/forkbombeu/credimi v1.269.2-0.20260827075051-9a0d9ddb47db
+	github.com/forkbombeu/credimi v1.280.1-0.20260910074335-f9667e076997
 	github.com/pelletier/go-toml/v2 v2.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
@@ -23,6 +23,7 @@ require (
 	go.temporal.io/sdk/contrib/opentelemetry v0.7.0
 	goa.design/clue v1.2.4
 	goa.design/goa/v3 v3.24.3
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -53,8 +54,9 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/forkbombeu/avdctl v0.10.6 // indirect
 	github.com/forkbombeu/credimi-conformance-assessment v1.3.1 // indirect
-	github.com/forkbombeu/credimi-extra v1.14.4-0.20260827074854-2b63092bd33c // indirect
+	github.com/forkbombeu/credimi-extra v1.14.4-0.20260909165933-892903a63842 // indirect
 	github.com/forkbombeu/eudi-conformance-evidence v1.0.2 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/ganigeorgiev/fexpr v0.4.1 // indirect
 	github.com/go-chi/chi/v5 v5.2.4 // indirect
@@ -97,6 +99,7 @@ require (
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.39.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
@@ -121,7 +124,6 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.9.1 // indirect
