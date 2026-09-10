@@ -28,7 +28,7 @@ func TestStoreExecutionScreenshots_MultipartResponseAndCleanup(t *testing.T) {
 			require.Equal(t, "user-key", req.Header.Get(internalAdminKeyHeader))
 			require.NoError(t, req.ParseMultipartForm(1<<20))
 			require.Equal(t, []string{"run-1"}, req.MultipartForm.Value["run_identifier"])
-			require.Equal(t, []string{"runner-1"}, req.MultipartForm.Value["runner_identifier"])
+			require.Equal(t, []string{"runner-1"}, req.MultipartForm.Value["device_identifier"])
 			require.Equal(t, []string{"scan-credential"}, req.MultipartForm.Value["step_id"])
 			files := req.MultipartForm.File["screenshots"]
 			require.Len(t, files, 2)
@@ -53,7 +53,7 @@ func TestStoreExecutionScreenshots_MultipartResponseAndCleanup(t *testing.T) {
 
 	result, apiErr := server.storeExecutionScreenshotsLogic(storeExecutionScreenshotsPayload{
 		RunIdentifier:    "run-1",
-		RunnerIdentifier: "runner-1",
+		DeviceIdentifier: "runner-1",
 		StepID:           "scan-credential",
 		ScreenshotPaths:  []string{first, second, first},
 	})
@@ -96,10 +96,10 @@ func TestStoreExecutionScreenshots_RejectsInvalidRequests(t *testing.T) {
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, Deps{FileStore: store, ManagedWorkflowRoot: "results"})
 
 	tests := map[string]storeExecutionScreenshotsPayload{
-		"run identifier":    {RunnerIdentifier: "runner", StepID: "step", ScreenshotPaths: []string{valid}},
+		"run identifier":    {DeviceIdentifier: "runner", StepID: "step", ScreenshotPaths: []string{valid}},
 		"runner identifier": {RunIdentifier: "run", StepID: "step", ScreenshotPaths: []string{valid}},
-		"step id":           {RunIdentifier: "run", RunnerIdentifier: "runner", ScreenshotPaths: []string{valid}},
-		"empty paths":       {RunIdentifier: "run", RunnerIdentifier: "runner", StepID: "step"},
+		"step id":           {RunIdentifier: "run", DeviceIdentifier: "runner", ScreenshotPaths: []string{valid}},
+		"empty paths":       {RunIdentifier: "run", DeviceIdentifier: "runner", StepID: "step"},
 	}
 	for name, payload := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -236,7 +236,7 @@ func (s *cleanupFailureFileStore) ReadDir(path string) ([]os.DirEntry, error) {
 }
 
 func validExecutionScreenshotPayload(path string) storeExecutionScreenshotsPayload {
-	return storeExecutionScreenshotsPayload{RunIdentifier: "run", RunnerIdentifier: "runner", StepID: "step", ScreenshotPaths: []string{path}}
+	return storeExecutionScreenshotsPayload{RunIdentifier: "run", DeviceIdentifier: "runner", StepID: "step", ScreenshotPaths: []string{path}}
 }
 
 func writeMemoryFile(t *testing.T, store *memoryFileStore, path, content string) {

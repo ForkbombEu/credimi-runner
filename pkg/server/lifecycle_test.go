@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
 )
@@ -66,16 +67,37 @@ func (t *fakeLifecycleTicker) Chan() <-chan time.Time {
 	return t.ch
 }
 
+type cancellationLifecycleTicker struct {
+	ch      chan time.Time
+	stopped chan struct{}
+}
+
+func (t *cancellationLifecycleTicker) Stop() { close(t.stopped) }
+
+func (t *cancellationLifecycleTicker) Chan() <-chan time.Time { return t.ch }
+
 type roundTripFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripFunc) Do(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+type retryableLifecycleError struct{}
+
+func (retryableLifecycleError) Error() string   { return "temporary lifecycle transport failure" }
+func (retryableLifecycleError) Timeout() bool   { return true }
+func (retryableLifecycleError) Temporary() bool { return true }
+
+type failingLifecycleBody struct{}
+
+func (failingLifecycleBody) Read([]byte) (int, error) { return 0, context.DeadlineExceeded }
+func (failingLifecycleBody) Close() error             { return nil }
+
 func TestLoadRunnerLifecycleConfigDefaults(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_ID", "/owner/runner")
 	t.Setenv(lifecycleEnabledEnvName, "")
 	t.Setenv(lifecycleHeartbeatIntervalEnvName, "")
+	t.Setenv(lifecycleRequestTimeoutEnvName, "")
 
 	cfg := LoadRunnerLifecycleConfig(utils.Instance{
 		URL:              "https://credimi.example",
@@ -103,11 +125,22 @@ func TestLoadRunnerLifecycleConfigDisabled(t *testing.T) {
 func TestLoadRunnerLifecycleConfigParsesDurations(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_ID", "/owner/runner")
 	t.Setenv(lifecycleHeartbeatIntervalEnvName, "45s")
+	t.Setenv(lifecycleRequestTimeoutEnvName, "20s")
 
 	cfg := LoadRunnerLifecycleConfig(utils.Instance{URL: "https://credimi.example"})
 
 	require.Equal(t, 45*time.Second, cfg.HeartbeatInterval)
-	require.Equal(t, defaultLifecycleRequestTimeout, cfg.RequestTimeout)
+	require.Equal(t, 20*time.Second, cfg.RequestTimeout)
+}
+
+func TestLoadRunnerLifecycleConfigRejectsInvalidRequestTimeout(t *testing.T) {
+	for _, value := range []string{"not-a-duration", "0s"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(lifecycleRequestTimeoutEnvName, value)
+			cfg := LoadRunnerLifecycleConfig(utils.Instance{URL: "https://credimi.example"})
+			require.Equal(t, defaultLifecycleRequestTimeout, cfg.RequestTimeout)
+		})
+	}
 }
 
 func TestLoadRunnerLifecycleConfigPrefersUserAPIKey(t *testing.T) {
@@ -134,6 +167,19 @@ func TestLoadRunnerLifecycleConfigIgnoresBackendPolicyEnvs(t *testing.T) {
 	require.Equal(t, defaultLifecycleRequestTimeout, cfg.RequestTimeout)
 }
 
+func TestRunnerLifecycleUsesExplicitRuntimeSnapshotLoader(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_ID", "org/runner")
+	snapshot := dashboardruntime.RunnerRuntimeConfig{Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "org/runner/device-a", Enabled: true}}}
+	loader := func() (dashboardruntime.RunnerRuntimeConfig, error) { return snapshot, nil }
+	cfg := LoadRunnerLifecycleConfig(utils.Instance{URL: "https://credimi.example"}, loader)
+	require.Equal(t, []LifecycleDevice{{DeviceID: "org/runner/device-a", Online: true}}, cfg.Devices)
+
+	client := NewRunnerLifecycleClient(cfg, nil, NewProcessStore(), loader)
+	devices, ok := client.inventory()
+	require.True(t, ok)
+	require.Equal(t, cfg.Devices, devices)
+}
+
 func TestRunnerLifecycleResumePostsExpectedPayload(t *testing.T) {
 	recorder, client := newLifecycleClientForServer(t, http.StatusAccepted, nil)
 
@@ -145,7 +191,171 @@ func TestRunnerLifecycleResumePostsExpectedPayload(t *testing.T) {
 	require.Equal(t, "/api/mobile-runner/lifecycle/resume", req.Path)
 	require.Equal(t, "runner-key", req.Header.Get(internalAdminKeyHeader))
 	require.Equal(t, "/owner/runner", req.Body.RunnerID)
+	require.NotEmpty(t, req.Body.RequestID)
 	require.Equal(t, "runner_startup", req.Body.Reason)
+}
+
+func TestRunnerLifecycleRetryReusesRequestID(t *testing.T) {
+	var requestIDs []string
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:        true,
+		RunnerID:       "/owner/runner",
+		CredimiURL:     "https://credimi.example",
+		APIKey:         "runner-key",
+		RequestTimeout: time.Second,
+	}, nil, NewProcessStore())
+	client.inventory = nil
+	client.warnf = func(string, ...any) {}
+	client.retryDelay = func(int) time.Duration { return 0 }
+	client.httpClient = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload lifecyclePayload
+		require.NoError(t, json.NewDecoder(req.Body).Decode(&payload))
+		requestIDs = append(requestIDs, payload.RequestID)
+		if len(requestIDs) == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
+	})
+
+	require.NoError(t, client.Resume(context.Background(), "runner_startup"))
+	require.Len(t, requestIDs, 2)
+	require.NotEmpty(t, requestIDs[0])
+	require.Equal(t, requestIDs[0], requestIDs[1])
+}
+
+func TestNewRunnerLifecycleClientUsesDefaultHTTPClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	originalClient := http.DefaultClient
+	http.DefaultClient = server.Client()
+	t.Cleanup(func() { http.DefaultClient = originalClient })
+
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:        true,
+		RunnerID:       "/owner/runner",
+		CredimiURL:     server.URL,
+		APIKey:         "runner-key",
+		RequestTimeout: time.Second,
+	}, nil, NewProcessStore())
+	client.inventory = nil
+	client.warnf = func(string, ...any) {}
+	ticker := client.newTicker(time.Hour)
+	ticker.Stop()
+
+	require.NoError(t, client.Resume(context.Background(), "runner_startup"))
+}
+
+func TestRunnerLifecycleRejectsMissingRunnerIDAndMalformedEndpoint(t *testing.T) {
+	calls := 0
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:    true,
+		CredimiURL: "https://credimi.example",
+		APIKey:     "runner-key",
+	}, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, nil
+	}), NewProcessStore())
+	client.inventory = nil
+	client.warnf = func(string, ...any) {}
+
+	require.NoError(t, client.Resume(context.Background(), "runner_startup"))
+	require.Zero(t, calls)
+
+	client.cfg.RunnerID = "/owner/runner"
+	client.cfg.CredimiURL = "://malformed"
+	err := client.Resume(context.Background(), "runner_startup")
+	require.ErrorContains(t, err, "create lifecycle request")
+}
+
+func TestCurrentLifecycleInventoryReportsMissingTypedConfiguration(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
+
+	devices, ok := currentLifecycleInventory()
+
+	require.False(t, ok)
+	require.Nil(t, devices)
+}
+
+func TestRunnerLifecycleRetryExhaustionReportsTheLastFailure(t *testing.T) {
+	calls := 0
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:        true,
+		RunnerID:       "/owner/runner",
+		CredimiURL:     "https://credimi.example",
+		APIKey:         "runner-key",
+		RequestTimeout: time.Second,
+	}, nil, NewProcessStore())
+	client.inventory = nil
+	client.warnf = func(string, ...any) {}
+	client.retryDelay = func(int) time.Duration { return 0 }
+	client.httpClient = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, retryableLifecycleError{}
+	})
+
+	err := client.Resume(context.Background(), "runner_startup")
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "temporary lifecycle transport failure")
+	require.Equal(t, defaultLifecycleRequestAttempts, calls)
+}
+
+func TestRunnerLifecycleRetryCancellationStopsBackoff(t *testing.T) {
+	started := make(chan struct{})
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:        true,
+		RunnerID:       "/owner/runner",
+		CredimiURL:     "https://credimi.example",
+		APIKey:         "runner-key",
+		RequestTimeout: time.Second,
+	}, nil, NewProcessStore())
+	client.inventory = nil
+	client.warnf = func(string, ...any) {}
+	client.retryDelay = func(int) time.Duration { return time.Hour }
+	client.httpClient = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		close(started)
+		return nil, context.DeadlineExceeded
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- client.Resume(ctx, "runner_startup") }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle request did not start")
+	}
+	cancel()
+
+	require.ErrorIs(t, <-done, context.Canceled)
+}
+
+func TestRunnerLifecycleReportsUnreadableErrorResponse(t *testing.T) {
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:        true,
+		RunnerID:       "/owner/runner",
+		CredimiURL:     "https://credimi.example",
+		APIKey:         "runner-key",
+		RequestTimeout: time.Second,
+	}, nil, NewProcessStore())
+	client.inventory = nil
+	client.warnf = func(string, ...any) {}
+	client.httpClient = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadGateway,
+			Status:     "502 Bad Gateway",
+			Body:       failingLifecycleBody{},
+		}, nil
+	})
+
+	err := client.Resume(context.Background(), "runner_startup")
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "unreadable body")
 }
 
 func TestRunnerLifecycleHeartbeatPostsExpectedPayload(t *testing.T) {
@@ -158,6 +368,83 @@ func TestRunnerLifecycleHeartbeatPostsExpectedPayload(t *testing.T) {
 	req := recorder.get(0)
 	require.Equal(t, "/api/mobile-runner/lifecycle/heartbeat", req.Path)
 	require.Equal(t, "heartbeat", req.Body.Reason)
+}
+
+func TestRunnerLifecycleHeartbeatReportsConfiguredDeviceReadiness(t *testing.T) {
+	recorder, client := newLifecycleClientForServer(t, http.StatusOK, nil)
+	client.SetDevices([]LifecycleDevice{
+		{DeviceID: "owner/ready", Online: true},
+		{DeviceID: "owner/offline", Online: true},
+		{DeviceID: "owner/not-ready", Online: true},
+		{DeviceID: "owner/missing", Online: true},
+		{DeviceID: "owner/disabled", Online: false},
+	})
+	client.readiness = func() Readiness {
+		return Readiness{Devices: map[string]DeviceReady{
+			"owner/ready":     {Ready: true, State: "device"},
+			"owner/offline":   {Ready: false, State: "unauthorized"},
+			"owner/not-ready": {Ready: false},
+		}}
+	}
+
+	require.NoError(t, client.Heartbeat(context.Background()))
+	devices := recorder.get(0).Body.Devices
+	require.Equal(t, []LifecycleDevice{
+		{DeviceID: "owner/ready", Online: true},
+		{DeviceID: "owner/offline", Online: false, Reason: "unauthorized"},
+		{DeviceID: "owner/not-ready", Online: false, Reason: "not ready"},
+		{DeviceID: "owner/missing", Online: false, Reason: "not reported by runner readiness"},
+		{DeviceID: "owner/disabled", Online: false, Reason: "disabled"},
+	}, devices)
+}
+
+func TestRunnerLifecycleHeartbeatReloadsDevicesAddedAfterStartup(t *testing.T) {
+	recorder, client := newLifecycleClientForServer(t, http.StatusOK, nil)
+	liveDevices := []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}
+	client.inventory = func() ([]LifecycleDevice, bool) {
+		return append([]LifecycleDevice(nil), liveDevices...), true
+	}
+	client.readiness = func() Readiness {
+		return Readiness{Devices: map[string]DeviceReady{
+			"owner/phone":    {Ready: true, State: "device"},
+			"owner/emulator": {Ready: true},
+		}}
+	}
+
+	require.NoError(t, client.Heartbeat(context.Background()))
+	require.Equal(t, []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}, recorder.get(0).Body.Devices)
+
+	liveDevices = append(liveDevices, LifecycleDevice{DeviceID: "owner/emulator", Online: true})
+	require.NoError(t, client.Heartbeat(context.Background()))
+	require.Equal(t, []LifecycleDevice{
+		{DeviceID: "owner/phone", Online: true},
+		{DeviceID: "owner/emulator", Online: true},
+	}, recorder.get(1).Body.Devices)
+}
+
+func TestRunnerLifecycleSetDevicesCopiesCallerInventory(t *testing.T) {
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{}, nil, nil)
+	client.inventory = nil
+	devices := []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}
+	client.SetDevices(devices)
+	devices[0].Online = false
+
+	client.readiness = nil
+	require.Equal(t, []LifecycleDevice{{DeviceID: "owner/phone", Online: true}}, client.currentDevices())
+	(*RunnerLifecycleClient)(nil).SetDevices(devices)
+}
+
+func TestRunnerLifecycleConfigurationFallbacks(t *testing.T) {
+	t.Setenv(lifecycleEnabledEnvName, "not-a-bool")
+	t.Setenv(lifecycleHeartbeatIntervalEnvName, "-1s")
+	cfg := LoadRunnerLifecycleConfig(utils.Instance{InternalAdminKey: "admin-key"})
+	require.True(t, cfg.Enabled)
+	require.Equal(t, "admin-key", cfg.APIKey)
+	require.Equal(t, defaultHeartbeatInterval, cfg.HeartbeatInterval)
+
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{Enabled: true}, nil, nil)
+	client.warnf = func(string, ...any) {}
+	require.NoError(t, client.Resume(context.Background(), "startup"))
 }
 
 func TestRunnerLifecyclePausePostsExpectedPayload(t *testing.T) {
@@ -232,6 +519,9 @@ func TestRunnerLifecycleMissingCredentialsDoesNotMakeHTTPCalls(t *testing.T) {
 		HeartbeatInterval: time.Second,
 		RequestTimeout:    time.Second,
 	}, srv.Client(), NewProcessStore())
+	// Unit tests exercise the explicit client inventory; never inherit a live
+	// runner's config directory from the test process environment.
+	client.inventory = nil
 	client.warnf = func(string, ...any) {}
 
 	require.NoError(t, client.Resume(context.Background(), "runner_startup"))
@@ -256,6 +546,13 @@ func TestRunnerLifecycleHeartbeatLoopSendsHeartbeat(t *testing.T) {
 	require.Equal(t, "/api/mobile-runner/lifecycle/heartbeat", recorder.get(0).Path)
 }
 
+func TestRunnerLifecycleHeartbeatLoopDisabledIsNoop(t *testing.T) {
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{}, nil, NewProcessStore())
+	stopLoop := client.StartHeartbeatLoop(context.Background())
+	stopLoop()
+	(*RunnerLifecycleClient)(nil).StartHeartbeatLoop(context.Background())()
+}
+
 func TestRunnerLifecycleHeartbeatLoopStopPreventsFurtherHeartbeats(t *testing.T) {
 	recorder, client := newLifecycleClientForServer(t, http.StatusOK, nil)
 	ticker := newFakeLifecycleTicker()
@@ -276,6 +573,25 @@ func TestRunnerLifecycleHeartbeatLoopStopPreventsFurtherHeartbeats(t *testing.T)
 	time.Sleep(100 * time.Millisecond)
 
 	require.Equal(t, 1, recorder.len())
+}
+
+func TestRunnerLifecycleHeartbeatLoopStopsWhenContextIsCanceled(t *testing.T) {
+	client := NewRunnerLifecycleClient(RunnerLifecycleConfig{
+		Enabled:           true,
+		HeartbeatInterval: time.Second,
+	}, nil, NewProcessStore())
+	ticker := &cancellationLifecycleTicker{ch: make(chan time.Time), stopped: make(chan struct{})}
+	client.newTicker = func(time.Duration) lifecycleTicker { return ticker }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopLoop := client.StartHeartbeatLoop(ctx)
+	cancel()
+	select {
+	case <-ticker.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat loop did not stop after context cancellation")
+	}
+	stopLoop()
 }
 
 func TestRunnerLifecycleHeartbeatLoopContinuesAfterFailure(t *testing.T) {
@@ -426,6 +742,9 @@ func newLifecycleClientForServer(
 		HeartbeatInterval: time.Second,
 		RequestTimeout:    time.Second,
 	}, srv.Client(), NewProcessStore())
+	// Unit tests exercise the explicit client inventory; never inherit a live
+	// runner's config directory from the test process environment.
+	client.inventory = nil
 	client.warnf = func(string, ...any) {}
 
 	return recorder, client

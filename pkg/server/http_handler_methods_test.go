@@ -62,7 +62,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			LogPath:          &log,
 			Platform:         platform,
 			RunIdentifier:    "run-1",
-			RunnerIdentifier: &runnerID,
+			DeviceIdentifier: &runnerID,
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]any{}, result)
@@ -76,7 +76,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			LogPath:          &log,
 			Platform:         platform,
 			RunIdentifier:    "run-1",
-			RunnerIdentifier: &runnerID,
+			DeviceIdentifier: &runnerID,
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]any{}, result)
@@ -90,7 +90,7 @@ func TestStorePipelineResult_MethodResponseShapes(t *testing.T) {
 			LogPath:          &log,
 			Platform:         platform,
 			RunIdentifier:    "run-1",
-			RunnerIdentifier: &runnerID,
+			DeviceIdentifier: &runnerID,
 		})
 		require.Error(t, err)
 		var svcErr *credimi.APIError
@@ -108,7 +108,7 @@ func TestTouchFingerprint_MethodError(t *testing.T) {
 		Sleeper: func(d time.Duration) {},
 	})
 
-	_, err := srv.TouchFingerprint(context.Background(), &mobile.TouchFingerprintPayload{})
+	_, err := srv.TouchFingerprint(context.Background(), &mobile.TouchFingerprintPayload{DeviceIdentifier: "missing"})
 	require.Error(t, err)
 	var svcErr *mobile.APIError
 	require.ErrorAs(t, err, &svcErr)

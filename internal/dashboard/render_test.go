@@ -4,13 +4,16 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
+	"github.com/forkbombeu/credimi-runner/internal/maintenance"
 )
 
 func TestIcons_Present(t *testing.T) {
 	required := []string{
 		"grid", "phone", "workers", "network", "key", "server", "shield",
 		"cloud", "activity", "globe", "check", "x", "plus", "refresh",
-		"trash", "wifi", "usb", "info", "warn", "chev", "eye", "copy",
+		"trash", "wifi", "usb", "info", "warn", "eye", "copy",
 		"gear", "android", "apple",
 	}
 
@@ -51,7 +54,6 @@ func TestChipClass(t *testing.T) {
 func TestServiceIcon(t *testing.T) {
 	tests := []struct{ id, contains string }{
 		{"runner", "server"},
-		{"caddy", "shield"},
 		{"cloudflared", "cloud"},
 		{"tunnel", "cloud"},
 		{"temporal", "workers"},
@@ -131,6 +133,15 @@ func TestRenderHelpers(t *testing.T) {
 	if !isSecret(Field{Secret: true}) || isSecret(Field{}) {
 		t.Fatal("isSecret returned unexpected result")
 	}
+	for _, tc := range []struct{ base, want string }{
+		{"http://192.168.178.120", "http://192.168.178.120/my/profile/api-keys"},
+		{"https://credimi.example/", "https://credimi.example/my/profile/api-keys"},
+		{"", "https://credimi.io/my/profile/api-keys"},
+	} {
+		if got := apiKeysURL(tc.base); got != tc.want {
+			t.Fatalf("apiKeysURL(%q)=%q, want %q", tc.base, got, tc.want)
+		}
+	}
 }
 
 func TestRenderer_FragmentPage(t *testing.T) {
@@ -160,7 +171,7 @@ func TestRenderer_FragmentPage(t *testing.T) {
 	if !strings.Contains(html, "Start Runner") {
 		t.Fatalf("overview fragment missing runtime start control: %s", html)
 	}
-	if !strings.Contains(html, "Maintenance") || !strings.Contains(html, "example.test/runner:latest") || !strings.Contains(html, "Up 2 minutes") {
+	if !strings.Contains(html, "Maintenance") || !strings.Contains(html, "Up 2 minutes") {
 		t.Fatalf("overview fragment missing maintenance details: %s", html)
 	}
 	if strings.Contains(html, "health-pill") {
@@ -168,21 +179,104 @@ func TestRenderer_FragmentPage(t *testing.T) {
 	}
 }
 
-func TestRendererOverviewPageIncludesUpgradeLogModal(t *testing.T) {
+func TestRendererNetworkUsesSetupServiceModeLabels(t *testing.T) {
 	renderer, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)
 	}
-	html, err := renderer.Page("overview", PageData{
-		Active: "overview",
-		Title:  "Overview",
+	html, err := renderer.Page("network", PageData{
+		Active: "network",
+		Title:  "Network",
 		Runner: &Config{values: Defaults},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(html, "runner-upgrade-modal") || !strings.Contains(html, "data-upgrade-log") || !strings.Contains(html, "data-upgrade-close disabled") {
-		t.Fatalf("overview page missing locked upgrade modal: %s", html)
+	for _, want := range []string{"data-val=\"auto\"", "Auto", "Quick tunnel", "data-val=\"cloudflare-managed\"", "Managed", "Named tunnel", "data-val=\"manual\"", "Manual", "Self-managed"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("network page missing %q: %s", want, html)
+		}
+	}
+	for _, obsolete := range []string{"Instant trycloudflare.com URL", "Your domain via Cloudflare", "Bind host port, no tunnel", ">Direct<"} {
+		if strings.Contains(html, obsolete) {
+			t.Fatalf("network page contains obsolete label %q: %s", obsolete, html)
+		}
+	}
+	for _, want := range []string{"Advanced infrastructure", "Show internal listener and edge settings", "Internal runner API port"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("network page missing %q: %s", want, html)
+		}
+	}
+	if strings.Contains(html, "Temporal</span>") || strings.Contains(html, "Edge &amp; tunnel") {
+		t.Fatalf("network page exposes unrelated service details: %s", html)
+	}
+	manual := strings.Index(html, "Manual public URL")
+	endpoint := strings.Index(html, "Public endpoint")
+	managed := strings.Index(html, "Runner domain")
+	if endpoint < 0 || manual < 0 || managed < 0 || endpoint < manual || endpoint < managed {
+		t.Fatalf("public endpoint fields are ordered incorrectly: endpoint=%d manual=%d managed=%d", endpoint, manual, managed)
+	}
+}
+
+func TestRendererConfigGroupsTemporalWithCredimiPlatform(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := renderer.Page("config", PageData{Active: "config", Title: "API & Config", Runner: &Config{values: Defaults}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform := strings.Index(html, "Credimi platform connection")
+	credimi := strings.Index(html, "Credimi platform URL")
+	temporal := strings.Index(html, "Temporal address")
+	if platform < 0 || credimi < platform || temporal < credimi {
+		t.Fatalf("Credimi platform connection fields are ordered incorrectly: platform=%d credimi=%d temporal=%d", platform, credimi, temporal)
+	}
+}
+
+func TestRendererConfigIncludesDashboardToken(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html, err := renderer.Page("config", PageData{Active: "config", Title: "API & Config", Runner: &Config{values: Defaults}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, `name="DASHBOARD_TOKEN"`) || !strings.Contains(html, `type="password"`) {
+		t.Fatalf("config page does not render dashboard token as a secret: %s", html)
+	}
+}
+
+func TestRuntimeStatusOmitsInternalRunnerAPIAddress(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := renderer.Fragment("runtime_status", PageData{
+		Runner: &Config{values: map[string]string{"CREDIMI_SERVICE_MODE": "manual"}},
+		Data:   map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, RunnerRunning: true}},
+	})
+	if strings.Contains(html, "Runner API") || strings.Contains(html, "127.0.0.1") {
+		t.Fatalf("runtime status exposes an internal runner address: %s", html)
+	}
+	if !strings.Contains(html, "Public URL") {
+		t.Fatalf("runtime status lost public endpoint: %s", html)
+	}
+}
+
+func TestRuntimeStatusSurfacesRuntimeFailure(t *testing.T) {
+	renderer, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := renderer.Fragment("runtime_status", PageData{
+		Runner: &Config{values: map[string]string{"CREDIMI_SERVICE_MODE": "manual"}},
+		Data:   map[string]any{"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, Actual: "failed", LastError: "verify public endpoint failed"}},
+	})
+	if !strings.Contains(html, "Runtime failed") || !strings.Contains(html, "verify public endpoint failed") {
+		t.Fatalf("runtime failure not visible: %s", html)
 	}
 }
 
@@ -206,65 +300,8 @@ func TestRenderer_ConfigPageDropsAdditionalEnvironments(t *testing.T) {
 	if strings.Contains(html, "Additional environments") {
 		t.Fatalf("config page should not render multi-environment section: %s", html)
 	}
-}
-
-func TestRenderer_SetupPage(t *testing.T) {
-	r, err := NewRenderer()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	d := PageData{
-		Active:   "setup",
-		Title:    "Setup",
-		Runner:   &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
-		Snapshot: Snapshot{Devices: []Device{{Serial: "device-1", Name: "Pixel 8", Type: "android_phone", Mode: "usb", Status: Online}}},
-		Workers:  []Worker{},
-		Pill:     PillData{OK: true, Label: "Setup"},
-	}
-
-	html, err := r.Page("setup", d)
-	if err != nil {
-		t.Fatalf("setup page failed: %v", err)
-	}
-	if !strings.Contains(html, "Set up Credimi Runner") {
-		t.Errorf("setup page missing heading: %s", html[:300])
-	}
-	if !strings.Contains(html, "data-setup-form") {
-		t.Errorf("setup page missing wizard form: %s", html[:300])
-	}
-	if !strings.Contains(html, "credimi.io/my/profile/api-keys") {
-		t.Errorf("setup page missing API key link")
-	}
-	if !strings.Contains(html, `name="RUNNER_PORT"`) {
-		t.Errorf("setup page missing runner port field")
-	}
-	if !strings.Contains(html, `data-android-phone-device-select`) || !strings.Contains(html, "device-1") {
-		t.Errorf("setup page missing connected Android device selector")
-	}
-	if !strings.Contains(html, `data-dev-type="redroid"`) || !strings.Contains(html, `name="CREDIMI_RUNNER_WIFI_IP"`) || !strings.Contains(html, `data-avdctl-ssh-control`) {
-		t.Errorf("setup page missing Redroid endpoint or SSH controls")
-	}
-	if strings.Count(html, `name="CREDIMI_RUNNER_WIFI_IP"`) != 1 || strings.Count(html, `name="CREDIMI_RUNNER_WIFI_PORT"`) != 1 {
-		t.Errorf("setup page must render one shared Wi-Fi endpoint field pair")
-	}
-	if !strings.Contains(html, `data-runner-wifi-fields`) {
-		t.Errorf("setup page missing shared Wi-Fi endpoint fields")
-	}
-	if !strings.Contains(html, `data-busy-log`) {
-		t.Errorf("base template missing busy log output")
-	}
-	if !strings.Contains(html, `data-startup-phase=`) || !strings.Contains(html, `data-startup-message=`) {
-		t.Errorf("base template missing startup state on busy overlay")
-	}
-	if strings.Contains(html, "data-runner-conflict-choice") {
-		t.Errorf("setup page should not render inline runner conflict controls")
-	}
-	if !strings.Contains(html, "runner-conflict-modal") {
-		t.Errorf("setup page missing runner conflict modal")
-	}
-	if strings.Contains(html, `class="sb"`) {
-		t.Errorf("setup page should not render sidebar")
+	if !strings.Contains(html, `name="ADB_SCREEN_RECORD_SIZE"`) {
+		t.Fatalf("config page should render the screen recording size setting: %s", html)
 	}
 }
 
@@ -277,7 +314,7 @@ func TestRenderer_HidesIOSSimulatorOnLinux(t *testing.T) {
 	d := PageData{
 		Active:   "setup",
 		Title:    "Setup",
-		Runner:   &Config{path: "/tmp/credimi/runner/.env", values: Defaults},
+		Runner:   &Config{path: "/tmp/credimi/runner/config.toml", values: Defaults},
 		Snapshot: Snapshot{},
 		Pill:     PillData{OK: true, Label: "Setup"},
 	}
@@ -287,6 +324,147 @@ func TestRenderer_HidesIOSSimulatorOnLinux(t *testing.T) {
 	}
 	if strings.Contains(html, `value="ios_simulator"`) {
 		t.Fatalf("linux setup page should not render ios_simulator: %s", html)
+	}
+}
+
+func TestSetupRendersProgressiveHostWizard(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := cloneStringMap(Defaults)
+	values["CREDIMI_URL"] = "http://192.168.178.120/"
+	html, err := r.Page("setup", PageData{
+		Active: "setup",
+		Runner: &Config{path: "/tmp/credimi/runner/config.toml", values: values},
+		Pill:   PillData{OK: true, Label: "Setup"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(html, `name="ADB_SCREEN_RECORD_SIZE"`) {
+		t.Fatalf("setup page should render the screen recording size setting: %s", html)
+	}
+	if !strings.Contains(html, "http://192.168.178.120/my/profile/api-keys") {
+		t.Fatalf("setup page should render the complete API keys URL: %s", html)
+	}
+	for _, want := range []string{
+		`data-setup-form`,
+		`data-step-target="identity"`,
+		`data-step-target="network"`,
+		`data-step-target="devices"`,
+		`data-step-target="advanced"`,
+		`data-step-target="review"`,
+		`data-org-value`,
+		`data-runner-id-value`,
+		`data-auth-seg`,
+		`data-net-mode="manual"`,
+		`data-manual-public-url-field`,
+		`data-manual-public-url-error`,
+		`data-runner-conflict-modal-summary`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("setup wizard missing %q", want)
+		}
+	}
+	if !strings.Contains(html, "No USB devices are visible from the current Runner topology") {
+		t.Fatalf("setup wizard should allow explicit USB serial entry when discovery is empty: %s", html)
+	}
+	if !strings.Contains(html, `name="CREDIMI_RUNNER_SERIAL"`) || !strings.Contains(html, `placeholder="e.g. 37131JEHN05321"`) {
+		t.Fatalf("setup wizard missing explicit USB serial input: %s", html)
+	}
+	for _, want := range []string{`data-device-provision`, `data-android-phone-device-select`, `data-android-phone-serial`, `data-android-phone-serial-hint`, `data-android-emulator-assets-panel`, `data-android-emulator-progress`, `data-android-emulator-progress-bar`, `data-android-emulator-progress-label`, `data-device-provision-template`, `AVDCTL_SSH_TARGET`, `AVDCTL_SSH_KNOWN_HOSTS_PATH`, `AVDCTL_SUDO`, `type="password" name="AVDCTL_SSH_PASSWORD"`, `type="password" name="AVDCTL_SUDO_PASSWORD"`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("setup device provisioning missing %q", want)
+		}
+	}
+	if got := strings.Count(html, `data-android-emulator-progress`); got != 6 {
+		t.Fatalf("setup should render three progress hooks in each shared card, got %d", got)
+	}
+	if strings.Count(html, `name="CREDIMI_RUNNER_TYPE"`) != 2 || strings.Count(html, `name="CREDIMI_RUNNER_DEVICE_MODE"`) != 2 {
+		t.Fatalf("each rendered device card should have one canonical type and mode field: %s", html)
+	}
+	if strings.Contains(html, `type="radio" name="CREDIMI_RUNNER_TYPE"`) || strings.Contains(html, `type="radio" name="CREDIMI_RUNNER_DEVICE_MODE"`) {
+		t.Fatalf("device radios must use UI-only names: %s", html)
+	}
+	for _, want := range []string{"data-device-type-value", "data-device-mode-value", "data-device-type-ui", "data-device-mode-ui", "data-setup-device-field"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("setup device card missing %q", want)
+		}
+	}
+	if !strings.Contains(html, `data-setup-device-count`) {
+		t.Fatalf("setup form missing indexed device count: %s", html)
+	}
+	script, err := staticFS.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(script), "reindexSetupDeviceCards") || !strings.Contains(string(script), "SETUP_DEVICE_${index}_") {
+		t.Fatalf("setup script missing indexed device field contract")
+	}
+	for _, want := range []string{"initializeDeviceProvisionCard", "device_type_ui_${id}", "device_mode_ui_${id}"} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("device card initialization missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"serialField.disabled = !needsSerial;",
+		"serialField.hidden = !needsSerial || hasDetectedDevices;",
+		"serialField.disabled = false;",
+		"new URLSearchParams(new FormData(form))",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("USB serial submission contract missing %q", want)
+		}
+	}
+	for _, want := range []string{
+		"syncManualPublicURLError",
+		"data-manual-public-url-error",
+		"Enter a complete URL starting with http:// or https://.",
+		"if (mode === 'manual') return !valueMissing('RUNNER_PUBLIC_URL') && validManualPublicURL();",
+		"setupDeviceFieldValue(card, fieldName)",
+		"fields.find((field) => !field.disabled)",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("setup manual URL validation missing %q", want)
+		}
+	}
+	if !strings.Contains(string(script), "flushSetupDraft") || !strings.Contains(string(script), "Unable to preserve the setup draft") {
+		t.Fatalf("setup submit must flush and surface draft failures")
+	}
+	if strings.Contains(string(script), "saveSetupDraft().catch(() => {})") {
+		t.Fatalf("setup draft autosave failure is silently swallowed")
+	}
+	for _, want := range []string{
+		"const form = document.querySelector('[data-device-add-form]');",
+		"if ($('.app.setup-shell'))",
+		"window.location.assign(dashboardURL(operation.refresh || '/', recovery.token, recovery.origin));",
+		"window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("dashboard script missing %q", want)
+		}
+	}
+}
+
+func TestSetupCredentialFeedbackIsShared(t *testing.T) {
+	r, err := NewRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := cloneStringMap(Defaults)
+	html, err := r.Page("setup", PageData{Active: "setup", Runner: &Config{values: values}, Pill: PillData{OK: true, Label: "Setup"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(html, `data-api-key-status`) != 1 || strings.Count(html, `data-api-key-error`) != 1 {
+		t.Fatalf("credential feedback should have one shared status/error region: %s", html)
+	}
+	if !strings.Contains(html, `data-credential-feedback`) {
+		t.Fatal("shared credential feedback region is missing")
+	}
+	if strings.Contains(html, `data-api-key-status style=`) || strings.Contains(html, `data-api-key-error style=`) {
+		t.Fatal("credential feedback still uses inline visibility styles")
 	}
 }
 
@@ -312,31 +490,6 @@ func TestRenderer_ShowsIOSSimulatorOnDarwin(t *testing.T) {
 	}
 }
 
-func TestRenderer_UsesSimulatorNameLabel(t *testing.T) {
-	t.Setenv("GOOS_OVERRIDE", "darwin")
-	r, err := NewRenderer()
-	if err != nil {
-		t.Fatal(err)
-	}
-	d := PageData{
-		Active:   "devices",
-		Title:    "Devices",
-		Runner:   &Config{values: map[string]string{"CREDIMI_RUNNER_TYPE": "ios_simulator", "BASE_NAME": "credimi"}},
-		Snapshot: Snapshot{},
-		Pill:     PillData{OK: true, Label: "Ready"},
-	}
-	html, err := r.Page("devices", d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(html, "Simulator name") {
-		t.Fatalf("devices page missing simulator label: %s", html)
-	}
-	if !strings.Contains(html, "Emulator base name") {
-		t.Fatalf("devices page missing emulator label: %s", html)
-	}
-}
-
 func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {
@@ -346,6 +499,7 @@ func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 		Active: "overview",
 		Title:  "Overview",
 		Runner: &Config{values: map[string]string{
+			"CREDIMI_AUTH_MODE":           "internal_admin",
 			"CREDIMI_RUNNER_ORGANIZATION": "acme",
 			"CREDIMI_INTERNAL_ADMIN_KEY":  "secret",
 		}},
@@ -355,7 +509,7 @@ func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(html, ">Admin<") {
+	if !strings.Contains(html, ">Internal admin<") {
 		t.Fatalf("sidebar should show auth mode, got: %s", html)
 	}
 	if strings.Contains(html, ">ops<") {
@@ -363,17 +517,31 @@ func TestRenderer_BaseUsesAuthModeInSidebar(t *testing.T) {
 	}
 }
 
-func TestRenderer_DevicesTargetPageContract(t *testing.T) {
+func TestRenderer_DevicesInventoryPageContract(t *testing.T) {
 	r, err := NewRenderer()
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	values := cloneStringMap(Defaults)
+	values["CREDIMI_RUNNER_ID"] = "acme/runner"
+	values["CREDIMI_DEVICE_COUNT"] = "2"
+	values["CREDIMI_DEVICE_1_ID"] = "acme/runner/pixel"
+	values["CREDIMI_DEVICE_1_NAME"] = "Pixel"
+	values["CREDIMI_DEVICE_1_TYPE"] = "android_phone"
+	values["CREDIMI_DEVICE_1_MODE"] = "usb"
+	values["CREDIMI_DEVICE_1_SERIAL"] = "pixel-1"
+	values["CREDIMI_DEVICE_1_ENABLED"] = "true"
+	values["CREDIMI_DEVICE_2_ID"] = "acme/runner/emulator"
+	values["CREDIMI_DEVICE_2_NAME"] = "Emulator"
+	values["CREDIMI_DEVICE_2_TYPE"] = "android_emulator"
+	values["CREDIMI_DEVICE_2_MODE"] = "emulator"
+	values["CREDIMI_DEVICE_2_ENABLED"] = "false"
 	d := PageData{
 		Active:   "devices",
 		Title:    "Devices",
-		Runner:   &Config{values: Defaults},
-		Snapshot: Snapshot{},
+		Runner:   &Config{values: values},
+		Snapshot: Snapshot{Devices: []Device{{Serial: "detected-1", Status: Online}}},
 		Workers:  []Worker{},
 		Pill:     PillData{OK: true, Label: "Ready"},
 	}
@@ -383,16 +551,44 @@ func TestRenderer_DevicesTargetPageContract(t *testing.T) {
 		t.Fatalf("devices page failed: %v", err)
 	}
 	for _, want := range []string{
-		`Configured target`,
-		`Save target`,
+		`Configured inventory`,
+		`Add device`,
+		`data-device-edit`,
+		`data-device-form-cancel`,
+		`Cancel edit`,
+		`data-busy-title="Adding device"`,
+		`data-busy-controller-progress="true"`,
+		`hx-boost="false"`,
+		`IDs are created from the device name and cannot be edited`,
 		`Detected devices`,
+		`data-android-emulator-progress`,
+		`data-android-emulator-progress-bar`,
+		`data-android-emulator-progress-label`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("devices page missing %q", want)
 		}
 	}
-	if strings.Contains(html, "Add device") {
-		t.Fatal("devices page should not present add-device flow")
+	if strings.Count(html, `data-device-form-cancel`) != 1 {
+		t.Fatalf("devices page should render one edit cancellation action: %s", html)
+	}
+	if strings.Count(html, `data-android-emulator-progress`) != 3 {
+		t.Fatalf("devices page should render one shared emulator progress block, got %d", strings.Count(html, `data-android-emulator-progress`))
+	}
+	if !strings.Contains(html, `<a class="sb-env" href="/devices"`) {
+		t.Fatal("runner sidebar identity should link to the Devices page")
+	}
+	if strings.Contains(html, `class="chev"`) {
+		t.Fatal("runner sidebar identity should not render a dropdown chevron")
+	}
+	if !strings.Contains(html, `Devices<span class="count">2</span>`) {
+		t.Fatalf("sidebar device count should use configured inventory: %s", html)
+	}
+	if configured, detected := strings.Index(html, "Configured inventory"), strings.Index(html, "Detected devices"); configured < 0 || detected < 0 || configured > detected {
+		t.Fatal("detected devices should appear after configured inventory")
+	}
+	if detected, add := strings.Index(html, "Detected devices"), strings.Index(html, "Add device"); detected < 0 || add < 0 || detected > add {
+		t.Fatal("detected devices should appear before the add-device form")
 	}
 }
 
@@ -406,6 +602,135 @@ func TestStaticCSS_HiddenBeatsModalDisplay(t *testing.T) {
 	}
 }
 
+func TestStaticRedroidSSHToggleClearsCanonicalSudo(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	if !strings.Contains(content, "setFieldValue(form, 'AVDCTL_SUDO', 'false')") {
+		t.Fatal("disabling Redroid SSH must clear the submitted canonical sudo value")
+	}
+	if strings.Contains(content, "setToggleValue(form, 'AVDCTL_SUDO', false)") {
+		t.Fatal("Redroid SSH toggle must not update only the visual toggle helper")
+	}
+}
+
+func TestStaticAPIKeysLinkKeepsCompleteURL(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"const apiKeysURL =",
+		"const url = apiKeysURL(base);",
+		"btn.textContent = apiKeysURL(base);",
+		"window.open(url, '_blank', 'noopener');",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("API keys link normalization missing %q", want)
+		}
+	}
+	if strings.Contains(content, "base.replace(/^https?:\\/\\//, '')") {
+		t.Fatal("API keys link still strips the visible URL scheme")
+	}
+}
+
+func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"let draftRevision = 0;",
+		"let persistedDraftRevision = 0;",
+		"while (persistedDraftRevision < draftRevision || !draftID())",
+		"if (input.disabled) return;",
+		"let runnerIdentityRevision = 0;",
+		"const deviceDerivedRevision = new WeakMap();",
+		"const currentDeviceDerivedRevision = (root) => deviceDerivedRevision.get(root) || 0;",
+		"const bumpDeviceDerivedRevision = (root) => {",
+		"bumpDeviceDerivedRevision(card);",
+		"const isCurrent = () => revision === currentDeviceDerivedRevision(root);",
+		"if (!isCurrent()) return;",
+		"input[type=\"checkbox\"][name=\"${CSS.escape(name)}\"]",
+		"if (markup) el.innerHTML = markup;",
+		"else el.textContent = val;",
+		"if (i > current) return;",
+		"st.innerHTML = check();",
+		"setFieldValueQuietly(root, 'IOS_UDID', data.udid || '');",
+		"const hydrateNamedControls = (controls, entry) => {",
+		"hidden.value = 'false';",
+		"box.dispatchEvent(new Event('change', { bubbles: true }));",
+		"count.dispatchEvent(new Event('change', { bubbles: true }));",
+		"function clearSetupDraftID()",
+		"clearSetupDraftID();\n\t\t\t\t\twindow.location.assign",
+		"if (phase === 'ready') clearSetupDraftID();",
+		"const returnedID = String(data.id || '').trim();",
+		"if (!returnedID) throw new Error('Setup draft response did not include an ID.');",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("setup state contract missing %q", want)
+		}
+	}
+	if strings.Contains(content, `data-setup-device-field="IOS_UDID"]')) updateDeviceFields`) {
+		t.Fatal("derived iOS UDID must not trigger another simulator status refresh")
+	}
+	if strings.Contains(content, "st.textContent = check();") {
+		t.Fatal("success icon must be rendered as HTML")
+	}
+	if strings.Contains(content, "draftPersistence") {
+		t.Fatal("obsolete draftPersistence state remains")
+	}
+	if strings.Contains(content, "devicePreviewRevision") {
+		t.Fatal("obsolete setup-local device revision map remains")
+	}
+	if got := strings.Count(content, "const deviceDerivedRevision = new WeakMap();"); got != 1 {
+		t.Fatalf("device derived revision owners = %d, want exactly one shared owner", got)
+	}
+	for _, function := range []string{"refreshIOSSimulatorPanel", "refreshAndroidEmulatorAssetsPanel", "applyNormalizedPreview"} {
+		start := strings.Index(content, "const "+function)
+		if start < 0 {
+			t.Fatalf("missing %s", function)
+		}
+		body := content[start:]
+		if !strings.Contains(body, "currentDeviceDerivedRevision(root)") {
+			t.Fatalf("%s does not use the shared device revision", function)
+		}
+	}
+	if strings.Contains(content, "actionInput.value = data.default_action") {
+		t.Fatal("runner conflict action must not default from preview response")
+	}
+	if strings.Contains(content, "el.innerHTML = val") {
+		t.Fatal("review values must not be interpreted as HTML")
+	}
+}
+
+func TestStaticDeviceAddDefersCanonicalIdentityToServer(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	start := strings.Index(content, "const form = e.target.closest('[data-device-add-form]');")
+	end := strings.Index(content[start:], "// ── Review step")
+	if start < 0 || end < 0 {
+		t.Fatal("device-add submit handler is missing")
+	}
+	handler := content[start : start+end]
+	if strings.Contains(handler, "id.value = preview.device_id || ''") || strings.Contains(handler, "id.value = choice === 'update'") {
+		t.Fatal("device-add browser preview must not submit a canonical device ID")
+	}
+	if !strings.Contains(handler, "if (action) action.value = '';") || !strings.Contains(handler, "if (!form.dataset.deviceEditing && id) id.value = '';") {
+		t.Fatal("device-add must clear stale browser-derived identity before saving")
+	}
+	if !strings.Contains(handler, "if (action) action.value = choice;") {
+		t.Fatal("device-add conflict choice must remain explicit")
+	}
+}
+
 func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
 	script, err := os.ReadFile("static/app.js")
 	if err != nil {
@@ -413,6 +738,161 @@ func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
 	}
 	if !strings.Contains(string(script), "if (!runtimeOperationActive) hideBusy();") {
 		t.Fatal("main swaps must not dismiss an active runtime operation overlay")
+	}
+}
+
+func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"const runtimeRecoveryMaxDuration = 18 * 60 * 1000;",
+		"const deadline = Date.now() + runtimeRecoveryMaxDuration;",
+		"function fetchDashboardStatus(path, tokens, origins, signal)",
+		"fetch(dashboardURL(path, token, origin)",
+		"runtimeRecoveryAbort.abort()",
+		"clearTimeout(timeout);",
+		"finishRuntimeRecoveryTimeout()",
+		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
+		"fetchDashboardStatus(url, setupRecoveryTokens, setupRecoveryOrigins, controller.signal)",
+		"else refreshOverview('/setup', recovery.token, recovery.origin);",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("runtime recovery is missing %q", want)
+		}
+	}
+	if strings.Contains(content, "runtimeRecoveryMaxAttempts") {
+		t.Fatal("recovery must use a wall-clock deadline, not an attempt count")
+	}
+}
+
+func TestStaticReplacementRecoveryHandoffsOnlyExpectedCancellation(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"function isReplacementRecoveryOperation(operation)",
+		"if (!isReplacementRecoveryOperation(operation)) return;",
+		"function shouldHandoffToReplacementRecovery(operation, phase, snapshot)",
+		"phase === 'cancelled'",
+		"message === 'context canceled' || message === 'context cancelled'",
+		"if (shouldHandoffToReplacementRecovery(operation, phase, snapshot))",
+		"if (isReplacementRecoveryOperation(operation)) startRuntimeRecovery(operation);",
+		"else finishRuntimeOperationPollingFailure(operation);",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("replacement recovery handoff is missing %q", want)
+		}
+	}
+	if strings.Contains(content, "phase === 'failed' && operation.recovery === 'true'") {
+		t.Fatal("all replacement failures must not be hidden as recovery handoffs")
+	}
+	if strings.Count(content, "fetchDashboardStatus(") < 3 {
+		t.Fatal("runtime recovery callers do not share the Dashboard status fetcher")
+	}
+}
+
+func TestStaticDashboardTokenHasOneCurrentSource(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"let currentDashboardToken =",
+		"function setDashboardToken(token)",
+		"history.replaceState",
+		"else url.searchParams.delete('token');",
+		"operation.previousToken = currentDashboardToken;",
+		"if (operation.recovery !== 'true' && operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("dashboard token source is missing %q", want)
+		}
+	}
+	if strings.Contains(content, "new URLSearchParams(window.location.search).get('token') : tokenOverride") {
+		t.Fatal("dashboard URL helper must not repeatedly restore a stale query token")
+	}
+}
+
+func TestStaticDashboardTokenRecoveryDefersRotationUntilReplacementState(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	if strings.Contains(content, "if (token) setDashboardToken(token);") {
+		t.Fatal("configuration responses must not rotate the browser token before operation acceptance")
+	}
+	if !strings.Contains(content, "const recovery = await fetchDashboardStatus(") ||
+		!strings.Contains(content, "setDashboardToken(recovery.token);") {
+		t.Fatal("replacement recovery does not defer token rotation until a usable Dashboard responds")
+	}
+	if !strings.Contains(content, "function dashboardURL(path, tokenOverride, originOverride)") ||
+		!strings.Contains(content, "dashboardURL(path, token, origin)") {
+		t.Fatal("replacement recovery does not support Dashboard origin changes")
+	}
+	if !strings.Contains(content, "operation.recovery !== 'true'") {
+		t.Fatal("runtime-only saves must still apply the accepted token")
+	}
+}
+
+func TestStaticDashboardRequestsPreserveQueryToken(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	for _, want := range []string{
+		"htmx:configRequest",
+		"preserveDashboardToken",
+		"[sse-connect]",
+		"fetch(dashboardURL(url)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("dashboard token preservation missing %q", want)
+		}
+	}
+}
+
+func TestStaticBusyPollingIsSequential(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(script)
+	if strings.Contains(content, "setInterval(") {
+		t.Fatal("dashboard network polling must schedule the next request only after the current request completes")
+	}
+	for _, want := range []string{
+		"setTimeout(pollBusyControllerOperation, 500)",
+		"setTimeout(pollBusyStartupStatus, 1500)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("sequential busy polling missing %q", want)
+		}
+	}
+}
+
+func TestStaticAppShowsDeviceProvisioningProgress(t *testing.T) {
+	script, err := os.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`/api/controller/operations/current`,
+		`pollBusyControllerOperation`,
+		`trigger.matches('[data-device-add-form]')`,
+		`controllerProgress: trigger.dataset.busyControllerProgress === 'true'`,
+		`deviceSubmitInFlight`,
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("device operation progress UI missing %q", want)
+		}
 	}
 }
 
@@ -446,9 +926,7 @@ func TestRenderer_FullPage(t *testing.T) {
 	if strings.Contains(html, "across environments") {
 		t.Fatalf("overview should not render multi-environment copy: %s", html)
 	}
-	if strings.Contains(html, "OpenAPI docs at") || strings.Contains(html, "/docs") {
-		t.Fatalf("overview should not render obsolete docs copy: %s", html)
-	}
+
 	if !strings.Contains(html, `data-copy-value=`) {
 		t.Fatalf("overview should render public URL copy action: %s", html)
 	}
@@ -460,7 +938,7 @@ func TestPageData_ViewModels(t *testing.T) {
 		Runner: &Config{values: Defaults},
 		Snapshot: Snapshot{
 			Devices: []Device{
-				{Serial: "a", Status: Online},
+				{Serial: "a", Status: Online, Type: "android_phone"},
 				{Serial: "b", Status: Online},
 				{Serial: "c", Status: Offline},
 				{Serial: "d", Status: Degraded},
@@ -489,5 +967,127 @@ func TestPageData_ViewModels(t *testing.T) {
 	}
 	if n := d.WorkersTotal(); n != 2 {
 		t.Errorf("WorkersTotal = %d, want 2", n)
+	}
+	if devices := d.AndroidDevices(); len(devices) != 1 || devices[0].Serial != "a" {
+		t.Fatalf("AndroidDevices = %#v", devices)
+	}
+	if devices := d.AndroidPhoneDevices(); len(devices) != 1 {
+		t.Fatalf("AndroidPhoneDevices = %#v", devices)
+	}
+	d.Snapshot.Devices = []Device{
+		{Serial: "usb", Type: "android_phone", Mode: "usb", Status: Online},
+		{Serial: "wifi", Type: "android_phone", Mode: "wifi", Status: Online},
+		{Serial: "emu", Type: "android_emulator", Mode: "emulator", Status: Online},
+	}
+	if devices := d.AndroidUSBPhoneDevices(); len(devices) != 1 || devices[0].Serial != "usb" {
+		t.Fatalf("AndroidUSBPhoneDevices = %#v", devices)
+	}
+	if field := d.FieldWithLabel("CREDIMI_URL", "Platform"); field.Label != "Platform" {
+		t.Fatalf("FieldWithLabel = %#v", field)
+	}
+	if got := d.DefaultSSHKnownHostsPath(); got == "" {
+		t.Fatal("DefaultSSHKnownHostsPath is empty")
+	}
+	if steps := d.SetupSteps(); len(steps) != 5 || steps[0].ID != "identity" {
+		t.Fatalf("SetupSteps = %#v", steps)
+	}
+	if got := d.Field("CREDIMI_USER_API_KEY").MaskedValue(); got != "" {
+		t.Fatalf("MaskedValue = %q", got)
+	}
+	if got := d.Pretty("<b>ok</b>"); string(got) != "<b>ok</b>" {
+		t.Fatalf("Pretty = %q", got)
+	}
+}
+
+func TestPageDataRuntimeAndMaintenanceViews(t *testing.T) {
+	runner := &Config{values: map[string]string{
+		"CREDIMI_RUNNER_ID":           "acme/runner",
+		"CREDIMI_DEVICE_COUNT":        "1",
+		"CREDIMI_DEVICE_1_ID":         "acme/runner/pixel",
+		"CREDIMI_DEVICE_1_NAME":       "Pixel",
+		"CREDIMI_DEVICE_1_TYPE":       "android_phone",
+		"CREDIMI_DEVICE_1_MODE":       "usb",
+		"ANDROID_RUNNER_IMAGE":        "registry.example/runner:v1",
+		"ANDROID_PULL_POLICY":         "never",
+		"CREDIMI_RUNNER_ORGANIZATION": "acme",
+		"RUNNER_HOST":                 "0.0.0.0",
+		"RUNNER_PORT":                 "9000",
+		"CREDIMI_SERVICE_MODE":        "manual",
+		"RUNNER_PUBLIC_URL":           "https://runner.example",
+		"RUNNER_PUBLIC_PORT":          "443",
+		"CREDIMI_USER_API_KEY":        "secret-value",
+	}}
+	d := PageData{
+		Active:   "overview",
+		Runner:   runner,
+		Snapshot: Snapshot{Services: []Service{{ID: "runner", Expected: true, Critical: true, Status: Online, Image: "registry.example/runner:v2", Uptime: "2m"}}},
+		Data: map[string]any{
+			"Errors":        map[string]string{"RUNNER_PORT": "Must be a port number."},
+			"Flash":         "Saved",
+			"RuntimeStatus": dashboardruntime.RuntimeStatus{Configured: true, Actual: "running", RunnerRunning: true},
+			"Startup":       startupState{Phase: StartupReady, Message: "Ready"},
+			"RunnerVersion": "v1.2.3",
+			"Maintenance":   maintenance.Status{Runner: maintenance.Component{LatestVersion: "v1.2.4", UpdateAvailable: true}},
+		},
+	}
+
+	if devices := d.ConfiguredDevices(); len(devices) != 1 || devices[0].ID != "acme/runner/pixel" {
+		t.Fatalf("configured devices = %#v", devices)
+	}
+	if views := d.ConfiguredDeviceViews(); len(views) != 1 || !views[0].ADBWarning {
+		t.Fatalf("missing configured ADB warning for absent USB device: %#v", views)
+	}
+	if !d.RuntimeHealthy() || d.RuntimeHeadline() != "Running" || !d.RuntimeRunning() {
+		t.Fatalf("runtime state headline=%q healthy=%t running=%t", d.RuntimeHeadline(), d.RuntimeHealthy(), d.RuntimeRunning())
+	}
+	if d.RuntimeTogglePath() != "/runtime/stop" || d.RuntimeToggleLabel() != "Stop Runner" || !strings.Contains(d.RuntimeToggleBusyMessage(), "Stopping") {
+		t.Fatalf("runtime toggle = %q %q %q", d.RuntimeTogglePath(), d.RuntimeToggleLabel(), d.RuntimeToggleBusyMessage())
+	}
+	if d.RunnerAPIURL() != "http://127.0.0.1:9000" || d.PublicURL() != "https://runner.example:443" || d.PublicEndpointClass() != "ok" {
+		t.Fatalf("URLs api=%q public=%q", d.RunnerAPIURL(), d.PublicURL())
+	}
+	d.Runner.values["RUNNER_HOST"] = "::1"
+	if d.RunnerAPIURL() != "http://[::1]:9000" {
+		t.Fatalf("IPv6 API URL=%q", d.RunnerAPIURL())
+	}
+	d.Runner.values["RUNNER_HOST"] = "::"
+	if d.RunnerAPIURL() != "http://127.0.0.1:9000" {
+		t.Fatalf("wildcard API URL=%q", d.RunnerAPIURL())
+	}
+	if d.RunnerServiceDetails() != "Online · 2m" {
+		t.Fatalf("runner details=%q", d.RunnerServiceDetails())
+	}
+	if !d.HasErrors() || d.Field("RUNNER_PORT").Err == "" || d.Flash() != "Saved" || d.StartupPhase() != StartupReady || d.StartupMessage() != "Ready" {
+		t.Fatalf("template payload was not exposed: %#v", d)
+	}
+	if d.RunnerVersionState() != "New version available" || d.LatestRunnerVersion() != "v1.2.4" {
+		t.Fatalf("maintenance view = runner=%q", d.RunnerVersionState())
+	}
+	if d.RunnerVersion() != "v1.2.3" || d.AvatarInitials() != "AC" || d.Field("CREDIMI_USER_API_KEY").MaskedValue() == "secret-value" {
+		t.Fatalf("identity view runner=%q avatar=%q", d.RunnerVersion(), d.AvatarInitials())
+	}
+
+	d.Runner.values["CREDIMI_SERVICE_MODE"] = "cloudflare-managed"
+	d.Runner.values["RUNNER_DOMAIN"] = ""
+	if d.PublicURL() != "https://<runner-domain>" {
+		t.Fatalf("managed public URL = %q", d.PublicURL())
+	}
+	d.Runner.values["CREDIMI_SERVICE_MODE"] = "auto"
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "failed", LastError: "verify public endpoint failed"}
+	d.Snapshot.Services[0].Status = Offline
+	if d.PublicURL() != "Public endpoint unavailable" || d.PublicEndpointClass() != "warn" || d.RuntimeTogglePath() != "/runtime/start" || d.RuntimeHeadline() != "Runtime failed" {
+		t.Fatalf("stopped runtime view url=%q toggle=%q headline=%q", d.PublicURL(), d.RuntimeTogglePath(), d.RuntimeHeadline())
+	}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "starting"}
+	if d.PublicURL() != "Starting quick tunnel..." || d.PublicEndpointClass() != "info" || d.RuntimeHeadline() != "Starting" {
+		t.Fatalf("starting runtime view url=%q class=%q headline=%q", d.PublicURL(), d.PublicEndpointClass(), d.RuntimeHeadline())
+	}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "stopped", PendingServiceRestart: true}
+	if d.RuntimeControlsAvailable() {
+		t.Fatal("stale service still exposed a start control")
+	}
+	d.Data.(map[string]any)["RuntimeStatus"] = dashboardruntime.RuntimeStatus{Configured: true, Actual: "running", RunnerRunning: true, PendingServiceRestart: true}
+	if !d.RuntimeControlsAvailable() {
+		t.Fatal("running stale service lost the safe stop control")
 	}
 }

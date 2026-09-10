@@ -43,7 +43,7 @@ func (l *verboseLog) Printf(format string, args ...any) {
 	if l == nil {
 		return
 	}
-	_, _ = l.Write([]byte(fmt.Sprintf("%s runtime: %s\n", time.Now().UTC().Format(time.RFC3339Nano), fmt.Sprintf(format, args...))))
+	_, _ = fmt.Fprintf(l, "%s runtime: %s\n", time.Now().UTC().Format(time.RFC3339Nano), fmt.Sprintf(format, args...))
 }
 
 func (l *verboseLog) Close() error {

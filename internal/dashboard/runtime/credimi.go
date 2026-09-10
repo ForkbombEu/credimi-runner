@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,8 +19,11 @@ type Organization struct {
 }
 
 type RunnerPreview struct {
-	Organization string `json:"organization"`
-	RunnerID     string `json:"runner_id"`
+	Organization     string `json:"organization"`
+	RunnerID         string `json:"runner_id"`
+	ExistingRunnerID string `json:"existing_runner_id,omitempty"`
+	CanonifiedName   string `json:"canonified_name"`
+	Conflict         bool   `json:"conflict"`
 }
 
 type MobileRunnerListItem struct {
@@ -32,15 +36,48 @@ type MobileRunnerListResponse struct {
 }
 
 type RegisterRunnerRequest struct {
-	RunnerID     string `json:"runner_id"`
+	RunnerID     string `json:"runner_id,omitempty"`
 	Name         string `json:"name,omitempty"`
 	IP           string `json:"ip,omitempty"`
 	Description  string `json:"description,omitempty"`
-	Type         string `json:"type,omitempty"`
 	Port         string `json:"port,omitempty"`
-	Serial       string `json:"serial,omitempty"`
 	Organization string `json:"organization,omitempty"`
 	Published    *bool  `json:"published,omitempty"`
+}
+
+type DevicePreview struct {
+	RunnerID         string `json:"runner_id"`
+	DeviceID         string `json:"device_id"`
+	ExistingDeviceID string `json:"existing_device_id,omitempty"`
+	CanonifiedName   string `json:"canonified_name"`
+	Conflict         bool   `json:"conflict"`
+}
+
+type RegisterDeviceRequest struct {
+	Organization string `json:"organization,omitempty"`
+	DeviceID     string `json:"device_id,omitempty"`
+	RunnerID     string `json:"runner_id"`
+	Name         string `json:"name"`
+	Description  string `json:"description,omitempty"`
+	Type         string `json:"type"`
+	Serial       string `json:"serial,omitempty"`
+}
+
+type PauseRunnerRequest struct {
+	RunnerID string `json:"runner_id"`
+	Reason   string `json:"reason"`
+}
+
+type DeleteDeviceRequest struct {
+	Organization string `json:"organization,omitempty"`
+	RunnerID     string `json:"runner_id"`
+	DeviceID     string `json:"device_id"`
+}
+
+type ReconcileDevicesRequest struct {
+	Organization string   `json:"organization,omitempty"`
+	RunnerID     string   `json:"runner_id"`
+	DeviceIDs    []string `json:"device_ids"`
 }
 
 type CredimiClient struct {
@@ -120,7 +157,7 @@ func (c *CredimiClient) PreviewRunnerID(ctx context.Context, name, organization 
 		return RunnerPreview{}, fmt.Errorf("runner ID preview returned invalid JSON: %w", err)
 	}
 	if preview.RunnerID == "" {
-		preview.RunnerID = strings.TrimSpace(organization) + "/" + canonifyPlain(name)
+		return RunnerPreview{}, errors.New("runner ID preview returned an empty runner ID")
 	}
 	if preview.Organization == "" {
 		preview.Organization = strings.TrimSpace(organization)
@@ -146,6 +183,132 @@ func (c *CredimiClient) RegisterMobileRunner(ctx context.Context, request Regist
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return credimiResponseError("mobile runner registration failed", resp)
+	}
+	return nil
+}
+
+func (c *CredimiClient) PreviewDeviceID(ctx context.Context, runnerID, name, organization string) (DevicePreview, error) {
+	body, err := json.Marshal(map[string]string{"organization": strings.TrimSpace(organization), "runner_id": runnerID, "name": name})
+	if err != nil {
+		return DevicePreview{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-device", "preview-id"), bytes.NewReader(body))
+	if err != nil {
+		return DevicePreview{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return DevicePreview{}, fmt.Errorf("device ID preview failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return DevicePreview{}, credimiResponseError("device ID preview failed", resp)
+	}
+	var preview DevicePreview
+	if err := json.NewDecoder(resp.Body).Decode(&preview); err != nil {
+		return DevicePreview{}, fmt.Errorf("device ID preview returned invalid JSON: %w", err)
+	}
+	preview.DeviceID = strings.TrimPrefix(strings.TrimSpace(preview.DeviceID), "/")
+	preview.ExistingDeviceID = strings.TrimPrefix(strings.TrimSpace(preview.ExistingDeviceID), "/")
+	if preview.DeviceID == "" {
+		return DevicePreview{}, errors.New("device ID preview returned an empty device ID")
+	}
+	if preview.Conflict && preview.ExistingDeviceID == "" {
+		return DevicePreview{}, errors.New("device ID preview returned a conflict without an existing device ID")
+	}
+	return preview, nil
+}
+
+func (c *CredimiClient) RegisterMobileDevice(ctx context.Context, request RegisterDeviceRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-device"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile device registration failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return credimiResponseError("mobile device registration failed", resp)
+	}
+	return nil
+}
+
+// PauseMobileRunner marks the runner and all of its devices offline before a
+// dashboard-controlled shutdown can terminate the runner process.
+func (c *CredimiClient) PauseMobileRunner(ctx context.Context, request PauseRunnerRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-runner", "lifecycle", "pause"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile runner pause failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return credimiResponseError("mobile runner pause failed", resp)
+	}
+	return nil
+}
+
+func (c *CredimiClient) DeleteMobileDevice(ctx context.Context, request DeleteDeviceRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, utils.JoinURL(c.BaseURL, "api", "mobile-device"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile device deletion failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return credimiResponseError("mobile device deletion failed", resp)
+	}
+	return nil
+}
+
+// ReconcileMobileDevices removes Credimi records belonging to this runner that
+// are absent from the runner's persisted device inventory.
+func (c *CredimiClient) ReconcileMobileDevices(ctx context.Context, request ReconcileDevicesRequest) error {
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, utils.JoinURL(c.BaseURL, "api", "mobile-device", "reconcile"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Credimi-Api-Key", c.APIKey)
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("mobile device reconciliation failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return credimiResponseError("mobile device reconciliation failed", resp)
 	}
 	return nil
 }

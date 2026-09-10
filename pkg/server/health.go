@@ -7,17 +7,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	genhealth "github.com/forkbombeu/credimi-runner/pkg/gen/health"
 )
 
 type HealthService struct {
-	adbPath string
-	runADB  func(context.Context, string, ...string) ([]byte, error)
+	adbPath       string
+	runADB        func(context.Context, string, ...string) ([]byte, error)
+	RuntimeConfig func() (dashboardruntime.RunnerRuntimeConfig, error)
+	resolveADB    func() (string, error)
 }
 
 func NewHealthService() *HealthService {
 	return &HealthService{
-		adbPath: "adb",
+		adbPath:    "adb", // retained for direct standalone health instances.
+		resolveADB: androidtools.ResolveADB,
 		runADB: func(ctx context.Context, cmd string, args ...string) ([]byte, error) {
 			return exec.CommandContext(ctx, cmd, args...).Output()
 		},
@@ -25,17 +30,22 @@ func NewHealthService() *HealthService {
 }
 
 func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, error) {
+	if !s.requiresADB() {
+		return &genhealth.CheckResult{Status: "connected", Devices: []*genhealth.DeviceInfo{}}, nil
+	}
+	adbPath := s.adbPath
+	if s.resolveADB != nil {
+		path, err := s.resolveADB()
+		if err != nil {
+			return nil, adbHealthError(err)
+		}
+		adbPath = path
+	}
 	adbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	devices, err := s.getDevicesWithDetails(adbCtx)
+	devices, err := s.getDevicesWithDetailsAt(adbCtx, adbPath)
 	if err != nil {
-		return nil, &genhealth.APIError{
-			Name:    "service_unavailable",
-			Code:    http.StatusServiceUnavailable,
-			Domain:  "health",
-			Reason:  "adb unavailable",
-			Message: err.Error(),
-		}
+		return nil, adbHealthError(err)
 	}
 
 	return &genhealth.CheckResult{
@@ -44,8 +54,32 @@ func (s *HealthService) Check(ctx context.Context) (*genhealth.CheckResult, erro
 	}, nil
 }
 
-func (s *HealthService) getDevicesWithDetails(ctx context.Context) ([]*genhealth.DeviceInfo, error) {
-	output, err := s.runADB(ctx, s.adbPath, "devices", "-l")
+func adbHealthError(err error) *genhealth.APIError {
+	return &genhealth.APIError{Name: "service_unavailable", Code: http.StatusServiceUnavailable, Domain: "health", Reason: "adb unavailable", Message: err.Error()}
+}
+
+func (s *HealthService) requiresADB() bool {
+	if s.RuntimeConfig == nil {
+		return true
+	}
+	inventory, err := s.RuntimeConfig()
+	if err != nil {
+		return true
+	}
+	for _, device := range inventory.Devices {
+		if !device.Enabled {
+			continue
+		}
+		switch device.Type {
+		case "android_phone", "android_emulator", "redroid":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *HealthService) getDevicesWithDetailsAt(ctx context.Context, adbPath string) ([]*genhealth.DeviceInfo, error) {
+	output, err := s.runADB(ctx, adbPath, "devices", "-l")
 	if err != nil {
 		return nil, err
 	}

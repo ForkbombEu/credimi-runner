@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1.4
 
-FROM golang:1.26.5-bookworm AS builder
+FROM golang:1.26.6-bookworm AS builder
 
 WORKDIR /src
 ARG TARGETOS=linux
 ARG TARGETARCH
 ARG VERSION=dev
 ARG BUILD_TIME
+ARG CLOUDFLARED_VERSION=2026.8.2
 ENV GOCACHE=/go-cache
 ENV GOMODCACHE=/gomod-cache
 
@@ -24,159 +25,60 @@ RUN --mount=type=secret,id=credimi_extra_pat,required=true \
     && rm -f /root/.gitconfig
 
 COPY . ./
-RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache go generate ./...
-RUN --mount=type=cache,target=/gomod-cache --mount=type=cache,target=/go-cache \
-    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags=credimi_extra \
+RUN --mount=type=secret,id=credimi_extra_pat,required=true \
+    --mount=type=cache,target=/gomod-cache \
+    --mount=type=cache,target=/go-cache \
+    pat="$(cat /run/secrets/credimi_extra_pat)" \
+    && git config --global url."https://${pat}@github.com/".insteadOf "https://github.com/" \
+    && go generate ./... \
+    && rm -f /root/.gitconfig
+RUN --mount=type=secret,id=credimi_extra_pat,required=true \
+    --mount=type=cache,target=/gomod-cache \
+    --mount=type=cache,target=/go-cache \
+    pat="$(cat /run/secrets/credimi_extra_pat)" \
+    && git config --global url."https://${pat}@github.com/".insteadOf "https://github.com/" \
+    && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags=credimi_extra \
     -ldflags "-s -w -X github.com/forkbombeu/credimi-runner/internal/buildinfo.Version=${VERSION} -X github.com/forkbombeu/credimi-runner/internal/buildinfo.BuildTime=${BUILD_TIME}" \
-    -o /out/credimi-runner main.go
+    -o /out/credimi-runner main.go \
+    && rm -f /root/.gitconfig
 
 FROM ghcr.io/forkbombeu/avdctl:latest AS avdctl
 
-
-############################
-# Base runtime (physical devices)
-############################
-FROM ubuntu:24.04 AS device
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    bash \
-    jq \
-    openjdk-17-jre-headless \
-    usbutils \
-    unzip \
-    adb \
-    aapt \
-    ffmpeg \
-    fontconfig \
-    fonts-noto-mono \
-    fonts-noto-color-emoji \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN mkdir -p /etc/fonts/conf.d && \
-    printf '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <alias>\n    <family>monospace</family>\n    <prefer>\n      <family>Noto Color Emoji</family>\n    </prefer>\n  </alias>\n</fontconfig>' \
-    > /etc/fonts/conf.d/51-emoji-monospace.conf && \
-    fc-cache -fv
-
-ENV LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    LC_CTYPE=C.UTF-8 \
-    JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8"
-
-# Install Maestro via official installer
-RUN curl -fsSL https://get.maestro.mobile.dev | bash \
-    && ln -s /root/.maestro/bin/maestro /usr/local/bin/maestro
-
+FROM ubuntu:24.04
+ARG TARGETARCH
+ARG CLOUDFLARED_VERSION=2026.8.2
+ARG CLOUDFLARED_SHA256_AMD64=fcfb02b575a52ca1af2e3267af4e1517bcdeb30ac48c834c69abaed3c0576ad2
+ARG CLOUDFLARED_SHA256_ARM64=7747d94570fb390cf47dcb4f9555c193c6355cda9793f0d878d9049e5d6a7790
 COPY --from=builder /out/credimi-runner /usr/local/bin/credimi-runner
 COPY --from=avdctl /usr/local/bin/avdctl /usr/local/bin/avdctl
-COPY --from=builder /src/pkg/server/docs /src/pkg/server/docs
-COPY --from=builder /src/pkg/gen/http /src/pkg/gen/http
-RUN chmod +x /usr/local/bin/credimi-runner /usr/local/bin/avdctl
-
-ENV CREDIMI_TEMP_DIR=/credimi/
-RUN mkdir -p ${CREDIMI_TEMP_DIR}/workflows
-
-# Physical-device entrypoint
-COPY scripts/entrypoint.sh /usr/local/bin/phone-connect
-RUN chmod +x /usr/local/bin/phone-connect
-
-ENTRYPOINT ["/usr/local/bin/phone-connect"]
-CMD ["--help"]
-
-############################
-# Phone runtime alias (for CI target compatibility)
-############################
-FROM device AS phone
-
-############################
-# Emulator runtime (extends device)
-############################
-FROM device AS emulator
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-    wget \
-    git \
-    psmisc \
-    qemu-kvm \
-    qemu-utils \
-    libvirt-daemon-system \
-    libvirt-clients \
-    bridge-utils \
-    libxkbfile1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxi6 \
-    libxrandr2 \
-    libxtst6 \
-    libnss3 \
-    libxdamage1 \
-    libxrender1 \
-    libatk1.0-0 \
-    libcairo2 \
-    libdbus-1-3 \
-    libgl1 \
-    libgtk-3-0 \
-    libpulse0 \
-    && rm -rf /var/lib/apt/lists/*
-
-
-
-WORKDIR /opt
-
-# Android SDK
-ENV ANDROID_SDK_ROOT=/opt/android-sdk
-ENV ANDROID_HOME=$ANDROID_SDK_ROOT
-ENV PATH=$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/build-tools/35.0.0:$PATH
-
-RUN mkdir -p $ANDROID_SDK_ROOT/cmdline-tools \
-    && wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip \
-    && unzip -q cmdline-tools.zip -d $ANDROID_SDK_ROOT/cmdline-tools \
-    && mv $ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest \
-    && rm cmdline-tools.zip
-
-RUN --mount=type=cache,target=/opt/android-sdk/.android/cache \
-    --mount=type=cache,target=/opt/android-sdk/system-images \
-    yes | sdkmanager --licenses > /dev/null || true
-
-RUN sdkmanager --update
-RUN sdkmanager --install \
-    "platform-tools" \
-    "platforms;android-35" \
-    "system-images;android-35;google_apis_playstore;x86_64" \
-    "emulator" \
-    "build-tools;35.0.0"
-
-RUN rm -rf ${ANDROID_HOME}/emulator \
-    && wget -q https://dl.google.com/android/repository/emulator-linux_x64-13025442.zip -O emulator-linux_x64-13025442.zip \
-    && unzip -q emulator-linux_x64-13025442.zip -d ${ANDROID_HOME}/ \
-    && rm emulator-linux_x64-13025442.zip \
-    && ${ANDROID_HOME}/emulator/emulator -version
-
-RUN echo "auto.update=false" >> ${ANDROID_HOME}/emulator/emulator-user.ini
-
-# AVDs are stored outside /root/.android so mounting adb keys does not hide base AVDs.
-ENV ANDROID_AVD_HOME=/avd-home
-ENV AVDCTL_GOLDEN_DIR=/avd-golden
-RUN mkdir -p ${ANDROID_AVD_HOME} ${AVDCTL_GOLDEN_DIR}
-
-ARG ADB_PRIVATE_KEY
-ARG ADB_PUBLIC_KEY
-RUN set -eux; \
-    mkdir -p /root/.android; \
-    if [ -n "${ADB_PRIVATE_KEY:-}" ]; then \
-    printf "%s\n" "$ADB_PRIVATE_KEY" > /root/.android/adbkey; \
-    chmod 600 /root/.android/adbkey; \
-    fi; \
-    if [ -n "${ADB_PUBLIC_KEY:-}" ]; then \
-    printf "%s\n" "$ADB_PUBLIC_KEY" > /root/.android/adbkey.pub; \
-    chmod 644 /root/.android/adbkey.pub; \
-    fi
-
-
-ENTRYPOINT ["/usr/local/bin/phone-connect"]
-CMD ["--emulator"]
+ENV DEBIAN_FRONTEND=noninteractive \
+    ANDROID_SDK_ROOT=/opt/android-sdk \
+    ANDROID_HOME=/opt/android-sdk \
+    ANDROID_AVD_HOME=/root/.android/avd \
+    ANDROID_SDK_BOOTSTRAP=/opt/android-sdk-bootstrap \
+    PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:/opt/android-sdk-bootstrap/cmdline-tools/latest/bin:/opt/android-sdk-bootstrap/platform-tools:/root/.maestro/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl bash openjdk-17-jre-headless openssh-client ffmpeg \
+    unzip wget qemu-kvm qemu-utils libxkbfile1 libxcomposite1 libxcursor1 libxi6 \
+    libxrandr2 libxtst6 libnss3 libxdamage1 libxrender1 libatk1.0-0 libcairo2 \
+    libdbus-1-3 libgl1 libgtk-3-0 libpulse0 && \
+    mkdir -p "$ANDROID_SDK_BOOTSTRAP/cmdline-tools" /opt/android-sdk && \
+    curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/android-cmdline-tools.zip && \
+    unzip -q /tmp/android-cmdline-tools.zip -d "$ANDROID_SDK_BOOTSTRAP/cmdline-tools" && \
+    mv "$ANDROID_SDK_BOOTSTRAP/cmdline-tools/cmdline-tools" "$ANDROID_SDK_BOOTSTRAP/cmdline-tools/latest" && \
+    yes | sdkmanager --sdk_root="$ANDROID_SDK_BOOTSTRAP" --licenses >/dev/null && \
+    sdkmanager --sdk_root="$ANDROID_SDK_BOOTSTRAP" "platform-tools" "build-tools;35.0.0" && \
+    ln -s "$ANDROID_SDK_BOOTSTRAP/build-tools/35.0.0/aapt2" /usr/local/bin/aapt2 && \
+    curl -fsSL https://get.maestro.mobile.dev | bash && \
+    case "$TARGETARCH" in \
+        amd64) cloudflared_sha256="$CLOUDFLARED_SHA256_AMD64" ;; \
+        arm64) cloudflared_sha256="$CLOUDFLARED_SHA256_ARM64" ;; \
+        *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac && \
+    cloudflared_asset="cloudflared-linux-${TARGETARCH}" && \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${cloudflared_asset}" -o /tmp/cloudflared && \
+    printf '%s  %s\n' "$cloudflared_sha256" /tmp/cloudflared | sha256sum -c - && \
+    install -m 0555 /tmp/cloudflared /usr/local/bin/cloudflared && \
+    chmod 0555 /usr/local/bin/credimi-runner /usr/local/bin/avdctl && \
+    rm -rf /var/lib/apt/lists/* /tmp/android-cmdline-tools.zip /tmp/cloudflared
+ENTRYPOINT ["/usr/local/bin/credimi-runner"]

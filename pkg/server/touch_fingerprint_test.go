@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/stretchr/testify/require"
@@ -34,14 +35,15 @@ func TestTouchFingerprint_Success(t *testing.T) {
 			slept = d
 		},
 	}
+	deps.RuntimeConfig = &dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/emulator", Enabled: true, Serial: "emulator-5554"}}}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, deps)
 
-	result, apiErr := server.touchFingerprintLogic()
+	result, apiErr := server.touchFingerprintLogic("acme/runner/emulator")
 
 	require.Nil(t, apiErr)
 	require.Equal(t, "fingerprint touch executed", result.Status)
 	require.Equal(t, "adb", runner.name)
-	require.Equal(t, []string{"-e", "emu", "finger", "touch", "1"}, runner.args)
+	require.Equal(t, []string{"-s", "emulator-5554", "emu", "finger", "touch", "1"}, runner.args)
 	require.Equal(t, 5*time.Second, slept)
 }
 
@@ -51,9 +53,10 @@ func TestTouchFingerprint_Error(t *testing.T) {
 		CommandRunner: fakeRunner,
 		Sleeper:       func(time.Duration) {},
 	}
+	deps.RuntimeConfig = &dashboardruntime.RunnerRuntimeConfig{Host: dashboardruntime.Values{"CREDIMI_RUNNER_ID": "acme/runner"}, Devices: []dashboardruntime.DeviceRuntimeConfig{{ID: "acme/runner/emulator", Enabled: true, Serial: "emulator-5554"}}}
 	server := NewRunnerServiceWithDeps(NewProcessStore(), utils.Instance{}, deps)
 
-	result, apiErr := server.touchFingerprintLogic()
+	result, apiErr := server.touchFingerprintLogic("acme/runner/emulator")
 
 	require.Nil(t, result)
 	require.Equal(t, &runner.APIError{

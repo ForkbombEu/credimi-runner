@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/observability"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
+	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -31,6 +35,16 @@ func NewRunnerService(store *ProcessStore, instance utils.Instance) *runnerServi
 
 func NewRunnerServiceWithDeps(store *ProcessStore, instance utils.Instance, deps Deps) *runnerService {
 	deps.WithDefaults()
+	// Typed inventory belongs to the managed runner. Do not implicitly load a
+	// developer's ~/.config file for a direct server or test process.
+	if deps.RuntimeConfig == nil && deps.RuntimeConfigLoader == nil && strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")) != "" {
+		deps.RuntimeConfigLoader = func() (dashboardruntime.RunnerRuntimeConfig, error) {
+			return dashboardruntime.RuntimeConfigFromEnvironment()
+		}
+		if config, err := dashboardruntime.RuntimeConfigFromEnvironment(); err == nil {
+			deps.RuntimeConfig = &config
+		}
+	}
 	return &runnerService{
 		Store:     store,
 		Instance:  instance,
@@ -49,6 +63,9 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	startDelay := startupWorkerDelay()
 	startAttempts := 0
 	runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID")
+	if config, err := s.currentRuntimeConfig(); err == nil {
+		runnerID = config.Host["CREDIMI_RUNNER_ID"]
+	}
 	runnerPublished, _ := strconv.ParseBool(utils.GetEnvironmentVariable("CREDIMI_RUNNER_PUBLISHED"))
 
 	inst := s.Instance
@@ -61,7 +78,10 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 			return err
 		}
 		for _, namespace := range namespaces {
-			startAttempts = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			startAttempts, err = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -71,7 +91,10 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 			return err
 		}
 		for _, namespace := range namespaces {
-			startAttempts = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			startAttempts, err = s.startWorkerIfNeeded(ctx, span, namespace, namespace, runnerID, startAttempts, startDelay)
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -80,8 +103,8 @@ func (s *runnerService) StartExistingWorkers(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	startAttempts = s.startWorkerIfNeeded(ctx, span, orgName, namespace, runnerID, startAttempts, startDelay)
-	return nil
+	_, err = s.startWorkerIfNeeded(ctx, span, orgName, namespace, runnerID, startAttempts, startDelay)
+	return err
 }
 
 func (s *runnerService) fetchAdminNamespaces(ctx context.Context, inst utils.Instance) ([]string, error) {
@@ -211,20 +234,28 @@ func (s *runnerService) startWorkerIfNeeded(
 	runnerID string,
 	startAttempts int,
 	startDelay time.Duration,
-) int {
+) (int, error) {
 	attrs := workerTraceAttrs(orgName, namespace, runnerID)
 	if namespace == "" {
 		span.AddEvent("worker.start_skipped", trace.WithAttributes(append(attrs, attribute.String("reason", "namespace_empty"))...))
-		return startAttempts
+		return startAttempts, nil
 	}
-	if proc, exists := s.Store.Get(namespace); exists && proc.Running {
-		span.AddEvent("worker.already_running", trace.WithAttributes(attrs...))
-		log.Printf("Worker already running for namespace %s", namespace)
-		observability.Info(ctx, "credimi-runner.startup", "worker already running for namespace",
-			observability.String("organization.name", orgName),
-			observability.String("namespace", namespace),
-		)
-		return startAttempts
+	if proc, exists := s.Store.Get(namespace); exists {
+		if proc.IsRunning() {
+			span.AddEvent("worker.already_running", trace.WithAttributes(attrs...))
+			log.Printf("Worker already running for namespace %s", namespace)
+			observability.Info(ctx, "credimi-runner.startup", "worker already running for namespace",
+				observability.String("organization.name", orgName),
+				observability.String("namespace", namespace),
+			)
+			return startAttempts, nil
+		}
+		if err := proc.Start(ctx); err != nil {
+			span.RecordError(err)
+			log.Printf("Failed to restart worker for %s: %v", namespace, err)
+			return startAttempts, err
+		}
+		return startAttempts + 1, nil
 	}
 	if startDelay > 0 && startAttempts > 0 {
 		s.Deps.Sleeper(startDelay)
@@ -242,10 +273,22 @@ func (s *runnerService) startWorkerIfNeeded(
 		observability.String("organization.name", orgName),
 		observability.String("namespace", namespace),
 	)
-	proc := NewProcess(namespace, s.Deps.WorkerRunnerFactory(namespace))
+	var provider workermanager.RuntimeConfigProvider
+	if s.Deps.RuntimeConfigLoader != nil || s.Deps.RuntimeConfig != nil {
+		if _, err := s.currentRuntimeConfig(); err == nil {
+			provider = func() (workermanager.RunnerRuntimeConfig, error) {
+				config, err := s.currentRuntimeConfig()
+				if err != nil {
+					return workermanager.RunnerRuntimeConfig{}, err
+				}
+				return workerInventory(config), nil
+			}
+		}
+	}
+	proc := NewProcess(namespace, s.Deps.WorkerFactory(namespace, provider))
 	s.Store.Add(proc)
 
-	if err := proc.Start(); err != nil {
+	if err := proc.Start(ctx); err != nil {
 		span.AddEvent("worker.start_failed", trace.WithAttributes(append(attrs, attribute.String("error", err.Error()))...))
 		span.RecordError(err)
 		log.Printf("Failed to start worker for %s: %v", namespace, err)
@@ -258,11 +301,21 @@ func (s *runnerService) startWorkerIfNeeded(
 			observability.String("organization.name", orgName),
 			observability.String("namespace", namespace),
 		)
-		return startAttempts
+		return startAttempts, err
 	}
 	span.AddEvent("worker.started", trace.WithAttributes(attrs...))
 
-	return startAttempts
+	return startAttempts, nil
+}
+
+func (s *runnerService) currentRuntimeConfig() (dashboardruntime.RunnerRuntimeConfig, error) {
+	if s.Deps.RuntimeConfigLoader != nil {
+		return s.Deps.RuntimeConfigLoader()
+	}
+	if s.Deps.RuntimeConfig != nil {
+		return *s.Deps.RuntimeConfig, nil
+	}
+	return dashboardruntime.RunnerRuntimeConfig{}, fmt.Errorf("runtime configuration is unavailable")
 }
 
 func startupWorkerDelay() time.Duration {

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"os"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/androidtools"
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
 	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 )
@@ -35,13 +36,16 @@ type CommandRunner interface {
 	Run(name string, args ...string) ([]byte, error)
 }
 
-type WorkerRunnerFactory func(namespace string) func(ctx context.Context) error
+type WorkerFactory func(namespace string, provider workermanager.RuntimeConfigProvider) ProcessRunFunc
+type RuntimeConfigLoader func() (dashboardruntime.RunnerRuntimeConfig, error)
 
 type Deps struct {
 	HTTPClient          HTTPClient
 	FileStore           FileStore
 	CommandRunner       CommandRunner
-	WorkerRunnerFactory WorkerRunnerFactory
+	WorkerFactory       WorkerFactory
+	RuntimeConfig       *dashboardruntime.RunnerRuntimeConfig
+	RuntimeConfigLoader RuntimeConfigLoader
 	Sleeper             func(time.Duration)
 	ManagedWorkflowRoot string
 }
@@ -56,8 +60,13 @@ func (d *Deps) WithDefaults() {
 	if d.CommandRunner == nil {
 		d.CommandRunner = execCommandRunner{}
 	}
-	if d.WorkerRunnerFactory == nil {
-		d.WorkerRunnerFactory = workermanager.RunTemporalWorker
+	if d.WorkerFactory == nil {
+		d.WorkerFactory = func(namespace string, provider workermanager.RuntimeConfigProvider) ProcessRunFunc {
+			if provider == nil {
+				return workermanager.RunTemporalWorker(namespace)
+			}
+			return workermanager.RunTemporalWorkerWithConfigProvider(namespace, provider)
+		}
 	}
 	if d.Sleeper == nil {
 		d.Sleeper = time.Sleep
@@ -113,5 +122,12 @@ func (osFileStore) RemoveAll(path string) error {
 type execCommandRunner struct{}
 
 func (execCommandRunner) Run(name string, args ...string) ([]byte, error) {
+	if name == "adb" {
+		resolved, err := androidtools.ResolveADB()
+		if err != nil {
+			return nil, err
+		}
+		name = resolved
+	}
 	return exec.Command(name, args...).CombinedOutput()
 }

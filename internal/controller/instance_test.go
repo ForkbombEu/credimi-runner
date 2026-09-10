@@ -8,8 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/forkbombeu/credimi-runner/internal/atomicfile"
 )
 
 func TestControllerLeaseExcludesSecondOwnerAndPublishesMetadata(t *testing.T) {
@@ -50,6 +54,27 @@ func TestControllerLeaseExcludesSecondOwnerAndPublishesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer third.Close()
+}
+
+func TestControllerLeasePublishKeepsSharedMetadataReadable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(atomicfile.OwnerUIDEnv, strconv.Itoa(os.Getuid()))
+	t.Setenv(atomicfile.OwnerGIDEnv, strconv.Itoa(os.Getgid()))
+	lease, err := Acquire(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	if err := lease.Publish(Metadata{ControllerID: "controller-1", PID: os.Getpid(), ConfigDir: dir, ListenHost: "127.0.0.1", ListenPort: 8051, IdentityToken: "token", ProbeURL: "http://127.0.0.1:8051/identity"}); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := ReadMetadata(dir)
+	if err != nil || metadata.ControllerID != "controller-1" {
+		t.Fatalf("published controller metadata = %#v, err=%v", metadata, err)
+	}
+	if info, err := os.Stat(filepath.Join(dir, "controller.json")); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("controller metadata mode = %v", err)
+	}
 }
 
 func TestControllerProbeRejectsUnavailableEndpoint(t *testing.T) {
@@ -100,5 +125,30 @@ func TestControllerIdentityTokenAndMetadataValidation(t *testing.T) {
 	}
 	if _, err := ReadMetadata(dir); err == nil {
 		t.Fatal("expected invalid metadata error")
+	}
+}
+
+func TestControllerLeaseAndProbeRejectInvalidState(t *testing.T) {
+	var lease *Lease
+	if err := lease.Publish(Metadata{}); err == nil {
+		t.Fatal("nil lease publish unexpectedly succeeded")
+	}
+	if err := Probe(context.Background(), Metadata{ProbeURL: "://bad"}); err == nil {
+		t.Fatal("invalid probe URL unexpectedly succeeded")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	if err := Probe(context.Background(), Metadata{ProbeURL: server.URL, IdentityToken: "token"}); err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("probe HTTP failure = %v", err)
+	}
+	server.Close()
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("{"))
+	}))
+	defer server.Close()
+	if err := Probe(context.Background(), Metadata{ProbeURL: server.URL, IdentityToken: "token"}); err == nil || !strings.Contains(err.Error(), "decode controller identity") {
+		t.Fatalf("probe decode failure = %v", err)
 	}
 }

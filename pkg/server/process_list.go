@@ -7,7 +7,7 @@ func (s *runnerService) processList() []string {
 func runningProcessNames(procs []*Process) []string {
 	list := make([]string, 0, len(procs))
 	for _, p := range procs {
-		if p.Running {
+		if p.IsRunning() {
 			list = append(list, p.Name)
 		}
 	}

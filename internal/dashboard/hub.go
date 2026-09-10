@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/forkbombeu/credimi-runner/internal/controller"
 	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 )
 
@@ -33,13 +32,11 @@ type client struct {
 }
 
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[*client]struct{}
-	cfg        *Config
-	composeDir string
-	render     *Renderer
-	statusFn   func() dashboardruntime.RuntimeStatus
-	observeFn  func(context.Context, dashboardruntime.Values) controller.ObservedRuntime
+	mu       sync.RWMutex
+	clients  map[*client]struct{}
+	cfg      *Config
+	render   *Renderer
+	statusFn func() dashboardruntime.RuntimeStatus
 
 	snapMu  sync.RWMutex
 	snap    Snapshot
@@ -56,14 +53,8 @@ type Worker struct {
 	Enabled bool
 }
 
-func NewHub(cfg *Config, composeDir string, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus) *Hub {
-	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, composeDir: composeDir, render: r, statusFn: statusFn}
-}
-
-func NewHubWithObservation(cfg *Config, composeDir string, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus, observeFn func(context.Context, dashboardruntime.Values) controller.ObservedRuntime) *Hub {
-	hub := NewHub(cfg, composeDir, r, statusFn)
-	hub.observeFn = observeFn
-	return hub
+func NewHub(cfg *Config, r *Renderer, statusFn func() dashboardruntime.RuntimeStatus) *Hub {
+	return &Hub{clients: map[*client]struct{}{}, cfg: cfg, render: r, statusFn: statusFn}
 }
 
 func (h *Hub) add(c *client) {
@@ -121,38 +112,14 @@ func (h *Hub) Run(ctx context.Context, interval time.Duration) {
 func (h *Hub) poll(ctx context.Context) {
 	devices := append(probeAndroid(ctx), probeIOS(ctx)...)
 	values := dashboardruntime.Values(h.cfg.Snapshot())
-	plan := dashboardruntime.BuildRuntimePlan(h.composeDir, values)
 	runtimeRunning := false
 	if h.statusFn != nil {
 		status := h.statusFn()
-		runtimeRunning = status.RunnerRunning || status.ComposeRunning
+		runtimeRunning = status.RunnerRunning
 	}
-	var services []Service
-	var observation controller.ObservedRuntime
-	observationStale := false
-	if h.observeFn != nil {
-		observation = h.observeFn(ctx, values)
-		observationStale = observation.Stale(time.Now(), 6*time.Second)
-		services = servicesFromObservation(observation)
-		for _, expected := range plan.ExpectedServices {
-			if expected.Kind == "external" {
-				services = append(services, Service{ID: expected.ID, Name: expected.Name, Role: expected.Role, Status: Idle, Expected: true, Critical: expected.Critical})
-			}
-		}
-	} else {
-		services = probeServices(ctx, h.composeDir, plan, runtimeRunning)
-	}
-	temporalAddr := h.cfg.Get("TEMPORAL_ADDRESS")
-	for i := range services {
-		if services[i].ID == "temporal" {
-			services[i].Role = temporalAddr
-			services[i].Image = "gRPC"
-			services[i].Status = dialTemporal(temporalAddr)
-			services[i].Uptime = "—"
-		}
-	}
+	services := probeServices(values, runtimeRunning)
 
-	snap := Snapshot{Services: services, Devices: devices, Time: time.Now(), Observation: observation, ObservationStale: observationStale}
+	snap := Snapshot{Services: services, Devices: devices, Time: time.Now()}
 	workers := h.runningWorkers(ctx, services)
 
 	h.snapMu.Lock()
@@ -163,6 +130,7 @@ func (h *Hub) poll(ctx context.Context) {
 	// Render and broadcast each live region.
 	h.broadcast("health", event{name: "pill", data: h.render.Fragment("pill", h.pillData(snap))})
 	h.broadcast("devices", event{name: "rows", data: h.render.Fragment("device_rows", devices)})
+	h.broadcast("devices", event{name: "configured", data: h.render.Fragment("configured_device_rows", PageData{Runner: h.cfg, Snapshot: snap})})
 	h.broadcast("workers", event{name: "rows", data: h.render.Fragment("worker_rows", workers)})
 }
 
@@ -255,7 +223,7 @@ func (h *Hub) deriveWorkers(services []Service) []Worker {
 	temporalUp := false
 	for _, s := range services {
 		switch s.ID {
-		case "runner", "runner_host", "runner_host_process":
+		case "runner":
 			runtimeUp = runtimeUp || s.Status == Online
 		case "temporal":
 			temporalUp = s.Status == Online
@@ -302,8 +270,19 @@ func (h *Hub) pillData(s Snapshot) PillData {
 			issues++
 		}
 	}
+	configuredIssues := map[string]bool{}
+	if h.cfg != nil {
+		for _, configured := range (PageData{Runner: h.cfg, Snapshot: s}).ConfiguredDeviceViews() {
+			if configured.ADBWarning {
+				if serial := strings.TrimSpace(configured.Serial); serial != "" {
+					configuredIssues[serial] = true
+				}
+				issues++
+			}
+		}
+	}
 	for _, d := range s.Devices {
-		if d.Status == Offline {
+		if (d.Status == Offline || d.Status == Degraded) && !configuredIssues[strings.TrimSpace(d.Serial)] {
 			issues++
 		}
 	}

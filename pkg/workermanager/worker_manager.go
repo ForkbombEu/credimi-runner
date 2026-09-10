@@ -22,17 +22,14 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
-	"go.temporal.io/sdk/workflow"
 )
-
-var clientCache sync.Map
 
 const defaultTemporalAddress = "temporal.credimi.io:7233"
 
 type temporalWorker interface {
-	RegisterWorkflowWithOptions(w interface{}, options workflow.RegisterOptions)
 	RegisterActivityWithOptions(a interface{}, options activity.RegisterOptions)
-	Run(interruptCh <-chan interface{}) error
+	Start() error
+	Stop()
 }
 
 var (
@@ -42,6 +39,38 @@ var (
 	}
 	sleepWithContextFn = sleepWithContext
 )
+
+type registeredActivity struct {
+	Activity workflowengine.ExecutableActivity
+	Mobile   bool
+}
+
+func registeredActivities() []registeredActivity {
+	return []registeredActivity{
+		{Activity: activities.NewHTTPActivity()},
+		{Activity: activities.NewRunMobileFlowActivity(), Mobile: true},
+		{Activity: activities.NewSetupMobileDeviceActivity(), Mobile: true},
+		{Activity: activities.NewApkInstallActivity(), Mobile: true},
+		{Activity: activities.NewApkPostInstallChecksActivity(), Mobile: true},
+		{Activity: activities.NewStartIOSSimulatorActivity(), Mobile: true},
+		{Activity: activities.NewInstallIOSAppActivity(), Mobile: true},
+		{Activity: activities.NewIOSPostInstallChecksActivity(), Mobile: true},
+		{Activity: activities.NewStartRecordingActivity(), Mobile: true},
+		{Activity: activities.NewStartIOSRecordingActivity(), Mobile: true},
+		{Activity: activities.NewStopRecordingActivity(), Mobile: true},
+		{Activity: activities.NewStopIOSRecordingActivity(), Mobile: true},
+		{Activity: activities.NewListInstalledAppsActivity(), Mobile: true},
+		{Activity: activities.NewDisableAndroidPlayStoreActivity(), Mobile: true},
+		{Activity: activities.NewCleanupDeviceActivity(), Mobile: true},
+	}
+}
+
+func registeredActivityExecutor(item registeredActivity, provider RuntimeConfigProvider) func(context.Context, workflowengine.ActivityInput) (workflowengine.ActivityResult, error) {
+	if item.Mobile {
+		return mobileActivityExecutor(item.Activity, provider)
+	}
+	return item.Activity.Execute
+}
 
 func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
@@ -54,15 +83,49 @@ func temporalWorkerTraceAttrs(namespace, taskqueue, runnerID string) []attribute
 	return attrs
 }
 
-// RunTemporalWorker returns a function suitable for Process.RunFunc
-func RunTemporalWorker(namespace string) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
+// RunTemporalWorker returns a process runner. It reports readiness only after
+// the Temporal worker's synchronous Start call succeeds.
+func RunTemporalWorker(namespace string) func(context.Context, func(error)) error {
+	return runTemporalWorker(namespace, nil)
+}
+
+// RunTemporalWorkerWithConfigProvider starts a namespace worker whose mobile
+// activities resolve the latest typed device inventory at activity start.
+func RunTemporalWorkerWithConfigProvider(namespace string, provider RuntimeConfigProvider) func(context.Context, func(error)) error {
+	return runTemporalWorker(namespace, provider)
+}
+
+func runTemporalWorker(namespace string, provider RuntimeConfigProvider) func(context.Context, func(error)) error {
+	return func(ctx context.Context, ready func(error)) error {
+		var readyOnce sync.Once
+		signalReady := func(err error) {
+			if ready != nil {
+				readyOnce.Do(func() { ready(err) })
+			}
+		}
 		temporalInterceptor, err := observability.NewTemporalInterceptor()
 		if err != nil {
-			return fmt.Errorf("unable to create temporal tracing interceptor: %w", err)
+			err = fmt.Errorf("unable to create temporal tracing interceptor: %w", err)
+			signalReady(err)
+			return err
 		}
-		runnerID := utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "", true)
-		runnerID = strings.TrimLeft(strings.TrimSpace(runnerID), "/")
+		runnerID := ""
+		if provider != nil {
+			config, err := provider()
+			if err != nil {
+				err = fmt.Errorf("load runner device inventory: %w", err)
+				signalReady(err)
+				return err
+			}
+			runnerID = strings.TrimLeft(strings.TrimSpace(config.RunnerID), "/")
+		} else {
+			runnerID = strings.TrimLeft(strings.TrimSpace(utils.GetEnvironmentVariable("CREDIMI_RUNNER_ID", "")), "/")
+		}
+		if runnerID == "" {
+			err := errors.New("runner ID is required")
+			signalReady(err)
+			return err
+		}
 		taskqueue := fmt.Sprintf("%s-%s", runnerID, "TaskQueue")
 		ctx, span := observability.Tracer("credimi-runner.temporal").Start(ctx, "temporal_worker.run", trace.WithAttributes(temporalWorkerTraceAttrs(namespace, taskqueue, runnerID)...))
 		defer span.End()
@@ -71,6 +134,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 
 		for {
 			if ctx.Err() != nil {
+				signalReady(ctx.Err())
 				span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "context_canceled")))
 				log.Printf("Temporal worker stopped for namespace %s", namespace)
 				return nil
@@ -80,6 +144,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 			if err != nil {
 				span.AddEvent("temporal_worker.init_failed", trace.WithAttributes(attribute.String("backoff", backoff.String()), attribute.String("error", err.Error())))
 				if !shouldRetryTemporalWorker(err) {
+					signalReady(err)
 					span.RecordError(err)
 					span.SetStatus(codes.Error, "temporal worker initialization failed")
 					return err
@@ -95,45 +160,50 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				log.Printf("Temporal worker failed to initialize for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
 					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "retry_canceled")))
+					signalReady(ctx.Err())
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
 				continue
 			}
 
+			fatal := make(chan error, 1)
 			w := temporalWorkerFactory(c, taskqueue, worker.Options{
 				Interceptors: []interceptor.WorkerInterceptor{temporalInterceptor},
+				OnFatalError: func(err error) {
+					select {
+					case fatal <- err:
+					default:
+					}
+				},
 			})
 
 			// Register activities
-			for _, act := range []workflowengine.ExecutableActivity{
-				activities.NewHTTPActivity(),
-				activities.NewRunMobileFlowActivity(),
-				activities.NewSetupMobileDeviceActivity(),
-				activities.NewApkInstallActivity(),
-				activities.NewApkPostInstallChecksActivity(),
-				activities.NewStartIOSSimulatorActivity(),
-				activities.NewInstallIOSAppActivity(),
-				activities.NewIOSPostInstallChecksActivity(),
-				activities.NewStartRecordingActivity(),
-				activities.NewStartIOSRecordingActivity(),
-				activities.NewStopRecordingActivity(),
-				activities.NewStopIOSRecordingActivity(),
-				// activities.NewUnlockEmulatorActivity(),
-				activities.NewListInstalledAppsActivity(),
-				activities.NewDisableAndroidPlayStoreActivity(),
-				activities.NewCleanupDeviceActivity(),
-			} {
-				w.RegisterActivityWithOptions(act.Execute, activity.RegisterOptions{Name: act.Name()})
+			for _, item := range registeredActivities() {
+				w.RegisterActivityWithOptions(registeredActivityExecutor(item, provider), activity.RegisterOptions{Name: item.Activity.Name()})
 			}
-
-			// Shutdown channel
-			shutdownCh := make(chan interface{})
-			go func() {
-				<-ctx.Done()
-				close(shutdownCh)
-			}()
-
+			wStartErr := w.Start()
+			if wStartErr != nil {
+				if c != nil {
+					c.Close()
+				}
+				if !shouldRetryTemporalWorker(wStartErr) {
+					signalReady(wStartErr)
+					return wStartErr
+				}
+				if !sleepWithContextFn(ctx, backoff) {
+					signalReady(ctx.Err())
+					return nil
+				}
+				backoff = growBackoff(backoff, maxBackoff)
+				continue
+			}
+			signalReady(nil)
+			var stopOnce sync.Once
+			stopWorker := func() { stopOnce.Do(w.Stop) }
+			// Temporal reports fatal post-start failures through OnFatalError.
+			// They are distinct from Start errors and retain the existing retry
+			// behavior without a second Run/shutdown channel.
 			log.Printf("Temporal worker running for namespace %s", namespace)
 			span.AddEvent("temporal_worker.started")
 			observability.Info(ctx, "credimi-runner.temporal", "temporal worker running",
@@ -141,7 +211,16 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				observability.String("task_queue", taskqueue),
 				observability.String("runner_id", runnerID),
 			)
-			if err := w.Run(shutdownCh); err != nil {
+			select {
+			case <-ctx.Done():
+				err = nil
+			case err = <-fatal:
+			}
+			stopWorker()
+			if c != nil {
+				c.Close()
+			}
+			if err != nil {
 				if ctx.Err() != nil {
 					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "context_canceled")))
 					log.Printf("Temporal worker stopped for namespace %s", namespace)
@@ -171,6 +250,7 @@ func RunTemporalWorker(namespace string) func(ctx context.Context) error {
 				log.Printf("Temporal worker stopped with retryable error for namespace %s: %v (retrying in %s)", namespace, err, backoff)
 				if !sleepWithContextFn(ctx, backoff) {
 					span.AddEvent("temporal_worker.stopped", trace.WithAttributes(attribute.String("reason", "retry_canceled")))
+					signalReady(ctx.Err())
 					return nil
 				}
 				backoff = growBackoff(backoff, maxBackoff)
@@ -229,9 +309,6 @@ func growBackoff(current, max time.Duration) time.Duration {
 }
 
 func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
-	if c, ok := clientCache.Load(namespace); ok {
-		return c.(client.Client), nil
-	}
 	temporalInterceptor, err := observability.NewTemporalInterceptor()
 	if err != nil {
 		return nil, fmt.Errorf("unable to create tracing interceptor: %w", err)
@@ -248,6 +325,5 @@ func getTemporalClientWithNamespace(namespace string) (client.Client, error) {
 		return nil, fmt.Errorf("unable to create client: %w", err)
 	}
 
-	clientCache.Store(namespace, c)
 	return c, nil
 }

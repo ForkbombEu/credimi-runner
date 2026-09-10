@@ -10,6 +10,7 @@ import (
 
 	"github.com/forkbombeu/credimi-runner/pkg/gen/runner"
 	"github.com/forkbombeu/credimi-runner/pkg/utils"
+	"github.com/forkbombeu/credimi-runner/pkg/workermanager"
 	"github.com/stretchr/testify/require"
 	cluelog "goa.design/clue/log"
 )
@@ -53,8 +54,8 @@ func TestProcessStartEndpoint(t *testing.T) {
 	t.Run("starts new worker", func(t *testing.T) {
 		store := NewProcessStore()
 		deps := Deps{
-			WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-				return func(ctx context.Context) error { return nil }
+			WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+				return func(ctx context.Context, started func(error)) error { started(nil); return nil }
 			},
 		}
 		srv := NewRunnerServiceWithDeps(store, utils.Instance{}, deps)
@@ -89,8 +90,8 @@ func TestProcessStartEndpoint(t *testing.T) {
 		store.Add(oldProc)
 
 		deps := Deps{
-			WorkerRunnerFactory: func(namespace string) func(ctx context.Context) error {
-				return func(ctx context.Context) error { return nil }
+			WorkerFactory: func(namespace string, _ workermanager.RuntimeConfigProvider) ProcessRunFunc {
+				return func(ctx context.Context, started func(error)) error { started(nil); return nil }
 			},
 		}
 		srv := NewRunnerServiceWithDeps(store, utils.Instance{}, deps)

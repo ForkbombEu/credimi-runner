@@ -1,0 +1,6 @@
+services:
+  runner_emulator:
+    environment:
+      PORT: ${PORT:-8050}
+    ports:
+      - "${PORT:-8050}:${PORT:-8050}"

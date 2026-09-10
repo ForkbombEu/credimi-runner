@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	dashboardruntime "github.com/forkbombeu/credimi-runner/internal/dashboard/runtime"
 	genhealth "github.com/forkbombeu/credimi-runner/pkg/gen/health"
 )
 
@@ -100,5 +101,76 @@ func TestCheck_ADBError(t *testing.T) {
 	}
 	if !strings.Contains(apiErr.Message, "adb failed") {
 		t.Errorf("unexpected message: %q", apiErr.Message)
+	}
+}
+
+func TestCheckManagedInventoryDoesNotRequireADBForIOSOrDisabledAndroid(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		devices []dashboardruntime.DeviceRuntimeConfig
+	}{
+		{
+			name: "ios simulator",
+			devices: []dashboardruntime.DeviceRuntimeConfig{{
+				Type: "ios_simulator", Enabled: true,
+			}},
+		},
+		{
+			name: "disabled android",
+			devices: []dashboardruntime.DeviceRuntimeConfig{{
+				Type: "android_emulator", Enabled: false,
+			}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			svc := newTestHealthService("", errors.New("adb must not be called"))
+			svc.RuntimeConfig = func() (dashboardruntime.RunnerRuntimeConfig, error) {
+				return dashboardruntime.RunnerRuntimeConfig{Devices: test.devices}, nil
+			}
+			svc.runADB = func(context.Context, string, ...string) ([]byte, error) {
+				calls++
+				return nil, errors.New("adb must not be called")
+			}
+
+			result, err := svc.Check(context.Background())
+			if err != nil {
+				t.Fatalf("Check() error = %v", err)
+			}
+			if result.Status != "connected" || calls != 0 {
+				t.Fatalf("result = %#v, adb calls = %d", result, calls)
+			}
+		})
+	}
+}
+
+func TestCheckManagedInventoryRequiresADBForEnabledAndroid(t *testing.T) {
+	for _, deviceType := range []string{"android_phone", "android_emulator", "redroid"} {
+		t.Run(deviceType, func(t *testing.T) {
+			calls := 0
+			var command string
+			svc := newTestHealthService("", errors.New("adb unavailable"))
+			svc.RuntimeConfig = func() (dashboardruntime.RunnerRuntimeConfig, error) {
+				return dashboardruntime.RunnerRuntimeConfig{Devices: []dashboardruntime.DeviceRuntimeConfig{{
+					Type: deviceType, Enabled: true,
+				}}}, nil
+			}
+			svc.resolveADB = func() (string, error) { return "/resolved/adb", nil }
+			svc.runADB = func(_ context.Context, cmd string, _ ...string) ([]byte, error) {
+				calls++
+				command = cmd
+				return nil, errors.New("adb unavailable")
+			}
+
+			if _, err := svc.Check(context.Background()); err == nil {
+				t.Fatal("Check() error = nil, want ADB failure")
+			}
+			if calls != 1 {
+				t.Fatalf("adb calls = %d, want 1", calls)
+			}
+			if command != "/resolved/adb" {
+				t.Fatalf("adb command = %q, want resolved absolute path", command)
+			}
+		})
 	}
 }
