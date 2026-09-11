@@ -29,7 +29,13 @@ func serviceAction(name string, action func(context.Context, servicemanager.Mana
 		if err != nil {
 			return err
 		}
-		return action(cmd.Context(), manager, configDir)
+		if err := action(cmd.Context(), manager, configDir); err != nil {
+			return err
+		}
+		if name == "stop" {
+			cmd.Println("Service stopped.")
+		}
+		return nil
 	}}
 }
 

@@ -103,6 +103,31 @@ func TestServiceStatusOutput(t *testing.T) {
 	}
 }
 
+func TestServiceStopOutputReflectsActionResult(t *testing.T) {
+	isolateRootConfig(t)
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "success", want: "Service stopped.\n"},
+		{name: "failure", err: errors.New("stop failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := serviceAction("stop", func(context.Context, servicemanager.Manager, string) error { return tc.err })
+			var out strings.Builder
+			cmd.SetOut(&out)
+			cmd.SetContext(context.Background())
+			err := cmd.RunE(cmd, nil)
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("err=%v, want %v", err, tc.err)
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("output=%q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 func TestServiceCommandsExposeAutostartControls(t *testing.T) {
 	for _, name := range []string{"start", "stop", "restart", "enable", "disable", "status"} {
 		command, _, err := serviceCmd.Find([]string{name})
