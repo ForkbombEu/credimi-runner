@@ -31,6 +31,49 @@ var serviceManagerFactory = func(configDir string, bootstrap servicemanager.Boot
 }
 
 var loadServiceConfigSnapshot = runnerconfig.LoadFileSnapshot
+var errReplacementReadinessStopped = errors.New("replacement readiness canceled by explicit service stop")
+
+var waitForReplacementReadinessFunc = waitForReplacementReadiness
+
+func waitForReplacementReadiness(ctx context.Context, configDir, previousIdentityToken string) (controller.Metadata, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	readinessCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	done := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		ticker := time.NewTicker(controllerReadinessPollInterval)
+		defer ticker.Stop()
+		for {
+			stopped, err := servicecoordination.StopRequested(configDir)
+			if err != nil {
+				cancel(fmt.Errorf("read explicit service stop request: %w", err))
+				return
+			}
+			if stopped {
+				cancel(errReplacementReadinessStopped)
+				return
+			}
+			select {
+			case <-done:
+				return
+			case <-readinessCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	metadata, err := waitForRunningControllerUsingWithTimeout(readinessCtx, configDir, previousIdentityToken, "", serviceApplyTimeout, controller.ReadMetadata, controller.Probe)
+	close(done)
+	<-watcherDone
+	if cause := context.Cause(readinessCtx); cause != nil && !errors.Is(cause, ctx.Err()) {
+		return controller.Metadata{}, cause
+	}
+	return metadata, err
+}
 
 type snapshotServiceRestarter interface {
 	RestartWithConfig(context.Context, runnerconfig.Config) error
@@ -281,7 +324,10 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 	} else if stopped {
 		return writeResult(false, "", "service restart canceled by explicit service stop")
 	}
-	if _, err := waitForRunningControllerUsingWithTimeout(ctx, configDir, previous.IdentityToken, "", serviceApplyTimeout, controller.ReadMetadata, controller.Probe); err != nil {
+	if _, err := waitForReplacementReadinessFunc(ctx, configDir, previous.IdentityToken); err != nil {
+		if errors.Is(err, errReplacementReadinessStopped) {
+			return nil
+		}
 		resultErr := writeResult(false, "", fmt.Sprintf("replacement service did not become ready: %v", err))
 		return errors.Join(err, resultErr)
 	}

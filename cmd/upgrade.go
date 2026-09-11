@@ -19,7 +19,10 @@ import (
 
 var downloadLatestBinary = maintenance.DownloadLatestBinary
 
-const serviceApplyTimeout = runtimesupervisor.ActivationWaitTimeout
+const (
+	serviceApplyTimeout             = runtimesupervisor.ActivationWaitTimeout
+	controllerReadinessPollInterval = 250 * time.Millisecond
+)
 
 var upgradeBinaryCmd = &cobra.Command{Use: "upgrade-binary", Short: "Upgrade the host Credimi Runner CLI binary", RunE: runUpgradeBinary}
 var upgradeImageCmd = &cobra.Command{Use: "upgrade-image", Short: "Upgrade the persistent Docker service image", RunE: runUpgradeImage}
@@ -139,7 +142,7 @@ func waitForRunningControllerUsingWithTimeout(
 	}
 	deadline, cancel := context.WithTimeout(ctx, maximum)
 	defer cancel()
-	ticker := time.NewTicker(250 * time.Millisecond)
+	ticker := time.NewTicker(controllerReadinessPollInterval)
 	defer ticker.Stop()
 	var lastErr error
 	for {
