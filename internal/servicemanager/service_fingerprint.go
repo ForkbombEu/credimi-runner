@@ -113,7 +113,9 @@ const defaultRedroidKnownHosts = "<host-default-known-hosts>"
 // the current service/container topology stale. Runtime credentials and
 // execution settings intentionally do not participate.
 func ServiceConfigFingerprint(cfg config.Config, configured bool) string {
-	return ServiceConfigFingerprintForHost(cfg, configured, HostContext{})
+	// The default projection describes the Linux container service. Native
+	// callers use ServiceConfigFingerprintForHost when they have host context.
+	return ServiceConfigFingerprintForHost(cfg, configured, HostContext{OS: "linux"})
 }
 
 // ServiceConfigFingerprintForHost includes the host-resolved network
@@ -251,10 +253,14 @@ func ServiceConfigsCompatibleWithHost(applied, desired config.Config, configured
 // when only the applied service fingerprint and its exported capabilities are
 // available to the Dashboard process.
 func ServiceConfigCompatibleWithFingerprint(cfg config.Config, configured bool, appliedFingerprint string, capabilities ServiceCapabilities) bool {
-	if ServiceHostLocalityUnknown(cfg, HostContext{OS: runtime.GOOS, ResolvedHostLocality: capabilities.ResolvedHostLocality}) {
+	// Applied fingerprints are emitted by the Linux container service. The
+	// Dashboard may evaluate them from a native Darwin process, so use the
+	// service host platform rather than the inspecting process platform.
+	host := HostContext{OS: "linux", ResolvedHostLocality: capabilities.ResolvedHostLocality}
+	if ServiceHostLocalityUnknown(cfg, host) {
 		return false
 	}
-	desiredProjection := serviceConfigProjectionForHost(cfg, configured, HostContext{OS: runtime.GOOS, ResolvedHostLocality: capabilities.ResolvedHostLocality})
+	desiredProjection := serviceConfigProjectionForHost(cfg, configured, host)
 	if capabilities.NetworkMode != "" && desiredProjection.NetworkMode != capabilities.NetworkMode {
 		return false
 	}
