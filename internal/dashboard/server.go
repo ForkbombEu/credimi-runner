@@ -976,6 +976,10 @@ func (s *Server) saveDevicesConfigSync(r *http.Request, progress func(string)) e
 		applyDeviceDefaults(&device)
 		config.Devices = append(config.Devices, device)
 	}
+	for index := range config.Devices {
+		normalizeNativeEmulatorGoldenSource(&config.Devices[index])
+	}
+
 	if err := dashboardruntime.ValidateDeviceConstraints(config.Devices); err != nil {
 		return err
 	}
@@ -1012,7 +1016,7 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 		set("ANDROID_KEYS_DIR", androidKeysDir)
 		set("HOST_AVD_HOME_PATH", avdHome)
 		set("HOST_AVD_GOLDEN_PATH", goldenRoot)
-		set("GOLDEN_PATH", "/avd-golden/credimi-golden")
+		set("GOLDEN_PATH", defaultEmulatorGoldenSource(goldenRoot, "credimi-golden"))
 	case "android_phone", "redroid":
 	}
 	if device.Mode == "wifi" || device.Type == "redroid" {
@@ -1025,6 +1029,35 @@ func applyDeviceDefaults(device *dashboardruntime.DeviceRuntimeConfig) {
 			set("AVDCTL_SSH_KNOWN_HOSTS_PATH", dashboardruntime.EffectiveSSHKnownHostsPath(device.Values["AVDCTL_SSH_TARGET"], device.Values["AVDCTL_SSH_KNOWN_HOSTS_PATH"]))
 		}
 	}
+}
+
+// normalizeNativeEmulatorGoldenSource translates only the runner's known
+// container mount convention into the native host location on Darwin. User
+// supplied absolute paths remain untouched.
+func normalizeNativeEmulatorGoldenSource(device *dashboardruntime.DeviceRuntimeConfig) {
+	if device.Type != "android_emulator" || runtimeGOOS() != "darwin" {
+		return
+	}
+	goldenPath := filepath.Clean(strings.TrimSpace(device.Values["GOLDEN_PATH"]))
+	if filepath.Dir(goldenPath) != "/avd-golden" {
+		return
+	}
+	leaf := filepath.Base(goldenPath)
+	if leaf == "." || leaf == string(filepath.Separator) {
+		return
+	}
+	goldenRoot := strings.TrimSpace(device.Values["HOST_AVD_GOLDEN_PATH"])
+	if goldenRoot == "" {
+		_, _, goldenRoot = emulatorAssetPaths()
+	}
+	device.Values["GOLDEN_PATH"] = filepath.Join(goldenRoot, leaf)
+}
+
+func defaultEmulatorGoldenSource(goldenRoot, leaf string) string {
+	if runtimeGOOS() == "darwin" {
+		return filepath.Join(goldenRoot, leaf)
+	}
+	return filepath.Join("/avd-golden", leaf)
 }
 
 // emulatorAssetPaths returns paths inside the runner. In Linux bootstrap mode
@@ -1770,6 +1803,7 @@ func (s *Server) setupDevices(r *http.Request, values map[string]string) ([]dash
 			}
 		}
 		applyDeviceDefaults(&device)
+		normalizeNativeEmulatorGoldenSource(&device)
 		if err := dashboardruntime.ValidateDeviceRegistration(device); err != nil {
 			return nil, err
 		}
