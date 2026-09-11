@@ -338,7 +338,7 @@
     if (operation.recovery !== 'true' && operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);
     activeRuntimeOperation = operation;
     pendingRuntimeRequest = null;
-    operation.visibleUntil = Date.now() + 900;
+    operation.visibleUntil = Date.now() + 1500;
     appendBusyLog('Runtime operation accepted. Waiting for completion.');
     const poll = async () => {
       if (!ownsRuntimeOperation(operation)) return;

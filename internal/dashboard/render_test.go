@@ -743,6 +743,7 @@ func TestRuntimeBusyOverlayIsOwnedByAcceptedOperation(t *testing.T) {
 		"activeRuntimeOperation.id === operation.id",
 		"if (activeRuntimeOperation) return;",
 		"if (!runtimeBusyOwned()) hideBusy();",
+		"operation.visibleUntil = Date.now() + 1500;",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("operation-scoped runtime busy state is missing %q", want)
