@@ -60,7 +60,7 @@ location, keep the directory private, and validate it:
 
 ```bash
 # Linux; XDG_CONFIG_HOME defaults to ~/.config
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/credimi-runner"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/credimi/runner"
 mkdir -p "$config_dir"
 chmod 700 "$config_dir"
 install -m 600 config.example.toml "$config_dir/config.toml"
@@ -69,9 +69,9 @@ credimi-runner validate-config
 ```
 
 On macOS, the default file is
-`~/Library/Application Support/credimi-runner/config.toml`. On Linux it is
-`$XDG_CONFIG_HOME/credimi-runner/config.toml`, or
-`~/.config/credimi-runner/config.toml` when `XDG_CONFIG_HOME` is unset. Use
+`~/Library/Application Support/credimi/runner/config.toml`. On Linux it is
+`$XDG_CONFIG_HOME/credimi/runner/config.toml`, or
+`~/.config/credimi/runner/config.toml` when `XDG_CONFIG_HOME` is unset. Use
 `--config /path/to/config.toml` for another file.
 
 Configuration files must not be symlinks and must not be readable by group or

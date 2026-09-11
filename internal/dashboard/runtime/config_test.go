@@ -507,10 +507,14 @@ func TestDefaultConfigDirHonorsOverride(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigDirResolvesPlatformDefault(t *testing.T) {
+func TestDefaultConfigDirSharesConfigDefaultDir(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
-	if got := DefaultConfigDir(); filepath.Base(got) != "runner" {
-		t.Fatalf("platform default config dir = %q", got)
+	want, err := config.DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := DefaultConfigDir(); got != want {
+		t.Fatalf("DefaultConfigDir = %q, want %q", got, want)
 	}
 }
 

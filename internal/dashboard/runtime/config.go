@@ -24,15 +24,11 @@ type Store struct {
 }
 
 func DefaultConfigDir() string {
-	if dir := strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")); dir != "" {
-		return dir
+	configDir, err := runnerconfig.DefaultDir()
+	if err == nil {
+		return configDir
 	}
-	configDir, err := os.UserConfigDir()
-	if err != nil {
-		homeDir, _ := os.UserHomeDir()
-		return filepath.Join(homeDir, ".config", "credimi", "runner")
-	}
-	return filepath.Join(configDir, "credimi", "runner")
+	return filepath.Join(".config", "credimi", "runner")
 }
 
 func LoadStore(configDir string) (*Store, error) {
