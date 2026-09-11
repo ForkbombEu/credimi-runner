@@ -14,7 +14,11 @@ func init() { rootCmd.AddCommand(internalServiceCmd) }
 func runInternalService(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	app, err := application.New(effectiveConfigDir(), nil)
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return err
+	}
+	app, err := application.New(configDir, nil)
 	if err != nil {
 		return err
 	}

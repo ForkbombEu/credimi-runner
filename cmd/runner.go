@@ -40,12 +40,20 @@ type snapshotServiceMatcher interface {
 	ServiceMatchesConfig(context.Context, runnerconfig.Config) (bool, error)
 }
 
-func currentServiceManager() servicemanager.Manager {
-	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy, DashboardListen: dashboardListen})
+func currentServiceManager() (servicemanager.Manager, string, error) {
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return nil, "", err
+	}
+	return serviceManagerFactory(configDir, servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy, DashboardListen: dashboardListen}), configDir, nil
 }
 
 var waitForDashboardFunc = func(ctx context.Context) (string, error) {
-	metadata, err := waitForRunningController(ctx, effectiveConfigDir(), "")
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return "", err
+	}
+	metadata, err := waitForRunningController(ctx, configDir, "")
 	if err != nil {
 		return "", err
 	}
@@ -53,13 +61,16 @@ var waitForDashboardFunc = func(ctx context.Context) (string, error) {
 }
 
 func runRoot(cmd *cobra.Command, _ []string) error {
-	configDir := effectiveConfigDir()
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return err
+	}
 	coordinationCleanup, err := servicecoordination.StartPresence(cmd.Context(), configDir)
 	if err != nil {
 		return fmt.Errorf("publish attached host presence: %w", err)
 	}
 	defer coordinationCleanup()
-	manager := currentServiceManager()
+	manager := serviceManagerFactory(configDir, servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy, DashboardListen: dashboardListen})
 	if err := startAttachedService(cmd.Context(), manager, configDir); err != nil {
 		return err
 	}
@@ -326,12 +337,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&dashboardListen, "dashboard-listen", "", "Dashboard bind address for this start (default: 0.0.0.0:8051)")
 }
 
-func effectiveConfigDir() string {
+func effectiveConfigDir() (string, error) {
 	if strings.TrimSpace(dashboardConfigDir) != "" {
-		return dashboardConfigDir
+		return dashboardConfigDir, nil
 	}
 	if configPath != "" {
-		return filepath.Dir(configPath)
+		return filepath.Dir(configPath), nil
 	}
 	return dashboard.ConfigDir()
 }

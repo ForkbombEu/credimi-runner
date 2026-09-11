@@ -502,8 +502,9 @@ func TestLoadStorePreservesEmulatorActivityEnvironment(t *testing.T) {
 
 func TestDefaultConfigDirHonorsOverride(t *testing.T) {
 	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "/tmp/runner-config")
-	if got := DefaultConfigDir(); got != "/tmp/runner-config" {
-		t.Fatalf("dir=%q", got)
+	got, err := DefaultConfigDir()
+	if err != nil || got != "/tmp/runner-config" {
+		t.Fatalf("dir=%q err=%v", got, err)
 	}
 }
 
@@ -513,8 +514,19 @@ func TestDefaultConfigDirSharesConfigDefaultDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := DefaultConfigDir(); got != want {
-		t.Fatalf("DefaultConfigDir = %q, want %q", got, want)
+	if got, err := DefaultConfigDir(); err != nil || got != want {
+		t.Fatalf("DefaultConfigDir = %q, want %q (err=%v)", got, want, err)
+	}
+}
+func TestLoadStorePropagatesUnresolvableDefaultConfigDir(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+	if _, err := DefaultConfigDir(); err == nil {
+		t.Fatal("unresolvable default config directory was accepted")
+	}
+	if _, err := LoadStore(""); err == nil {
+		t.Fatal("LoadStore selected a fallback config directory")
 	}
 }
 

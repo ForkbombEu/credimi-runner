@@ -25,7 +25,11 @@ func init() {
 
 func serviceAction(name string, action func(context.Context, servicemanager.Manager, string) error) *cobra.Command {
 	return &cobra.Command{Use: name, RunE: func(cmd *cobra.Command, _ []string) error {
-		return action(cmd.Context(), currentServiceManager(), effectiveConfigDir())
+		manager, configDir, err := currentServiceManager()
+		if err != nil {
+			return err
+		}
+		return action(cmd.Context(), manager, configDir)
 	}}
 }
 
@@ -60,7 +64,11 @@ func stopService(ctx context.Context, manager servicemanager.Manager, configDir 
 }
 
 func runServiceStatus(cmd *cobra.Command, _ []string) error {
-	status, err := currentServiceManager().Status(cmd.Context())
+	manager, _, err := currentServiceManager()
+	if err != nil {
+		return err
+	}
+	status, err := manager.Status(cmd.Context())
 	if err != nil {
 		return err
 	}

@@ -389,8 +389,16 @@ func TestConfigBoolAndConfigDirUseCompatibilityDefaults(t *testing.T) {
 		t.Fatalf("boolean compatibility values were not interpreted correctly")
 	}
 	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", t.TempDir())
-	if ConfigDir() == "" {
-		t.Fatal("ConfigDir returned empty path")
+	if dir, err := ConfigDir(); err != nil || dir == "" {
+		t.Fatalf("ConfigDir = %q, err=%v", dir, err)
+	}
+}
+func TestConfigDirPropagatesUnresolvableDefault(t *testing.T) {
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+	if _, err := ConfigDir(); err == nil {
+		t.Fatal("ConfigDir selected a fallback directory")
 	}
 }
 
