@@ -91,10 +91,33 @@ func followAttachedService(ctx context.Context, manager servicemanager.Manager, 
 			case <-ctx.Done():
 				cancelLogs()
 				<-logsDone
+				ticker.Stop()
 				return nil
 			case <-logsDone:
-				// A container can disappear while it is being replaced. Keep the
-				// attached command alive and resume following its replacement.
+				if ctx.Err() != nil {
+					ticker.Stop()
+					return nil
+				}
+				request, requestErr := servicecoordination.ReadRestartRequest(configDir)
+				if requestErr == nil {
+					result, resultErr := servicecoordination.ReadRestartResult(configDir)
+					if resultErr != nil || result.RequestID != request.RequestID {
+						if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
+							return err
+						}
+						restartFollower = true
+						continue
+					}
+				}
+				status, statusErr := manager.Status(ctx)
+				if statusErr == nil && !status.Running {
+					ticker.Stop()
+					return nil
+				}
+				// A log stream can end while a service is being replaced or
+				// while the service remains healthy. In either case, resume
+				// following; an explicit stopped status is the external-stop
+				// signal that ends the attached command.
 				restartFollower = true
 			case <-ticker.C:
 				if !servicecoordination.CoordinatorOwned(configDir) {
@@ -104,19 +127,26 @@ func followAttachedService(ctx context.Context, manager servicemanager.Manager, 
 					return errors.New("attached Credimi Runner coordinator ownership was lost")
 				}
 				request, err := servicecoordination.ReadRestartRequest(configDir)
-				if err != nil {
-					continue
+				if err == nil {
+					if result, resultErr := servicecoordination.ReadRestartResult(configDir); resultErr != nil || result.RequestID != request.RequestID {
+						cancelLogs()
+						<-logsDone
+						ticker.Stop()
+						if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
+							return err
+						}
+						restartFollower = true
+						continue
+					}
 				}
-				if result, resultErr := servicecoordination.ReadRestartResult(configDir); resultErr == nil && result.RequestID == request.RequestID {
+				status, err := manager.Status(ctx)
+				if err != nil || status.Running {
 					continue
 				}
 				cancelLogs()
 				<-logsDone
 				ticker.Stop()
-				if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
-					return err
-				}
-				restartFollower = true
+				return nil
 			}
 		}
 		ticker.Stop()

@@ -20,15 +20,16 @@ import (
 )
 
 type restartTestManager struct {
-	mu           sync.Mutex
-	status       servicemanager.Status
-	restarts     int
-	restart      func()
-	restartErr   error
-	logs         int
-	logsExitOnce bool
-	logStarted   chan struct{}
-	logOnce      sync.Once
+	mu            sync.Mutex
+	status        servicemanager.Status
+	restarts      int
+	restart       func()
+	restartErr    error
+	logs          int
+	logsExitOnce  bool
+	stopOnLogExit bool
+	logStarted    chan struct{}
+	logOnce       sync.Once
 }
 
 func (m *restartTestManager) Start(context.Context) error   { return nil }
@@ -39,6 +40,9 @@ func (m *restartTestManager) Logs(ctx context.Context, _ servicemanager.LogOptio
 	m.mu.Lock()
 	m.logs++
 	call := m.logs
+	if m.stopOnLogExit && call == 1 {
+		m.status.Running = false
+	}
 	m.mu.Unlock()
 	m.logOnce.Do(func() {
 		if m.logStarted != nil {
@@ -406,7 +410,7 @@ func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	manager := &restartTestManager{logsExitOnce: true, logStarted: make(chan struct{})}
+	manager := &restartTestManager{status: servicemanager.Status{Running: true}, logsExitOnce: true, logStarted: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- followAttachedService(ctx, manager, dir) }()
@@ -433,6 +437,41 @@ func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+func TestAttachedHostExitsAfterExternalServiceStopAndReleasesPresence(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	cleanup, err := servicecoordination.StartPresence(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &restartTestManager{
+		status:        servicemanager.Status{Running: true},
+		logsExitOnce:  true,
+		stopOnLogExit: true,
+		logStarted:    make(chan struct{}),
+	}
+	followDone := make(chan error, 1)
+	go func() { followDone <- followAttachedService(ctx, manager, dir) }()
+	select {
+	case <-manager.logStarted:
+	case <-time.After(time.Second):
+		t.Fatal("attached log follower did not start")
+	}
+	select {
+	case err := <-followDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("attached host did not exit after external stop")
+	}
+	cleanup()
+	nextCleanup, err := servicecoordination.StartPresence(ctx, dir)
+	if err != nil {
+		t.Fatalf("new attached host could not acquire coordination: %v", err)
+	}
+	nextCleanup()
 }
 
 func TestAttachedHostStopsAfterCoordinatorOwnershipIsReplaced(t *testing.T) {
