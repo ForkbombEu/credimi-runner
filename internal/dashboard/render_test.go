@@ -666,7 +666,7 @@ func TestStaticSetupUsesAuthoritativeDraftAndIdentityState(t *testing.T) {
 		"box.dispatchEvent(new Event('change', { bubbles: true }));",
 		"count.dispatchEvent(new Event('change', { bubbles: true }));",
 		"function clearSetupDraftID()",
-		"clearSetupDraftID();\n\t\t\t\t\twindow.location.assign",
+		"window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));",
 		"if (phase === 'ready') clearSetupDraftID();",
 		"const returnedID = String(data.id || '').trim();",
 		"if (!returnedID) throw new Error('Setup draft response did not include an ID.');",
@@ -731,13 +731,26 @@ func TestStaticDeviceAddDefersCanonicalIdentityToServer(t *testing.T) {
 	}
 }
 
-func TestRuntimeBusyOverlaySurvivesUnrelatedMainSwap(t *testing.T) {
+func TestRuntimeBusyOverlayIsOwnedByAcceptedOperation(t *testing.T) {
 	script, err := os.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(script), "if (!runtimeOperationActive) hideBusy();") {
-		t.Fatal("main swaps must not dismiss an active runtime operation overlay")
+	content := string(script)
+	for _, want := range []string{
+		"let activeRuntimeOperation = null;",
+		"function ownsRuntimeOperation(operation)",
+		"activeRuntimeOperation.id === operation.id",
+		"if (activeRuntimeOperation) return;",
+		"if (!runtimeBusyOwned()) hideBusy();",
+		"operation.visibleUntil = Date.now() + 1500;",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("operation-scoped runtime busy state is missing %q", want)
+		}
+	}
+	if strings.Contains(content, "runtimeOperationActive") {
+		t.Fatal("runtime busy state must not use a global boolean")
 	}
 }
 
@@ -754,10 +767,10 @@ func TestStaticRuntimeRecoveryUsesTokenAndWallClockDeadline(t *testing.T) {
 		"fetch(dashboardURL(path, token, origin)",
 		"runtimeRecoveryAbort.abort()",
 		"clearTimeout(timeout);",
-		"finishRuntimeRecoveryTimeout()",
+		"finishRuntimeRecoveryTimeout(operation);",
 		"Math.min(runtimeRecoveryRequestTimeout, deadline - Date.now())",
 		"fetchDashboardStatus(url, setupRecoveryTokens, setupRecoveryOrigins, controller.signal)",
-		"else refreshOverview('/setup', recovery.token, recovery.origin);",
+		"refreshOverview('/setup', recovery.token, recovery.origin);",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("runtime recovery is missing %q", want)
@@ -776,7 +789,7 @@ func TestStaticReplacementRecoveryHandoffsOnlyExpectedCancellation(t *testing.T)
 	content := string(script)
 	for _, want := range []string{
 		"function isReplacementRecoveryOperation(operation)",
-		"if (!isReplacementRecoveryOperation(operation)) return;",
+		"if (!isReplacementRecoveryOperation(operation) || !ownsRuntimeOperation(operation)) return;",
 		"function shouldHandoffToReplacementRecovery(operation, phase, snapshot)",
 		"phase === 'cancelled'",
 		"message === 'context canceled' || message === 'context cancelled'",

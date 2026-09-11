@@ -580,10 +580,10 @@ func TestEnsureRuntimeCapabilitiesUsesTypedCapabilityDetector(t *testing.T) {
 func TestEnsureRuntimeCapabilitiesProvisionsPhysicalAndroid(t *testing.T) {
 	root := t.TempDir()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\n/usr/bin/mkdir -p \"$ANDROID_SDK_ROOT/platform-tools\"\n/usr/bin/touch \"$ANDROID_SDK_ROOT/platform-tools/adb\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "sdkmanager"), []byte("#!/bin/sh\nmkdir -p \"$ANDROID_SDK_ROOT/platform-tools\"\ntouch \"$ANDROID_SDK_ROOT/platform-tools/adb\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("ANDROID_SDK_ROOT", root)
 	cfg := runnerconfig.Bootstrap()
 	cfg.Storage.StateDir = t.TempDir()

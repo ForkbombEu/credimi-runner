@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -81,15 +82,14 @@ func NormalizeValues(values Values, goos string) (Values, error) {
 	if !defaultYesNoChoice(normalized["OTEL_ENABLED"], true) {
 		normalized["OTEL_EXPORTER_OTLP_ENDPOINT"] = ""
 	}
-
 	return normalized, nil
 }
-
 func normalizeIndexedValues(values Values, goos string) (Values, error) {
 	normalized := DefaultValues()
 	for key, value := range values {
 		normalized[key] = strings.TrimSpace(value)
 	}
+	normalizeNativeGoldenPaths(normalized, goos)
 	if _, err := ParseRuntimeConfig(normalized); err != nil {
 		return nil, err
 	}
@@ -97,6 +97,25 @@ func normalizeIndexedValues(values Values, goos string) (Values, error) {
 		return nil, err
 	}
 	return normalized, nil
+}
+
+func normalizeNativeGoldenPaths(values Values, goos string) {
+	if goos != "darwin" {
+		return
+	}
+	count := atoiOrZero(values["CREDIMI_DEVICE_COUNT"])
+	for index := 1; index <= count; index++ {
+		prefix := fmt.Sprintf("CREDIMI_DEVICE_%d_", index)
+		path := filepath.Clean(strings.TrimSpace(values[prefix+"GOLDEN_PATH"]))
+		if filepath.Dir(path) != "/avd-golden" {
+			continue
+		}
+		root := strings.TrimSpace(values[prefix+"HOST_AVD_GOLDEN_PATH"])
+		if root == "" {
+			continue
+		}
+		values[prefix+"GOLDEN_PATH"] = filepath.Join(root, filepath.Base(path))
+	}
 }
 
 func validateLegacyDeviceTypes(values Values, goos string) error {

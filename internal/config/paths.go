@@ -7,12 +7,27 @@ import (
 	"strings"
 )
 
-func DefaultPath() (string, error) {
+func DefaultDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("CREDIMI_RUNNER_CONFIG_DIR")); dir != "" {
+		return dir, nil
+	}
 	dir, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve user config directory: %w", err)
+		home, homeErr := os.UserHomeDir()
+		if homeErr != nil {
+			return "", fmt.Errorf("resolve user config directory: %w", err)
+		}
+		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "credimi-runner", "config.toml"), nil
+	return filepath.Join(dir, "credimi", "runner"), nil
+}
+
+func DefaultPath() (string, error) {
+	dir, err := DefaultDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "config.toml"), nil
 }
 
 func ResolvePath(explicit string) (string, error) {

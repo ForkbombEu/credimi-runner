@@ -19,7 +19,10 @@ import (
 
 var downloadLatestBinary = maintenance.DownloadLatestBinary
 
-const serviceApplyTimeout = runtimesupervisor.ActivationWaitTimeout
+const (
+	serviceApplyTimeout             = runtimesupervisor.ActivationWaitTimeout
+	controllerReadinessPollInterval = 250 * time.Millisecond
+)
 
 var upgradeBinaryCmd = &cobra.Command{Use: "upgrade-binary", Short: "Upgrade the host Credimi Runner CLI binary", RunE: runUpgradeBinary}
 var upgradeImageCmd = &cobra.Command{Use: "upgrade-image", Short: "Upgrade the persistent Docker service image", RunE: runUpgradeImage}
@@ -39,7 +42,10 @@ func runUpgradeBinary(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
 	}
-	manager := currentServiceManager()
+	manager, configDir, err := currentServiceManager()
+	if err != nil {
+		return err
+	}
 	running := false
 	var previousIdentity string
 	if runtime.GOOS == "darwin" {
@@ -49,7 +55,7 @@ func runUpgradeBinary(cmd *cobra.Command, _ []string) error {
 		}
 		running = status.Running
 		if running {
-			metadata, err := verifiedController(ctx, effectiveConfigDir())
+			metadata, err := verifiedController(ctx, configDir)
 			if err != nil {
 				return err
 			}
@@ -69,7 +75,7 @@ func runUpgradeBinary(cmd *cobra.Command, _ []string) error {
 	if err := manager.Restart(ctx); err != nil {
 		return fmt.Errorf("binary was upgraded but persistent service restart failed: %w", err)
 	}
-	_, err = waitForRunningController(ctx, effectiveConfigDir(), previousIdentity)
+	_, err = waitForRunningController(ctx, configDir, previousIdentity)
 	return err
 }
 
@@ -81,14 +87,17 @@ func runUpgradeImage(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	manager := currentServiceManager()
+	manager, configDir, err := currentServiceManager()
+	if err != nil {
+		return err
+	}
 	status, err := manager.Status(ctx)
 	if err != nil {
 		return err
 	}
 	var previousIdentity string
 	if status.Running {
-		metadata, err := verifiedController(ctx, effectiveConfigDir())
+		metadata, err := verifiedController(ctx, configDir)
 		if err != nil {
 			return err
 		}
@@ -104,7 +113,7 @@ func runUpgradeImage(cmd *cobra.Command, _ []string) error {
 	if !status.Running {
 		return nil
 	}
-	_, err = waitForRunningController(ctx, effectiveConfigDir(), previousIdentity)
+	_, err = waitForRunningController(ctx, configDir, previousIdentity)
 	return err
 }
 
@@ -133,7 +142,7 @@ func waitForRunningControllerUsingWithTimeout(
 	}
 	deadline, cancel := context.WithTimeout(ctx, maximum)
 	defer cancel()
-	ticker := time.NewTicker(250 * time.Millisecond)
+	ticker := time.NewTicker(controllerReadinessPollInterval)
 	defer ticker.Stop()
 	var lastErr error
 	for {

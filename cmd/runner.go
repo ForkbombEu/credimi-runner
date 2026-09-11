@@ -31,6 +31,49 @@ var serviceManagerFactory = func(configDir string, bootstrap servicemanager.Boot
 }
 
 var loadServiceConfigSnapshot = runnerconfig.LoadFileSnapshot
+var errReplacementReadinessStopped = errors.New("replacement readiness canceled by explicit service stop")
+
+var waitForReplacementReadinessFunc = waitForReplacementReadiness
+
+func waitForReplacementReadiness(ctx context.Context, configDir, previousIdentityToken string) (controller.Metadata, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	readinessCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	done := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		ticker := time.NewTicker(controllerReadinessPollInterval)
+		defer ticker.Stop()
+		for {
+			stopped, err := servicecoordination.StopRequested(configDir)
+			if err != nil {
+				cancel(fmt.Errorf("read explicit service stop request: %w", err))
+				return
+			}
+			if stopped {
+				cancel(errReplacementReadinessStopped)
+				return
+			}
+			select {
+			case <-done:
+				return
+			case <-readinessCtx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	metadata, err := waitForRunningControllerUsingWithTimeout(readinessCtx, configDir, previousIdentityToken, "", serviceApplyTimeout, controller.ReadMetadata, controller.Probe)
+	close(done)
+	<-watcherDone
+	if cause := context.Cause(readinessCtx); cause != nil && !errors.Is(cause, ctx.Err()) {
+		return controller.Metadata{}, cause
+	}
+	return metadata, err
+}
 
 type snapshotServiceRestarter interface {
 	RestartWithConfig(context.Context, runnerconfig.Config) error
@@ -40,12 +83,20 @@ type snapshotServiceMatcher interface {
 	ServiceMatchesConfig(context.Context, runnerconfig.Config) (bool, error)
 }
 
-func currentServiceManager() servicemanager.Manager {
-	return serviceManagerFactory(effectiveConfigDir(), servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy, DashboardListen: dashboardListen})
+func currentServiceManager() (servicemanager.Manager, string, error) {
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return nil, "", err
+	}
+	return serviceManagerFactory(configDir, servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy, DashboardListen: dashboardListen}), configDir, nil
 }
 
 var waitForDashboardFunc = func(ctx context.Context) (string, error) {
-	metadata, err := waitForRunningController(ctx, effectiveConfigDir(), "")
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return "", err
+	}
+	metadata, err := waitForRunningController(ctx, configDir, "")
 	if err != nil {
 		return "", err
 	}
@@ -53,17 +104,18 @@ var waitForDashboardFunc = func(ctx context.Context) (string, error) {
 }
 
 func runRoot(cmd *cobra.Command, _ []string) error {
-	coordinationCleanup, err := servicecoordination.StartPresence(cmd.Context(), effectiveConfigDir())
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return err
+	}
+	coordinationCleanup, err := servicecoordination.StartPresence(cmd.Context(), configDir)
 	if err != nil {
 		return fmt.Errorf("publish attached host presence: %w", err)
 	}
 	defer coordinationCleanup()
-	manager := currentServiceManager()
-	status, err := manager.Status(cmd.Context())
-	if err != nil || !status.Running {
-		if err := manager.Start(cmd.Context()); err != nil {
-			return err
-		}
+	manager := serviceManagerFactory(configDir, servicemanager.BootstrapOptions{Image: bootstrapImage, PullPolicy: bootstrapPullPolicy, DashboardListen: dashboardListen})
+	if err := startAttachedService(cmd.Context(), manager, configDir); err != nil {
+		return err
 	}
 	url, err := waitForDashboardFunc(cmd.Context())
 	if err != nil {
@@ -73,13 +125,33 @@ func runRoot(cmd *cobra.Command, _ []string) error {
 		_ = openDashboardBrowserFunc(url)
 	}
 	cmd.Printf("Dashboard: %s\n", url)
-	return followAttachedService(cmd.Context(), manager, effectiveConfigDir())
+	return followAttachedService(cmd.Context(), manager, configDir)
+}
+
+func startAttachedService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
+	return servicecoordination.WithServiceMutation(ctx, configDir, func() error {
+		if err := servicecoordination.ResumeService(configDir); err != nil {
+			return err
+		}
+		status, err := manager.Status(ctx)
+		if err == nil && status.Running {
+			return nil
+		}
+		return manager.Start(ctx)
+	})
 }
 
 func followAttachedService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
 	for {
 		if !servicecoordination.CoordinatorOwned(configDir) {
 			return errors.New("attached Credimi Runner coordinator ownership was lost")
+		}
+		stopRequested, stopErr := servicecoordination.StopRequested(configDir)
+		if stopErr != nil {
+			return fmt.Errorf("read explicit service stop request: %w", stopErr)
+		}
+		if stopRequested {
+			return nil
 		}
 		logsCtx, cancelLogs := context.WithCancel(ctx)
 		logsDone := make(chan error, 1)
@@ -91,10 +163,42 @@ func followAttachedService(ctx context.Context, manager servicemanager.Manager, 
 			case <-ctx.Done():
 				cancelLogs()
 				<-logsDone
+				ticker.Stop()
 				return nil
 			case <-logsDone:
-				// A container can disappear while it is being replaced. Keep the
-				// attached command alive and resume following its replacement.
+				if ctx.Err() != nil {
+					ticker.Stop()
+					return nil
+				}
+				stopRequested, stopErr := servicecoordination.StopRequested(configDir)
+				if stopErr != nil {
+					ticker.Stop()
+					return fmt.Errorf("read explicit service stop request: %w", stopErr)
+				}
+				if stopRequested {
+					ticker.Stop()
+					return nil
+				}
+				request, requestErr := servicecoordination.ReadRestartRequest(configDir)
+				if requestErr == nil {
+					result, resultErr := servicecoordination.ReadRestartResult(configDir)
+					if resultErr != nil || result.RequestID != request.RequestID {
+						if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
+							return err
+						}
+						restartFollower = true
+						continue
+					}
+				}
+				status, statusErr := manager.Status(ctx)
+				if statusErr == nil && !status.Running {
+					ticker.Stop()
+					return nil
+				}
+				// A log stream can end while a service is being replaced or
+				// while the service remains healthy. In either case, resume
+				// following; an explicit stopped status is the external-stop
+				// signal that ends the attached command.
 				restartFollower = true
 			case <-ticker.C:
 				if !servicecoordination.CoordinatorOwned(configDir) {
@@ -103,20 +207,40 @@ func followAttachedService(ctx context.Context, manager servicemanager.Manager, 
 					ticker.Stop()
 					return errors.New("attached Credimi Runner coordinator ownership was lost")
 				}
-				request, err := servicecoordination.ReadRestartRequest(configDir)
-				if err != nil {
-					continue
+				stopRequested, stopErr := servicecoordination.StopRequested(configDir)
+				if stopErr != nil {
+					cancelLogs()
+					<-logsDone
+					ticker.Stop()
+					return fmt.Errorf("read explicit service stop request: %w", stopErr)
 				}
-				if result, resultErr := servicecoordination.ReadRestartResult(configDir); resultErr == nil && result.RequestID == request.RequestID {
+				if stopRequested {
+					cancelLogs()
+					<-logsDone
+					ticker.Stop()
+					return nil
+				}
+				request, err := servicecoordination.ReadRestartRequest(configDir)
+				if err == nil {
+					if result, resultErr := servicecoordination.ReadRestartResult(configDir); resultErr != nil || result.RequestID != request.RequestID {
+						cancelLogs()
+						<-logsDone
+						ticker.Stop()
+						if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
+							return err
+						}
+						restartFollower = true
+						continue
+					}
+				}
+				status, err := manager.Status(ctx)
+				if err != nil || status.Running {
 					continue
 				}
 				cancelLogs()
 				<-logsDone
 				ticker.Stop()
-				if err := applyServiceRestartRequest(ctx, manager, configDir, request); err != nil {
-					return err
-				}
-				restartFollower = true
+				return nil
 			}
 		}
 		ticker.Stop()
@@ -135,6 +259,18 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 			RequestID: request.RequestID, Success: success, AppliedFingerprint: fingerprint,
 			Error: sanitizeServiceError(message, configDir), UpdatedAt: time.Now().UTC(),
 		})
+	}
+	stopRequested := func() (bool, error) {
+		stopped, err := servicecoordination.StopRequested(configDir)
+		if err != nil {
+			return false, fmt.Errorf("read explicit service stop request: %w", err)
+		}
+		return stopped, nil
+	}
+	if stopped, err := stopRequested(); err != nil {
+		return err
+	} else if stopped {
+		return writeResult(false, "", "service restart canceled by explicit service stop")
 	}
 	configPath := filepath.Join(configDir, "config.toml")
 	cfg, digest, err := loadServiceConfigSnapshot(configPath)
@@ -161,17 +297,37 @@ func applyServiceRestartRequest(ctx context.Context, manager servicemanager.Mana
 		}
 	}
 	previous, _ := controller.ReadMetadata(configDir)
-	var restartErr error
-	if restarter, ok := manager.(snapshotServiceRestarter); ok {
-		restartErr = restarter.RestartWithConfig(ctx, cfg)
-	} else {
-		restartErr = manager.Restart(ctx)
-	}
+	restartSkipped := false
+	restartErr := servicecoordination.WithServiceMutation(ctx, configDir, func() error {
+		stopped, err := stopRequested()
+		if err != nil {
+			return err
+		}
+		if stopped {
+			restartSkipped = true
+			return nil
+		}
+		if restarter, ok := manager.(snapshotServiceRestarter); ok {
+			return restarter.RestartWithConfig(ctx, cfg)
+		}
+		return manager.Restart(ctx)
+	})
 	if restartErr != nil {
 		resultErr := writeResult(false, "", fmt.Sprintf("service restart failed: %v", restartErr))
 		return errors.Join(restartErr, resultErr)
 	}
-	if _, err := waitForRunningControllerUsingWithTimeout(ctx, configDir, previous.IdentityToken, "", serviceApplyTimeout, controller.ReadMetadata, controller.Probe); err != nil {
+	if restartSkipped {
+		return writeResult(false, "", "service restart canceled by explicit service stop")
+	}
+	if stopped, err := stopRequested(); err != nil {
+		return err
+	} else if stopped {
+		return writeResult(false, "", "service restart canceled by explicit service stop")
+	}
+	if _, err := waitForReplacementReadinessFunc(ctx, configDir, previous.IdentityToken); err != nil {
+		if errors.Is(err, errReplacementReadinessStopped) {
+			return nil
+		}
 		resultErr := writeResult(false, "", fmt.Sprintf("replacement service did not become ready: %v", err))
 		return errors.Join(err, resultErr)
 	}
@@ -227,12 +383,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&dashboardListen, "dashboard-listen", "", "Dashboard bind address for this start (default: 0.0.0.0:8051)")
 }
 
-func effectiveConfigDir() string {
+func effectiveConfigDir() (string, error) {
 	if strings.TrimSpace(dashboardConfigDir) != "" {
-		return dashboardConfigDir
+		return dashboardConfigDir, nil
 	}
 	if configPath != "" {
-		return filepath.Dir(configPath)
+		return filepath.Dir(configPath), nil
 	}
 	return dashboard.ConfigDir()
 }

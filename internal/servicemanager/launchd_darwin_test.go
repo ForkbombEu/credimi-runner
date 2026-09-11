@@ -12,9 +12,23 @@ import (
 )
 
 func TestLaunchAgentPlistUsesInternalService(t *testing.T) {
-	m := &LaunchAgentManager{ConfigDir: "/tmp/runner", BinaryPath: "/usr/local/bin/credimi-runner"}
+	originalJavaHome := launchAgentJavaHome
+	launchAgentJavaHome = func() string { return "/Library/Java/JavaVirtualMachines/test/Contents/Home" }
+	t.Cleanup(func() { launchAgentJavaHome = originalJavaHome })
+	m := &LaunchAgentManager{ConfigDir: "/tmp/runner", BinaryPath: "/usr/local/bin/credimi-runner", HomeDir: "/Users/tester"}
 	plist := m.plist()
-	for _, want := range []string{"eu.forkbomb.credimi-runner", "/usr/local/bin/credimi-runner", "internal-service", "RunAtLoad", "KeepAlive", "CREDIMI_RUNNER_CONFIG_DIR"} {
+	for _, want := range []string{
+		"eu.forkbomb.credimi-runner",
+		"/usr/local/bin/credimi-runner",
+		"internal-service",
+		"RunAtLoad",
+		"KeepAlive",
+		"CREDIMI_RUNNER_CONFIG_DIR",
+		"<key>HOME</key><string>/Users/tester</string>",
+		"/Users/tester/.maestro/bin",
+		"/Users/tester/Library/Android/sdk/platform-tools",
+		"<key>JAVA_HOME</key><string>/Library/Java/JavaVirtualMachines/test/Contents/Home</string>",
+	} {
 		if !strings.Contains(plist, want) {
 			t.Fatalf("plist missing %q", want)
 		}

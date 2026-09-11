@@ -529,6 +529,8 @@ func TestServerContract_StoreExecutionScreenshots(t *testing.T) {
 		upstream := newTestInstanceServer(t, capture)
 		defer upstream.Close()
 		tmpDir := t.TempDir()
+		tmpDir, err := filepath.EvalSymlinks(tmpDir)
+		require.NoError(t, err)
 		first := filepath.Join(tmpDir, "child-1", "one.png")
 		second := filepath.Join(tmpDir, "child-2", "two.png")
 		require.NoError(t, os.MkdirAll(filepath.Dir(first), 0755))

@@ -20,25 +20,43 @@ import (
 )
 
 type restartTestManager struct {
-	mu           sync.Mutex
-	status       servicemanager.Status
-	restarts     int
-	restart      func()
-	restartErr   error
-	logs         int
-	logsExitOnce bool
-	logStarted   chan struct{}
-	logOnce      sync.Once
+	mu            sync.Mutex
+	status        servicemanager.Status
+	starts        int
+	stops         int
+	restarts      int
+	restart       func()
+	restartErr    error
+	logs          int
+	logsExitOnce  bool
+	stopOnLogExit bool
+	logStarted    chan struct{}
+	logOnce       sync.Once
 }
 
-func (m *restartTestManager) Start(context.Context) error   { return nil }
-func (m *restartTestManager) Stop(context.Context) error    { return nil }
+func (m *restartTestManager) Start(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.starts++
+	m.status.Running = true
+	return nil
+}
+func (m *restartTestManager) Stop(context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stops++
+	m.status.Running = false
+	return nil
+}
 func (m *restartTestManager) Enable(context.Context) error  { return nil }
 func (m *restartTestManager) Disable(context.Context) error { return nil }
 func (m *restartTestManager) Logs(ctx context.Context, _ servicemanager.LogOptions) error {
 	m.mu.Lock()
 	m.logs++
 	call := m.logs
+	if m.stopOnLogExit && call == 1 {
+		m.status.Running = false
+	}
 	m.mu.Unlock()
 	m.logOnce.Do(func() {
 		if m.logStarted != nil {
@@ -398,6 +416,94 @@ func TestAttachedHostHandlesRestartRequestOnce(t *testing.T) {
 		t.Fatalf("result=%+v restarts=%d", result, restarts)
 	}
 }
+func TestExplicitStopInterruptsReplacementReadinessAndReleasesAttachedCoordination(t *testing.T) {
+	dir := t.TempDir()
+	restartTestConfig(t, dir)
+	request, err := servicecoordination.NewRestartRequest(restartTestConfigDigest(t, dir), true, nowForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oldWait := waitForReplacementReadinessFunc
+	readinessEntered := make(chan struct{})
+	waitForReplacementReadinessFunc = func(ctx context.Context, configDir, previousIdentityToken string) (controller.Metadata, error) {
+		close(readinessEntered)
+		return oldWait(ctx, configDir, previousIdentityToken)
+	}
+	t.Cleanup(func() { waitForReplacementReadinessFunc = oldWait })
+
+	manager := &restartTestManager{
+		status:     servicemanager.Status{Running: true},
+		logStarted: make(chan struct{}),
+	}
+	cleanup, err := servicecoordination.StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	followDone := make(chan error, 1)
+	go func() { followDone <- followAttachedService(context.Background(), manager, dir) }()
+	select {
+	case <-manager.logStarted:
+	case <-time.After(time.Second):
+		t.Fatal("attached log follower did not start")
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-readinessEntered:
+	case <-time.After(time.Second):
+		t.Fatal("replacement readiness did not begin")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- stopService(context.Background(), manager, dir) }()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("service stop did not complete")
+	}
+	select {
+	case err := <-followDone:
+		if err != nil {
+			t.Fatalf("attached follow error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("attached coordinator did not exit after stop during readiness")
+	}
+	cleanup()
+
+	status, err := manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	restarts, stops := manager.restarts, manager.stops
+	manager.mu.Unlock()
+	if status.Running || restarts != 1 || stops != 1 {
+		t.Fatalf("status=%+v restarts=%d stops=%d", status, restarts, stops)
+	}
+	if _, err := servicecoordination.ReadRestartRequest(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restart request remained after explicit stop: %v", err)
+	}
+	if _, err := servicecoordination.ReadRestartResult(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restart result remained after explicit stop: %v", err)
+	}
+	nextCleanup, err := servicecoordination.StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("coordinator remained held after readiness stop: %v", err)
+	}
+	nextCleanup()
+	if err := startService(context.Background(), manager, dir); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := servicecoordination.StopRequested(dir); err != nil || stopped {
+		t.Fatalf("stop request after later start: stopped=%t err=%v", stopped, err)
+	}
+}
 
 func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
 	dir := t.TempDir()
@@ -406,7 +512,7 @@ func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	manager := &restartTestManager{logsExitOnce: true, logStarted: make(chan struct{})}
+	manager := &restartTestManager{status: servicemanager.Status{Running: true}, logsExitOnce: true, logStarted: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- followAttachedService(ctx, manager, dir) }()
@@ -433,6 +539,41 @@ func TestAttachedHostResumesAfterLogStreamEnds(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+func TestAttachedHostExitsAfterExternalServiceStopAndReleasesPresence(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	cleanup, err := servicecoordination.StartPresence(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &restartTestManager{
+		status:        servicemanager.Status{Running: true},
+		logsExitOnce:  true,
+		stopOnLogExit: true,
+		logStarted:    make(chan struct{}),
+	}
+	followDone := make(chan error, 1)
+	go func() { followDone <- followAttachedService(ctx, manager, dir) }()
+	select {
+	case <-manager.logStarted:
+	case <-time.After(time.Second):
+		t.Fatal("attached log follower did not start")
+	}
+	select {
+	case err := <-followDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("attached host did not exit after external stop")
+	}
+	cleanup()
+	nextCleanup, err := servicecoordination.StartPresence(ctx, dir)
+	if err != nil {
+		t.Fatalf("new attached host could not acquire coordination: %v", err)
+	}
+	nextCleanup()
 }
 
 func TestAttachedHostStopsAfterCoordinatorOwnershipIsReplaced(t *testing.T) {
@@ -465,6 +606,94 @@ func TestAttachedHostStopsAfterCoordinatorOwnershipIsReplaced(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("attached host did not stop after ownership loss")
+	}
+}
+
+func TestApplyServiceRestartRequestCancelsExplicitStop(t *testing.T) {
+	dir := t.TempDir()
+	restartTestConfig(t, dir)
+	request, err := servicecoordination.NewRestartRequest(restartTestConfigDigest(t, dir), true, nowForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.RequestStop(dir, nowForTest()); err != nil {
+		t.Fatal(err)
+	}
+	manager := &restartTestManager{status: servicemanager.Status{Running: true}}
+	if err := applyServiceRestartRequest(context.Background(), manager, dir, request); err != nil {
+		t.Fatal(err)
+	}
+	result, err := servicecoordination.ReadRestartResult(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Success || !strings.Contains(result.Error, "explicit service stop") || manager.restarts != 0 {
+		t.Fatalf("result=%+v restarts=%d", result, manager.restarts)
+	}
+}
+
+func TestExplicitStopCancelsPendingRestartAndReleasesAttachedCoordination(t *testing.T) {
+	dir := t.TempDir()
+	restartTestConfig(t, dir)
+	request, err := servicecoordination.NewRestartRequest(restartTestConfigDigest(t, dir), true, nowForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := servicecoordination.StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &restartTestManager{status: servicemanager.Status{Running: true}}
+	if err := stopService(context.Background(), manager, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := followAttachedService(context.Background(), manager, dir); err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if _, err := servicecoordination.ReadRestartRequest(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending restart after explicit stop: %v", err)
+	}
+	status, err := manager.Status(context.Background())
+	if err != nil || status.Running || manager.restarts != 0 || manager.stops != 1 {
+		t.Fatalf("status=%+v restarts=%d stops=%d err=%v", status, manager.restarts, manager.stops, err)
+	}
+	nextCleanup, err := servicecoordination.StartPresence(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("coordinator remained held after explicit stop: %v", err)
+	}
+	nextCleanup()
+	if err := startService(context.Background(), manager, dir); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := servicecoordination.StopRequested(dir); err != nil || stopped {
+		t.Fatalf("stop request after later start: stopped=%t err=%v", stopped, err)
+	}
+	if err := servicecoordination.WriteRestartRequest(dir, request); err != nil {
+		t.Fatalf("later restart request was suppressed: %v", err)
+	}
+}
+
+func TestExplicitStopWithoutPendingRestartIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	manager := &restartTestManager{status: servicemanager.Status{Running: false}}
+	if err := stopService(context.Background(), manager, dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := stopService(context.Background(), manager, dir); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := servicecoordination.StopRequested(dir); err != nil || !stopped {
+		t.Fatalf("stop request: stopped=%t err=%v", stopped, err)
+	}
+	if manager.stops != 2 {
+		t.Fatalf("stop calls=%d", manager.stops)
 	}
 }
 

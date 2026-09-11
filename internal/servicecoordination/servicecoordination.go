@@ -20,13 +20,15 @@ import (
 )
 
 const (
-	CoordinatorFile      = "service-coordinator.json"
-	CoordinatorLockFile  = "service-coordinator.lock"
-	RestartRequestFile   = "service-restart-request.json"
-	RestartResultFile    = "service-restart-result.json"
-	Protocol             = 1
-	CoordinatorMaxAge    = 15 * time.Second
-	CoordinatorHeartbeat = 5 * time.Second
+	CoordinatorFile         = "service-coordinator.json"
+	CoordinatorLockFile     = "service-coordinator.lock"
+	RestartRequestFile      = "service-restart-request.json"
+	RestartResultFile       = "service-restart-result.json"
+	StopRequestFile         = "service-stop-request.json"
+	ServiceMutationLockFile = "service-mutation.lock"
+	Protocol                = 1
+	CoordinatorMaxAge       = 15 * time.Second
+	CoordinatorHeartbeat    = 5 * time.Second
 )
 
 var coordinatorHeartbeat = CoordinatorHeartbeat
@@ -102,6 +104,10 @@ type RestartResult struct {
 	AppliedFingerprint string    `json:"applied_fingerprint,omitempty"`
 	Error              string    `json:"error,omitempty"`
 	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+type StopRequest struct {
+	RequestedAt time.Time `json:"requested_at"`
 }
 
 func writePresence(configDir string, now time.Time, nonce string) error {
@@ -288,6 +294,167 @@ func ReadRestartResult(configDir string) (RestartResult, error) {
 		return RestartResult{}, errors.New("service restart result is invalid")
 	}
 	return result, nil
+}
+
+// RequestStop records an explicit operator stop before the service is stopped.
+// Attached coordinators must not apply replacement requests while it exists.
+func RequestStop(configDir string, now time.Time) error {
+	if now.IsZero() {
+		return errors.New("service stop request time is empty")
+	}
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return fmt.Errorf("create service coordination directory: %w", err)
+	}
+	return writeJSON(filepath.Join(configDir, StopRequestFile), StopRequest{RequestedAt: now.UTC()})
+}
+func StopRequested(configDir string) (bool, error) {
+	var request StopRequest
+	if err := readJSON(filepath.Join(configDir, StopRequestFile), &request); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if request.RequestedAt.IsZero() {
+		return false, errors.New("service stop request is invalid")
+	}
+	return true, nil
+}
+
+// ResumeService clears a prior explicit-stop intent and any replacement work
+// that was pending when the service was stopped.
+func ResumeService(configDir string) error {
+	stopped, err := StopRequested(configDir)
+	if err != nil {
+		return err
+	}
+	if !stopped {
+		return nil
+	}
+	if err := removeCoordinationFile(configDir, StopRequestFile); err != nil {
+		return err
+	}
+	return CancelRestartRequest(configDir)
+}
+
+// CancelRestartRequest removes replacement state that must not survive an
+// explicit stop. It is idempotent so stopping an already stopped service works.
+func CancelRestartRequest(configDir string) error {
+	for _, name := range []string{RestartRequestFile, RestartResultFile} {
+		if err := removeCoordinationFile(configDir, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeCoordinationFile(configDir, name string) error {
+	err := os.Remove(filepath.Join(configDir, name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// WithServiceMutation serializes host service start, stop, and replacement
+// mutations across CLI processes. Its lease heartbeat permits stale recovery.
+func WithServiceMutation(ctx context.Context, configDir string, operation func() error) error {
+	if operation == nil {
+		return errors.New("service mutation is required")
+	}
+	release, err := acquireServiceMutation(ctx, configDir)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return operation()
+}
+
+func acquireServiceMutation(ctx context.Context, configDir string) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create service coordination directory: %w", err)
+	}
+	nonceBytes := make([]byte, 16)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return nil, fmt.Errorf("generate service mutation nonce: %w", err)
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	path := filepath.Join(configDir, ServiceMutationLockFile)
+	for {
+		file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			if _, writeErr := file.WriteString(nonce); writeErr != nil {
+				_ = file.Close()
+				_ = os.Remove(path)
+				return nil, fmt.Errorf("write service mutation lock: %w", writeErr)
+			}
+			if closeErr := file.Close(); closeErr != nil {
+				_ = os.Remove(path)
+				return nil, fmt.Errorf("close service mutation lock: %w", closeErr)
+			}
+			return startServiceMutationLease(path, nonce), nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("create service mutation lock: %w", err)
+		}
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("inspect service mutation lock: %w", statErr)
+		}
+		if time.Since(info.ModTime()) > CoordinatorMaxAge {
+			if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("reclaim stale service mutation lock: %w", removeErr)
+			}
+			continue
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func startServiceMutationLease(path, nonce string) func() {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	var once sync.Once
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(coordinatorHeartbeat)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-ticker.C:
+				if !serviceMutationOwned(path, nonce) {
+					return
+				}
+				_ = os.Chtimes(path, now, now)
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() { close(done) })
+		<-finished
+		if serviceMutationOwned(path, nonce) {
+			_ = os.Remove(path)
+		}
+	}
+}
+
+func serviceMutationOwned(path, nonce string) bool {
+	contents, err := os.ReadFile(path)
+	return err == nil && strings.TrimSpace(string(contents)) == nonce
 }
 
 func writeJSON(path string, value any) error {

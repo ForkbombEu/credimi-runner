@@ -76,14 +76,13 @@
   });
 
   // ── Runtime operations (the dashboard waits for the same final result as the CLI) ──
-  let runtimeOperationTimer = null;
   let runtimeRecoveryTimer = null;
   let runtimeRecoveryAbort = null;
   let runtimeRecoveryDeadline = 0;
   let setupRecoveryTokens = [];
   let setupRecoveryOrigins = [];
-  let runtimeOperationActive = false;
-  let runtimeBusyVisibleUntil = 0;
+  let activeRuntimeOperation = null;
+  let pendingRuntimeRequest = null;
   let currentDashboardToken = new URLSearchParams(window.location.search).get('token') || '';
   function dashboardURL(path, tokenOverride, originOverride) {
     const url = new URL(path, originOverride || window.location.origin);
@@ -158,30 +157,36 @@
   // Must exceed the backend's 15-minute activation budget.
   const runtimeRecoveryMaxDuration = 18 * 60 * 1000;
   const runtimeRecoveryRequestTimeout = 10000;
-  function finishRuntimeRecoveryTimeout() {
-    if (!runtimeOperationActive) return;
+  function ownsRuntimeOperation(operation) {
+    return Boolean(operation && activeRuntimeOperation && activeRuntimeOperation.id === operation.id);
+  }
+  function runtimeBusyOwned() {
+    return Boolean(activeRuntimeOperation || pendingRuntimeRequest);
+  }
+  function finishRuntimeRecoveryTimeout(operation) {
+    if (!ownsRuntimeOperation(operation)) return;
     if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
     runtimeRecoveryAbort = null;
     clearTimeout(runtimeRecoveryTimer);
     runtimeRecoveryTimer = null;
-    runtimeOperationActive = false;
+    activeRuntimeOperation = null;
     setupRecoveryTokens = [];
     setupRecoveryOrigins = [];
     hideBusy();
     toast('Runner operation recovery timed out. Reload the dashboard and check runtime status.', 'error');
   }
   function startRuntimeRecovery(operation) {
-    if (!isReplacementRecoveryOperation(operation)) return;
+    if (!isReplacementRecoveryOperation(operation) || !ownsRuntimeOperation(operation)) return;
     operation._recovering = true;
-    clearTimeout(runtimeOperationTimer);
-    runtimeOperationTimer = null;
+    clearTimeout(operation.pollTimer);
+    operation.pollTimer = null;
     const deadline = Date.now() + runtimeRecoveryMaxDuration;
     runtimeRecoveryDeadline = deadline;
     clearTimeout(runtimeRecoveryTimer);
     if (runtimeRecoveryAbort) runtimeRecoveryAbort.abort();
     const poll = async () => {
-      if (Date.now() >= deadline || !runtimeOperationActive) {
-        finishRuntimeRecoveryTimeout();
+      if (Date.now() >= deadline || !ownsRuntimeOperation(operation)) {
+        finishRuntimeRecoveryTimeout(operation);
         return;
       }
       let timeout;
@@ -195,8 +200,8 @@
           [operation.recoveryOrigin, window.location.origin],
           controller.signal,
         );
-        if (Date.now() >= deadline) {
-          finishRuntimeRecoveryTimeout();
+        if (Date.now() >= deadline || !ownsRuntimeOperation(operation)) {
+          finishRuntimeRecoveryTimeout(operation);
           return;
         }
         if (!recovery.response.ok) {
@@ -211,7 +216,7 @@
         clearTimeout(runtimeRecoveryTimer);
         runtimeRecoveryTimer = null;
         runtimeRecoveryAbort = null;
-        runtimeOperationActive = false;
+        activeRuntimeOperation = null;
         hideBusy();
         setDashboardToken(recovery.token);
         if (state.phase === 'ready') {
@@ -219,13 +224,19 @@
         } else {
           toast(`Runner operation failed: ${state.message || 'runner needs attention'}`, 'error');
         }
-		if ($('.app.setup-shell')) {
-			if (state.phase === 'ready') { clearSetupDraftID(); window.location.assign(dashboardURL(operation.refresh || '/', recovery.token, recovery.origin)); }
-			else refreshOverview('/setup', recovery.token, recovery.origin);
-		} else refreshOverview(operation.refresh || '/', recovery.token, recovery.origin);
+        if ($('.app.setup-shell')) {
+          if (state.phase === 'ready') {
+            clearSetupDraftID();
+            window.location.assign(dashboardURL(operation.refresh || '/', recovery.token, recovery.origin));
+          } else {
+            refreshOverview('/setup', recovery.token, recovery.origin);
+          }
+        } else {
+          refreshOverview(operation.refresh || '/', recovery.token, recovery.origin);
+        }
       } catch (_) {
-        if (Date.now() >= deadline) finishRuntimeRecoveryTimeout();
-        else if (runtimeOperationActive) runtimeRecoveryTimer = setTimeout(poll, 1000);
+        if (Date.now() >= deadline) finishRuntimeRecoveryTimeout(operation);
+        else if (ownsRuntimeOperation(operation)) runtimeRecoveryTimer = setTimeout(poll, 1000);
       } finally {
         clearTimeout(timeout);
       }
@@ -233,16 +244,19 @@
     void poll();
   }
   function finishRuntimeOperationPollingFailure(operation) {
-    runtimeOperationActive = false;
+    if (!ownsRuntimeOperation(operation)) return;
+    activeRuntimeOperation = null;
     hideBusy();
     toast('Runner operation failed: controller status is unavailable.', 'error');
     if ($('.app.setup-shell')) refreshOverview('/setup', operation.recoveryToken, operation.recoveryOrigin);
     else refreshOverview(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin);
   }
   async function pollRuntimeOperation(operation) {
+    if (!ownsRuntimeOperation(operation) || operation._recovering) return;
     operation._pollFailures = operation._pollFailures || 0;
     try {
       const response = await fetch(dashboardURL(`/api/controller/operations/${encodeURIComponent(operation.id)}`), { headers: { Accept: 'application/json' } });
+      if (!ownsRuntimeOperation(operation)) return;
       if (!response.ok) {
         operation._pollFailures++;
         if (operation._pollFailures < 3) return;
@@ -252,6 +266,7 @@
       }
       operation._pollFailures = 0;
       const snapshot = await response.json();
+      if (!ownsRuntimeOperation(operation)) return;
       const phase = String(snapshot.phase || snapshot.Phase || '');
       const message = String(snapshot.message || snapshot.Message || '').trim();
       if (message) {
@@ -261,33 +276,42 @@
         appendBusyLog(message);
       }
       if (phase === 'queued' || phase === 'running') return;
-      clearTimeout(runtimeOperationTimer);
-      runtimeOperationTimer = null;
+      clearTimeout(operation.pollTimer);
+      operation.pollTimer = null;
       if (shouldHandoffToReplacementRecovery(operation, phase, snapshot)) {
         startRuntimeRecovery(operation);
         return;
       }
       const finish = () => {
-        runtimeOperationActive = false;
+        if (!ownsRuntimeOperation(operation)) return;
+        activeRuntimeOperation = null;
         hideBusy();
         if (phase === 'succeeded') {
           toast(operation.success || 'Runner operation completed successfully.');
         } else {
           toast(runtimeOperationFailure(snapshot), 'error');
         }
-			if ($('.app.setup-shell')) {
-				if (phase === 'succeeded') {
-					clearSetupDraftID();
-					window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));
-				} else {
-					refreshOverview('/setup', operation.recoveryToken, operation.recoveryOrigin);
-				}
-				return;
-			}
-			refreshOverview(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin);
+        if ($('.app.setup-shell')) {
+          if (phase === 'succeeded') {
+            clearSetupDraftID();
+            window.location.assign(dashboardURL(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin));
+          } else {
+            refreshOverview('/setup', operation.recoveryToken, operation.recoveryOrigin);
+          }
+          return;
+        }
+        refreshOverview(operation.refresh || '/', operation.recoveryToken, operation.recoveryOrigin);
       };
-      setTimeout(finish, Math.max(0, runtimeBusyVisibleUntil - Date.now()));
+      const terminalMessage = phase === 'succeeded'
+        ? (operation.success || 'Runner operation completed.')
+        : runtimeOperationFailure(snapshot);
+      const overlay = busyOverlay();
+      const messageNode = overlay && $('[data-busy-message]', overlay);
+      if (messageNode) messageNode.textContent = terminalMessage;
+      appendBusyLog(terminalMessage);
+      operation.finishTimer = setTimeout(finish, Math.max(0, (operation.visibleUntil || 0) - Date.now()));
     } catch (_) {
+      if (!ownsRuntimeOperation(operation)) return;
       operation._pollFailures++;
       if (operation._pollFailures >= 3) {
         if (isReplacementRecoveryOperation(operation)) startRuntimeRecovery(operation);
@@ -298,6 +322,10 @@
   document.body.addEventListener('runtimeOperation', (e) => {
     const operation = e.detail && (e.detail.value || e.detail);
     if (!operation || !operation.id) return;
+    if (activeRuntimeOperation) {
+      if (activeRuntimeOperation.id === operation.id) return;
+      return;
+    }
     if (operation.recoveryToken === undefined) {
       const tokenField = document.querySelector('[name="DASHBOARD_TOKEN"]');
       if (tokenField) operation.recoveryToken = tokenField.value.trim();
@@ -308,14 +336,14 @@
     setupRecoveryOrigins = [operation.recoveryOrigin, window.location.origin]
       .filter((origin, index, values) => origin && values.indexOf(origin) === index);
     if (operation.recovery !== 'true' && operation.recoveryToken !== undefined) setDashboardToken(operation.recoveryToken);
-    runtimeOperationActive = true;
-    clearTimeout(runtimeOperationTimer);
-    runtimeBusyVisibleUntil = Math.max(runtimeBusyVisibleUntil, Date.now() + 900);
+    activeRuntimeOperation = operation;
+    pendingRuntimeRequest = null;
+    operation.visibleUntil = Date.now() + 1500;
     appendBusyLog('Runtime operation accepted. Waiting for completion.');
     const poll = async () => {
-      if (!runtimeOperationActive) return;
+      if (!ownsRuntimeOperation(operation)) return;
       await pollRuntimeOperation(operation);
-      if (runtimeOperationActive && !operation._recovering) runtimeOperationTimer = setTimeout(poll, 500);
+      if (ownsRuntimeOperation(operation) && !operation._recovering) operation.pollTimer = setTimeout(poll, 500);
     };
     void poll();
   });
@@ -479,17 +507,17 @@
   document.body.addEventListener('htmx:beforeRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
     if (!trigger) return;
-    if (trigger.matches('[data-runtime-action]')) runtimeOperationActive = true;
+    if (trigger.matches('[data-runtime-action]')) pendingRuntimeRequest = trigger;
     const message = trigger.dataset.busyMessage || 'Applying runtime change in the background.';
     if (trigger.matches('[data-setup-form]')) {
       sessionStorage.setItem(setupBusyKey, message);
       showSetupBusy(message);
       return;
     }
-		showBusy(message, {
-			title: trigger.dataset.busyTitle,
-			controllerProgress: trigger.dataset.busyControllerProgress === 'true',
-		});
+    showBusy(message, {
+      title: trigger.dataset.busyTitle,
+      controllerProgress: trigger.dataset.busyControllerProgress === 'true',
+    });
   });
   document.body.addEventListener('htmx:afterRequest', (e) => {
     const trigger = busyTriggerForElement(e.detail.elt);
@@ -501,16 +529,29 @@
       if (e.detail.successful !== false) return;
       sessionStorage.removeItem(setupBusyKey);
     }
-    if (runtimeOperationActive || (trigger && trigger.matches('[data-runtime-action]') && e.detail.successful !== false)) return;
+    if (trigger && trigger === pendingRuntimeRequest) {
+      pendingRuntimeRequest = null;
+      if (e.detail.successful === false) {
+        hideBusy();
+        return;
+      }
+    }
+    if (runtimeBusyOwned()) return;
     if (wasBusy) hideBusy();
   });
-  document.body.addEventListener('htmx:responseError', () => {
-    runtimeOperationActive = false;
+  document.body.addEventListener('htmx:responseError', (e) => {
+    const trigger = busyTriggerForElement(e.detail && e.detail.elt);
+    if (activeRuntimeOperation) return;
+    if (pendingRuntimeRequest && trigger !== pendingRuntimeRequest) return;
+    pendingRuntimeRequest = null;
     sessionStorage.removeItem(setupBusyKey);
     hideBusy();
   });
-  document.body.addEventListener('htmx:sendError', () => {
-    runtimeOperationActive = false;
+  document.body.addEventListener('htmx:sendError', (e) => {
+    const trigger = busyTriggerForElement(e.detail && e.detail.elt);
+    if (activeRuntimeOperation) return;
+    if (pendingRuntimeRequest && trigger !== pendingRuntimeRequest) return;
+    pendingRuntimeRequest = null;
     sessionStorage.removeItem(setupBusyKey);
     hideBusy();
   });
@@ -2587,7 +2628,6 @@
     }
   });
 
-  // ── Sidebar active-state + crumb sync after client nav ───────────────────
   function syncNav() {
     const path = location.pathname === '/' ? '/' : location.pathname.replace(/\/$/, '');
     let label = 'Overview';
@@ -2601,7 +2641,7 @@
   }
   document.body.addEventListener('htmx:afterSwap', (e) => {
     if (e.detail.target && e.detail.target.tagName === 'MAIN') {
-      if (!runtimeOperationActive) hideBusy();
+      if (!runtimeBusyOwned()) hideBusy();
       syncNav();
       initSetupWizard(e.detail.target);
       initNetMode();

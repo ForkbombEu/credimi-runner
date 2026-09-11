@@ -16,7 +16,7 @@
   <div class="grid-4" style="margin-bottom:16px">
     <div class="stat"><div class="k">{{icon "shield"}} Service</div><div class="v">{{if .ServicesAllUp}}Healthy{{else}}Degraded{{end}}</div><div class="meta">{{len .Snapshot.Services}} expected services · {{.RunnerServiceDetails}}</div></div>
     <div class="stat"><div class="k">{{icon "phone"}} Devices</div><div class="v">{{.DevicesOnline}}<small>/ {{.DevicesTotal}} online</small></div><div class="meta">{{.DevicesDegraded}} degraded · {{.DevicesOffline}} offline</div></div>
-    <div class="stat"><div class="k">{{icon "activity"}} Dashboard</div><div class="v">{{.RuntimeHeadline}}</div><div class="meta">{{.Runner.Get "DASHBOARD_HOST"}}:{{.Runner.Get "DASHBOARD_PORT"}}</div></div>
+    <div class="stat"><div class="k">{{icon "activity"}} Runtime</div><div class="v">{{.RuntimeHeadline}}</div><div class="meta">execution runtime</div></div>
     <div class="stat"><div class="k">{{icon "cloud"}} Exposure</div><div class="v" style="font-size:15px;font-family:var(--font-mono)">{{.Runner.Get "CREDIMI_SERVICE_MODE"}}</div><div class="meta">public runner route</div></div>
   </div>
 

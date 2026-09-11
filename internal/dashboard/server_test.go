@@ -246,11 +246,12 @@ func TestNamedTunnelDomainChangeUsesRuntimeReconcile(t *testing.T) {
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
-	if os.Getenv("ANDROID_SDK_ROOT") == "" {
-		original := ensureCandidateEmulatorReady
-		ensureCandidateEmulatorReady = func(context.Context, runnerconfig.Config, string, androidtools.EmulatorProgress) error { return nil }
-		t.Cleanup(func() { ensureCandidateEmulatorReady = original })
+	if os.Getenv("GOOS_OVERRIDE") == "" {
+		t.Setenv("GOOS_OVERRIDE", "linux")
 	}
+	original := ensureCandidateEmulatorReady
+	ensureCandidateEmulatorReady = func(context.Context, runnerconfig.Config, string, androidtools.EmulatorProgress) error { return nil }
+	t.Cleanup(func() { ensureCandidateEmulatorReady = original })
 	cfg := &Config{path: filepath.Join(t.TempDir(), "config.toml"), values: map[string]string{}}
 	for key, value := range Defaults {
 		cfg.values[key] = value
@@ -700,6 +701,9 @@ func TestDashboardMapsSupervisorStatus(t *testing.T) {
 
 func testSavedConfig(t *testing.T) (*Config, string) {
 	t.Helper()
+	if os.Getenv("GOOS_OVERRIDE") == "" {
+		t.Setenv("GOOS_OVERRIDE", "linux")
+	}
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()
 	cfg.Runner.ID = "org/runner"
@@ -2029,6 +2033,33 @@ func TestApplyDeviceDefaultsAndRegistrationRequirements(t *testing.T) {
 	applyDeviceDefaults(&redroid)
 	if redroid.Values["WIFI_PORT"] != "5555" || redroid.Values["REDROID_DATA_DIR"] == "" {
 		t.Fatalf("redroid defaults = %#v", redroid.Values)
+	}
+}
+
+func TestNormalizeNativeEmulatorGoldenSource(t *testing.T) {
+	hostRoot := filepath.Join(t.TempDir(), "avd-golden")
+	t.Setenv("GOOS_OVERRIDE", "darwin")
+	device := dashboardruntime.DeviceRuntimeConfig{
+		Type: "android_emulator",
+		Values: dashboardruntime.Values{
+			"GOLDEN_PATH":          "/avd-golden/credimi-golden",
+			"HOST_AVD_GOLDEN_PATH": hostRoot,
+		},
+	}
+	normalizeNativeEmulatorGoldenSource(&device)
+	if got := device.Values["GOLDEN_PATH"]; got != filepath.Join(hostRoot, "credimi-golden") {
+		t.Fatalf("native golden path = %q", got)
+	}
+	device.Values["GOLDEN_PATH"] = "/Users/example/custom-golden"
+	normalizeNativeEmulatorGoldenSource(&device)
+	if got := device.Values["GOLDEN_PATH"]; got != "/Users/example/custom-golden" {
+		t.Fatalf("custom golden path = %q", got)
+	}
+	t.Setenv("GOOS_OVERRIDE", "linux")
+	device.Values["GOLDEN_PATH"] = "/avd-golden/credimi-golden"
+	normalizeNativeEmulatorGoldenSource(&device)
+	if got := device.Values["GOLDEN_PATH"]; got != "/avd-golden/credimi-golden" {
+		t.Fatalf("Linux golden path = %q", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -327,6 +328,7 @@ func TestEmulatorBaseNameIsTheOnlyTypedAVDIdentifier(t *testing.T) {
 
 func TestDefaultsPathsAndLoadResolution(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
 	state, err := DefaultStateDir()
 	if err != nil || !strings.HasSuffix(state, "credimi-runner") {
 		t.Fatalf("state=%q err=%v", state, err)
@@ -378,13 +380,29 @@ func TestDurationRoundTripsText(t *testing.T) {
 func TestDefaultPathsUseXDGAndWriteCreatesPrivateParent(t *testing.T) {
 	xdgConfig := t.TempDir()
 	xdgState := t.TempDir()
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", "")
 	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
 	t.Setenv("XDG_STATE_HOME", xdgState)
+	configDir, err := DefaultDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "darwin" {
+		userConfigDir, err := os.UserConfigDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(userConfigDir, "credimi", "runner"); configDir != want {
+			t.Fatalf("DefaultDir = %q, want %q", configDir, want)
+		}
+	} else if want := filepath.Join(xdgConfig, "credimi", "runner"); configDir != want {
+		t.Fatalf("DefaultDir = %q, want %q", configDir, want)
+	}
 	configPath, err := DefaultPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(xdgConfig, "credimi-runner", "config.toml"); configPath != want {
+	if want := filepath.Join(configDir, "config.toml"); configPath != want {
 		t.Fatalf("DefaultPath = %q, want %q", configPath, want)
 	}
 	statePath, err := DefaultStateDir()
@@ -405,6 +423,17 @@ func TestDefaultPathsUseXDGAndWriteCreatesPrivateParent(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o700 {
 		t.Fatalf("config directory mode = %o", info.Mode().Perm())
+	}
+}
+
+func TestDefaultPathsHonorConfigDirectoryOverride(t *testing.T) {
+	override := filepath.Join(t.TempDir(), "runner-config")
+	t.Setenv("CREDIMI_RUNNER_CONFIG_DIR", override)
+	if got, err := DefaultDir(); err != nil || got != override {
+		t.Fatalf("DefaultDir = %q, want %q (err=%v)", got, override, err)
+	}
+	if got, err := DefaultPath(); err != nil || got != filepath.Join(override, "config.toml") {
+		t.Fatalf("DefaultPath = %q, want %q (err=%v)", got, filepath.Join(override, "config.toml"), err)
 	}
 }
 

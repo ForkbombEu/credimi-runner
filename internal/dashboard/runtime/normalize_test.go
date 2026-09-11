@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"path/filepath"
 	"testing"
 )
 
@@ -70,6 +71,28 @@ func TestNormalizeHelperFunctions(t *testing.T) {
 	}
 	if got := resolvedRunnerPublicURL(Values{"CREDIMI_SERVICE_MODE": "auto", "RUNNER_PUBLIC_URL": "https://existing.example"}, "https://fallback.example"); got != "https://fallback.example" {
 		t.Fatalf("resolvedRunnerPublicURL fallback = %q", got)
+	}
+}
+
+func TestNormalizeIndexedDarwinGoldenPathUsesHostRoot(t *testing.T) {
+	hostRoot := filepath.Join(t.TempDir(), "avd-golden")
+	valuesInput := DefaultValues()
+	valuesInput["CREDIMI_RUNNER_ID"] = "acme/runner"
+	valuesInput["CREDIMI_DEVICE_1_ID"] = "acme/runner/emulator"
+	valuesInput["CREDIMI_DEVICE_1_NAME"] = "Emulator"
+	valuesInput["CREDIMI_DEVICE_1_MODE"] = "emulator"
+	valuesInput["CREDIMI_DEVICE_1_ENABLED"] = "true"
+	valuesInput["CREDIMI_DEVICE_COUNT"] = "1"
+	valuesInput["CREDIMI_DEVICE_1_TYPE"] = "android_emulator"
+	valuesInput["CREDIMI_DEVICE_1_BASE_NAME"] = "credimi"
+	valuesInput["CREDIMI_DEVICE_1_GOLDEN_PATH"] = "/avd-golden/credimi-golden"
+	valuesInput["CREDIMI_DEVICE_1_HOST_AVD_GOLDEN_PATH"] = hostRoot
+	values, err := NormalizeValues(valuesInput, "darwin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := values["CREDIMI_DEVICE_1_GOLDEN_PATH"]; got != filepath.Join(hostRoot, "credimi-golden") {
+		t.Fatalf("normalized Darwin golden path = %q", got)
 	}
 }
 

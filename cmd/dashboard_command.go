@@ -18,7 +18,11 @@ func init() {
 }
 
 func runDashboardCommand(cmd *cobra.Command, _ []string) error {
-	metadata, err := verifiedController(cmd.Context(), effectiveConfigDir())
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return err
+	}
+	metadata, err := verifiedController(cmd.Context(), configDir)
 	if err != nil {
 		return serviceNotRunningError()
 	}

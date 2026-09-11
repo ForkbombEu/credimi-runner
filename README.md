@@ -1,105 +1,120 @@
 # Credimi Runner
 
-Credimi Runner is a persistent service for a multi-device Credimi runner. The
-service owns the Dashboard and local control API for its entire lifetime;
-runtime execution (the runner API, Temporal workers, lifecycle heartbeat and
-edge tunnel) is started and stopped independently.
+Credimi Runner keeps a Dashboard and Credimi runtime available for one or more
+configured mobile devices. Start the service once, then use the Dashboard to
+configure devices and control runtime execution.
 
-There is no `.env` runtime configuration or per-device runner image. One
-Android-capable image is shared by every configured device.
+## Quick start
 
-## Install
-
-Build the native binary on Linux or macOS:
+Install the latest release and open the Dashboard:
 
 ```bash
-git clone https://github.com/forkbombeu/credimi-runner.git
-cd credimi-runner
-task build
-mkdir -p "$HOME/.local/bin"
-install -m 755 bin/credimi-runner "$HOME/.local/bin/credimi-runner"
+curl -sL credimi.run | sh
 ```
 
-Create the configuration with private permissions. The default location is
-`$XDG_CONFIG_HOME/credimi-runner/config.toml`, or
-`~/.config/credimi-runner/config.toml` when `XDG_CONFIG_HOME` is unset.
+The installer selects the Linux or macOS release for the host architecture,
+verifies its checksum, installs `credimi-runner`, and starts the persistent
+service. It uses `CREDIMI_RUNNER_BIN_DIR`, `$XDG_BIN_HOME`, or
+`$HOME/.local/bin` in that order. If that directory is not on `PATH`, the
+installer prints the command to add it; it never changes shell startup files.
+
+Open the Dashboard at `http://127.0.0.1:8051` unless you configured another
+listener. Complete setup there, add devices, and start the runtime when the
+Dashboard reports the configuration is ready.
+
+## Day-to-day usage
 
 ```bash
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/credimi-runner"
+credimi-runner                         # start/attach and follow service logs
+credimi-runner dashboard               # open or print Dashboard access
+credimi-runner service status           # inspect persistent service status
+credimi-runner runtime start            # start runner API, workers, heartbeat
+credimi-runner runtime stop             # stop runtime; keep Dashboard available
+credimi-runner runtime status
+```
+
+The foreground root command attaches to the persistent service and follows its
+logs. `Ctrl+C` detaches that terminal without stopping the service.
+
+Use these commands when service administration is necessary:
+
+```bash
+credimi-runner service start
+credimi-runner service stop
+credimi-runner service restart
+credimi-runner service enable           # start automatically at login/startup
+credimi-runner service disable
+credimi-runner logs --lines 200
+```
+
+On Linux, `service stop` stops the Docker Compose service. Docker can retain an
+exited container in `docker ps -a`; only a container shown by `docker ps` is
+running. Trust `credimi-runner service status` for the runner lifecycle.
+
+On macOS, the persistent service is a per-user LaunchAgent. `service stop`
+stops that LaunchAgent. A service restart preserves the runtime's desired state
+and restores it after the service returns.
+
+## Requirements and supported devices
+
+- Linux and macOS, on x86_64/amd64 and arm64/aarch64 release architectures.
+- A Credimi account or internal-admin credential, with access to the configured
+  Credimi and Temporal services.
+- Docker access on Linux when the runner is enabled.
+- Android SDK platform tools for native Android work. On macOS, persistent
+  runner activities resolve supported host tools without requiring an
+  interactive-shell `PATH`; Maestro additionally needs a supported Java
+  installation.
+- Xcode for iOS Simulator devices on macOS.
+- Readable and writable `/dev/kvm` for Linux Android emulators:
+
+  ```bash
+  test -r /dev/kvm -a -w /dev/kvm && echo KVM-ready
+  ```
+
+| Device type | Linux | macOS | Requirements |
+| --- | --- | --- | --- |
+| `android_physical` | USB or Wi-Fi ADB | USB or Wi-Fi ADB | Unique serial; reachable ADB device |
+| `android_emulator` | Yes | Yes | Android SDK; `/dev/kvm` on Linux; one per runner |
+| `redroid` | Yes | Yes | Remote Redroid/AVDCTL endpoint and unique ADB serial |
+| `ios_simulator` | No | Yes | Xcode, `xcrun simctl`, and an explicit Simulator UDID |
+
+## Configuration
+
+Dashboard setup is the recommended path. It stores the configuration privately
+and validates it before runtime startup.
+
+For manual configuration, copy the example into the platform's configuration
+directory, make the directory and file private, edit it, then start the runner:
+
+```bash
+# Linux; XDG_CONFIG_HOME defaults to ~/.config
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/credimi/runner"
 mkdir -p "$config_dir"
 chmod 700 "$config_dir"
 install -m 600 config.example.toml "$config_dir/config.toml"
 ${EDITOR:-vi} "$config_dir/config.toml"
-credimi-runner validate-config
+credimi-runner --config "$config_dir/config.toml"
 ```
 
-Pass `--config /path/to/config.toml` to use a different location. The process
-rejects symlinks and files readable by group or others; credentials never come
-from runtime environment variables.
+The default file is:
 
-## Service and runtime
+- Linux: `$XDG_CONFIG_HOME/credimi/runner/config.toml`, or
+  `~/.config/credimi/runner/config.toml` when `XDG_CONFIG_HOME` is unset.
+- macOS: `~/Library/Application Support/credimi/runner/config.toml`.
 
-The root command starts the service, waits for the Dashboard, and follows its
-logs. Pressing Ctrl+C only detaches the log follower; it does not stop the
-service.
-
-```bash
-credimi-runner
-credimi-runner service start
-credimi-runner --dashboard-listen 0.0.0.0:8051
-credimi-runner service status
-credimi-runner logs --follow
-
-credimi-runner runtime start
-credimi-runner runtime stop
-credimi-runner runtime restart
-credimi-runner runtime status
-credimi-runner dashboard
-```
-
-On Linux the service is one Docker Compose `runner` container. On macOS it is
-a per-user LaunchAgent. Runtime stop keeps the Dashboard alive while closing
-the runner API, workers, heartbeat and edge exposure. Service restart preserves
-the runtime desired state and lets the application restore it after startup.
-
-The Dashboard control API listens on `0.0.0.0:8051` by default. Set
-`server.dashboard_listen` in `config.toml`, or pass `--dashboard-listen` when
-starting the CLI service, to use another address. The execution API is owned by
-the active runtime generation (normally port `8050`). Useful endpoints include:
-
-```text
-GET  /healthz
-GET  /api/config
-PUT  /api/config
-GET  /api/devices
-POST /api/devices
-PUT  /api/devices/{id}
-DELETE /api/devices/{id}
-GET  /monitoring
-GET  /api/system/metrics
-GET  /api/system/metrics?range=hourly
-```
-
-Set `server.dashboard_token` to require either `X-Dashboard-Token` or an
-`Authorization: Bearer …` header for the dashboard API. The main API remains
-the generated GoA API and is available at `/docs/openapi.yaml`.
-
-The Dashboard remains available while runtime operations are in progress and
-reports desired versus actual runtime state.
-
-## TOML configuration
-
-`config.example.toml` is the canonical starting point. It has one
-`schema_version = 1`, runner identity, Credimi/Temporal connection, listener,
-exposure, storage and unified runner-runtime settings, followed by `[[devices]]`
-tables. Unknown TOML fields are rejected.
+Use `--config-dir /path/to/directory` or `CREDIMI_RUNNER_CONFIG_DIR` for a
+different configuration directory. `--config /path/to/config.toml` selects the
+parent directory of that `config.toml`. Configuration files must not be symlinks
+or readable by group or others. Credentials belong in TOML, not runtime
+environment variables. The file uses `schema_version = 1` and rejects unknown
+fields.
 
 Each device ID is a canonical child of `runner.id`, for example
-`example-org/office-runner/pixel-7`. The configuration permits at most one
-Android emulator and one iOS Simulator. Android physical devices and Redroid
-devices may be repeated only with different serials.
+`example-org/office-runner/pixel-7`. Configure at most one Android emulator and
+one iOS Simulator. Android physical and Redroid devices must have unique serials.
 
-Select exactly one credential:
+Choose exactly one credential:
 
 ```toml
 [credimi]
@@ -119,97 +134,28 @@ internal_admin_key = "replace-me"
 
 Exposure modes are `manual`, `quick_tunnel`, and `named_tunnel`. Manual mode
 requires `exposure.public_url`; named tunnels require
-`exposure.cloudflare_token`; quick tunnels intentionally do not accept a
-Cloudflare token. A quick-tunnel URL is ephemeral and should never be treated
-as ready until the tunnel and runner health checks have succeeded.
+`exposure.cloudflare_token`; quick tunnels do not accept a Cloudflare token.
 
-## Device support
-
-| Device type | Linux | macOS | Requirements |
-| --- | --- | --- | --- |
-| `android_physical` | USB or Wi-Fi ADB | Wi-Fi ADB only | Docker when enabled; unique serial |
-| `android_emulator` | Yes | Yes | Docker and `/dev/kvm`; one per runner |
-| `redroid` | Yes | No | Docker; unique serial; one managed Redroid resource per device |
-| `ios_simulator` | No | Yes | Xcode and an explicit Simulator UDID; one per runner |
-
-### Android and Docker
-
-Every enabled Android device uses the unified runner image declared by
-`android.runner_image`. Persistent state, SDK/tool caches, AVD data and ADB
-keys live in configured volumes, so replacing the runner image does not discard
-provisioned assets. Missing SDK platform-tools and emulator packages are
-installed idempotently into the persistent SDK volume. The runner container contains the dashboard, GoA server,
-Temporal workers and common Android tools.
-
-Docker is required only if Android is enabled. An iOS-Simulator-only manual
-runner on macOS does not need Docker. On Linux, the user running
-`credimi-runner` must be allowed to access the Docker daemon. USB Android
-devices use the host ADB connection; grant the operator the normal udev/group
-permissions for the attached phone and reconnect it after changing rules.
-
-Android emulator devices require `/dev/kvm` on Linux. Verify it before
-enabling an emulator:
+## Troubleshooting
 
 ```bash
-test -r /dev/kvm -a -w /dev/kvm && echo KVM-ready
-```
-
-Redroid is Linux-only and ephemeral. Its SSH/avdctl configuration is validated
-when configured; no local container is created and no ADB connection is
-required while idle. Existing Credimi activities create and clean up the
-temporary runtime for each run.
-
-On macOS, physical Android devices must use Wi-Fi ADB, for example:
-
-```toml
-[[devices]]
-id = "example-org/office-runner/pixel-7"
-name = "Pixel 7"
-type = "android_physical"
-enabled = true
-
-[devices.android_physical]
-transport = "wifi"
-serial = "192.168.1.42:5555"
-```
-
-## Device execution boundary
-
-Credimi Runner owns configuration, lifecycle registration, tunnel exposure and
-Temporal worker startup. Device provisioning, emulator/simulator lifecycle,
-ADB and Maestro execution are owned by the Credimi-2 activities registered by
-the worker manager. The runner only hosts those activities and does not expose
-a second operation or agent API.
-
-## Monitoring and troubleshooting
-
-The monitoring page reports live CPU load, RAM load, disk activity and free
-space. Samples are collected every two seconds (half a second with
-`--debug-verbose`) and persisted as newline-delimited JSON; the hourly view
-aggregates the previous 24 hours.
-
-Useful checks:
-
-```bash
-credimi-runner validate-config --config /path/to/config.toml
-curl -fsS http://127.0.0.1:8051/healthz
-curl -fsS http://127.0.0.1:8051/api/system/metrics
 credimi-runner service status
 credimi-runner logs --lines 200
+curl -fsS http://127.0.0.1:8051/healthz
 ```
 
-If a device is offline, inspect the Credimi-2 activity and device logs. A
-healthy runner does not imply every device is ready. For a quick tunnel, wait
-for the newly-created URL to be registered only after readiness succeeds. A
-crash or failed reconciliation is surfaced by the dashboard API rather than
-silently waiting for a URL.
+A healthy runner does not guarantee every device is ready. Inspect the
+Dashboard, Credimi activity logs, and device logs when a device is offline. For
+a quick tunnel, use its URL only after the tunnel and runner health checks are
+ready.
 
-## Development gates
+## Development
+
+Build from a checkout when developing Credimi Runner itself:
 
 ```bash
-task format
-task lint
-task test
-task test:race
+git clone https://github.com/forkbombeu/credimi-runner.git
+cd credimi-runner
 task build
+task test
 ```

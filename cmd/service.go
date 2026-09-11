@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"time"
 
+	"github.com/forkbombeu/credimi-runner/internal/servicecoordination"
 	"github.com/forkbombeu/credimi-runner/internal/servicemanager"
 	"github.com/spf13/cobra"
 )
@@ -11,24 +13,68 @@ var serviceCmd = &cobra.Command{Use: "service", Short: "Control the persistent C
 
 func init() {
 	serviceCmd.AddCommand(
-		serviceAction("start", func(ctx context.Context, m servicemanager.Manager) error { return m.Start(ctx) }),
-		serviceAction("stop", func(ctx context.Context, m servicemanager.Manager) error { return m.Stop(ctx) }),
-		serviceAction("restart", func(ctx context.Context, m servicemanager.Manager) error { return m.Restart(ctx) }),
-		serviceAction("enable", func(ctx context.Context, m servicemanager.Manager) error { return m.Enable(ctx) }),
-		serviceAction("disable", func(ctx context.Context, m servicemanager.Manager) error { return m.Disable(ctx) }),
+		serviceAction("start", startService),
+		serviceAction("stop", stopService),
+		serviceAction("restart", restartService),
+		serviceAction("enable", func(ctx context.Context, m servicemanager.Manager, _ string) error { return m.Enable(ctx) }),
+		serviceAction("disable", func(ctx context.Context, m servicemanager.Manager, _ string) error { return m.Disable(ctx) }),
 		&cobra.Command{Use: "status", RunE: runServiceStatus},
 	)
 	rootCmd.AddCommand(serviceCmd)
 }
 
-func serviceAction(name string, action func(context.Context, servicemanager.Manager) error) *cobra.Command {
+func serviceAction(name string, action func(context.Context, servicemanager.Manager, string) error) *cobra.Command {
 	return &cobra.Command{Use: name, RunE: func(cmd *cobra.Command, _ []string) error {
-		return action(cmd.Context(), currentServiceManager())
+		manager, configDir, err := currentServiceManager()
+		if err != nil {
+			return err
+		}
+		if err := action(cmd.Context(), manager, configDir); err != nil {
+			return err
+		}
+		if name == "stop" {
+			cmd.Println("Service stopped.")
+		}
+		return nil
 	}}
 }
 
+func startService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
+	return servicecoordination.WithServiceMutation(ctx, configDir, func() error {
+		if err := servicecoordination.ResumeService(configDir); err != nil {
+			return err
+		}
+		return manager.Start(ctx)
+	})
+}
+
+func restartService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
+	return servicecoordination.WithServiceMutation(ctx, configDir, func() error {
+		if err := servicecoordination.ResumeService(configDir); err != nil {
+			return err
+		}
+		return manager.Restart(ctx)
+	})
+}
+
+func stopService(ctx context.Context, manager servicemanager.Manager, configDir string) error {
+	if err := servicecoordination.RequestStop(configDir, time.Now()); err != nil {
+		return err
+	}
+	return servicecoordination.WithServiceMutation(ctx, configDir, func() error {
+		if err := servicecoordination.CancelRestartRequest(configDir); err != nil {
+			return err
+		}
+		return manager.Stop(ctx)
+	})
+}
+
 func runServiceStatus(cmd *cobra.Command, _ []string) error {
-	status, err := currentServiceManager().Status(cmd.Context())
+	manager, _, err := currentServiceManager()
+	if err != nil {
+		return err
+	}
+	status, err := manager.Status(cmd.Context())
 	if err != nil {
 		return err
 	}

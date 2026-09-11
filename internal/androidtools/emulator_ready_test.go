@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -57,12 +58,18 @@ func TestEnsureEmulatorReadyReusesMountedAssetsAndEmptySerial(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("ANDROID_SDK_ROOT", root)
+	t.Setenv("HOST_AVD_GOLDEN_PATH", goldenRoot)
+	originalClient := androidAssetHTTPClient
+	t.Cleanup(func() { androidAssetHTTPClient = originalClient })
+	androidAssetHTTPClient = &http.Client{Transport: assetRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("asset download should not be called")
+	})}
 	t.Setenv("ANDROID_AVD_HOME", avdHome)
 	cfg := runnerconfig.Bootstrap()
 	cfg.Storage.StateDir = t.TempDir()
 	cfg.Devices = []runnerconfig.DeviceConfig{{
 		ID: "acme/runner/emulator", Type: runnerconfig.DeviceAndroidEmulator, Enabled: true,
-		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: filepath.Join(goldenRoot, "credimi-golden"), SystemImage: "system-images;android-35;google_apis;x86_64"},
+		AndroidEmulator: &runnerconfig.AndroidEmulatorConfig{BaseName: "credimi", GoldenSource: "/avd-golden/credimi-golden", SystemImage: "system-images;android-35;google_apis;x86_64"},
 	}}
 	if err := EnsureEmulatorReady(context.Background(), cfg, "darwin", nil); err != nil {
 		t.Fatal(err)
@@ -133,6 +140,23 @@ func TestEffectiveEmulatorPathsUseConfiguredValues(t *testing.T) {
 	}
 	if root, leaf := effectiveGoldenPath("/golden/custom", "credimi"); root != "/golden" || leaf != "custom" {
 		t.Fatalf("golden path = %q/%q", root, leaf)
+	}
+}
+
+func TestEffectiveGoldenPathForOSUsesNativeRootOnlyForKnownMount(t *testing.T) {
+	hostRoot := filepath.Join(t.TempDir(), "avd-golden")
+	t.Setenv("HOST_AVD_GOLDEN_PATH", hostRoot)
+	if root, leaf := effectiveGoldenPathForOS("", "credimi", "darwin"); root != hostRoot || leaf != "credimi-golden" {
+		t.Fatalf("Darwin default path = %q/%q", root, leaf)
+	}
+	if root, leaf := effectiveGoldenPathForOS("/avd-golden/credimi-golden", "credimi", "darwin"); root != hostRoot || leaf != "credimi-golden" {
+		t.Fatalf("Darwin mount path = %q/%q", root, leaf)
+	}
+	if root, leaf := effectiveGoldenPathForOS("/custom/credimi-golden", "credimi", "darwin"); root != "/custom" || leaf != "credimi-golden" {
+		t.Fatalf("Darwin custom path = %q/%q", root, leaf)
+	}
+	if root, leaf := effectiveGoldenPathForOS("/avd-golden/credimi-golden", "credimi", "linux"); root != "/avd-golden" || leaf != "credimi-golden" {
+		t.Fatalf("Linux mount path = %q/%q", root, leaf)
 	}
 }
 

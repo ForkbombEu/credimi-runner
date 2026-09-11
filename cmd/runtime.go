@@ -22,7 +22,11 @@ func runtimeAction(action string) *cobra.Command {
 	return &cobra.Command{Use: action, RunE: func(cmd *cobra.Command, _ []string) error { return runRuntimeAPIAction(cmd, action) }}
 }
 func runRuntimeAPIAction(cmd *cobra.Command, action string) error {
-	client, err := newControllerClient(cmd.Context(), effectiveConfigDir())
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return err
+	}
+	client, err := newControllerClient(cmd.Context(), configDir)
 	if err != nil {
 		return err
 	}
@@ -54,7 +58,11 @@ func lifecycleFailureMessage(done controller.Snapshot) string {
 	return message
 }
 func runRuntimeStatus(cmd *cobra.Command, _ []string) error {
-	client, err := newControllerClient(cmd.Context(), effectiveConfigDir())
+	configDir, err := effectiveConfigDir()
+	if err != nil {
+		return err
+	}
+	client, err := newControllerClient(cmd.Context(), configDir)
 	if err != nil {
 		return err
 	}

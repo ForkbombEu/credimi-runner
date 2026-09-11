@@ -94,7 +94,7 @@ type Config struct {
 }
 
 // ConfigDir resolves the runner config directory, honoring an override.
-func ConfigDir() string {
+func ConfigDir() (string, error) {
 	return dashboardruntime.DefaultConfigDir()
 }
 

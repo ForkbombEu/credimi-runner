@@ -83,7 +83,7 @@ func ensureEmulatorReadyAt(ctx context.Context, cfg runnerconfig.Config, goos, s
 	if err := EnsureCapabilities(ctx, sdkRoot, true, baseSystemImage); err != nil {
 		return fmt.Errorf("provision Android system image required by AVD %q: %w", baseName, err)
 	}
-	goldenRoot, goldenLeaf := effectiveGoldenPath(emulator.AndroidEmulator.GoldenSource, baseName)
+	goldenRoot, goldenLeaf := effectiveGoldenPathForOS(emulator.AndroidEmulator.GoldenSource, baseName, goos)
 	if !GoldenAssetsExist(goldenRoot, goldenLeaf) {
 		progressStage(progress, "Preparing Credimi golden image")
 		if err := DownloadAndExtractTarball(ctx, DefaultGoldenArchiveURL, goldenRoot, nil); err != nil {
@@ -148,6 +148,32 @@ func effectiveGoldenPath(configured, baseName string) (string, string) {
 	}
 	clean := filepath.Clean(configured)
 	return filepath.Dir(clean), filepath.Base(clean)
+}
+
+func effectiveGoldenPathForOS(configured, baseName, goos string) (string, string) {
+	if goos != "darwin" {
+		return effectiveGoldenPath(configured, baseName)
+	}
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return nativeGoldenRoot(), baseName + "-golden"
+	}
+	clean := filepath.Clean(configured)
+	if filepath.Dir(clean) == "/avd-golden" {
+		return nativeGoldenRoot(), filepath.Base(clean)
+	}
+	return filepath.Dir(clean), filepath.Base(clean)
+}
+
+func nativeGoldenRoot() string {
+	if root := strings.TrimSpace(os.Getenv("HOST_AVD_GOLDEN_PATH")); root != "" {
+		return root
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join("/tmp", "credimi-runner", "avd-golden")
+	}
+	return filepath.Join(home, "avd-golden")
 }
 
 // avdSystemImage returns the SDK package referenced by an existing AVD. AVD

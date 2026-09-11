@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -38,6 +39,15 @@ func isolateRootConfig(t *testing.T) {
 
 func (m *rootStoppedManager) Status(context.Context) (servicemanager.Status, error) {
 	return servicemanager.Status{Running: false, DashboardURL: "http://127.0.0.1:8051"}, nil
+}
+func TestEffectiveConfigDirHonorsExplicitConfigPath(t *testing.T) {
+	oldConfigPath, oldDashboardConfigDir := configPath, dashboardConfigDir
+	t.Cleanup(func() { configPath, dashboardConfigDir = oldConfigPath, oldDashboardConfigDir })
+	dashboardConfigDir = ""
+	configPath = filepath.Join(t.TempDir(), "nested", "config.toml")
+	if got, err := effectiveConfigDir(); err != nil || got != filepath.Dir(configPath) {
+		t.Fatalf("effectiveConfigDir = %q, err=%v", got, err)
+	}
 }
 
 func TestRootStartsStoppedService(t *testing.T) {

@@ -252,6 +252,100 @@ func TestCoordinatorReleaseIsIdempotentWhenLockIsMissing(t *testing.T) {
 	}
 }
 
+func TestStopRequestCancelsReplacementUntilServiceResumes(t *testing.T) {
+	dir := t.TempDir()
+	request, err := NewRestartRequest("config-digest", true, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRestartRequest(dir, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteRestartResult(dir, RestartResult{RequestID: request.RequestID, Success: true, UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResumeService(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadRestartRequest(dir); err != nil || got != request {
+		t.Fatalf("restart request without stop intent: request=%+v err=%v", got, err)
+	}
+	if err := RequestStop(dir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := StopRequested(dir); err != nil || !stopped {
+		t.Fatalf("stop request: stopped=%t err=%v", stopped, err)
+	}
+	if err := CancelRestartRequest(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRestartRequest(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restart request after cancel: %v", err)
+	}
+	if _, err := ReadRestartResult(dir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restart result after cancel: %v", err)
+	}
+	if err := ResumeService(dir); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := StopRequested(dir); err != nil || stopped {
+		t.Fatalf("stop request after resume: stopped=%t err=%v", stopped, err)
+	}
+	if err := WriteRestartRequest(dir, request); err != nil {
+		t.Fatalf("replacement request after resume: %v", err)
+	}
+}
+
+func TestStopRequestCreatesMissingDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing", "runner")
+	if err := RequestStop(dir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if stopped, err := StopRequested(dir); err != nil || !stopped {
+		t.Fatalf("stop request: stopped=%t err=%v", stopped, err)
+	}
+}
+
+func TestServiceMutationSerializesOperations(t *testing.T) {
+	dir := t.TempDir()
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- WithServiceMutation(context.Background(), dir, func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- WithServiceMutation(context.Background(), dir, func() error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+	select {
+	case <-secondEntered:
+		t.Fatal("second service mutation entered before first released")
+	default:
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("second service mutation did not run after first released")
+	}
+}
+
 func TestRestartProtocolRoundTripAndValidation(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(200, 0)

@@ -281,7 +281,7 @@ func (s *Store) RuntimeConfig() (RunnerRuntimeConfig, error) {
 // the GoA server. The runner configuration is loaded from typed TOML; process
 // environment values are not accepted as a configuration source.
 func RuntimeConfigFromEnvironment() (RunnerRuntimeConfig, error) {
-	store, err := LoadStore(DefaultConfigDir())
+	store, err := LoadStore("")
 	if err != nil {
 		return RunnerRuntimeConfig{}, err
 	}

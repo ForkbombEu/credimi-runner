@@ -32,9 +32,51 @@ func (m *LaunchAgentManager) command(ctx context.Context, args ...string) error 
 	}
 	return exec.CommandContext(ctx, args[0], args[1:]...).Run()
 }
+
+var launchAgentJavaHome = func() string {
+	output, err := exec.Command("/usr/libexec/java_home").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func launchAgentToolEnvironment(home string) string {
+	paths := []string{
+		filepath.Join(home, ".maestro", "bin"),
+		filepath.Join(home, "Library", "Android", "sdk", "platform-tools"),
+		filepath.Join(home, "Library", "Android", "sdk", "emulator"),
+		filepath.Join(home, "Library", "Android", "sdk", "cmdline-tools", "latest", "bin"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+		"/usr/sbin",
+		"/sbin",
+	}
+	environment := fmt.Sprintf("<key>HOME</key><string>%s</string><key>PATH</key><string>%s</string>",
+		html.EscapeString(home), html.EscapeString(strings.Join(paths, ":")))
+	androidHome := filepath.Join(home, "Library", "Android", "sdk")
+	if info, err := os.Stat(androidHome); err == nil && info.IsDir() {
+		environment += fmt.Sprintf("<key>ANDROID_HOME</key><string>%s</string><key>ANDROID_SDK_ROOT</key><string>%s</string>",
+			html.EscapeString(androidHome), html.EscapeString(androidHome))
+	}
+	environment += fmt.Sprintf("<key>ANDROID_USER_HOME</key><string>%s</string><key>ANDROID_AVD_HOME</key><string>%s</string>",
+		html.EscapeString(filepath.Join(home, ".android")), html.EscapeString(filepath.Join(home, ".android", "avd")))
+	if javaHome := launchAgentJavaHome(); javaHome != "" {
+		environment += fmt.Sprintf("<key>JAVA_HOME</key><string>%s</string>", html.EscapeString(javaHome))
+	}
+	return environment
+}
+
 func (m *LaunchAgentManager) plist() string {
 	logPath := filepath.Join(m.ConfigDir, "service.log")
-	return fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>internal-service</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string><key>EnvironmentVariables</key><dict><key>CREDIMI_RUNNER_CONFIG_DIR</key><string>%s</string></dict></dict></plist>\n", html.EscapeString(launchAgentLabel), html.EscapeString(m.BinaryPath), html.EscapeString(logPath), html.EscapeString(logPath), html.EscapeString(m.ConfigDir))
+	home := m.HomeDir
+	if home == "" {
+		home, _ = os.UserHomeDir()
+	}
+	environment := launchAgentToolEnvironment(home)
+	return fmt.Sprintf("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>%s</string><key>ProgramArguments</key><array><string>%s</string><string>internal-service</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string><key>EnvironmentVariables</key><dict><key>CREDIMI_RUNNER_CONFIG_DIR</key><string>%s</string>%s</dict></dict></plist>\n", html.EscapeString(launchAgentLabel), html.EscapeString(m.BinaryPath), html.EscapeString(logPath), html.EscapeString(logPath), html.EscapeString(m.ConfigDir), environment)
 }
 func (m *LaunchAgentManager) paths() (string, string, string, error) {
 	home := m.HomeDir
