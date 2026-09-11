@@ -74,7 +74,7 @@ and restores it after the service returns.
 
 | Device type | Linux | macOS | Requirements |
 | --- | --- | --- | --- |
-| `android_physical` | USB or Wi-Fi ADB | Wi-Fi ADB | Unique serial; reachable ADB device |
+| `android_physical` | USB or Wi-Fi ADB | USB or Wi-Fi ADB | Unique serial; reachable ADB device |
 | `android_emulator` | Yes | Yes | Android SDK; `/dev/kvm` on Linux; one per runner |
 | `redroid` | Yes | Yes | Remote Redroid/AVDCTL endpoint and unique ADB serial |
 | `ios_simulator` | No | Yes | Xcode, `xcrun simctl`, and an explicit Simulator UDID |
