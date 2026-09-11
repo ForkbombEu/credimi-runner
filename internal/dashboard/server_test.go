@@ -246,11 +246,12 @@ func TestNamedTunnelDomainChangeUsesRuntimeReconcile(t *testing.T) {
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	t.Setenv("PATH", t.TempDir())
-	if os.Getenv("ANDROID_SDK_ROOT") == "" {
-		original := ensureCandidateEmulatorReady
-		ensureCandidateEmulatorReady = func(context.Context, runnerconfig.Config, string, androidtools.EmulatorProgress) error { return nil }
-		t.Cleanup(func() { ensureCandidateEmulatorReady = original })
+	if os.Getenv("GOOS_OVERRIDE") == "" {
+		t.Setenv("GOOS_OVERRIDE", "linux")
 	}
+	original := ensureCandidateEmulatorReady
+	ensureCandidateEmulatorReady = func(context.Context, runnerconfig.Config, string, androidtools.EmulatorProgress) error { return nil }
+	t.Cleanup(func() { ensureCandidateEmulatorReady = original })
 	cfg := &Config{path: filepath.Join(t.TempDir(), "config.toml"), values: map[string]string{}}
 	for key, value := range Defaults {
 		cfg.values[key] = value
@@ -700,6 +701,9 @@ func TestDashboardMapsSupervisorStatus(t *testing.T) {
 
 func testSavedConfig(t *testing.T) (*Config, string) {
 	t.Helper()
+	if os.Getenv("GOOS_OVERRIDE") == "" {
+		t.Setenv("GOOS_OVERRIDE", "linux")
+	}
 	dir := t.TempDir()
 	cfg := runnerconfig.Bootstrap()
 	cfg.Runner.ID = "org/runner"

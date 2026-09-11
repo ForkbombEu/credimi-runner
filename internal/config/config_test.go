@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -386,7 +387,15 @@ func TestDefaultPathsUseXDGAndWriteCreatesPrivateParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(xdgConfig, "credimi", "runner"); configDir != want {
+	if runtime.GOOS == "darwin" {
+		userConfigDir, err := os.UserConfigDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := filepath.Join(userConfigDir, "credimi", "runner"); configDir != want {
+			t.Fatalf("DefaultDir = %q, want %q", configDir, want)
+		}
+	} else if want := filepath.Join(xdgConfig, "credimi", "runner"); configDir != want {
 		t.Fatalf("DefaultDir = %q, want %q", configDir, want)
 	}
 	configPath, err := DefaultPath()

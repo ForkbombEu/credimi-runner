@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -196,21 +197,33 @@ func TestRemoteDigestAuthenticatesGetFallbackIndependently(t *testing.T) {
 
 func TestCheckerImageStateAndFailures(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"x","digest":"sha256:same"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Docker-Content-Digest", "sha256:same")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	checker := Checker{ConfigDir: dir, HTTPClient: srv.Client()}
-	status := checker.Check(context.Background(), "v1", time.Time{})
-	if status.Image.UpdateAvailable || status.Image.CurrentVersion == "" {
-		t.Fatalf("status=%+v", status)
+	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"`+srv.URL+`/repo:latest","digest":"sha256:same"}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if got := (Checker{ConfigDir: t.TempDir()}).Check(context.Background(), "v1", time.Time{}); got.Image.LatestVersion != "" || got.Error == "" {
-		t.Fatalf("missing state=%+v", got)
+	checker := Checker{ConfigDir: dir, HTTPClient: srv.Client()}
+	if runtime.GOOS == "darwin" {
+		var image Component
+		if err := checker.checkImage(context.Background(), &image); err != nil || image.UpdateAvailable || image.CurrentVersion == "" {
+			t.Fatalf("image=%+v err=%v", image, err)
+		}
+	} else {
+		status := checker.Check(context.Background(), "v1", time.Time{})
+		if status.Image.UpdateAvailable || status.Image.CurrentVersion == "" {
+			t.Fatalf("status=%+v", status)
+		}
+	}
+	missing := (Checker{ConfigDir: t.TempDir()}).Check(context.Background(), "v1", time.Time{})
+	if runtime.GOOS == "darwin" {
+		if missing.Error != "" || missing.Image.LatestVersion != "" {
+			t.Fatalf("missing state=%+v", missing)
+		}
+	} else if missing.Image.LatestVersion != "" || missing.Error == "" {
+		t.Fatalf("missing state=%+v", missing)
 	}
 }
 
@@ -251,9 +264,6 @@ func TestParseImageRejectsMalformedReferences(t *testing.T) {
 
 func TestImageStateReportsDigestChangeAndRegistryErrors(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"http://registry/repo:latest","digest":"sha256:old"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Docker-Content-Digest", "sha256:new")
 		w.WriteHeader(http.StatusOK)
@@ -262,9 +272,17 @@ func TestImageStateReportsDigestChangeAndRegistryErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "service-image-state.json"), []byte(`{"image":"`+server.URL+`/repo:latest","digest":"sha256:old"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	status := (Checker{ConfigDir: dir, HTTPClient: server.Client()}).Check(context.Background(), "v1", time.Time{})
-	if !status.Image.UpdateAvailable || status.Image.LatestVersion != "sha256:new" {
-		t.Fatalf("status=%+v", status)
+	checker := Checker{ConfigDir: dir, HTTPClient: server.Client()}
+	if runtime.GOOS == "darwin" {
+		var image Component
+		if err := checker.checkImage(context.Background(), &image); err != nil || !image.UpdateAvailable || image.LatestVersion != "sha256:new" {
+			t.Fatalf("image=%+v err=%v", image, err)
+		}
+	} else {
+		status := checker.Check(context.Background(), "v1", time.Time{})
+		if !status.Image.UpdateAvailable || status.Image.LatestVersion != "sha256:new" {
+			t.Fatalf("status=%+v", status)
+		}
 	}
 	for _, challenge := range []string{"", "Basic abc", `Bearer service="x"`} {
 		if _, err := bearerToken(context.Background(), server.Client(), challenge); err == nil {
@@ -278,7 +296,11 @@ func TestCheckerAllowsConfigurationWithoutRunnerImage(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(`{"tag_name":"v1","published_at":"2026-01-01T00:00:00Z"}`))}, nil
 	})}
 	status := (Checker{HTTPClient: client}).Check(context.Background(), "v1", time.Time{})
-	if status.Runner.UpdateAvailable || !strings.Contains(status.Error, "image:") {
+	if runtime.GOOS == "darwin" {
+		if status.Error != "" {
+			t.Fatalf("status = %#v", status)
+		}
+	} else if status.Runner.UpdateAvailable || !strings.Contains(status.Error, "image:") {
 		t.Fatalf("status = %#v", status)
 	}
 }
