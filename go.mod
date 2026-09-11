@@ -3,7 +3,7 @@ module github.com/forkbombeu/credimi-runner
 go 1.27
 
 require (
-	github.com/forkbombeu/credimi v1.281.5
+	github.com/forkbombeu/credimi v1.281.6
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
