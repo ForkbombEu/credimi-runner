@@ -172,10 +172,12 @@ transport = "wifi"
 serial = "192.168.1.42:5555"
 ```
 
-Android emulator assets, SDK/tool caches, AVD data, and ADB keys use the
+On Linux, Android emulator assets, SDK/tool caches, AVD data, and ADB keys use
 configured persistent storage. Missing Android platform-tools and emulator
 packages are installed idempotently by the Credimi activities when required.
-Redroid is remote and ephemeral from the runner's perspective; its SSH/AVDCTL
+On macOS, native activities use the host Android SDK and AVD/ADB state; the
+persistent LaunchAgent supplies their tool environment explicitly. Redroid is
+remote and ephemeral from the runner's perspective; its SSH/AVDCTL
 configuration is validated before use.
 
 ## Execution and monitoring
